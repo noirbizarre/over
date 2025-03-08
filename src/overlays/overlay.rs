@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use tera::{Context, Tera};
 
+use crate::actions::install::InstallConfig;
 use crate::actions::{self, EnsureDir};
 use crate::exec::{self, Action, Ctx};
 use crate::ui::{emojis, style};
@@ -30,7 +31,7 @@ pub struct Overlay {
 
     pub git: Option<HashMap<String, String>>,
 
-    pub install: Option<HashMap<String, Vec<String>>>,
+    pub install: Option<InstallConfig>,
 }
 
 impl fmt::Display for Overlay {

@@ -43,11 +43,12 @@ features = ["derive"]
 version = "1.0"
 
 [dev-dependencies]
+pretty_assertions = { version = "1.4", features = ["unstable"] }
 assert_cmd = { version = "2.0", features = ["color", "color-auto"] }
 assert_fs = { version = "1.1", features = ["color", "color-auto"] }
 dir-diff = "0.3"
-predicates = { version = "3.0", features = ["color"] }
-rstest = "0.17"
+predicates = { version = "3.1", features = ["color"] }
+rstest = "0.25"
 trycmd = "0.14"
 
 [features]

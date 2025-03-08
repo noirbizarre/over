@@ -81,9 +81,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         );
         println!("{:#?}", e);
     }
-
-    
-
     
     Ok(())
 }
