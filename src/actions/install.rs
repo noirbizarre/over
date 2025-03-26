@@ -1,10 +1,115 @@
+use std::{collections::HashSet, env::consts::OS};
+
 use crate::{exec::Ctx, overlays::Overlay};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use which::which;
 
-pub async fn install(ctx: Ctx, overlay: &Overlay) -> Result<()> {
-    println!("Applying overlay: {}", overlay);
+#[cfg(test)]
+use mockall::{automock, mock, predicate::*};
+
+pub async fn install(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
+    let finder = WhichFinder;
+    match OS {
+        "linux" => install_linux(ctx, overlay, finder).await?,
+        "macos" => install_macos(ctx, overlay, finder).await?,
+        "windows" => install_windows(ctx, overlay, finder).await?,
+        _ => println!("Unsupported OS: {}", OS),
+    }
     Ok(())
+}
+
+#[cfg_attr(test, automock)]
+trait BinFinder {
+    fn find_first(&self, bins: Vec<String>) -> Option<String>;
+}
+
+struct WhichFinder;
+
+impl BinFinder for WhichFinder {
+    fn find_first(&self, bins: Vec<String>) -> Option<String> {
+        bins.into_iter().find(|bin| which(bin).is_ok())
+    }
+}
+
+
+#[cfg_attr(test, automock)]
+trait Installer {
+    async fn install(&self, pkgs: Vec<String>) -> Result<()>;
+}
+
+struct ArchInstaller;
+
+struct AptInstaller;
+
+struct BrewInstaller;
+
+
+async fn install_windows<T: BinFinder>(ctx: &Ctx, overlay: &Overlay, finder: T) -> Result<()> {
+    todo!();
+    Ok(())
+}
+
+async fn install_macos<T: BinFinder>(ctx: &Ctx, overlay: &Overlay, finder: T) -> Result<()> {
+    if let Ok(brew) = which("brew") {
+        println!("brew is installed at {}", brew.display());
+    } else {
+        println!("brew is not installed");
+    }
+    Ok(())
+}
+
+async fn install_linux<T: BinFinder>(ctx: &Ctx, overlay: &Overlay, finder: T) -> Result<()> {
+    match finder.find_first(vec![
+        "yay".to_string(),
+        "paru".to_string(),
+        "pacman".to_string(),
+        "apt".to_string(),
+    ]) {
+        Some(bin) => match bin.as_str() {
+            "yay" | "paru" | "pacman" => install_arch(ctx, overlay, &bin).await?,
+            "apt" => install_apt(ctx, overlay, &bin).await?,
+            _ => println!("Unknown bin {}", bin),
+        },
+        None => println!("No package manager found"),
+    }
+    let pkgs = get_archlinux_packages(ctx, overlay).await;
+    println!("{:?}", pkgs);
+    Ok(())
+}
+
+async fn install_apt(ctx: &Ctx, overlay: &Overlay, bin: &str) -> Result<()> {
+    println!("Installer for apt using {}", bin);
+    todo!();
+    Ok(())
+}
+
+async fn install_arch(ctx: &Ctx, overlay: &Overlay, bin: &str) -> Result<()> {
+    println!("Installer for Archlinux using {}", bin);
+    todo!();
+    Ok(())
+}
+
+async fn get_archlinux_packages(ctx: &Ctx, overlay: &Overlay) -> HashSet<String> {
+    let mut packages: HashSet<String> = HashSet::new();
+    if let Some(install) = &overlay.install {
+        if let Some(archlinux) = &install.archlinux {
+            packages.extend(archlinux.packages.iter().cloned());
+        }
+    }
+    if let Some(uses) = &overlay.uses {
+        for name in uses {
+            let used = ctx.repository.get(name).expect("failed");
+            if ctx.debug {
+                println!("{:#?}", overlay);
+            }
+            packages = packages
+                .union(&Box::pin(get_archlinux_packages(ctx, &used)).await)
+                .cloned()
+                .collect();
+        }
+    }
+    packages
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -111,7 +216,10 @@ impl From<AllBrewPackageForms> for BrewPackage {
 #[serde(untagged)]
 pub enum AllBrewPackageForms {
     Str(String),
-    Full {name: String,  options: Option<String>},
+    Full {
+        name: String,
+        options: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

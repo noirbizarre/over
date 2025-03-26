@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::Args;
 use dirs::home_dir;
 
+use crate::actions;
 use crate::cli::CLI;
 use crate::exec::Context;
 use crate::overlays::Repository;
@@ -22,6 +23,12 @@ pub struct Params {
 
     #[clap(long, short, help = "Overwrite without prompting")]
     force: bool,
+
+    #[clap(long, short, help = "Do not process uses")]
+    no_uses: bool,
+
+    #[clap(long, short, help = "Install associated applications")]
+    install: bool,
 }
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
@@ -47,6 +54,10 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         repo,
         Some(overlay.clone()),
     );
+        
+    if args.install {
+        actions::install::install(&ctx, &overlay).await?;
+    }
 
     let result = overlay.apply(&ctx).await;
     if let Err(e) = result {
