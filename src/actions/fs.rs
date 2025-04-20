@@ -97,7 +97,7 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
                 "{} is not included in {}",
                 src.display(),
                 root.display(),
-            ))
+            ));
         }
     };
     let target = overlay.root.join(rel_path);

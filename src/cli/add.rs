@@ -2,14 +2,14 @@ use std::path::PathBuf;
 
 use clap::Args;
 
-use anyhow::Result;
-use dialoguer::theme::ColorfulTheme;
-use dirs::home_dir;
 use crate::cli::CLI;
 use crate::exec::Context;
 use crate::overlays::Repository;
 use crate::ui::{emojis, style};
+use anyhow::Result;
 use dialoguer::FuzzySelect;
+use dialoguer::theme::ColorfulTheme;
+use dirs::home_dir;
 
 #[derive(Args, Debug)]
 pub struct Params {
@@ -28,7 +28,6 @@ pub struct Params {
     #[clap(long, short, help = "Overwrite without prompting")]
     force: bool,
 }
-
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if cli.debug {

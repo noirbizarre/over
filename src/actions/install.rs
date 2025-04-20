@@ -32,7 +32,6 @@ impl BinFinder for WhichFinder {
     }
 }
 
-
 #[cfg_attr(test, automock)]
 trait Installer {
     async fn install(&self, pkgs: Vec<String>) -> Result<()>;
@@ -43,7 +42,6 @@ struct ArchInstaller;
 struct AptInstaller;
 
 struct BrewInstaller;
-
 
 async fn install_windows<T: BinFinder>(ctx: &Ctx, overlay: &Overlay, finder: T) -> Result<()> {
     todo!();

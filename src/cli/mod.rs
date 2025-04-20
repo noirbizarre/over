@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::{crate_name, Parser, Subcommand};
+use clap::{Parser, Subcommand, crate_name};
 
 use crate::ui::style::clap_styles;
 
