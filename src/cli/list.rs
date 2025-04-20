@@ -20,7 +20,10 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     // let repo = Repository::new( PathBuf::from(&cli.home) );
 
-    for overlay in Repository::new(PathBuf::from(&cli.home)).overlays()? {
+    let home = cli.home.as_ref().expect("Home directory not set");
+    let repo = Repository::new(PathBuf::from(home));
+
+    for overlay in repo.overlays()? {
         println!("{}", overlay.name);
     }
 

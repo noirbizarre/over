@@ -35,7 +35,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         println!("{:#?}", args);
     }
 
-    let repo = Repository::new(PathBuf::from(&cli.home));
+    let home = cli.home.as_ref().expect("Home directory not set");
+    let repo = Repository::new(PathBuf::from(home));
     if cli.debug {
         println!("{:#?}", repo);
     }

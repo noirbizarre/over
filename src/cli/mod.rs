@@ -30,7 +30,7 @@ pub struct CLI {
         env = "OVER_HOME",
         help = "Configuration and overlays root"
     )]
-    home: PathBuf,
+    home: Option<PathBuf>,
 
     #[clap(long, short, global = true, help = "Toggle debug traces")]
     debug: bool,
