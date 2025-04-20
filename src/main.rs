@@ -1,5 +1,5 @@
 use anyhow::Result;
-use over::cli;
+use dot_over::cli;
 
 // fn main() -> Result<(), Box<dyn std::error::Error>> {
 //     cli::main()?;

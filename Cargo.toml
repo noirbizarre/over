@@ -1,12 +1,15 @@
 [package]
-name = "over"
-edition = "2021"
+name = "dot-over"
+edition = "2024"
 version = "0.0.1"
 description = "A git-based files overlay manager (dotfiles as overlays)"
 readme = "README.md"
-repository = "https://github.com/rawtools/over/"
+repository = "https://github.com/noirbizarre/over/"
 license = "MIT"
 
+[[bin]]
+name = "over"
+path = "src/main.rs"
 
 [dependencies]
 dialoguer = { version = "0.11", features = ["fuzzy-select"] }

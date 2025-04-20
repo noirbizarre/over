@@ -623,6 +623,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fea41bba32d969b513997752735605054bc0dfa92b4c56bf1189f2e174be7a10"
 
 [[package]]
+name = "dot-over"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "assert_fs",
+ "async-trait",
+ "clap",
+ "config",
+ "console",
+ "dialoguer 0.11.0",
+ "dir-diff",
+ "directories",
+ "dirs 6.0.0",
+ "futures",
+ "git2",
+ "git2_credentials",
+ "globset",
+ "indicatif",
+ "mockall",
+ "mockall_double",
+ "normpath",
+ "once_cell",
+ "predicates",
+ "pretty_assertions",
+ "rstest",
+ "serde",
+ "symlink",
+ "tera",
+ "thiserror 2.0.11",
+ "tokio",
+ "toml",
+ "trycmd",
+ "walkdir",
+ "which",
+]
+
+[[package]]
 name = "downcast"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1361,44 +1399,6 @@ checksum = "2c92f2b54f081d635c77e7120862d48db8e91f7f21cef23ab1b4fe9971c59f55"
 dependencies = [
  "libc",
  "winapi",
-]
-
-[[package]]
-name = "over"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "assert_fs",
- "async-trait",
- "clap",
- "config",
- "console",
- "dialoguer 0.11.0",
- "dir-diff",
- "directories",
- "dirs 6.0.0",
- "futures",
- "git2",
- "git2_credentials",
- "globset",
- "indicatif",
- "mockall",
- "mockall_double",
- "normpath",
- "once_cell",
- "predicates",
- "pretty_assertions",
- "rstest",
- "serde",
- "symlink",
- "tera",
- "thiserror 2.0.11",
- "tokio",
- "toml",
- "trycmd",
- "walkdir",
- "which",
 ]
 
 [[package]]
