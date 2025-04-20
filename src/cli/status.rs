@@ -5,7 +5,8 @@ use crate::overlays::repository::Repository;
 use anyhow::Result;
 
 pub async fn execute(cli: &CLI) -> Result<()> {
-    let repo = Repository::new(PathBuf::from(&cli.home));
+    let home = cli.home.as_ref().expect("Home directory not set");
+    let repo = Repository::new(PathBuf::from(home));
     println!("{:#?}", repo);
     Ok(())
 }
