@@ -54,7 +54,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         repo,
         Some(overlay.clone()),
     );
-        
+
     if args.install {
         actions::install::install(&ctx, &overlay).await?;
     }

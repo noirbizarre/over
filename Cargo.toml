@@ -22,7 +22,7 @@ tera = "1.20"
 walkdir = "2"
 tokio = { version = "1.43", features = ["full"] }
 indicatif = "0.17"
-toml = "0.8" 
+toml = "0.8"
 git2 = "0.16"
 git2_credentials = "0.11"
 async-trait = "0.1"
@@ -58,4 +58,3 @@ rstest = "0.25"
 trycmd = "0.14"
 
 [features]
-

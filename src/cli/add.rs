@@ -40,7 +40,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if cli.debug {
         println!("{:#?}", repo);
     }
-   
+
     let overlay = match &args.overlay {
         Some(name) => repo.get(name)?,
         None => {
@@ -81,6 +81,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         );
         println!("{:#?}", e);
     }
-    
+
     Ok(())
 }

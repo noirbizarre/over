@@ -124,7 +124,7 @@ impl Overlay {
 
         Ok(())
     }
-    
+
     pub async fn add_file(&self, ctx: &Ctx, file: &PathBuf) -> Result<()> {
         let root = self.resolve_target(ctx)?;
         actions::fs::add_file(ctx.clone(), self, file).await?;
