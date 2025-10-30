@@ -122,8 +122,146 @@ impl Overlay {
     }
 
     pub async fn add_file(&self, ctx: &Ctx, file: &PathBuf) -> Result<()> {
-        let root = self.resolve_target(ctx)?;
+        let _ = self.resolve_target(ctx)?;
         actions::fs::add_file(ctx.clone(), self, file).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exec::Context;
+    use crate::overlays::Repository;
+    use assert_fs::TempDir;
+    use assert_fs::prelude::*;
+    use rstest::rstest;
+    use std::fs;
+
+    fn repo_and_root() -> (TempDir, Repository) {
+        let td = TempDir::new().unwrap();
+        let repo = Repository::new(td.path().to_path_buf());
+        (td, repo)
+    }
+
+    fn ctx(root: PathBuf, repo: Repository, overlay: Option<Overlay>) -> Ctx {
+        Context::new(false, false, false, false, root, repo, overlay)
+    }
+
+    #[rstest]
+    #[case("~", |root: &PathBuf| root.clone())]
+    #[case("~/sub", |root: &PathBuf| root.join("sub"))]
+    fn test_resolve_target(#[case] target: &str, #[case] expected: fn(&PathBuf) -> PathBuf) {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str(&format!("target = \"{}\"", target))
+            .unwrap();
+        let overlay = repo.get("ov").unwrap();
+        let root = td.path().to_path_buf();
+        let c = ctx(root.clone(), repo.clone(), Some(overlay.clone()));
+        let resolved = overlay.resolve_target(&c).unwrap();
+        assert_eq!(resolved, expected(&root));
+    }
+
+    #[rstest]
+    fn test_resolve_target_absolute() {
+        let (td, repo) = repo_and_root();
+        let abs = td.child("abs_root");
+        abs.create_dir_all().unwrap();
+        let overlay_dir = td.child("abs");
+        overlay_dir.create_dir_all().unwrap();
+        let target_str = abs.to_str().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str(&format!("target = \"{}\"", target_str))
+            .unwrap();
+        let overlay = repo.get("abs").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let resolved = overlay.resolve_target(&c).unwrap();
+        assert_eq!(resolved, PathBuf::from(target_str));
+    }
+
+    #[tokio::test]
+    async fn test_apply_with_uses() {
+        let (td, repo) = repo_and_root();
+        let child_dir = td.child("child");
+        child_dir.create_dir_all().unwrap();
+        child_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        child_dir.child("file.txt").write_str("content").unwrap();
+
+        let parent_dir = td.child("parent");
+        parent_dir.create_dir_all().unwrap();
+        parent_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nuses = [\"child\"]")
+            .unwrap();
+
+        let parent = repo.get("parent").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(parent.clone()));
+        let result = parent.apply(&c).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_add_file_success() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_add");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+
+        let original_file = td.path().join("my.txt");
+        fs::write(&original_file, "hello world").unwrap();
+
+        let overlay = repo.get("ov_add").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let result = overlay.add_file(&c, &original_file).await;
+        assert!(result.is_ok(), "add_file should succeed");
+
+        let moved_path = overlay.root.join("my.txt");
+        assert!(
+            moved_path.exists(),
+            "moved file should exist in overlay root"
+        );
+        assert_eq!(fs::read_to_string(&moved_path).unwrap(), "hello world");
+
+        assert!(
+            original_file.exists(),
+            "original path should exist as symlink"
+        );
+        let symlink_target = fs::read_link(&original_file).unwrap();
+        assert_eq!(symlink_target, moved_path);
+    }
+
+    #[tokio::test]
+    async fn test_add_file_outside_target_errors() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_err");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+
+        let overlay = repo.get("ov_err").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let outside = assert_fs::TempDir::new().unwrap();
+        let outside_file = outside.path().join("ext.txt");
+        fs::write(&outside_file, "external").unwrap();
+
+        let result = overlay.add_file(&c, &outside_file).await;
+        assert!(
+            result.is_err(),
+            "adding file outside target root should error"
+        );
     }
 }
