@@ -16,6 +16,7 @@ pub fn short_path(path: &str) -> String {
 
 // Find the longuest common suffix between two strings
 // Returns an empty string if no common suffix is found
+#[allow(dead_code)]
 pub fn longuest_common_suffix<'a>(a: &'a str, b: &'a str) -> String {
     let reversed = a
         .chars()

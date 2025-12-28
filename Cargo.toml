@@ -56,5 +56,6 @@ dir-diff = "0.3"
 predicates = { version = "3.1", features = ["color"] }
 rstest = "0.25"
 trycmd = "0.14"
+tempfile = "3.13"
 
 [features]

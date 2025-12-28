@@ -289,3 +289,101 @@ impl Action for MoveFile {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exec::Context;
+    use crate::overlays::Repository;
+    use assert_fs::TempDir;
+    use assert_fs::prelude::*;
+    use std::fs;
+
+    fn repo_and_root() -> (TempDir, Repository) {
+        let td = TempDir::new().unwrap();
+        let repo = Repository::new(td.path().to_path_buf());
+        (td, repo)
+    }
+
+    fn ctx(root: PathBuf, repo: Repository, overlay: Option<Overlay>) -> Ctx {
+        Context::new(false, false, true, true, root, repo, overlay)
+    }
+
+    #[tokio::test]
+    async fn ensure_dir_creates_directory() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let dir_path = td.path().join("new_dir");
+        let action = EnsureDir::new(dir_path.clone());
+        action.execute(c.clone()).await.unwrap();
+        assert!(dir_path.exists(), "directory should be created");
+    }
+
+    #[tokio::test]
+    async fn move_file_moves() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_move");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_move").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let original = td.child("file.txt");
+        original.write_str("content").unwrap();
+        let dst = overlay.root.join("file.txt");
+        let action = MoveFile::new(c.clone(), original.path().to_path_buf(), dst.clone());
+        action.execute(c.clone()).await.unwrap();
+        assert!(dst.exists(), "file moved into overlay root");
+        assert!(!original.path().exists(), "original should be moved away");
+    }
+
+    #[tokio::test]
+    async fn ensure_link_creates_symlink() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_link");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_link").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let src_file = overlay.root.join("inner.txt");
+        fs::write(&src_file, "hello").unwrap();
+        let target = td.path().join("inner.txt");
+        let action = EnsureLink::new(c.clone(), src_file.clone(), target.clone());
+        action.execute(c.clone()).await.unwrap();
+        let link_target = fs::read_link(&target).unwrap();
+        assert_eq!(link_target, src_file);
+    }
+
+    #[tokio::test]
+    async fn add_file_errors_when_outside_target() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_add_err");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_add_err").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        // outside file
+        let outside_dir = assert_fs::TempDir::new().unwrap();
+        let outside_file = outside_dir.path().join("ext.txt");
+        fs::write(&outside_file, "ext").unwrap();
+        let res = add_file(c.clone(), &overlay, &outside_file).await;
+        assert!(res.is_err());
+    }
+}

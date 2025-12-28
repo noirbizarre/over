@@ -5,11 +5,21 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use which::which;
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum SystemManager {
+    Archlinux,
+    Apt,
+    Brew,
+}
+
 // Precedence maps per platform/distro (system managers only)
-const PRECEDENCE_MACOS: &[&str] = &["brew"]; // kept for symmetry
-const PRECEDENCE_ARCH: &[&str] = &["archlinux", "brew"]; // arch helpers preferred, fallback to brew
-const PRECEDENCE_DEBIAN: &[&str] = &["apt", "brew"]; // apt before brew
-const PRECEDENCE_GENERIC_LINUX: &[&str] = &["archlinux", "apt", "brew"]; // attempt all known managers
+const PRECEDENCE_ARCH: &[SystemManager] = &[SystemManager::Archlinux, SystemManager::Brew]; // arch helpers preferred, fallback to brew
+const PRECEDENCE_DEBIAN: &[SystemManager] = &[SystemManager::Apt, SystemManager::Brew]; // apt before brew
+const PRECEDENCE_GENERIC_LINUX: &[SystemManager] = &[
+    SystemManager::Archlinux,
+    SystemManager::Apt,
+    SystemManager::Brew,
+]; // attempt all known managers
 
 fn detect_linux_distro() -> Option<String> {
     let content = fs::read_to_string("/etc/os-release").ok()?;
@@ -161,11 +171,11 @@ async fn install_cargo_crates(ctx: &Ctx, crates: HashSet<CargoPackage>) -> Resul
                 args.push(version.clone());
             }
         }
-        if let Some(features) = &krate.features {
-            if !features.is_empty() {
-                args.push("--features".into());
-                args.push(features.join(","));
-            }
+        if let Some(features) = &krate.features
+            && !features.is_empty()
+        {
+            args.push("--features".into());
+            args.push(features.join(","));
         }
         if krate.locked == Some(true) {
             args.push("--locked".into());
@@ -191,39 +201,25 @@ async fn install_python_packages(ctx: &Ctx, packages: HashSet<PythonPackage>) ->
     let pip_available = which("pip").is_ok();
     for pkg in packages.iter() {
         // Determine effective tool
-        let tool = match pkg.tool.as_deref() {
-            Some("uv") => {
-                if uv_available {
-                    "uv"
-                } else {
-                    continue;
-                }
+        let chosen = if let Some(explicit) = pkg.tool {
+            // Copy so moved is fine
+            match explicit {
+                PythonTool::Uv if uv_available => Some("uv"),
+                PythonTool::Pipx if pipx_available => Some("pipx"),
+                PythonTool::Pip if pip_available => Some("pip"),
+                _ => None,
             }
-            Some("pipx") => {
-                if pipx_available {
-                    "pipx"
-                } else {
-                    continue;
-                }
-            }
-            Some("pip") => {
-                if pip_available {
-                    "pip"
-                } else {
-                    continue;
-                }
-            }
-            _ => {
-                if uv_available {
-                    "uv"
-                } else if pipx_available {
-                    "pipx"
-                } else if pip_available {
-                    "pip"
-                } else {
-                    continue;
-                }
-            }
+        } else if uv_available {
+            Some("uv")
+        } else if pipx_available {
+            Some("pipx")
+        } else if pip_available {
+            Some("pip")
+        } else {
+            None
+        };
+        let Some(tool) = chosen else {
+            continue;
         };
         let mut args: Vec<String> = Vec::new();
         match tool {
@@ -237,12 +233,12 @@ async fn install_python_packages(ctx: &Ctx, packages: HashSet<PythonPackage>) ->
         }
         // Build spec with extras if any
         let mut spec = pkg.name.clone();
-        if let Some(extras) = &pkg.extras {
-            if !extras.is_empty() {
-                spec.push('[');
-                spec.push_str(&extras.join(","));
-                spec.push(']');
-            }
+        if let Some(extras) = &pkg.extras
+            && !extras.is_empty()
+        {
+            spec.push('[');
+            spec.push_str(&extras.join(","));
+            spec.push(']');
         }
         args.push(spec);
         if let Some(opts) = &pkg.options {
@@ -296,26 +292,24 @@ async fn install_windows(_ctx: &Ctx, _overlay: &Overlay) -> Result<()> {
 }
 
 // Decide which system managers will run on Linux given distro & config
-fn decide_linux_managers(distro: &str, install_cfg: &InstallConfig) -> Vec<&'static str> {
-    let precedence: &[&str] = match distro {
+fn decide_linux_managers(distro: &str, install_cfg: &InstallConfig) -> Vec<SystemManager> {
+    let precedence: &[SystemManager] = match distro {
         "arch" | "archlinux" => PRECEDENCE_ARCH,
         "ubuntu" | "debian" => PRECEDENCE_DEBIAN,
         _ => PRECEDENCE_GENERIC_LINUX,
     };
     let platform_cfg = install_cfg.platforms.get(distro);
-    let has_top = |name: &str| match name {
-        "archlinux" => install_cfg.archlinux.is_some(),
-        "apt" => install_cfg.apt.is_some(),
-        "brew" => install_cfg.brew.is_some(),
-        _ => false,
+    let has_top = |mgr: &SystemManager| match mgr {
+        SystemManager::Archlinux => install_cfg.archlinux.is_some(),
+        SystemManager::Apt => install_cfg.apt.is_some(),
+        SystemManager::Brew => install_cfg.brew.is_some(),
     };
-    let has_platform = |name: &str| {
+    let has_platform = |mgr: &SystemManager| {
         platform_cfg
-            .map(|p| match name {
-                "archlinux" => p.archlinux.is_some(),
-                "apt" => p.apt.is_some(),
-                "brew" => p.brew.is_some(),
-                _ => false,
+            .map(|p| match mgr {
+                SystemManager::Archlinux => p.archlinux.is_some(),
+                SystemManager::Apt => p.apt.is_some(),
+                SystemManager::Brew => p.brew.is_some(),
             })
             .unwrap_or(false)
     };
@@ -356,14 +350,13 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     // System managers first
     for mgr in decide_linux_managers(distro.as_str(), install_cfg) {
         match mgr {
-            "archlinux" => {
+            SystemManager::Archlinux => {
                 if let Some(cfg) = platform_cfg
                     .and_then(|p| p.archlinux.as_ref())
                     .or(install_cfg.archlinux.as_ref())
+                    && let Some(pre) = &cfg.pre
                 {
-                    if let Some(pre) = &cfg.pre {
-                        run_scripts(ctx, pre).await?;
-                    }
+                    run_scripts(ctx, pre).await?;
                 }
                 let pkgs = get_archlinux_packages(ctx, overlay).await;
                 if !pkgs.is_empty() {
@@ -372,20 +365,18 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
                 if let Some(cfg) = platform_cfg
                     .and_then(|p| p.archlinux.as_ref())
                     .or(install_cfg.archlinux.as_ref())
+                    && let Some(post) = &cfg.post
                 {
-                    if let Some(post) = &cfg.post {
-                        run_scripts(ctx, post).await?;
-                    }
+                    run_scripts(ctx, post).await?;
                 }
             }
-            "apt" => {
+            SystemManager::Apt => {
                 if let Some(cfg) = platform_cfg
                     .and_then(|p| p.apt.as_ref())
                     .or(install_cfg.apt.as_ref())
+                    && let Some(pre) = &cfg.pre
                 {
-                    if let Some(pre) = &cfg.pre {
-                        run_scripts(ctx, pre).await?;
-                    }
+                    run_scripts(ctx, pre).await?;
                 }
                 let pkgs = get_apt_packages(ctx, overlay).await;
                 if !pkgs.is_empty() {
@@ -394,20 +385,18 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
                 if let Some(cfg) = platform_cfg
                     .and_then(|p| p.apt.as_ref())
                     .or(install_cfg.apt.as_ref())
+                    && let Some(post) = &cfg.post
                 {
-                    if let Some(post) = &cfg.post {
-                        run_scripts(ctx, post).await?;
-                    }
+                    run_scripts(ctx, post).await?;
                 }
             }
-            "brew" => {
+            SystemManager::Brew => {
                 if let Some(cfg) = platform_cfg
                     .and_then(|p| p.brew.as_ref())
                     .or(install_cfg.brew.as_ref())
+                    && let Some(pre) = &cfg.pre
                 {
-                    if let Some(pre) = &cfg.pre {
-                        run_scripts(ctx, pre).await?;
-                    }
+                    run_scripts(ctx, pre).await?;
                 }
                 let (taps, pkgs) = get_brew_packages(ctx, overlay).await;
                 if !taps.is_empty() || !pkgs.is_empty() {
@@ -416,13 +405,11 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
                 if let Some(cfg) = platform_cfg
                     .and_then(|p| p.brew.as_ref())
                     .or(install_cfg.brew.as_ref())
+                    && let Some(post) = &cfg.post
                 {
-                    if let Some(post) = &cfg.post {
-                        run_scripts(ctx, post).await?;
-                    }
+                    run_scripts(ctx, post).await?;
                 }
             }
-            _ => {}
         }
     }
 
@@ -505,10 +492,9 @@ async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     if let Some(cfg) = platform_cfg
         .and_then(|p| p.brew.as_ref())
         .or(install_cfg.brew.as_ref())
+        && let Some(pre) = &cfg.pre
     {
-        if let Some(pre) = &cfg.pre {
-            run_scripts(ctx, pre).await?;
-        }
+        run_scripts(ctx, pre).await?;
     }
     let (taps, pkgs) = get_brew_packages(ctx, overlay).await;
     if !taps.is_empty() || !pkgs.is_empty() {
@@ -517,10 +503,9 @@ async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     if let Some(cfg) = platform_cfg
         .and_then(|p| p.brew.as_ref())
         .or(install_cfg.brew.as_ref())
+        && let Some(post) = &cfg.post
     {
-        if let Some(post) = &cfg.post {
-            run_scripts(ctx, post).await?;
-        }
+        run_scripts(ctx, post).await?;
     }
 
     // cargo
@@ -1080,11 +1065,19 @@ pub enum AllPythonForms {
     },
 }
 
+#[derive(Debug, Deserialize, Serialize, Copy, Clone, Eq, PartialEq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum PythonTool {
+    Uv,
+    Pipx,
+    Pip,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, Eq, PartialEq, Hash)]
 #[serde(from = "AllPythonPackageForms")]
 pub struct PythonPackage {
     pub name: String,
-    pub tool: Option<String>, // uv|pipx|pip|auto(default)
+    pub tool: Option<PythonTool>, // uv|pipx|pip|auto(default)
     pub extras: Option<Vec<String>>,
     pub options: Option<String>,
 }
@@ -1119,7 +1112,7 @@ pub enum AllPythonPackageForms {
     Str(String),
     Full {
         name: String,
-        tool: Option<String>,
+        tool: Option<PythonTool>,
         extras: Option<Vec<String>>,
         options: Option<String>,
     },
@@ -1500,9 +1493,9 @@ brew.packages = ["pkg1", {name="pkg2", options="--cask", cask=true}]
         };
         // simulate ubuntu distro: expect apt only
         let managers = decide_linux_managers("ubuntu", &install);
-        assert_eq!(managers, vec!["apt"]);
+        assert_eq!(managers, vec![SystemManager::Apt]);
         let managers_arch = decide_linux_managers("archlinux", &install);
-        assert_eq!(managers_arch, vec!["archlinux"]);
+        assert_eq!(managers_arch, vec![SystemManager::Archlinux]);
     }
 
     #[test]
@@ -1542,6 +1535,6 @@ brew.packages = ["pkg1", {name="pkg2", options="--cask", cask=true}]
             platforms,
         };
         let managers = decide_linux_managers("ubuntu", &install);
-        assert_eq!(managers, vec!["apt", "brew"]);
+        assert_eq!(managers, vec![SystemManager::Apt, SystemManager::Brew]);
     }
 }

@@ -24,7 +24,7 @@ pub struct Params {
     #[clap(long, short, help = "Overwrite without prompting")]
     force: bool,
 
-    #[clap(long, short, help = "Do not process uses")]
+    #[clap(long, help = "Do not process uses")]
     no_uses: bool,
 
     #[clap(long, short, help = "Install associated applications")]

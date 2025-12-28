@@ -124,3 +124,50 @@ impl Context {
 }
 
 pub type Ctx = Arc<Context>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indicatif::{MultiProgress, ProgressBar};
+
+    fn dummy_repo() -> Repository {
+        Repository::new(PathBuf::from("/tmp/over-test-repo"))
+    }
+
+    #[test]
+    fn with_progress_sets_progress_bar() {
+        let ctx = Context::new(
+            false,
+            false,
+            false,
+            false,
+            PathBuf::from("/tmp"),
+            dummy_repo(),
+            None,
+        );
+        let pb = ProgressBar::hidden();
+        let new_ctx = ctx.with_progress(pb.clone());
+        // Original context should remain without progress
+        assert!(ctx.try_progress().is_none());
+        // New context should have the progress bar
+        let stored = new_ctx.try_progress().expect("progress bar present");
+        assert_eq!(stored.position(), pb.position());
+    }
+
+    #[test]
+    fn with_multiprogress_sets_multi() {
+        let ctx = Context::new(
+            false,
+            false,
+            false,
+            false,
+            PathBuf::from("/tmp"),
+            dummy_repo(),
+            None,
+        );
+        let mp = MultiProgress::new();
+        let new_ctx = ctx.with_multiprogress(mp.clone());
+        assert!(ctx.try_multiprogress().is_none());
+        assert!(new_ctx.try_multiprogress().is_some());
+    }
+}
