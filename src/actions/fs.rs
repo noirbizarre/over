@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use globset::GlobBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use once_cell::sync::Lazy;
-use symlink::{remove_symlink_file, symlink_file};
+use symlink::{remove_symlink_file, symlink_dir, symlink_file};
 
 use tokio::fs::rename;
 use walkdir::WalkDir;
@@ -102,6 +102,17 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
     };
     let target = overlay.root.join(rel_path);
 
+    // Ensure parent directories exist in the overlay before moving the file
+    if let Some(parent) = target.parent()
+        && !parent.exists()
+    {
+        let dir_action = EnsureDir::new(parent.to_path_buf());
+        if ctx.verbose || ctx.dry_run {
+            println!("{}", dir_action);
+        }
+        dir_action.execute(ctx.clone()).await?;
+    }
+
     let move_action = MoveFile::new(ctx.clone(), src.clone(), target.clone());
     let link_action = EnsureLink::new(ctx.clone(), target, src.to_path_buf());
 
@@ -116,6 +127,91 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
     link_action.execute(ctx.clone()).await?;
 
     Ok(())
+}
+
+/// Add a directory to an overlay, either as a whole directory symlink (if it matches
+/// `link_dirs`) or by recursing into it and adding each file individually.
+pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
+    let src = if dir.is_relative() {
+        current_dir()?.join(dir)
+    } else {
+        dir.to_path_buf()
+    };
+    let root = overlay.resolve_target(&ctx)?;
+    let rel_path = match src.strip_prefix(&root) {
+        Ok(tail) => tail.to_path_buf(),
+        Err(_) => {
+            return Err(anyhow::anyhow!(
+                "{} is not included in {}",
+                src.display(),
+                root.display(),
+            ));
+        }
+    };
+
+    if overlay.is_link_dir(&rel_path) {
+        // Symlink the entire directory as a unit
+        let target = overlay.root.join(&rel_path);
+
+        // Ensure parent directories exist in the overlay
+        if let Some(parent) = target.parent()
+            && !parent.exists()
+        {
+            let dir_action = EnsureDir::new(parent.to_path_buf());
+            if ctx.verbose || ctx.dry_run {
+                println!("{}", dir_action);
+            }
+            dir_action.execute(ctx.clone()).await?;
+        }
+
+        let move_action = MoveFile::new(ctx.clone(), src.clone(), target.clone());
+        let link_action = EnsureDirLink::new(ctx.clone(), target, src);
+
+        if ctx.verbose || ctx.dry_run {
+            println!("{}", move_action);
+        }
+        move_action.execute(ctx.clone()).await?;
+
+        if ctx.verbose || ctx.dry_run {
+            println!("{}", link_action);
+        }
+        link_action.execute(ctx.clone()).await?;
+    } else {
+        // Recurse into the directory and add each file individually
+        let files: Vec<PathBuf> = WalkDir::new(&src)
+            .min_depth(1)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().is_file())
+            .map(|e| e.path().to_path_buf())
+            .collect();
+
+        for file in files {
+            add_file(ctx.clone(), overlay, &file).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Add a path (file or directory) to an overlay.
+pub async fn add_path(ctx: Ctx, overlay: &Overlay, path: &Path) -> Result<()> {
+    let src = if path.is_relative() {
+        current_dir()?.join(path)
+    } else {
+        path.to_path_buf()
+    };
+
+    if src.is_dir() {
+        add_dir(ctx, overlay, &src).await
+    } else if src.is_file() {
+        add_file(ctx, overlay, &src).await
+    } else {
+        Err(anyhow::anyhow!(
+            "{} does not exist or is not a file/directory",
+            src.display(),
+        ))
+    }
 }
 
 pub struct EnsureLink {
@@ -172,6 +268,9 @@ impl fmt::Display for EnsureLink {
 #[async_trait]
 impl Action for EnsureLink {
     async fn execute(&self, ctx: Ctx) -> Result<()> {
+        if ctx.dry_run {
+            return Ok(());
+        }
         if self.target.exists() {
             if self.target.is_symlink() {
                 let src = fs::read_link(self.target.as_path())?;
@@ -200,9 +299,7 @@ impl Action for EnsureLink {
                 return Err(anyhow::anyhow!("{} is a directory", self.target.display()));
             }
         }
-        if !ctx.dry_run {
-            symlink_file(self.source.as_path(), self.target.as_path())?;
-        }
+        symlink_file(self.source.as_path(), self.target.as_path())?;
 
         Ok(())
     }
@@ -237,6 +334,87 @@ impl Action for EnsureDir {
         if !ctx.dry_run {
             create_dir_all(self.path.as_path())?;
         }
+        Ok(())
+    }
+}
+
+pub struct EnsureDirLink {
+    pub ctx: Ctx,
+    pub source: PathBuf,
+    pub target: PathBuf,
+}
+
+impl EnsureDirLink {
+    pub fn new(ctx: Ctx, source: PathBuf, target: PathBuf) -> Self {
+        Self {
+            ctx,
+            source,
+            target,
+        }
+    }
+}
+
+impl fmt::Display for EnsureDirLink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let overlay = self.ctx.overlay.as_ref().unwrap();
+        let rel_path = self
+            .source
+            .to_str()
+            .unwrap()
+            .strip_prefix(overlay.root.to_str().unwrap())
+            .unwrap();
+        let target_root = self
+            .target
+            .to_str()
+            .unwrap()
+            .strip_suffix(rel_path)
+            .unwrap();
+        write!(
+            f,
+            "{} {} {}{} {} {}{}{}",
+            emojis::LINK,
+            style::white("link dir:"),
+            style::white("{"),
+            short_path(overlay.root.to_str().unwrap()),
+            style::white("->"),
+            short_path(target_root),
+            style::white("}"),
+            rel_path,
+        )
+    }
+}
+
+#[async_trait]
+impl Action for EnsureDirLink {
+    async fn execute(&self, ctx: Ctx) -> Result<()> {
+        if ctx.dry_run {
+            return Ok(());
+        }
+        if self.target.exists() {
+            if self.target.is_symlink() {
+                let src = fs::read_link(self.target.as_path())?;
+                if src == self.source {
+                    return Ok(());
+                }
+                return Err(anyhow::anyhow!(
+                    "Symlink {} already exists pointing to {}",
+                    self.target.display(),
+                    src.display(),
+                ));
+            } else if self.target.is_dir() {
+                return Err(anyhow::anyhow!(
+                    "Directory {} already exists",
+                    self.target.display()
+                ));
+            } else {
+                return Err(anyhow::anyhow!(
+                    "{} exists and is not a directory",
+                    self.target.display()
+                ));
+            }
+        }
+        symlink_dir(self.source.as_path(), self.target.as_path())?;
+
         Ok(())
     }
 }
@@ -385,5 +563,205 @@ mod tests {
         fs::write(&outside_file, "ext").unwrap();
         let res = add_file(c.clone(), &overlay, &outside_file).await;
         assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn add_file_creates_parent_dirs_in_overlay() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_nested");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_nested").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        // Create a nested file: <root>/.config/app/settings.conf
+        let nested_dir = td.path().join(".config").join("app");
+        fs::create_dir_all(&nested_dir).unwrap();
+        let nested_file = nested_dir.join("settings.conf");
+        fs::write(&nested_file, "key=value").unwrap();
+
+        let res = add_file(c.clone(), &overlay, &nested_file).await;
+        assert!(res.is_ok(), "add_file should succeed: {:?}", res.err());
+
+        // Check the file was moved to the overlay
+        let moved_path = overlay.root.join(".config/app/settings.conf");
+        assert!(moved_path.exists(), "file should exist in overlay");
+        assert_eq!(fs::read_to_string(&moved_path).unwrap(), "key=value");
+
+        // Check symlink was created at original location
+        assert!(nested_file.is_symlink(), "original should be a symlink");
+        assert_eq!(fs::read_link(&nested_file).unwrap(), moved_path);
+    }
+
+    #[tokio::test]
+    async fn add_dir_recursively_adds_files() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_dir");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_dir").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        // Create a directory with files: <root>/mydir/{a.txt, sub/b.txt}
+        let dir = td.path().join("mydir");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("a.txt"), "aaa").unwrap();
+        fs::write(dir.join("sub").join("b.txt"), "bbb").unwrap();
+
+        let res = add_dir(c.clone(), &overlay, &dir).await;
+        assert!(res.is_ok(), "add_dir should succeed: {:?}", res.err());
+
+        // Both files should be moved to overlay and symlinked back
+        let moved_a = overlay.root.join("mydir/a.txt");
+        let moved_b = overlay.root.join("mydir/sub/b.txt");
+        assert!(moved_a.exists(), "a.txt should be in overlay");
+        assert!(moved_b.exists(), "b.txt should be in overlay");
+        assert_eq!(fs::read_to_string(&moved_a).unwrap(), "aaa");
+        assert_eq!(fs::read_to_string(&moved_b).unwrap(), "bbb");
+
+        // Original locations should be symlinks
+        let orig_a = dir.join("a.txt");
+        let orig_b = dir.join("sub").join("b.txt");
+        assert!(orig_a.is_symlink(), "a.txt should be a symlink");
+        assert!(orig_b.is_symlink(), "b.txt should be a symlink");
+    }
+
+    #[tokio::test]
+    async fn add_dir_as_link_dir_symlinks_whole_directory() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_linkdir");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nlink_dirs = [\"mydir\"]")
+            .unwrap();
+        let overlay = repo.get("ov_linkdir").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        // Create a directory with files
+        let dir = td.path().join("mydir");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("file.txt"), "content").unwrap();
+
+        let res = add_dir(c.clone(), &overlay, &dir).await;
+        assert!(res.is_ok(), "add_dir should succeed: {:?}", res.err());
+
+        // The whole directory should be moved to the overlay
+        let moved_dir = overlay.root.join("mydir");
+        assert!(moved_dir.is_dir(), "mydir should exist as dir in overlay");
+        assert!(
+            moved_dir.join("file.txt").exists(),
+            "file.txt should be in overlay dir"
+        );
+
+        // Original location should be a symlink to the overlay directory
+        assert!(dir.is_symlink(), "original dir should be a symlink");
+        assert_eq!(fs::read_link(&dir).unwrap(), moved_dir);
+    }
+
+    #[tokio::test]
+    async fn add_path_dispatches_file() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_path_file");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_path_file").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let file = td.path().join("pathfile.txt");
+        fs::write(&file, "data").unwrap();
+
+        let res = add_path(c.clone(), &overlay, &file).await;
+        assert!(
+            res.is_ok(),
+            "add_path for file should succeed: {:?}",
+            res.err()
+        );
+
+        let moved = overlay.root.join("pathfile.txt");
+        assert!(moved.exists(), "file should be in overlay");
+        assert!(file.is_symlink(), "original should be a symlink");
+    }
+
+    #[tokio::test]
+    async fn add_path_dispatches_directory() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_path_dir");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_path_dir").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let dir = td.path().join("pathdir");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("x.txt"), "xxx").unwrap();
+
+        let res = add_path(c.clone(), &overlay, &dir).await;
+        assert!(
+            res.is_ok(),
+            "add_path for dir should succeed: {:?}",
+            res.err()
+        );
+
+        let moved = overlay.root.join("pathdir/x.txt");
+        assert!(moved.exists(), "file should be in overlay");
+    }
+
+    #[tokio::test]
+    async fn add_path_nonexistent_errors() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_path_err");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_path_err").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let nonexistent = td.path().join("does_not_exist.txt");
+        let res = add_path(c.clone(), &overlay, &nonexistent).await;
+        assert!(res.is_err(), "add_path for nonexistent should error");
+    }
+
+    #[tokio::test]
+    async fn ensure_dir_link_creates_dir_symlink() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_dirlink");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_dirlink").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        // Create source directory inside overlay
+        let src_dir = overlay.root.join("linked_dir");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("file.txt"), "hello").unwrap();
+
+        let target = td.path().join("linked_dir");
+        let action = EnsureDirLink::new(c.clone(), src_dir.clone(), target.clone());
+        action.execute(c.clone()).await.unwrap();
+
+        assert!(target.is_symlink(), "target should be a symlink");
+        assert_eq!(fs::read_link(&target).unwrap(), src_dir);
+        assert!(
+            target.join("file.txt").exists(),
+            "should be able to access files through symlink"
+        );
     }
 }

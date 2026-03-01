@@ -610,6 +610,7 @@ dependencies = [
  "futures",
  "git2",
  "git2_credentials",
+ "glob",
  "globset",
  "indicatif",
  "mockall",

@@ -60,7 +60,76 @@ fn add_file_to_overlay_dry_run() -> TestResult {
     fs::write(&target_file, b"hello")?;
     let mut cmd = Command::cargo_bin("over")?;
     cmd.arg("--home").arg(repo.path());
-    cmd.args(["add", target_file.to_str().unwrap(), "dev", "--dry-run"]);
+    cmd.args([
+        "add",
+        target_file.to_str().unwrap(),
+        "-o",
+        "dev",
+        "--root",
+        repo.path().to_str().unwrap(),
+        "--dry-run",
+    ]);
     cmd.assert().success();
+    Ok(())
+}
+
+#[test]
+fn add_multiple_files_dry_run() -> TestResult {
+    let repo = setup_overlay_repo();
+    let file_a = repo.path().join("a.txt");
+    let file_b = repo.path().join("b.txt");
+    fs::write(&file_a, b"aaa")?;
+    fs::write(&file_b, b"bbb")?;
+    let mut cmd = Command::cargo_bin("over")?;
+    cmd.arg("--home").arg(repo.path());
+    cmd.args([
+        "add",
+        file_a.to_str().unwrap(),
+        file_b.to_str().unwrap(),
+        "-o",
+        "dev",
+        "--root",
+        repo.path().to_str().unwrap(),
+        "--dry-run",
+    ]);
+    cmd.assert().success();
+    Ok(())
+}
+
+#[test]
+fn add_directory_dry_run() -> TestResult {
+    let repo = setup_overlay_repo();
+    let dir = repo.path().join("mydir");
+    fs::create_dir_all(&dir)?;
+    fs::write(dir.join("file.txt"), b"content")?;
+    let mut cmd = Command::cargo_bin("over")?;
+    cmd.arg("--home").arg(repo.path());
+    cmd.args([
+        "add",
+        dir.to_str().unwrap(),
+        "-o",
+        "dev",
+        "--root",
+        repo.path().to_str().unwrap(),
+        "--dry-run",
+    ]);
+    cmd.assert().success();
+    Ok(())
+}
+
+#[test]
+fn add_nonexistent_file_fails() -> TestResult {
+    let repo = setup_overlay_repo();
+    let mut cmd = Command::cargo_bin("over")?;
+    cmd.arg("--home").arg(repo.path());
+    cmd.args([
+        "add",
+        "/tmp/nonexistent_file_xyz.txt",
+        "-o",
+        "dev",
+        "--root",
+        repo.path().to_str().unwrap(),
+    ]);
+    cmd.assert().failure();
     Ok(())
 }

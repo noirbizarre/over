@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use config::{Config, File, FileFormat, FileSourceFile};
+use globset::GlobBuilder;
 use serde::{Deserialize, Serialize};
 
 use tera::{Context, Tera};
@@ -33,6 +34,10 @@ pub struct Overlay {
     pub git: Option<HashMap<String, GitRepoConfig>>,
 
     pub install: Option<InstallConfig>,
+
+    /// Glob patterns for directories that should be symlinked as a unit
+    /// rather than recursed into when adding.
+    pub link_dirs: Option<Vec<String>>,
 }
 
 impl fmt::Display for Overlay {
@@ -82,6 +87,23 @@ impl Overlay {
         })
     }
 
+    /// Check if a relative path matches any `link_dirs` glob pattern,
+    /// meaning it should be symlinked as a whole directory rather than recursed into.
+    pub fn is_link_dir(&self, rel_path: &Path) -> bool {
+        let patterns = match &self.link_dirs {
+            Some(p) if !p.is_empty() => p,
+            _ => return false,
+        };
+        for pattern in patterns {
+            if let Ok(glob) = GlobBuilder::new(pattern).literal_separator(true).build()
+                && glob.compile_matcher().is_match(rel_path)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     pub async fn apply(&self, ctx: &Ctx) -> Result<()> {
         let target = self.resolve_target(ctx)?;
         if !target.exists() {
@@ -125,6 +147,14 @@ impl Overlay {
     pub async fn add_file(&self, ctx: &Ctx, file: &PathBuf) -> Result<()> {
         let _ = self.resolve_target(ctx)?;
         actions::fs::add_file(ctx.clone(), self, file).await?;
+        Ok(())
+    }
+
+    pub async fn add_files(&self, ctx: &Ctx, files: &[PathBuf]) -> Result<()> {
+        let _ = self.resolve_target(ctx)?;
+        for file in files {
+            actions::fs::add_path(ctx.clone(), self, file).await?;
+        }
         Ok(())
     }
 }
@@ -264,5 +294,69 @@ mod tests {
             result.is_err(),
             "adding file outside target root should error"
         );
+    }
+
+    #[rstest]
+    fn test_is_link_dir_matches() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_ld");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nlink_dirs = [\".config/nvim\", \".local/share/*\"]")
+            .unwrap();
+        let overlay = repo.get("ov_ld").unwrap();
+
+        assert!(overlay.is_link_dir(Path::new(".config/nvim")));
+        assert!(overlay.is_link_dir(Path::new(".local/share/fonts")));
+        assert!(!overlay.is_link_dir(Path::new(".config/other")));
+        assert!(!overlay.is_link_dir(Path::new("random")));
+    }
+
+    #[rstest]
+    fn test_is_link_dir_none() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_ld_none");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_ld_none").unwrap();
+
+        assert!(!overlay.is_link_dir(Path::new(".config/nvim")));
+        assert!(!overlay.is_link_dir(Path::new("anything")));
+    }
+
+    #[tokio::test]
+    async fn test_add_files_multiple() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_multi");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+
+        let file_a = td.path().join("a.txt");
+        let file_b = td.path().join("b.txt");
+        fs::write(&file_a, "aaa").unwrap();
+        fs::write(&file_b, "bbb").unwrap();
+
+        let overlay = repo.get("ov_multi").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let result = overlay
+            .add_files(&c, &[file_a.clone(), file_b.clone()])
+            .await;
+        assert!(
+            result.is_ok(),
+            "add_files should succeed: {:?}",
+            result.err()
+        );
+
+        assert!(overlay.root.join("a.txt").exists());
+        assert!(overlay.root.join("b.txt").exists());
+        assert!(file_a.is_symlink());
+        assert!(file_b.is_symlink());
     }
 }

@@ -1,3 +1,4 @@
+use std::env::current_dir;
 use std::path::PathBuf;
 
 use clap::Args;
@@ -6,17 +7,17 @@ use crate::cli::CLI;
 use crate::exec::Context;
 use crate::overlays::Repository;
 use crate::ui::{emojis, style};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use dialoguer::FuzzySelect;
 use dialoguer::theme::ColorfulTheme;
 use dirs::home_dir;
 
 #[derive(Args, Debug)]
 pub struct Params {
-    #[clap(help = "File to add")]
-    file: PathBuf,
+    #[clap(required = true, help = "Files, directories, or glob patterns to add")]
+    files: Vec<String>,
 
-    #[clap(help = "Name of the target overlay")]
+    #[clap(short, long, help = "Name of the target overlay")]
     overlay: Option<String>,
 
     #[clap(short, long, help = "The target root directory (~)")]
@@ -27,6 +28,69 @@ pub struct Params {
 
     #[clap(long, short, help = "Overwrite without prompting")]
     force: bool,
+}
+
+/// Check whether a string contains glob metacharacters.
+fn is_glob_pattern(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[') || s.contains('{')
+}
+
+/// Expand a tilde prefix in a path string to the home directory.
+fn expand_tilde(s: &str) -> PathBuf {
+    if let Some(rest) = s.strip_prefix("~/")
+        && let Some(home) = home_dir()
+    {
+        return home.join(rest);
+    } else if s == "~"
+        && let Some(home) = home_dir()
+    {
+        return home;
+    }
+    PathBuf::from(s)
+}
+
+/// Resolve a list of input strings (which may be globs, tildes, relative paths,
+/// directories, or plain files) into a flat list of absolute paths.
+fn resolve_inputs(inputs: &[String]) -> Result<Vec<PathBuf>> {
+    let cwd = current_dir()?;
+    let mut resolved = Vec::new();
+
+    for input in inputs {
+        let expanded = expand_tilde(input);
+        let pattern_str = expanded.to_string_lossy();
+
+        if is_glob_pattern(&pattern_str) {
+            let matches: Vec<_> = glob::glob(&pattern_str)
+                .map_err(|e| anyhow!("Invalid glob pattern '{}': {}", input, e))?
+                .filter_map(|entry| entry.ok())
+                .collect();
+
+            if matches.is_empty() {
+                return Err(anyhow!("No files matched pattern '{}'", input));
+            }
+
+            for path in matches {
+                let abs = if path.is_relative() {
+                    cwd.join(&path)
+                } else {
+                    path
+                };
+                resolved.push(abs);
+            }
+        } else {
+            let abs = if expanded.is_relative() {
+                cwd.join(&expanded)
+            } else {
+                expanded
+            };
+            if !abs.exists() {
+                return Err(anyhow!("{} does not exist", abs.display()));
+            }
+            resolved.push(abs);
+        }
+    }
+
+    Ok(resolved)
 }
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
@@ -69,18 +133,18 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         Some(overlay.clone()),
     );
 
-    let result = overlay.add_file(&ctx, &args.file).await;
-    if let Err(e) = result {
+    let resolved = resolve_inputs(&args.files)?;
+
+    overlay.add_files(&ctx, &resolved).await.map_err(|e| {
         println!(
-            "{} {} {} {} {}",
+            "{} {} {} {}",
             emojis::CROSSMARK,
-            style::white_b("Failed to add file overlay"),
-            style::cyan(&args.file.to_str().unwrap()),
-            style::white_b("to overlay"),
+            style::white_b("Failed to add to overlay"),
             style::cyan(&overlay.name),
+            style::white_b(&format!(": {}", e)),
         );
-        println!("{:#?}", e);
-    }
+        e
+    })?;
 
     Ok(())
 }

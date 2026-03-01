@@ -44,7 +44,7 @@ pub struct CLI {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    #[clap(name = "add", about = "Add a file to an overlay")]
+    #[clap(name = "add", about = "Add files or directories to an overlay")]
     Add(add::Params),
 
     #[clap(name = "list", about = "List known overlays", alias = "ls")]
