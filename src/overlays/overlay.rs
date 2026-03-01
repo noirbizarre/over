@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use tera::{Context, Tera};
 
+use crate::actions::git::config::GitRepoConfig;
 use crate::actions::install::InstallConfig;
 use crate::actions::{self, EnsureDir};
 use crate::exec::{self, Action, Ctx};
@@ -29,7 +30,7 @@ pub struct Overlay {
 
     pub exclude: Option<Vec<String>>,
 
-    pub git: Option<HashMap<String, String>>,
+    pub git: Option<HashMap<String, GitRepoConfig>>,
 
     pub install: Option<InstallConfig>,
 }
