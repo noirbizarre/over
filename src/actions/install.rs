@@ -2,8 +2,27 @@ use std::{collections::HashSet, env::consts::OS, fs};
 
 use crate::{exec::Ctx, overlays::Overlay};
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use which::which;
+
+/// Serde helper: accept either a single string or a list of strings for
+/// `Option<Vec<String>>` fields, normalising both to `Some(vec![…])`.
+fn option_string_or_vec<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        Vec(Vec<String>),
+        Str(String),
+    }
+    Option::<StringOrVec>::deserialize(deserializer).map(|opt| match opt {
+        Some(StringOrVec::Vec(v)) => Some(v),
+        Some(StringOrVec::Str(s)) => Some(vec![s]),
+        None => None,
+    })
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum SystemManager {
@@ -675,7 +694,9 @@ pub enum AllAptForms {
     Flat(Vec<String>),
     Full {
         packages: Vec<String>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
         pre: Option<Vec<String>>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
         post: Option<Vec<String>>,
     },
 }
@@ -715,7 +736,9 @@ pub enum AllArchlinuxForms {
     Flat(Vec<String>),
     Full {
         packages: Vec<String>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
         pre: Option<Vec<String>>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
         post: Option<Vec<String>>,
     },
 }
@@ -810,7 +833,9 @@ pub enum AllBrewForms {
     Full {
         taps: Option<Vec<String>>,
         packages: Option<Vec<BrewPackage>>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
         pre: Option<Vec<String>>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
         post: Option<Vec<String>>,
     },
 }
@@ -905,7 +930,9 @@ pub enum AllCargoForms {
     Flat(Vec<String>),
     Full {
         packages: Vec<CargoPackage>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
         pre: Option<Vec<String>>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
         post: Option<Vec<String>>,
     },
 }
@@ -1060,7 +1087,9 @@ pub enum AllPythonForms {
     Flat(Vec<String>),
     Full {
         packages: Vec<PythonPackage>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
         pre: Option<Vec<String>>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
         post: Option<Vec<String>>,
     },
 }
@@ -1191,7 +1220,9 @@ pub enum AllNodeForms {
     Flat(Vec<String>),
     Full {
         packages: Vec<NodePackage>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
         pre: Option<Vec<String>>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
         post: Option<Vec<String>>,
     },
 }
@@ -1258,6 +1289,7 @@ async fn get_node_packages(ctx: &Ctx, overlay: &Overlay) -> HashSet<NodePackage>
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PlatformInstallConfig {
+    #[serde(default, deserialize_with = "option_string_or_vec")]
     pub pre: Option<Vec<String>>,
     pub apt: Option<AptConfig>,
     pub archlinux: Option<ArchlinuxConfig>,
@@ -1265,11 +1297,13 @@ pub struct PlatformInstallConfig {
     pub cargo: Option<CargoConfig>,
     pub python: Option<PythonConfig>,
     pub node: Option<NodeConfig>,
+    #[serde(default, deserialize_with = "option_string_or_vec")]
     pub post: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct InstallConfig {
+    #[serde(default, deserialize_with = "option_string_or_vec")]
     pub pre: Option<Vec<String>>,
     pub apt: Option<AptConfig>,
     pub archlinux: Option<ArchlinuxConfig>,
@@ -1277,6 +1311,7 @@ pub struct InstallConfig {
     pub cargo: Option<CargoConfig>,
     pub python: Option<PythonConfig>,
     pub node: Option<NodeConfig>,
+    #[serde(default, deserialize_with = "option_string_or_vec")]
     pub post: Option<Vec<String>>,
     #[serde(flatten)]
     pub platforms: std::collections::HashMap<String, PlatformInstallConfig>,
@@ -1383,6 +1418,43 @@ node.packages = [{name="typescript", options="--force"}]
 post = ['echo "Goodbye, World!"']
 "#
     )]
+    #[case::scalar_yaml(
+        FileFormat::Yaml,
+        r#"
+install:
+  pre: echo "Hello, World!"
+  archlinux:
+    - pkg1
+    - pkg2
+  apt:
+    - pkg1
+    - pkg2
+  brew:
+    - pkg1
+    - pkg2
+  cargo:
+    - ripgrep
+  python:
+    - requests
+  node:
+    - typescript
+  post: echo "Goodbye, World!"
+"#
+    )]
+    #[case::scalar_toml(
+        FileFormat::Toml,
+        r#"
+[install]
+pre = 'echo "Hello, World!"'
+archlinux = ["pkg1", "pkg2"]
+apt = ["pkg1", "pkg2"]
+brew = ["pkg1", "pkg2"]
+cargo = ["ripgrep"]
+python = ["requests"]
+node = ["typescript"]
+post = 'echo "Goodbye, World!"'
+"#
+    )]
     fn test_config(#[case] format: FileFormat, #[case] content: &str) {
         let c = Config::builder()
             .add_source(File::from_str(content, format))
@@ -1463,6 +1535,38 @@ brew.packages = ["pkg1", {name="pkg2", options="--cask", cask=true}]
                 },
             ]
         );
+    }
+
+    #[rstest]
+    #[case::yaml(
+        FileFormat::Yaml,
+        r#"
+install:
+  apt:
+    packages:
+      - pkg1
+    pre: echo "before apt"
+    post: echo "after apt"
+"#
+    )]
+    #[case::toml(
+        FileFormat::Toml,
+        r#"
+[install.apt]
+packages = ["pkg1"]
+pre = 'echo "before apt"'
+post = 'echo "after apt"'
+"#
+    )]
+    fn test_manager_scalar_scripts(#[case] format: FileFormat, #[case] content: &str) {
+        let c = Config::builder()
+            .add_source(File::from_str(content, format))
+            .build()
+            .unwrap();
+        let data: Data = c.try_deserialize().unwrap();
+        let apt = data.install.unwrap().apt.unwrap();
+        assert_eq!(apt.pre.unwrap(), vec!["echo \"before apt\""]);
+        assert_eq!(apt.post.unwrap(), vec!["echo \"after apt\""]);
     }
 
     #[test]
