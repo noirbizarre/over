@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use clap::Args;
 
 use crate::cli::CLI;
@@ -18,10 +16,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         println!("{:#?}", args);
     }
 
-    // let repo = Repository::new( PathBuf::from(&cli.home) );
-
-    let home = cli.home.as_ref().expect("Home directory not set");
-    let repo = Repository::new(PathBuf::from(home));
+    let home = cli.resolve_home()?;
+    let repo = Repository::new(home);
 
     for overlay in repo.overlays()? {
         println!("{}", overlay.name);

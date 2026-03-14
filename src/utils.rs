@@ -1,14 +1,23 @@
+use std::path::Path;
+
 use dirs::home_dir;
 
 // Change the alias to `Box<error::Error>`.
 pub type Expect<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-// Shorten a path as string
+// Shorten a path by replacing the home directory with ~
 pub fn short_path(path: &str) -> String {
-    let binding = home_dir().unwrap();
-    let home = binding.to_str().unwrap();
-    if path.starts_with(home) {
-        path.replace(home, "~")
+    let Some(home) = home_dir() else {
+        return path.to_string();
+    };
+    let home_path = home.as_path();
+    let p = Path::new(path);
+    if let Ok(suffix) = p.strip_prefix(home_path) {
+        if suffix.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{}", suffix.display())
+        }
     } else {
         path.to_string()
     }

@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context as AnyhowContext, Result};
 use config::{Config, File, FileFormat, FileSourceFile};
 use globset::GlobBuilder;
 use serde::{Deserialize, Serialize};
@@ -51,17 +52,30 @@ impl Overlay {
         let name = root
             .strip_prefix(repository.root.as_path())?
             .to_str()
-            .unwrap();
+            .ok_or_else(|| anyhow::anyhow!("overlay path is not valid UTF-8"))?;
         let mut sources: Vec<File<FileSourceFile, FileFormat>> = Vec::new();
         let mut dir = root;
         loop {
             let basename = dir.join("over");
-            sources.push(File::with_name(basename.to_str().unwrap()).required(dir == root));
+            sources.push(
+                File::with_name(
+                    basename
+                        .to_str()
+                        .ok_or_else(|| anyhow::anyhow!("config path is not valid UTF-8"))?,
+                )
+                .required(dir == root),
+            );
             if dir == repository.root {
                 break;
             }
-            dir = dir.parent().unwrap();
+            dir = dir
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("unexpected root path without parent"))?;
         }
+
+        // Reverse so that ancestor configs are added first (lower priority)
+        // and overlay-specific config is added last (higher priority / overrides)
+        sources.reverse();
 
         let s = Config::builder()
             .add_source(sources)
@@ -80,10 +94,11 @@ impl Overlay {
             true,
         )?);
 
-        Ok(match path.to_str().unwrap() {
+        let path_str = path.to_string_lossy();
+        Ok(match path_str.as_ref() {
             p if !p.starts_with("~") => path,
             "~" => ctx.root.clone(),
-            _ => ctx.root.join(path.strip_prefix("~").unwrap()),
+            _ => ctx.root.join(path.strip_prefix("~").unwrap_or(&path)),
         })
     }
 
@@ -105,43 +120,66 @@ impl Overlay {
     }
 
     pub async fn apply(&self, ctx: &Ctx) -> Result<()> {
-        let target = self.resolve_target(ctx)?;
-        if !target.exists() {
-            let mkdir = EnsureDir::new(target.to_path_buf());
-            mkdir.execute(ctx.clone()).await?;
-        }
-        println!(
-            "{} {} {} {} {}",
-            emojis::PACKAGE,
-            style::white_b("Applying overlay"),
-            style::cyan(&self.name),
-            style::white_b("to"),
-            style::cyan(target.to_str().unwrap()),
-        );
-        if let Some(uses) = &self.uses {
-            for name in uses {
-                let overlay = ctx.repository.get(name).expect("failed");
-                if ctx.debug {
-                    println!("{:#?}", overlay);
-                }
-                let _ = Box::pin(overlay.clone().apply(&ctx.with_overlay(overlay))).await;
+        let mut visited = HashSet::new();
+        self.apply_inner(ctx, &mut visited).await
+    }
+
+    fn apply_inner<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+        visited: &'a mut HashSet<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            if !visited.insert(self.name.clone()) {
+                return Err(anyhow::anyhow!(
+                    "Cycle detected: overlay '{}' was already visited (path: {})",
+                    self.name,
+                    visited.iter().cloned().collect::<Vec<_>>().join(" -> ")
+                ));
             }
-        }
+            let target = self.resolve_target(ctx)?;
+            if !target.exists() {
+                let mkdir = EnsureDir::new(target.to_path_buf());
+                mkdir.execute(ctx.clone()).await?;
+            }
+            println!(
+                "{} {} {} {} {}",
+                emojis::PACKAGE,
+                style::white_b("Applying overlay"),
+                style::cyan(&self.name),
+                style::white_b("to"),
+                style::cyan(&target.to_string_lossy()),
+            );
+            if let Some(uses) = &self.uses {
+                for name in uses {
+                    let overlay = ctx
+                        .repository
+                        .get(name)
+                        .with_context(|| format!("used overlay '{}' not found", name))?;
+                    if ctx.debug {
+                        println!("{:#?}", overlay);
+                    }
+                    overlay
+                        .apply_inner(&ctx.with_overlay(overlay.clone()), visited)
+                        .await?;
+                }
+            }
 
-        actions::git::clone_repositories(ctx.clone(), self, &target).await?;
-        actions::fs::link(ctx.clone(), self, &target).await?;
+            actions::git::clone_repositories(ctx.clone(), self, &target).await?;
+            actions::fs::link(ctx.clone(), self, &target).await?;
 
-        println!(
-            "{} {} {} {} {} {}",
-            emojis::SPARKLE,
-            style::white_b("Applied overlay"),
-            style::cyan(&self.name),
-            style::white_b("to"),
-            style::cyan(target.to_str().unwrap()),
-            style::white_b("with success"),
-        );
+            println!(
+                "{} {} {} {} {} {}",
+                emojis::SPARKLE,
+                style::white_b("Applied overlay"),
+                style::cyan(&self.name),
+                style::white_b("to"),
+                style::cyan(&target.to_string_lossy()),
+                style::white_b("with success"),
+            );
 
-        Ok(())
+            Ok(())
+        })
     }
 
     pub async fn add_file(&self, ctx: &Ctx, file: &PathBuf) -> Result<()> {

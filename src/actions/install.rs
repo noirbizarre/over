@@ -1,7 +1,7 @@
-use std::{collections::HashSet, env::consts::OS, fs};
+use std::{collections::BTreeSet, env::consts::OS, fs, sync::OnceLock};
 
 use crate::{exec::Ctx, overlays::Overlay};
-use anyhow::Result;
+use anyhow::{Context as AnyhowContext, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 use which::which;
 
@@ -41,14 +41,19 @@ const PRECEDENCE_GENERIC_LINUX: &[SystemManager] = &[
 ]; // attempt all known managers
 
 fn detect_linux_distro() -> Option<String> {
-    let content = fs::read_to_string("/etc/os-release").ok()?;
-    for line in content.lines() {
-        if let Some(rest) = line.strip_prefix("ID=") {
-            let id = rest.trim_matches('"').to_string();
-            return Some(id);
-        }
-    }
-    None
+    static DISTRO: OnceLock<Option<String>> = OnceLock::new();
+    DISTRO
+        .get_or_init(|| {
+            let content = fs::read_to_string("/etc/os-release").ok()?;
+            for line in content.lines() {
+                if let Some(rest) = line.strip_prefix("ID=") {
+                    let id = rest.trim_matches('"').to_string();
+                    return Some(id);
+                }
+            }
+            None
+        })
+        .clone()
 }
 
 async fn run_cmd(ctx: &Ctx, program: &str, args: &[&str]) -> Result<()> {
@@ -77,7 +82,7 @@ async fn run_scripts(ctx: &Ctx, scripts: &Vec<String>) -> Result<()> {
     Ok(())
 }
 
-async fn install_arch_pkgs(ctx: &Ctx, pkgs: HashSet<String>) -> Result<()> {
+async fn install_arch_pkgs(ctx: &Ctx, pkgs: BTreeSet<String>) -> Result<()> {
     if pkgs.is_empty() {
         return Ok(());
     }
@@ -97,12 +102,12 @@ async fn install_arch_pkgs(ctx: &Ctx, pkgs: HashSet<String>) -> Result<()> {
             run_cmd(ctx, bin, ref_args.as_slice()).await?;
         }
     } else if ctx.verbose {
-        println!("No arch package manager found for archlinux packages");
+        eprintln!("No arch package manager found for archlinux packages");
     }
     Ok(())
 }
 
-async fn install_apt_pkgs(ctx: &Ctx, pkgs: HashSet<String>) -> Result<()> {
+async fn install_apt_pkgs(ctx: &Ctx, pkgs: BTreeSet<String>) -> Result<()> {
     if pkgs.is_empty() {
         return Ok(());
     }
@@ -117,14 +122,14 @@ async fn install_apt_pkgs(ctx: &Ctx, pkgs: HashSet<String>) -> Result<()> {
 
 async fn install_brew_pkgs(
     ctx: &Ctx,
-    taps: HashSet<String>,
-    pkgs: HashSet<BrewPackage>,
+    taps: BTreeSet<String>,
+    pkgs: BTreeSet<BrewPackage>,
 ) -> Result<()> {
     if taps.is_empty() && pkgs.is_empty() {
         return Ok(());
     }
     if which("brew").is_err() {
-        println!("brew not found");
+        eprintln!("brew not found");
         return Ok(());
     }
     for tap in taps.iter() {
@@ -150,13 +155,13 @@ async fn install_brew_pkgs(
     Ok(())
 }
 
-async fn install_cargo_crates(ctx: &Ctx, crates: HashSet<CargoPackage>) -> Result<()> {
+async fn install_cargo_crates(ctx: &Ctx, crates: BTreeSet<CargoPackage>) -> Result<()> {
     if crates.is_empty() {
         return Ok(());
     }
     if which("cargo").is_err() {
         if ctx.verbose {
-            println!("cargo not found");
+            eprintln!("cargo not found");
         }
         return Ok(());
     }
@@ -210,7 +215,7 @@ async fn install_cargo_crates(ctx: &Ctx, crates: HashSet<CargoPackage>) -> Resul
     Ok(())
 }
 
-async fn install_python_packages(ctx: &Ctx, packages: HashSet<PythonPackage>) -> Result<()> {
+async fn install_python_packages(ctx: &Ctx, packages: BTreeSet<PythonPackage>) -> Result<()> {
     if packages.is_empty() {
         return Ok(());
     }
@@ -243,8 +248,8 @@ async fn install_python_packages(ctx: &Ctx, packages: HashSet<PythonPackage>) ->
         let mut args: Vec<String> = Vec::new();
         match tool {
             "uv" => {
-                // Use pip subcommand for global installs to match user's environment
-                args.extend(["pip", "install"].map(|s| s.to_string()));
+                // Use `uv tool install` for global CLI tool installs
+                args.extend(["tool", "install"].map(|s| s.to_string()));
             }
             "pipx" => args.push("install".into()),
             "pip" => args.push("install".into()),
@@ -271,13 +276,13 @@ async fn install_python_packages(ctx: &Ctx, packages: HashSet<PythonPackage>) ->
     Ok(())
 }
 
-async fn install_node_packages(ctx: &Ctx, packages: HashSet<NodePackage>) -> Result<()> {
+async fn install_node_packages(ctx: &Ctx, packages: BTreeSet<NodePackage>) -> Result<()> {
     if packages.is_empty() {
         return Ok(());
     }
     if which("npm").is_err() {
         if ctx.verbose {
-            println!("npm not found");
+            eprintln!("npm not found");
         }
         return Ok(());
     }
@@ -299,14 +304,14 @@ pub async fn install(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         "linux" => install_linux(ctx, overlay).await?,
         "macos" => install_macos(ctx, overlay).await?,
         "windows" => install_windows(ctx, overlay).await?,
-        _ => println!("Unsupported OS: {}", OS),
+        _ => eprintln!("Unsupported OS: {}", OS),
     }
     Ok(())
 }
 
 async fn install_windows(_ctx: &Ctx, _overlay: &Overlay) -> Result<()> {
     // Windows support pending; placeholder respects interface
-    println!("Windows install not yet implemented");
+    eprintln!("Windows install not yet implemented");
     Ok(())
 }
 
@@ -377,7 +382,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
                 {
                     run_scripts(ctx, pre).await?;
                 }
-                let pkgs = get_archlinux_packages(ctx, overlay).await;
+                let pkgs = get_archlinux_packages(ctx, overlay).await?;
                 if !pkgs.is_empty() {
                     install_arch_pkgs(ctx, pkgs).await?;
                 }
@@ -397,7 +402,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
                 {
                     run_scripts(ctx, pre).await?;
                 }
-                let pkgs = get_apt_packages(ctx, overlay).await;
+                let pkgs = get_apt_packages(ctx, overlay).await?;
                 if !pkgs.is_empty() {
                     install_apt_pkgs(ctx, pkgs).await?;
                 }
@@ -417,7 +422,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
                 {
                     run_scripts(ctx, pre).await?;
                 }
-                let (taps, pkgs) = get_brew_packages(ctx, overlay).await;
+                let (taps, pkgs) = get_brew_packages(ctx, overlay).await?;
                 if !taps.is_empty() || !pkgs.is_empty() {
                     install_brew_pkgs(ctx, taps, pkgs).await?;
                 }
@@ -441,7 +446,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let crates = get_cargo_packages(ctx, overlay).await;
+        let crates = get_cargo_packages(ctx, overlay).await?;
         if !crates.is_empty() {
             install_cargo_crates(ctx, crates).await?;
         }
@@ -457,7 +462,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let packages = get_python_packages(ctx, overlay).await;
+        let packages = get_python_packages(ctx, overlay).await?;
         if !packages.is_empty() {
             install_python_packages(ctx, packages).await?;
         }
@@ -473,7 +478,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let packages = get_node_packages(ctx, overlay).await;
+        let packages = get_node_packages(ctx, overlay).await?;
         if !packages.is_empty() {
             install_node_packages(ctx, packages).await?;
         }
@@ -515,7 +520,7 @@ async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     {
         run_scripts(ctx, pre).await?;
     }
-    let (taps, pkgs) = get_brew_packages(ctx, overlay).await;
+    let (taps, pkgs) = get_brew_packages(ctx, overlay).await?;
     if !taps.is_empty() || !pkgs.is_empty() {
         install_brew_pkgs(ctx, taps, pkgs).await?;
     }
@@ -535,7 +540,7 @@ async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let crates = get_cargo_packages(ctx, overlay).await;
+        let crates = get_cargo_packages(ctx, overlay).await?;
         if !crates.is_empty() {
             install_cargo_crates(ctx, crates).await?;
         }
@@ -551,7 +556,7 @@ async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let packages = get_python_packages(ctx, overlay).await;
+        let packages = get_python_packages(ctx, overlay).await?;
         if !packages.is_empty() {
             install_python_packages(ctx, packages).await?;
         }
@@ -567,7 +572,7 @@ async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let packages = get_node_packages(ctx, overlay).await;
+        let packages = get_node_packages(ctx, overlay).await?;
         if !packages.is_empty() {
             install_node_packages(ctx, packages).await?;
         }
@@ -586,8 +591,8 @@ async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     Ok(())
 }
 
-async fn get_archlinux_packages(ctx: &Ctx, overlay: &Overlay) -> HashSet<String> {
-    let mut packages: HashSet<String> = HashSet::new();
+async fn get_archlinux_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<String>> {
+    let mut packages: BTreeSet<String> = BTreeSet::new();
     if let Some(install) = &overlay.install {
         let platform_override = if OS == "linux" {
             if let Some(distro) = detect_linux_distro() {
@@ -607,28 +612,30 @@ async fn get_archlinux_packages(ctx: &Ctx, overlay: &Overlay) -> HashSet<String>
         } else {
             None
         };
-        if let Some(platform) = platform_override {
-            if let Some(archlinux) = &platform.archlinux {
-                packages.extend(archlinux.packages.iter().cloned());
-            }
-        } else if let Some(archlinux) = &install.archlinux {
+        let source = platform_override
+            .and_then(|p| p.archlinux.as_ref())
+            .or(install.archlinux.as_ref());
+        if let Some(archlinux) = source {
             packages.extend(archlinux.packages.iter().cloned());
         }
     }
     if let Some(uses) = &overlay.uses {
         for name in uses {
-            let used = ctx.repository.get(name).expect("failed");
+            let used = ctx
+                .repository
+                .get(name)
+                .with_context(|| format!("used overlay '{name}' not found"))?;
             packages = packages
-                .union(&Box::pin(get_archlinux_packages(ctx, &used)).await)
+                .union(&Box::pin(get_archlinux_packages(ctx, &used)).await?)
                 .cloned()
                 .collect();
         }
     }
-    packages
+    Ok(packages)
 }
 
-async fn get_apt_packages(ctx: &Ctx, overlay: &Overlay) -> HashSet<String> {
-    let mut packages: HashSet<String> = HashSet::new();
+async fn get_apt_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<String>> {
+    let mut packages: BTreeSet<String> = BTreeSet::new();
     if let Some(install) = &overlay.install {
         let platform_override = if OS == "linux" {
             if let Some(distro) = detect_linux_distro() {
@@ -639,24 +646,26 @@ async fn get_apt_packages(ctx: &Ctx, overlay: &Overlay) -> HashSet<String> {
         } else {
             None
         };
-        if let Some(platform) = platform_override {
-            if let Some(apt) = &platform.apt {
-                packages.extend(apt.packages.iter().cloned());
-            }
-        } else if let Some(apt) = &install.apt {
+        let source = platform_override
+            .and_then(|p| p.apt.as_ref())
+            .or(install.apt.as_ref());
+        if let Some(apt) = source {
             packages.extend(apt.packages.iter().cloned());
         }
     }
     if let Some(uses) = &overlay.uses {
         for name in uses {
-            let used = ctx.repository.get(name).expect("failed");
+            let used = ctx
+                .repository
+                .get(name)
+                .with_context(|| format!("used overlay '{name}' not found"))?;
             packages = packages
-                .union(&Box::pin(get_apt_packages(ctx, &used)).await)
+                .union(&Box::pin(get_apt_packages(ctx, &used)).await?)
                 .cloned()
                 .collect();
         }
     }
-    packages
+    Ok(packages)
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -746,9 +755,9 @@ pub enum AllArchlinuxForms {
 async fn get_brew_packages(
     ctx: &Ctx,
     overlay: &Overlay,
-) -> (HashSet<String>, HashSet<BrewPackage>) {
-    let mut taps: HashSet<String> = HashSet::new();
-    let mut packages: HashSet<BrewPackage> = HashSet::new();
+) -> Result<(BTreeSet<String>, BTreeSet<BrewPackage>)> {
+    let mut taps: BTreeSet<String> = BTreeSet::new();
+    let mut packages: BTreeSet<BrewPackage> = BTreeSet::new();
     if let Some(install) = &overlay.install {
         let platform_override = if OS == "macos" {
             install.platforms.get("macos")
@@ -775,13 +784,16 @@ async fn get_brew_packages(
     }
     if let Some(uses) = &overlay.uses {
         for name in uses {
-            let used = ctx.repository.get(name).expect("failed");
-            let (used_taps, used_pkgs) = Box::pin(get_brew_packages(ctx, &used)).await;
+            let used = ctx
+                .repository
+                .get(name)
+                .with_context(|| format!("used overlay '{name}' not found"))?;
+            let (used_taps, used_pkgs) = Box::pin(get_brew_packages(ctx, &used)).await?;
             taps = taps.union(&used_taps).cloned().collect();
             packages = packages.union(&used_pkgs).cloned().collect();
         }
     }
-    (taps, packages)
+    Ok((taps, packages))
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -840,7 +852,7 @@ pub enum AllBrewForms {
     },
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Deserialize, Serialize, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 #[serde(from = "AllBrewPackageForms")]
 pub struct BrewPackage {
     pub name: String,
@@ -937,7 +949,7 @@ pub enum AllCargoForms {
     },
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Deserialize, Serialize, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 #[serde(from = "AllCargoPackageForms")]
 pub struct CargoPackage {
     pub name: Option<String>,
@@ -1012,8 +1024,8 @@ pub enum AllCargoPackageForms {
     },
 }
 
-async fn get_cargo_packages(ctx: &Ctx, overlay: &Overlay) -> HashSet<CargoPackage> {
-    let mut packages: HashSet<CargoPackage> = HashSet::new();
+async fn get_cargo_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<CargoPackage>> {
+    let mut packages: BTreeSet<CargoPackage> = BTreeSet::new();
     if let Some(install) = &overlay.install {
         let platform_override = if OS == "macos" {
             install.platforms.get("macos")
@@ -1035,12 +1047,15 @@ async fn get_cargo_packages(ctx: &Ctx, overlay: &Overlay) -> HashSet<CargoPackag
     }
     if let Some(uses) = &overlay.uses {
         for name in uses {
-            let used = ctx.repository.get(name).expect("failed");
-            let used_pkgs = Box::pin(get_cargo_packages(ctx, &used)).await;
+            let used = ctx
+                .repository
+                .get(name)
+                .with_context(|| format!("used overlay '{name}' not found"))?;
+            let used_pkgs = Box::pin(get_cargo_packages(ctx, &used)).await?;
             packages = packages.union(&used_pkgs).cloned().collect();
         }
     }
-    packages
+    Ok(packages)
 }
 
 // Python
@@ -1094,7 +1109,7 @@ pub enum AllPythonForms {
     },
 }
 
-#[derive(Debug, Deserialize, Serialize, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Deserialize, Serialize, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 #[serde(rename_all = "lowercase")]
 pub enum PythonTool {
     Uv,
@@ -1102,7 +1117,7 @@ pub enum PythonTool {
     Pip,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Deserialize, Serialize, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 #[serde(from = "AllPythonPackageForms")]
 pub struct PythonPackage {
     pub name: String,
@@ -1147,8 +1162,8 @@ pub enum AllPythonPackageForms {
     },
 }
 
-async fn get_python_packages(ctx: &Ctx, overlay: &Overlay) -> HashSet<PythonPackage> {
-    let mut packages: HashSet<PythonPackage> = HashSet::new();
+async fn get_python_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<PythonPackage>> {
+    let mut packages: BTreeSet<PythonPackage> = BTreeSet::new();
     if let Some(install) = &overlay.install {
         let platform_override = if OS == "macos" {
             install.platforms.get("macos")
@@ -1170,12 +1185,15 @@ async fn get_python_packages(ctx: &Ctx, overlay: &Overlay) -> HashSet<PythonPack
     }
     if let Some(uses) = &overlay.uses {
         for name in uses {
-            let used = ctx.repository.get(name).expect("failed");
-            let used_pkgs = Box::pin(get_python_packages(ctx, &used)).await;
+            let used = ctx
+                .repository
+                .get(name)
+                .with_context(|| format!("used overlay '{name}' not found"))?;
+            let used_pkgs = Box::pin(get_python_packages(ctx, &used)).await?;
             packages = packages.union(&used_pkgs).cloned().collect();
         }
     }
-    packages
+    Ok(packages)
 }
 
 // Node (npm)
@@ -1227,7 +1245,7 @@ pub enum AllNodeForms {
     },
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Deserialize, Serialize, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 #[serde(from = "AllNodePackageForms")]
 pub struct NodePackage {
     pub name: String,
@@ -1256,8 +1274,8 @@ pub enum AllNodePackageForms {
     },
 }
 
-async fn get_node_packages(ctx: &Ctx, overlay: &Overlay) -> HashSet<NodePackage> {
-    let mut packages: HashSet<NodePackage> = HashSet::new();
+async fn get_node_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<NodePackage>> {
+    let mut packages: BTreeSet<NodePackage> = BTreeSet::new();
     if let Some(install) = &overlay.install {
         let platform_override = if OS == "macos" {
             install.platforms.get("macos")
@@ -1279,12 +1297,15 @@ async fn get_node_packages(ctx: &Ctx, overlay: &Overlay) -> HashSet<NodePackage>
     }
     if let Some(uses) = &overlay.uses {
         for name in uses {
-            let used = ctx.repository.get(name).expect("failed");
-            let used_pkgs = Box::pin(get_node_packages(ctx, &used)).await;
+            let used = ctx
+                .repository
+                .get(name)
+                .with_context(|| format!("used overlay '{name}' not found"))?;
+            let used_pkgs = Box::pin(get_node_packages(ctx, &used)).await?;
             packages = packages.union(&used_pkgs).cloned().collect();
         }
     }
-    packages
+    Ok(packages)
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

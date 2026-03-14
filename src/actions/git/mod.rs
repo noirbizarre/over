@@ -33,7 +33,7 @@ pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Resul
             style::white("Cloning repositories"),
         ))?;
         let subctx = ctx.with_multiprogress(MultiProgress::new());
-        let _clones = join_all(git_repos.iter().map(|(path, repo_config)| {
+        let results = join_all(git_repos.iter().map(|(path, repo_config)| {
             let target = to.join(path);
             let repo_config = repo_config.clone();
             let ctx = subctx.clone();
@@ -43,6 +43,22 @@ pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Resul
             })
         }))
         .await;
+        let mut errors: Vec<anyhow::Error> = Vec::new();
+        for result in results {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => errors.push(e),
+                Err(e) => errors.push(anyhow!("clone task panicked: {}", e)),
+            }
+        }
+        if !errors.is_empty() {
+            let msgs: Vec<String> = errors.iter().map(|e| format!("{e:#}")).collect();
+            return Err(anyhow!(
+                "Failed to clone {} repositories:\n  {}",
+                msgs.len(),
+                msgs.join("\n  ")
+            ));
+        }
     };
     Ok(())
 }
@@ -79,10 +95,10 @@ impl Action for EnsureGitRepository {
     async fn execute(&self, ctx: Ctx) -> Result<()> {
         let pb = ctx
             .try_multiprogress()
-            .unwrap()
-            .add(ProgressBar::new(100))
-            .with_style(CLONE_PROGRESS_STYLE.clone())
-            .with_prefix(self.short_name());
+            .ok_or_else(|| anyhow!("MultiProgress not available for git clone"))?
+            .add(ProgressBar::new(100));
+        pb.set_style(CLONE_PROGRESS_STYLE.clone());
+        pb.set_prefix(self.short_name());
 
         let repo_path = if self.config.worktree || self.config.worktrees.is_some() {
             self.path.join(".git")
@@ -122,8 +138,8 @@ impl Action for EnsureGitRepository {
 
         if exists && !ctx.dry_run {
             if ctx.verbose {
-                pb.with_style(DONE_PROGRESS_STYLE.clone())
-                    .finish_with_message("Repository exists");
+                pb.set_style(DONE_PROGRESS_STYLE.clone());
+                pb.finish_with_message("Repository exists");
             } else {
                 pb.finish_and_clear();
             }
@@ -231,9 +247,18 @@ fn ensure_remotes(
             }
         }
 
-        // Apply push refspec if specified
+        // Apply push refspec if specified (check if already present to be idempotent)
         if let Some(push) = &remote_config.push {
-            repo.remote_add_push(name, push)?;
+            let existing = repo.find_remote(name.as_str())?;
+            let already_has = existing
+                .push_refspecs()?
+                .into_iter()
+                .flatten()
+                .any(|r| r == push.as_str());
+            drop(existing);
+            if !already_has {
+                repo.remote_add_push(name, push)?;
+            }
         }
 
         // Apply arbitrary extra config keys to the remote section
@@ -470,8 +495,6 @@ struct CloneStats {
     received_bytes: usize,
 }
 
-unsafe impl Send for CloneStats {}
-
 impl CloneStats {
     fn from(stats: Progress) -> Self {
         Self {
@@ -497,8 +520,6 @@ enum CloneMessage {
     Stats(CloneStats),
     Progress(CloneProgress),
 }
-
-unsafe impl Send for CloneProgress {}
 
 #[derive(Debug, Default)]
 struct CloneState {

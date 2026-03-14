@@ -99,8 +99,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         println!("{:#?}", args);
     }
 
-    let home = cli.home.as_ref().expect("Home directory not set");
-    let repo = Repository::new(PathBuf::from(home));
+    let home = cli.resolve_home()?;
+    let repo = Repository::new(home);
     if cli.debug {
         println!("{:#?}", repo);
     }
@@ -109,12 +109,15 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         Some(name) => repo.get(name)?,
         None => {
             let overlays = repo.overlays()?;
+            if overlays.is_empty() {
+                return Err(anyhow!("no overlays found in repository"));
+            }
             let selection = FuzzySelect::with_theme(&ColorfulTheme::default())
                 .with_prompt("Choose the target overlay")
                 .default(0)
                 .items(&overlays[..])
                 .interact()
-                .unwrap();
+                .map_err(|e| anyhow!("overlay selection cancelled: {}", e))?;
             overlays[selection].clone()
         }
     };
@@ -128,7 +131,10 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         cli.debug,
         cli.verbose,
         args.force,
-        args.root.clone().unwrap_or(home_dir().unwrap()),
+        args.root
+            .clone()
+            .or_else(home_dir)
+            .ok_or_else(|| anyhow!("could not determine home directory"))?,
         repo,
         Some(overlay.clone()),
     );

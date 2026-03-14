@@ -4,10 +4,10 @@ use globset::GlobBuilder;
 use serde::Serialize;
 use walkdir::WalkDir;
 
-use anyhow::Result;
+use anyhow::{Context as AnyhowContext, Result};
 
+use super::GLOB_PATTERN;
 use super::overlay::Overlay;
-use super::pattern;
 
 /// Manage all overlays
 #[derive(Debug, Default, Serialize, Clone)]
@@ -29,7 +29,7 @@ impl Repository {
 
     /// Returns a list of all overlays in the repository
     pub fn overlays(&self) -> Result<Vec<Overlay>> {
-        let glob = GlobBuilder::new(&pattern())
+        let glob = GlobBuilder::new(&GLOB_PATTERN)
             .literal_separator(true)
             .build()?
             .compile_matcher();
@@ -43,14 +43,14 @@ impl Repository {
 
         dirs.sort();
 
-        Ok(dirs
-            .iter()
+        dirs.iter()
             .enumerate()
-            .filter_map(|(idx, dir)| match dirs.get(idx + 1) {
-                Some(next) if next.starts_with(dir) => None,
-                _ => Some(Overlay::new(self, dir).expect("failed")),
+            .filter(|(idx, dir)| !matches!(dirs.get(idx + 1), Some(next) if next.starts_with(dir)))
+            .map(|(_, dir)| {
+                Overlay::new(self, dir)
+                    .with_context(|| format!("failed to load overlay at {}", dir.display()))
             })
-            .collect())
+            .collect::<Result<Vec<_>>>()
     }
 
     /// Get a repository by its name/relative path

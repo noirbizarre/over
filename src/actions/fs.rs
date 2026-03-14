@@ -45,7 +45,13 @@ pub async fn link(ctx: Ctx, overlay: &Overlay, to: &Path) -> Result<()> {
     let files = WalkDir::new(&overlay.root)
         .min_depth(1)
         .into_iter()
-        .filter_map(Result::ok)
+        .filter_map(|entry| match entry {
+            Ok(e) => Some(e),
+            Err(e) => {
+                eprintln!("Warning: skipping entry due to error: {}", e);
+                None
+            }
+        })
         .filter(|e| !exclude.is_match(e.path()));
 
     for file in files {
@@ -53,6 +59,19 @@ pub async fn link(ctx: Ctx, overlay: &Overlay, to: &Path) -> Result<()> {
         let rel_path = file.path().strip_prefix(&overlay.root)?;
         let target = to.join(rel_path);
         let path = file.path();
+
+        // If this directory matches a link_dirs pattern, symlink it as a unit
+        // and skip its children (WalkDir will still yield them but we handle the dir)
+        if path.is_dir() && overlay.is_link_dir(rel_path) {
+            let action = EnsureDirLink::new(ctx.clone(), path.to_path_buf(), target);
+            if ctx.verbose || ctx.dry_run {
+                progress.println(format!("{}", action));
+            }
+            progress.set_message(format!("{}", action));
+            action.execute(ctx.clone()).await?;
+            continue;
+        }
+
         let action: Box<dyn Action> = match () {
             _ if path.is_dir() => Box::new(EnsureDir::new(target)),
             _ if path.is_file() => Box::new(EnsureLink::new(
@@ -114,7 +133,7 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
     }
 
     let move_action = MoveFile::new(ctx.clone(), src.clone(), target.clone());
-    let link_action = EnsureLink::new(ctx.clone(), target, src.to_path_buf());
+    let link_action = EnsureLink::new(ctx.clone(), target.clone(), src.to_path_buf());
 
     if ctx.verbose || ctx.dry_run {
         println!("{}", move_action);
@@ -124,7 +143,13 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
     if ctx.verbose || ctx.dry_run {
         println!("{}", link_action);
     }
-    link_action.execute(ctx.clone()).await?;
+    if let Err(e) = link_action.execute(ctx.clone()).await {
+        // Rollback: move file back to original location
+        if !ctx.dry_run {
+            let _ = rename(&target, src).await;
+        }
+        return Err(e);
+    }
 
     Ok(())
 }
@@ -181,7 +206,13 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
         let files: Vec<PathBuf> = WalkDir::new(&src)
             .min_depth(1)
             .into_iter()
-            .filter_map(Result::ok)
+            .filter_map(|entry| match entry {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    eprintln!("Warning: skipping entry due to error: {}", e);
+                    None
+                }
+            })
             .filter(|e| e.path().is_file())
             .map(|e| e.path().to_path_buf())
             .collect();
@@ -232,35 +263,36 @@ impl EnsureLink {
 
 impl fmt::Display for EnsureLink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // write!(f, "{} -> {}", self.source.display(), self.target.display())
-        // We operate on string as path normalization is broken in rust
-        // See:
-        //  - https://users.rust-lang.org/t/trailing-in-paths/43166/9
-        //  - https://github.com/rust-lang/rfcs/issues/2208
-        let overlay = self.ctx.overlay.as_ref().unwrap();
-        let rel_path = self
-            .source
-            .to_str()
-            .unwrap()
-            .strip_prefix(overlay.root.to_str().unwrap())
-            .unwrap();
-        let target_root = self
-            .target
-            .to_str()
-            .unwrap()
-            .strip_suffix(rel_path)
-            .unwrap();
+        if let Some(overlay) = self.ctx.overlay.as_ref()
+            && let Ok(rel_path) = self.source.strip_prefix(&overlay.root)
+        {
+            let rel_str = rel_path.to_string_lossy();
+            let target_root = self
+                .target
+                .to_string_lossy()
+                .strip_suffix(rel_str.as_ref())
+                .unwrap_or(&self.target.to_string_lossy())
+                .to_string();
+            return write!(
+                f,
+                "{} {} {}{} {} {}{}{}",
+                emojis::LINK,
+                style::white("link:"),
+                style::white("{"),
+                short_path(&overlay.root.to_string_lossy()),
+                style::white("->"),
+                short_path(&target_root),
+                style::white("}"),
+                rel_str,
+            );
+        }
         write!(
             f,
-            "{} {} {}{} {} {}{}{}",
+            "{} {} {} -> {}",
             emojis::LINK,
             style::white("link:"),
-            style::white("{"),
-            short_path(overlay.root.to_str().unwrap()),
-            style::white("->"),
-            short_path(target_root),
-            style::white("}"),
-            rel_path,
+            self.source.display(),
+            self.target.display(),
         )
     }
 }
@@ -279,11 +311,11 @@ impl Action for EnsureLink {
                         || Confirm::with_theme(&DialogTheme::default())
                             .with_prompt(format!(
                                 " Do you want to overwrite {} currently linked to {}?",
-                                style::yellow(short_path(self.target.to_str().unwrap())),
-                                style::yellow(short_path(src.to_str().unwrap())),
+                                style::yellow(short_path(&self.target.to_string_lossy())),
+                                style::yellow(short_path(&src.to_string_lossy())),
                             ))
                             .interact()
-                            .unwrap()
+                            .map_err(|e| anyhow::anyhow!("prompt failed: {}", e))?
                     {
                         remove_symlink_file(self.target.as_path())?;
                     } else {
@@ -356,30 +388,36 @@ impl EnsureDirLink {
 
 impl fmt::Display for EnsureDirLink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let overlay = self.ctx.overlay.as_ref().unwrap();
-        let rel_path = self
-            .source
-            .to_str()
-            .unwrap()
-            .strip_prefix(overlay.root.to_str().unwrap())
-            .unwrap();
-        let target_root = self
-            .target
-            .to_str()
-            .unwrap()
-            .strip_suffix(rel_path)
-            .unwrap();
+        if let Some(overlay) = self.ctx.overlay.as_ref()
+            && let Ok(rel_path) = self.source.strip_prefix(&overlay.root)
+        {
+            let rel_str = rel_path.to_string_lossy();
+            let target_root = self
+                .target
+                .to_string_lossy()
+                .strip_suffix(rel_str.as_ref())
+                .unwrap_or(&self.target.to_string_lossy())
+                .to_string();
+            return write!(
+                f,
+                "{} {} {}{} {} {}{}{}",
+                emojis::LINK,
+                style::white("link dir:"),
+                style::white("{"),
+                short_path(&overlay.root.to_string_lossy()),
+                style::white("->"),
+                short_path(&target_root),
+                style::white("}"),
+                rel_str,
+            );
+        }
         write!(
             f,
-            "{} {} {}{} {} {}{}{}",
+            "{} {} {} -> {}",
             emojis::LINK,
             style::white("link dir:"),
-            style::white("{"),
-            short_path(overlay.root.to_str().unwrap()),
-            style::white("->"),
-            short_path(target_root),
-            style::white("}"),
-            rel_path,
+            self.source.display(),
+            self.target.display(),
         )
     }
 }
@@ -433,27 +471,37 @@ impl MoveFile {
 
 impl fmt::Display for MoveFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let overlay = self.ctx.overlay.as_ref().unwrap();
-        let src_root = overlay.resolve_target(&self.ctx).unwrap();
-
-        let rel_path = self
-            .src
-            .to_str()
-            .unwrap()
-            .strip_prefix(src_root.to_str().unwrap())
-            .unwrap();
-        let target_root = self.dst.to_str().unwrap().strip_suffix(rel_path).unwrap();
+        if let Some(overlay) = self.ctx.overlay.as_ref()
+            && let Ok(src_root) = overlay.resolve_target(&self.ctx)
+            && let Ok(rel_path) = self.src.strip_prefix(&src_root)
+        {
+            let rel_str = rel_path.to_string_lossy();
+            let target_root = self
+                .dst
+                .to_string_lossy()
+                .strip_suffix(rel_str.as_ref())
+                .unwrap_or(&self.dst.to_string_lossy())
+                .to_string();
+            return write!(
+                f,
+                "{} {} {}{} {} {}{}{}",
+                emojis::MOVE_FILE,
+                style::white("move file:"),
+                style::white("{"),
+                short_path(&src_root.to_string_lossy()),
+                style::white("->"),
+                short_path(&target_root),
+                style::white("}"),
+                rel_str,
+            );
+        }
         write!(
             f,
-            "{} {} {}{} {} {}{}{}",
+            "{} {} {} -> {}",
             emojis::MOVE_FILE,
             style::white("move file:"),
-            style::white("{"),
-            short_path(src_root.to_str().unwrap()),
-            style::white("->"),
-            short_path(target_root),
-            style::white("}"),
-            rel_path,
+            self.src.display(),
+            self.dst.display(),
         )
     }
 }

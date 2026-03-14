@@ -2,9 +2,8 @@ use console::Term;
 
 use anyhow::Result;
 
-pub fn info(msg: String) -> Result<()> {
+pub fn info(msg: impl AsRef<str>) -> Result<()> {
     let term = Term::stdout();
-    term.write_line(&msg)?;
-    // term.clear_line()?;
+    term.write_line(msg.as_ref())?;
     Ok(())
 }
