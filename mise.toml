@@ -1,0 +1,39 @@
+[tools]
+prek = "latest"
+cargo-binstall = "latest"
+"cargo:cargo-nextest" = "latest"
+"cargo:cargo-llvm-cov" = "latest"
+
+[tasks.default]
+description = "Run fmt, lint, build and test"
+depends = ["fmt", "lint", "build", "test"]
+
+[tasks.test]
+description = "Run tests with selectors"
+usage = 'arg "[selectors]" var=#true help="Test selectors to filter"'
+run = "cargo nextest run ${usage_selectors[@]}"
+
+[tasks.cover]
+description = "Run tests with coverage"
+run = "cargo llvm-cov nextest"
+
+[tasks.build]
+description = "Build the binaries"
+run = "cargo build"
+
+[tasks.setup]
+description = "Install the binaries"
+run = "cargo install --path . --force"
+
+[tasks.run]
+description = "Run the application"
+usage = 'arg "[args]" var=#true help="Arguments to pass to the application"'
+run = "cargo run --bin over -- ${usage_args[@]}"
+
+[tasks.fmt]
+description = "Format the code"
+run = "cargo fmt --all"
+
+[tasks.lint]
+description = "Lint the code"
+run = "cargo clippy --all-targets --all-features -- -Dclippy::all"

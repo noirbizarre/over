@@ -15,3 +15,9 @@ Cargo.lock
 
 # Coverage report
 lcov.info
+
+# Mise
+!/mise.toml
+!/mise.lock
+mise.*.toml
+.mise.*.toml
