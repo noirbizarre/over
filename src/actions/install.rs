@@ -29,6 +29,7 @@ pub enum SystemManager {
     Archlinux,
     Apt,
     Brew,
+    Winget,
 }
 
 // Precedence maps per platform/distro (system managers only)
@@ -151,6 +152,40 @@ async fn install_brew_pkgs(
         }
         args.push(pkg.name.as_str());
         run_cmd(ctx, "brew", args.as_slice()).await?;
+    }
+    Ok(())
+}
+
+async fn install_winget_pkgs(ctx: &Ctx, pkgs: BTreeSet<WingetPackage>) -> Result<()> {
+    if pkgs.is_empty() {
+        return Ok(());
+    }
+    if which("winget").is_err() {
+        if ctx.verbose {
+            eprintln!("winget not found");
+        }
+        return Ok(());
+    }
+    for pkg in pkgs.iter() {
+        let mut args: Vec<&str> = vec![
+            "install",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+        ];
+        if let Some(id) = &pkg.id {
+            args.push("--id");
+            args.push(id.as_str());
+        } else if let Some(name) = &pkg.name {
+            args.push(name.as_str());
+        } else {
+            continue; // skip packages with neither name nor id
+        }
+        if let Some(opts) = &pkg.options {
+            for part in opts.split_whitespace() {
+                args.push(part);
+            }
+        }
+        run_cmd(ctx, "winget", args.as_slice()).await?;
     }
     Ok(())
 }
@@ -309,9 +344,97 @@ pub async fn install(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     Ok(())
 }
 
-async fn install_windows(_ctx: &Ctx, _overlay: &Overlay) -> Result<()> {
-    // Windows support pending; placeholder respects interface
-    eprintln!("Windows install not yet implemented");
+async fn install_windows(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
+    let install_cfg = overlay.install.as_ref();
+    if install_cfg.is_none() {
+        return Ok(());
+    }
+    let install_cfg = install_cfg.unwrap();
+    let platform_cfg = install_cfg.platforms.get("windows");
+
+    if let Some(pre) = &install_cfg.pre {
+        run_scripts(ctx, pre).await?;
+    }
+    if let Some(pre) = platform_cfg.and_then(|p| p.pre.as_ref()) {
+        run_scripts(ctx, pre).await?;
+    }
+
+    // winget (system manager)
+    if let Some(cfg) = platform_cfg
+        .and_then(|p| p.winget.as_ref())
+        .or(install_cfg.winget.as_ref())
+        && let Some(pre) = &cfg.pre
+    {
+        run_scripts(ctx, pre).await?;
+    }
+    let pkgs = get_winget_packages(ctx, overlay).await?;
+    if !pkgs.is_empty() {
+        install_winget_pkgs(ctx, pkgs).await?;
+    }
+    if let Some(cfg) = platform_cfg
+        .and_then(|p| p.winget.as_ref())
+        .or(install_cfg.winget.as_ref())
+        && let Some(post) = &cfg.post
+    {
+        run_scripts(ctx, post).await?;
+    }
+
+    // cargo
+    if let Some(cfg) = platform_cfg
+        .and_then(|p| p.cargo.as_ref())
+        .or(install_cfg.cargo.as_ref())
+    {
+        if let Some(pre) = &cfg.pre {
+            run_scripts(ctx, pre).await?;
+        }
+        let crates = get_cargo_packages(ctx, overlay).await?;
+        if !crates.is_empty() {
+            install_cargo_crates(ctx, crates).await?;
+        }
+        if let Some(post) = &cfg.post {
+            run_scripts(ctx, post).await?;
+        }
+    }
+    // python
+    if let Some(cfg) = platform_cfg
+        .and_then(|p| p.python.as_ref())
+        .or(install_cfg.python.as_ref())
+    {
+        if let Some(pre) = &cfg.pre {
+            run_scripts(ctx, pre).await?;
+        }
+        let packages = get_python_packages(ctx, overlay).await?;
+        if !packages.is_empty() {
+            install_python_packages(ctx, packages).await?;
+        }
+        if let Some(post) = &cfg.post {
+            run_scripts(ctx, post).await?;
+        }
+    }
+    // node
+    if let Some(cfg) = platform_cfg
+        .and_then(|p| p.node.as_ref())
+        .or(install_cfg.node.as_ref())
+    {
+        if let Some(pre) = &cfg.pre {
+            run_scripts(ctx, pre).await?;
+        }
+        let packages = get_node_packages(ctx, overlay).await?;
+        if !packages.is_empty() {
+            install_node_packages(ctx, packages).await?;
+        }
+        if let Some(post) = &cfg.post {
+            run_scripts(ctx, post).await?;
+        }
+    }
+
+    if let Some(post) = platform_cfg.and_then(|p| p.post.as_ref()) {
+        run_scripts(ctx, post).await?;
+    }
+    if let Some(post) = &install_cfg.post {
+        run_scripts(ctx, post).await?;
+    }
+
     Ok(())
 }
 
@@ -327,6 +450,7 @@ fn decide_linux_managers(distro: &str, install_cfg: &InstallConfig) -> Vec<Syste
         SystemManager::Archlinux => install_cfg.archlinux.is_some(),
         SystemManager::Apt => install_cfg.apt.is_some(),
         SystemManager::Brew => install_cfg.brew.is_some(),
+        SystemManager::Winget => install_cfg.winget.is_some(),
     };
     let has_platform = |mgr: &SystemManager| {
         platform_cfg
@@ -334,6 +458,7 @@ fn decide_linux_managers(distro: &str, install_cfg: &InstallConfig) -> Vec<Syste
                 SystemManager::Archlinux => p.archlinux.is_some(),
                 SystemManager::Apt => p.apt.is_some(),
                 SystemManager::Brew => p.brew.is_some(),
+                SystemManager::Winget => p.winget.is_some(),
             })
             .unwrap_or(false)
     };
@@ -434,6 +559,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
                     run_scripts(ctx, post).await?;
                 }
             }
+            SystemManager::Winget => {} // winget is not used on Linux
         }
     }
 
@@ -1308,6 +1434,116 @@ async fn get_node_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<Node
     Ok(packages)
 }
 
+async fn get_winget_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<WingetPackage>> {
+    let mut packages: BTreeSet<WingetPackage> = BTreeSet::new();
+    if let Some(install) = &overlay.install {
+        let platform_override = if OS == "windows" {
+            install.platforms.get("windows")
+        } else {
+            None
+        };
+        let source = platform_override
+            .and_then(|p| p.winget.as_ref())
+            .or(install.winget.as_ref());
+        if let Some(cfg) = source {
+            packages.extend(cfg.packages.iter().cloned());
+        }
+    }
+    if let Some(uses) = &overlay.uses {
+        for name in uses {
+            let used = ctx
+                .repository
+                .get(name)
+                .with_context(|| format!("used overlay '{name}' not found"))?;
+            let used_pkgs = Box::pin(get_winget_packages(ctx, &used)).await?;
+            packages = packages.union(&used_pkgs).cloned().collect();
+        }
+    }
+    Ok(packages)
+}
+
+// Winget (Windows Package Manager)
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(from = "AllWingetForms")]
+pub struct WingetConfig {
+    pub packages: Vec<WingetPackage>,
+    pub pre: Option<Vec<String>>,
+    pub post: Option<Vec<String>>,
+}
+
+impl From<AllWingetForms> for WingetConfig {
+    fn from(f: AllWingetForms) -> Self {
+        match f {
+            AllWingetForms::Flat(packages) => Self {
+                packages: packages
+                    .into_iter()
+                    .map(|name| WingetPackage {
+                        name: Some(name),
+                        id: None,
+                        options: None,
+                    })
+                    .collect(),
+                pre: None,
+                post: None,
+            },
+            AllWingetForms::Full {
+                packages,
+                pre,
+                post,
+            } => Self {
+                packages,
+                pre,
+                post,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum AllWingetForms {
+    Flat(Vec<String>),
+    Full {
+        packages: Vec<WingetPackage>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
+        pre: Option<Vec<String>>,
+        #[serde(default, deserialize_with = "option_string_or_vec")]
+        post: Option<Vec<String>>,
+    },
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[serde(from = "AllWingetPackageForms")]
+pub struct WingetPackage {
+    pub name: Option<String>,
+    pub id: Option<String>,
+    pub options: Option<String>,
+}
+
+impl From<AllWingetPackageForms> for WingetPackage {
+    fn from(f: AllWingetPackageForms) -> Self {
+        match f {
+            AllWingetPackageForms::Str(name) => Self {
+                name: Some(name),
+                id: None,
+                options: None,
+            },
+            AllWingetPackageForms::Full { name, id, options } => Self { name, id, options },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum AllWingetPackageForms {
+    Str(String),
+    Full {
+        name: Option<String>,
+        id: Option<String>,
+        options: Option<String>,
+    },
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PlatformInstallConfig {
     #[serde(default, deserialize_with = "option_string_or_vec")]
@@ -1318,6 +1554,7 @@ pub struct PlatformInstallConfig {
     pub cargo: Option<CargoConfig>,
     pub python: Option<PythonConfig>,
     pub node: Option<NodeConfig>,
+    pub winget: Option<WingetConfig>,
     #[serde(default, deserialize_with = "option_string_or_vec")]
     pub post: Option<Vec<String>>,
 }
@@ -1332,6 +1569,7 @@ pub struct InstallConfig {
     pub cargo: Option<CargoConfig>,
     pub python: Option<PythonConfig>,
     pub node: Option<NodeConfig>,
+    pub winget: Option<WingetConfig>,
     #[serde(default, deserialize_with = "option_string_or_vec")]
     pub post: Option<Vec<String>>,
     #[serde(flatten)]
@@ -1373,6 +1611,8 @@ install:
     - requests
   node:
     - typescript
+  winget:
+    - bat
   post:
     - echo "Goodbye, World!"
 "#
@@ -1407,6 +1647,9 @@ install:
     packages:
       - name: typescript
         options: "--force"
+  winget:
+    packages:
+      - name: bat
   post:
     - echo "Goodbye, World!"
 "#
@@ -1422,6 +1665,7 @@ brew = ["pkg1", "pkg2"]
 cargo = ["ripgrep"]
 python = ["requests"]
 node = ["typescript"]
+winget = ["bat"]
 post = ['echo "Goodbye, World!"']
 "#
     )]
@@ -1436,6 +1680,7 @@ brew.packages = ["pkg1", "pkg2"]
 cargo.packages = [{name="ripgrep", locked=true}]
 python.packages = [{name="requests", tool="uv"}]
 node.packages = [{name="typescript", options="--force"}]
+winget.packages = [{name="bat"}]
 post = ['echo "Goodbye, World!"']
 "#
     )]
@@ -1459,6 +1704,8 @@ install:
     - requests
   node:
     - typescript
+  winget:
+    - bat
   post: echo "Goodbye, World!"
 "#
     )]
@@ -1473,6 +1720,7 @@ brew = ["pkg1", "pkg2"]
 cargo = ["ripgrep"]
 python = ["requests"]
 node = ["typescript"]
+winget = ["bat"]
 post = 'echo "Goodbye, World!"'
 "#
     )]
@@ -1507,6 +1755,14 @@ post = 'echo "Goodbye, World!"'
         );
         assert_eq!(install.python.unwrap().packages[0].name, "requests");
         assert_eq!(install.node.unwrap().packages[0].name, "typescript");
+        assert_eq!(
+            install.winget.unwrap().packages[0],
+            WingetPackage {
+                name: Some("bat".into()),
+                id: None,
+                options: None,
+            }
+        );
         assert_eq!(install.post.unwrap()[0], "echo \"Goodbye, World!\"");
     }
 
@@ -1553,6 +1809,55 @@ brew.packages = ["pkg1", {name="pkg2", options="--cask", cask=true}]
                     name: String::from("pkg2"),
                     options: Some(String::from("--cask")),
                     cask: Some(true)
+                },
+            ]
+        );
+    }
+
+    #[rstest]
+    #[case::yaml(
+        FileFormat::Yaml,
+        r#"
+install:
+  winget:
+    packages:
+      - bat
+      - id: sharkdp.bat
+      - name: Git
+        options: "--source winget"
+"#
+    )]
+    #[case::toml(
+        FileFormat::Toml,
+        r#"
+[install]
+winget.packages = ["bat", {id="sharkdp.bat"}, {name="Git", options="--source winget"}]
+"#
+    )]
+    fn test_winget_config(#[case] format: FileFormat, #[case] content: &str) {
+        let c = Config::builder()
+            .add_source(File::from_str(content, format))
+            .build()
+            .unwrap();
+        let data: Data = c.try_deserialize().unwrap();
+        let winget = data.install.unwrap().winget.unwrap();
+        assert_eq!(
+            winget.packages,
+            vec![
+                WingetPackage {
+                    name: Some(String::from("bat")),
+                    id: None,
+                    options: None,
+                },
+                WingetPackage {
+                    name: None,
+                    id: Some(String::from("sharkdp.bat")),
+                    options: None,
+                },
+                WingetPackage {
+                    name: Some(String::from("Git")),
+                    id: None,
+                    options: Some(String::from("--source winget")),
                 },
             ]
         );
@@ -1613,6 +1918,7 @@ post = 'echo "after apt"'
             cargo: None,
             python: None,
             node: None,
+            winget: None,
             post: None,
             platforms: Default::default(),
         };
@@ -1645,6 +1951,7 @@ post = 'echo "after apt"'
                 cargo: None,
                 python: None,
                 node: None,
+                winget: None,
                 post: None,
             },
         );
@@ -1656,6 +1963,7 @@ post = 'echo "after apt"'
             cargo: None,
             python: None,
             node: None,
+            winget: None,
             post: None,
             platforms,
         };
