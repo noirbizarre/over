@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use config::GitRepoConfig;
+use config::{GitRepoConfig, ROOT_PATH};
 use futures::future::join_all;
 use git2::{Progress, Repository};
 use git2_credentials::CredentialHandler;
@@ -34,7 +34,11 @@ pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Resul
         ))?;
         let subctx = ctx.with_multiprogress(MultiProgress::new());
         let results = join_all(git_repos.iter().map(|(path, repo_config)| {
-            let target = to.join(path);
+            let target = if path == ROOT_PATH {
+                to.to_path_buf()
+            } else {
+                to.join(path)
+            };
             let repo_config = repo_config.clone();
             let ctx = subctx.clone();
             spawn(async move {
@@ -106,14 +110,22 @@ impl Action for EnsureGitRepository {
             self.path.clone()
         };
 
-        let exists = repo_path.exists();
+        // For bare repos (worktree mode), repo_path is `path/.git` which is
+        // specific enough. For normal repos, check for `.git` inside the
+        // directory so a pre-existing empty directory isn't mistaken for a repo
+        // (e.g. the target root created by overlay apply before cloning).
+        let is_bare = self.config.worktree || self.config.worktrees.is_some();
+        let exists = if is_bare {
+            repo_path.exists()
+        } else {
+            repo_path.join(".git").exists()
+        };
 
         if !exists && !ctx.dry_run {
             let mut state = CloneState::default();
             let url = self.config.url.clone();
             let into = repo_path.clone();
             let branch = self.config.branch.clone();
-            let is_bare = self.config.worktree || self.config.worktrees.is_some();
             let recurse = self.config.recurse_submodules;
             let (tx, mut rx) = mpsc::channel(100);
             let tx = Arc::new(tx);

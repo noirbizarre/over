@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use minijinja::Environment;
 
-use crate::actions::git::config::GitRepoConfig;
+use crate::actions::git::config::{GitRepoConfig, deserialize_git_field};
 use crate::actions::install::InstallConfig;
 use crate::actions::{self, EnsureDir};
 use crate::exec::{self, Action, Ctx};
@@ -32,6 +32,7 @@ pub struct Overlay {
 
     pub exclude: Option<Vec<String>>,
 
+    #[serde(default, deserialize_with = "deserialize_git_field")]
     pub git: Option<HashMap<String, GitRepoConfig>>,
 
     pub install: Option<InstallConfig>,
@@ -493,5 +494,102 @@ mod tests {
             err_msg.contains("a_cycle"),
             "error should mention the cycling overlay: {err_msg}"
         );
+    }
+
+    // ── git: <url> shorthand ─────────────────────────────────────────────
+
+    #[test]
+    fn test_git_simple_url_toml() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_git_url");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str(
+                r#"
+target = "~"
+git = "https://github.com/user/repo.git"
+"#,
+            )
+            .unwrap();
+        let overlay = repo.get("ov_git_url").unwrap();
+        let git = overlay.git.as_ref().expect("git should be Some");
+        assert_eq!(git.len(), 1);
+        let cfg = &git["."];
+        assert_eq!(cfg.url, "https://github.com/user/repo.git");
+        assert_eq!(cfg.branch, None);
+    }
+
+    #[test]
+    fn test_git_detailed_single_toml() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_git_det");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str(
+                r#"
+target = "~"
+
+[git]
+url = "git@github.com:user/repo.git"
+branch = "main"
+recurse_submodules = true
+"#,
+            )
+            .unwrap();
+        let overlay = repo.get("ov_git_det").unwrap();
+        let git = overlay.git.as_ref().expect("git should be Some");
+        assert_eq!(git.len(), 1);
+        let cfg = &git["."];
+        assert_eq!(cfg.url, "git@github.com:user/repo.git");
+        assert_eq!(cfg.branch.as_deref(), Some("main"));
+        assert!(cfg.recurse_submodules);
+    }
+
+    #[test]
+    fn test_git_map_form_still_works_toml() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_git_map");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str(
+                r#"
+target = "~"
+
+[git]
+".tmux/plugins/tpm" = "https://github.com/tmux-plugins/tpm"
+
+[git.".config/nvim"]
+url = "git@github.com:user/nvim-config.git"
+branch = "main"
+"#,
+            )
+            .unwrap();
+        let overlay = repo.get("ov_git_map").unwrap();
+        let git = overlay.git.as_ref().expect("git should be Some");
+        assert_eq!(git.len(), 2);
+        assert_eq!(
+            git[".tmux/plugins/tpm"].url,
+            "https://github.com/tmux-plugins/tpm"
+        );
+        assert_eq!(
+            git[".config/nvim"].url,
+            "git@github.com:user/nvim-config.git"
+        );
+    }
+
+    #[test]
+    fn test_git_absent_remains_none() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_no_git");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_no_git").unwrap();
+        assert!(overlay.git.is_none());
     }
 }

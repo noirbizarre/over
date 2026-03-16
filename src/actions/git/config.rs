@@ -206,6 +206,50 @@ enum GitConfigValue {
     Section(HashMap<String, GitConfigValue>),
 }
 
+/// The root path key used when a single git repo is cloned to the overlay root.
+pub const ROOT_PATH: &str = ".";
+
+/// All supported shapes for the `git` field in an overlay config.
+///
+/// Tried in order by serde's `#[serde(untagged)]`:
+/// 1. **Single** – a bare URL string *or* an object with a `url` key
+///    (both handled by [`GitRepoConfig`]'s own deserializer).
+///    The repo is cloned to the overlay target root (path `"."`).
+/// 2. **Map** – a map of destination paths to repo configs (current behaviour).
+///
+/// *Edge case*: if you literally need a destination path called `"url"`, add
+/// at least one other path entry so the map variant is selected instead.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum AllGitForms {
+    /// A single repo config (string URL or detailed object).
+    Single(GitRepoConfig),
+    /// Map of `<path> → <repo config>`.
+    Map(HashMap<String, GitRepoConfig>),
+}
+
+impl From<AllGitForms> for HashMap<String, GitRepoConfig> {
+    fn from(form: AllGitForms) -> Self {
+        match form {
+            AllGitForms::Single(cfg) => HashMap::from([(ROOT_PATH.to_string(), cfg)]),
+            AllGitForms::Map(m) => m,
+        }
+    }
+}
+
+/// Custom deserializer for `Option<HashMap<String, GitRepoConfig>>` that
+/// accepts a plain URL string, a single repo object, or the traditional map.
+///
+/// Used via `#[serde(default, deserialize_with = "deserialize_git_field")]`.
+pub fn deserialize_git_field<'de, D>(
+    deserializer: D,
+) -> Result<Option<HashMap<String, GitRepoConfig>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<AllGitForms>::deserialize(deserializer).map(|opt| opt.map(Into::into))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,5 +566,81 @@ url = "git@github.com:upstream/mylib.git"
             mylib.worktrees.as_ref().unwrap().get("feature-x").unwrap(),
             "feature/x"
         );
+    }
+
+    // ── AllGitForms (git field: string / single / map) ───────────────────
+
+    /// Helper: deserialize a YAML value through `deserialize_git_field`.
+    fn git_field_from_yaml(yaml: &str) -> Option<HashMap<String, GitRepoConfig>> {
+        // Wrap the value under a `git` key so we can use an Overlay-like struct.
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default, deserialize_with = "super::deserialize_git_field")]
+            git: Option<HashMap<String, GitRepoConfig>>,
+        }
+        let doc = format!("git: {yaml}");
+        let w: Wrapper = serde_yaml::from_str(&doc).unwrap();
+        w.git
+    }
+
+    #[test]
+    fn test_git_field_simple_url() {
+        let repos = git_field_from_yaml(r#""https://github.com/user/repo.git""#).unwrap();
+        assert_eq!(repos.len(), 1);
+        let cfg = &repos["."];
+        assert_eq!(cfg.url, "https://github.com/user/repo.git");
+        assert_eq!(cfg.branch, None);
+        assert!(!cfg.recurse_submodules);
+    }
+
+    #[test]
+    fn test_git_field_detailed_single() {
+        let repos = git_field_from_yaml(
+            r#"
+  url: "git@github.com:user/repo.git"
+  branch: main
+  recurse_submodules: true
+"#,
+        )
+        .unwrap();
+        assert_eq!(repos.len(), 1);
+        let cfg = &repos["."];
+        assert_eq!(cfg.url, "git@github.com:user/repo.git");
+        assert_eq!(cfg.branch.as_deref(), Some("main"));
+        assert!(cfg.recurse_submodules);
+    }
+
+    #[test]
+    fn test_git_field_map_form_unchanged() {
+        let repos = git_field_from_yaml(
+            r#"
+  ".tmux/plugins/tpm": "https://github.com/tmux-plugins/tpm"
+  ".config/nvim":
+    url: "git@github.com:user/nvim-config.git"
+    branch: main
+"#,
+        )
+        .unwrap();
+        assert_eq!(repos.len(), 2);
+        assert_eq!(
+            repos[".tmux/plugins/tpm"].url,
+            "https://github.com/tmux-plugins/tpm"
+        );
+        assert_eq!(
+            repos[".config/nvim"].url,
+            "git@github.com:user/nvim-config.git"
+        );
+        assert_eq!(repos[".config/nvim"].branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn test_git_field_none_when_absent() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default, deserialize_with = "super::deserialize_git_field")]
+            git: Option<HashMap<String, GitRepoConfig>>,
+        }
+        let w: Wrapper = serde_yaml::from_str("other: value").unwrap();
+        assert!(w.git.is_none());
     }
 }
