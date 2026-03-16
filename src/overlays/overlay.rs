@@ -89,15 +89,12 @@ impl Overlay {
 
     pub fn resolve_target(&self, ctx: &exec::Context) -> Result<PathBuf> {
         let env = Environment::new();
-        let path = PathBuf::from(
-            env.render_str(self.target.as_str(), ctx)
-                .with_context(|| {
-                    format!(
-                        "failed to render target template '{}' for overlay '{}'",
-                        self.target, self.name
-                    )
-                })?,
-        );
+        let path = PathBuf::from(env.render_str(self.target.as_str(), ctx).with_context(|| {
+            format!(
+                "failed to render target template '{}' for overlay '{}'",
+                self.target, self.name
+            )
+        })?);
 
         let path_str = path.to_string_lossy();
         Ok(match path_str.as_ref() {
@@ -126,22 +123,32 @@ impl Overlay {
 
     pub async fn apply(&self, ctx: &Ctx) -> Result<()> {
         let mut visited = HashSet::new();
-        self.apply_inner(ctx, &mut visited).await
+        let mut stack = Vec::new();
+        self.apply_inner(ctx, &mut visited, &mut stack).await
     }
 
     fn apply_inner<'a>(
         &'a self,
         ctx: &'a Ctx,
         visited: &'a mut HashSet<String>,
+        stack: &'a mut Vec<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-            if !visited.insert(self.name.clone()) {
+            // Already fully applied via another dependency path — skip silently
+            if visited.contains(&self.name) {
+                return Ok(());
+            }
+            // Currently in the recursion stack — true cycle
+            if stack.contains(&self.name) {
+                stack.push(self.name.clone());
                 return Err(anyhow::anyhow!(
-                    "Cycle detected: overlay '{}' was already visited (path: {})",
+                    "Cycle detected: overlay '{}' forms a cycle (path: {})",
                     self.name,
-                    visited.iter().cloned().collect::<Vec<_>>().join(" -> ")
+                    stack.join(" -> ")
                 ));
             }
+            stack.push(self.name.clone());
+
             let target = self.resolve_target(ctx)?;
             if !target.exists() {
                 let mkdir = EnsureDir::new(target.to_path_buf());
@@ -165,13 +172,16 @@ impl Overlay {
                         println!("{:#?}", overlay);
                     }
                     overlay
-                        .apply_inner(&ctx.with_overlay(overlay.clone()), visited)
+                        .apply_inner(&ctx.with_overlay(overlay.clone()), visited, stack)
                         .await?;
                 }
             }
 
             actions::git::clone_repositories(ctx.clone(), self, &target).await?;
             actions::fs::link(ctx.clone(), self, &target).await?;
+
+            stack.pop();
+            visited.insert(self.name.clone());
 
             println!(
                 "{} {} {} {} {} {}",
@@ -401,5 +411,87 @@ mod tests {
         assert!(overlay.root.join("b.txt").exists());
         assert!(file_a.is_symlink());
         assert!(file_b.is_symlink());
+    }
+
+    /// Diamond dependency: A uses B and C, both B and C use D.
+    /// D should only be applied once and no false cycle error should occur.
+    #[tokio::test]
+    async fn test_apply_diamond_dependency() {
+        let (td, repo) = repo_and_root();
+
+        // D: leaf overlay used by both B and C
+        let d = td.child("d");
+        d.create_dir_all().unwrap();
+        d.child("over.toml").write_str("target = \"~\"").unwrap();
+
+        // B: uses D
+        let b = td.child("b");
+        b.create_dir_all().unwrap();
+        b.child("over.toml")
+            .write_str("target = \"~\"\nuses = [\"d\"]")
+            .unwrap();
+
+        // C: uses D
+        let c_ov = td.child("c");
+        c_ov.create_dir_all().unwrap();
+        c_ov.child("over.toml")
+            .write_str("target = \"~\"\nuses = [\"d\"]")
+            .unwrap();
+
+        // A: uses B and C
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("target = \"~\"\nuses = [\"b\", \"c\"]")
+            .unwrap();
+
+        let overlay_a = repo.get("a").unwrap();
+        let c = ctx(
+            td.path().to_path_buf(),
+            repo.clone(),
+            Some(overlay_a.clone()),
+        );
+        let result = overlay_a.apply(&c).await;
+        assert!(
+            result.is_ok(),
+            "diamond dependency should not cause a cycle error: {:?}",
+            result.err()
+        );
+    }
+
+    /// True cycle: A uses B, B uses A. Should produce a cycle error.
+    #[tokio::test]
+    async fn test_apply_cycle_detected() {
+        let (td, repo) = repo_and_root();
+
+        let a = td.child("a_cycle");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("target = \"~\"\nuses = [\"b_cycle\"]")
+            .unwrap();
+
+        let b = td.child("b_cycle");
+        b.create_dir_all().unwrap();
+        b.child("over.toml")
+            .write_str("target = \"~\"\nuses = [\"a_cycle\"]")
+            .unwrap();
+
+        let overlay_a = repo.get("a_cycle").unwrap();
+        let c = ctx(
+            td.path().to_path_buf(),
+            repo.clone(),
+            Some(overlay_a.clone()),
+        );
+        let result = overlay_a.apply(&c).await;
+        assert!(result.is_err(), "cycle should be detected");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Cycle detected"),
+            "error should mention cycle: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("a_cycle"),
+            "error should mention the cycling overlay: {err_msg}"
+        );
     }
 }

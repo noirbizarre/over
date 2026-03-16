@@ -1,4 +1,5 @@
-use std::{collections::BTreeSet, env::consts::OS, fs, sync::OnceLock};
+use std::collections::{BTreeSet, HashSet};
+use std::{env::consts::OS, fs, sync::OnceLock};
 
 use crate::{exec::Ctx, overlays::Overlay};
 use anyhow::{Context as AnyhowContext, Result};
@@ -367,7 +368,7 @@ async fn install_windows(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     {
         run_scripts(ctx, pre).await?;
     }
-    let pkgs = get_winget_packages(ctx, overlay).await?;
+    let pkgs = get_winget_packages(ctx, overlay, &mut HashSet::new()).await?;
     if !pkgs.is_empty() {
         install_winget_pkgs(ctx, pkgs).await?;
     }
@@ -387,7 +388,7 @@ async fn install_windows(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let crates = get_cargo_packages(ctx, overlay).await?;
+        let crates = get_cargo_packages(ctx, overlay, &mut HashSet::new()).await?;
         if !crates.is_empty() {
             install_cargo_crates(ctx, crates).await?;
         }
@@ -403,7 +404,7 @@ async fn install_windows(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let packages = get_python_packages(ctx, overlay).await?;
+        let packages = get_python_packages(ctx, overlay, &mut HashSet::new()).await?;
         if !packages.is_empty() {
             install_python_packages(ctx, packages).await?;
         }
@@ -419,7 +420,7 @@ async fn install_windows(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let packages = get_node_packages(ctx, overlay).await?;
+        let packages = get_node_packages(ctx, overlay, &mut HashSet::new()).await?;
         if !packages.is_empty() {
             install_node_packages(ctx, packages).await?;
         }
@@ -507,7 +508,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
                 {
                     run_scripts(ctx, pre).await?;
                 }
-                let pkgs = get_archlinux_packages(ctx, overlay).await?;
+                let pkgs = get_archlinux_packages(ctx, overlay, &mut HashSet::new()).await?;
                 if !pkgs.is_empty() {
                     install_arch_pkgs(ctx, pkgs).await?;
                 }
@@ -527,7 +528,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
                 {
                     run_scripts(ctx, pre).await?;
                 }
-                let pkgs = get_apt_packages(ctx, overlay).await?;
+                let pkgs = get_apt_packages(ctx, overlay, &mut HashSet::new()).await?;
                 if !pkgs.is_empty() {
                     install_apt_pkgs(ctx, pkgs).await?;
                 }
@@ -547,7 +548,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
                 {
                     run_scripts(ctx, pre).await?;
                 }
-                let (taps, pkgs) = get_brew_packages(ctx, overlay).await?;
+                let (taps, pkgs) = get_brew_packages(ctx, overlay, &mut HashSet::new()).await?;
                 if !taps.is_empty() || !pkgs.is_empty() {
                     install_brew_pkgs(ctx, taps, pkgs).await?;
                 }
@@ -572,7 +573,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let crates = get_cargo_packages(ctx, overlay).await?;
+        let crates = get_cargo_packages(ctx, overlay, &mut HashSet::new()).await?;
         if !crates.is_empty() {
             install_cargo_crates(ctx, crates).await?;
         }
@@ -588,7 +589,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let packages = get_python_packages(ctx, overlay).await?;
+        let packages = get_python_packages(ctx, overlay, &mut HashSet::new()).await?;
         if !packages.is_empty() {
             install_python_packages(ctx, packages).await?;
         }
@@ -604,7 +605,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let packages = get_node_packages(ctx, overlay).await?;
+        let packages = get_node_packages(ctx, overlay, &mut HashSet::new()).await?;
         if !packages.is_empty() {
             install_node_packages(ctx, packages).await?;
         }
@@ -646,7 +647,7 @@ async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     {
         run_scripts(ctx, pre).await?;
     }
-    let (taps, pkgs) = get_brew_packages(ctx, overlay).await?;
+    let (taps, pkgs) = get_brew_packages(ctx, overlay, &mut HashSet::new()).await?;
     if !taps.is_empty() || !pkgs.is_empty() {
         install_brew_pkgs(ctx, taps, pkgs).await?;
     }
@@ -666,7 +667,7 @@ async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let crates = get_cargo_packages(ctx, overlay).await?;
+        let crates = get_cargo_packages(ctx, overlay, &mut HashSet::new()).await?;
         if !crates.is_empty() {
             install_cargo_crates(ctx, crates).await?;
         }
@@ -682,7 +683,7 @@ async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let packages = get_python_packages(ctx, overlay).await?;
+        let packages = get_python_packages(ctx, overlay, &mut HashSet::new()).await?;
         if !packages.is_empty() {
             install_python_packages(ctx, packages).await?;
         }
@@ -698,7 +699,7 @@ async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         if let Some(pre) = &cfg.pre {
             run_scripts(ctx, pre).await?;
         }
-        let packages = get_node_packages(ctx, overlay).await?;
+        let packages = get_node_packages(ctx, overlay, &mut HashSet::new()).await?;
         if !packages.is_empty() {
             install_node_packages(ctx, packages).await?;
         }
@@ -717,7 +718,14 @@ async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     Ok(())
 }
 
-async fn get_archlinux_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<String>> {
+async fn get_archlinux_packages(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    visited: &mut HashSet<String>,
+) -> Result<BTreeSet<String>> {
+    if !visited.insert(overlay.name.clone()) {
+        return Ok(BTreeSet::new());
+    }
     let mut packages: BTreeSet<String> = BTreeSet::new();
     if let Some(install) = &overlay.install {
         let platform_override = if OS == "linux" {
@@ -752,7 +760,7 @@ async fn get_archlinux_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet
                 .get(name)
                 .with_context(|| format!("used overlay '{name}' not found"))?;
             packages = packages
-                .union(&Box::pin(get_archlinux_packages(ctx, &used)).await?)
+                .union(&Box::pin(get_archlinux_packages(ctx, &used, visited)).await?)
                 .cloned()
                 .collect();
         }
@@ -760,7 +768,14 @@ async fn get_archlinux_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet
     Ok(packages)
 }
 
-async fn get_apt_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<String>> {
+async fn get_apt_packages(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    visited: &mut HashSet<String>,
+) -> Result<BTreeSet<String>> {
+    if !visited.insert(overlay.name.clone()) {
+        return Ok(BTreeSet::new());
+    }
     let mut packages: BTreeSet<String> = BTreeSet::new();
     if let Some(install) = &overlay.install {
         let platform_override = if OS == "linux" {
@@ -786,7 +801,7 @@ async fn get_apt_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<Strin
                 .get(name)
                 .with_context(|| format!("used overlay '{name}' not found"))?;
             packages = packages
-                .union(&Box::pin(get_apt_packages(ctx, &used)).await?)
+                .union(&Box::pin(get_apt_packages(ctx, &used, visited)).await?)
                 .cloned()
                 .collect();
         }
@@ -881,7 +896,11 @@ pub enum AllArchlinuxForms {
 async fn get_brew_packages(
     ctx: &Ctx,
     overlay: &Overlay,
+    visited: &mut HashSet<String>,
 ) -> Result<(BTreeSet<String>, BTreeSet<BrewPackage>)> {
+    if !visited.insert(overlay.name.clone()) {
+        return Ok((BTreeSet::new(), BTreeSet::new()));
+    }
     let mut taps: BTreeSet<String> = BTreeSet::new();
     let mut packages: BTreeSet<BrewPackage> = BTreeSet::new();
     if let Some(install) = &overlay.install {
@@ -914,7 +933,7 @@ async fn get_brew_packages(
                 .repository
                 .get(name)
                 .with_context(|| format!("used overlay '{name}' not found"))?;
-            let (used_taps, used_pkgs) = Box::pin(get_brew_packages(ctx, &used)).await?;
+            let (used_taps, used_pkgs) = Box::pin(get_brew_packages(ctx, &used, visited)).await?;
             taps = taps.union(&used_taps).cloned().collect();
             packages = packages.union(&used_pkgs).cloned().collect();
         }
@@ -1150,7 +1169,14 @@ pub enum AllCargoPackageForms {
     },
 }
 
-async fn get_cargo_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<CargoPackage>> {
+async fn get_cargo_packages(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    visited: &mut HashSet<String>,
+) -> Result<BTreeSet<CargoPackage>> {
+    if !visited.insert(overlay.name.clone()) {
+        return Ok(BTreeSet::new());
+    }
     let mut packages: BTreeSet<CargoPackage> = BTreeSet::new();
     if let Some(install) = &overlay.install {
         let platform_override = if OS == "macos" {
@@ -1177,7 +1203,7 @@ async fn get_cargo_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<Car
                 .repository
                 .get(name)
                 .with_context(|| format!("used overlay '{name}' not found"))?;
-            let used_pkgs = Box::pin(get_cargo_packages(ctx, &used)).await?;
+            let used_pkgs = Box::pin(get_cargo_packages(ctx, &used, visited)).await?;
             packages = packages.union(&used_pkgs).cloned().collect();
         }
     }
@@ -1288,7 +1314,14 @@ pub enum AllPythonPackageForms {
     },
 }
 
-async fn get_python_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<PythonPackage>> {
+async fn get_python_packages(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    visited: &mut HashSet<String>,
+) -> Result<BTreeSet<PythonPackage>> {
+    if !visited.insert(overlay.name.clone()) {
+        return Ok(BTreeSet::new());
+    }
     let mut packages: BTreeSet<PythonPackage> = BTreeSet::new();
     if let Some(install) = &overlay.install {
         let platform_override = if OS == "macos" {
@@ -1315,7 +1348,7 @@ async fn get_python_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<Py
                 .repository
                 .get(name)
                 .with_context(|| format!("used overlay '{name}' not found"))?;
-            let used_pkgs = Box::pin(get_python_packages(ctx, &used)).await?;
+            let used_pkgs = Box::pin(get_python_packages(ctx, &used, visited)).await?;
             packages = packages.union(&used_pkgs).cloned().collect();
         }
     }
@@ -1400,7 +1433,14 @@ pub enum AllNodePackageForms {
     },
 }
 
-async fn get_node_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<NodePackage>> {
+async fn get_node_packages(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    visited: &mut HashSet<String>,
+) -> Result<BTreeSet<NodePackage>> {
+    if !visited.insert(overlay.name.clone()) {
+        return Ok(BTreeSet::new());
+    }
     let mut packages: BTreeSet<NodePackage> = BTreeSet::new();
     if let Some(install) = &overlay.install {
         let platform_override = if OS == "macos" {
@@ -1427,14 +1467,21 @@ async fn get_node_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<Node
                 .repository
                 .get(name)
                 .with_context(|| format!("used overlay '{name}' not found"))?;
-            let used_pkgs = Box::pin(get_node_packages(ctx, &used)).await?;
+            let used_pkgs = Box::pin(get_node_packages(ctx, &used, visited)).await?;
             packages = packages.union(&used_pkgs).cloned().collect();
         }
     }
     Ok(packages)
 }
 
-async fn get_winget_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<WingetPackage>> {
+async fn get_winget_packages(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    visited: &mut HashSet<String>,
+) -> Result<BTreeSet<WingetPackage>> {
+    if !visited.insert(overlay.name.clone()) {
+        return Ok(BTreeSet::new());
+    }
     let mut packages: BTreeSet<WingetPackage> = BTreeSet::new();
     if let Some(install) = &overlay.install {
         let platform_override = if OS == "windows" {
@@ -1455,7 +1502,7 @@ async fn get_winget_packages(ctx: &Ctx, overlay: &Overlay) -> Result<BTreeSet<Wi
                 .repository
                 .get(name)
                 .with_context(|| format!("used overlay '{name}' not found"))?;
-            let used_pkgs = Box::pin(get_winget_packages(ctx, &used)).await?;
+            let used_pkgs = Box::pin(get_winget_packages(ctx, &used, visited)).await?;
             packages = packages.union(&used_pkgs).cloned().collect();
         }
     }
@@ -1969,5 +2016,112 @@ post = 'echo "after apt"'
         };
         let managers = decide_linux_managers("ubuntu", &install);
         assert_eq!(managers, vec![SystemManager::Apt, SystemManager::Brew]);
+    }
+
+    use assert_fs::TempDir;
+    use assert_fs::prelude::*;
+
+    use crate::exec::Context;
+    use crate::overlays::Repository;
+
+    fn repo_and_root() -> (TempDir, Repository) {
+        let td = TempDir::new().unwrap();
+        let repo = Repository::new(td.path().to_path_buf());
+        (td, repo)
+    }
+
+    fn test_ctx(root: std::path::PathBuf, repo: Repository, overlay: Option<Overlay>) -> Ctx {
+        Context::new(false, false, false, false, root, repo, overlay)
+    }
+
+    /// Diamond dependency for package collection:
+    /// A uses B and C, both B and C use D.
+    /// D's cargo packages should appear once (not duplicated, no infinite recursion).
+    #[tokio::test]
+    async fn test_get_cargo_packages_diamond() {
+        let (td, repo) = repo_and_root();
+
+        // D: leaf overlay with cargo packages
+        let d = td.child("d");
+        d.create_dir_all().unwrap();
+        d.child("over.toml")
+            .write_str("[install.cargo]\npackages = [{name = \"shared-crate\"}]")
+            .unwrap();
+
+        // B: uses D, has its own cargo packages
+        let b = td.child("b");
+        b.create_dir_all().unwrap();
+        b.child("over.toml")
+            .write_str("uses = [\"d\"]\n[install.cargo]\npackages = [{name = \"b-crate\"}]")
+            .unwrap();
+
+        // C: uses D, has its own cargo packages
+        let c_ov = td.child("c");
+        c_ov.create_dir_all().unwrap();
+        c_ov.child("over.toml")
+            .write_str("uses = [\"d\"]\n[install.cargo]\npackages = [{name = \"c-crate\"}]")
+            .unwrap();
+
+        // A: uses B and C
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("uses = [\"b\", \"c\"]\n[install.cargo]\npackages = [{name = \"a-crate\"}]")
+            .unwrap();
+
+        let overlay_a = repo.get("a").unwrap();
+        let ctx = test_ctx(
+            td.path().to_path_buf(),
+            repo.clone(),
+            Some(overlay_a.clone()),
+        );
+        let mut visited = HashSet::new();
+        let pkgs = get_cargo_packages(&ctx, &overlay_a, &mut visited)
+            .await
+            .unwrap();
+
+        let names: BTreeSet<_> = pkgs.iter().filter_map(|p| p.name.as_deref()).collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["a-crate", "b-crate", "c-crate", "shared-crate"]),
+            "all packages should be collected exactly once across diamond"
+        );
+        // visited should contain all 4 overlays
+        assert_eq!(visited.len(), 4);
+    }
+
+    /// Cycle in `uses` for package collection should not infinite-loop.
+    /// The visited set breaks the recursion; packages from the first visit are collected.
+    #[tokio::test]
+    async fn test_get_cargo_packages_cycle() {
+        let (td, repo) = repo_and_root();
+
+        let a = td.child("x");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("uses = [\"y\"]\n[install.cargo]\npackages = [{name = \"x-crate\"}]")
+            .unwrap();
+
+        let b = td.child("y");
+        b.create_dir_all().unwrap();
+        b.child("over.toml")
+            .write_str("uses = [\"x\"]\n[install.cargo]\npackages = [{name = \"y-crate\"}]")
+            .unwrap();
+
+        let overlay_x = repo.get("x").unwrap();
+        let ctx = test_ctx(
+            td.path().to_path_buf(),
+            repo.clone(),
+            Some(overlay_x.clone()),
+        );
+        let mut visited = HashSet::new();
+        // Should not panic or infinite-loop
+        let pkgs = get_cargo_packages(&ctx, &overlay_x, &mut visited)
+            .await
+            .unwrap();
+
+        let names: BTreeSet<_> = pkgs.iter().filter_map(|p| p.name.as_deref()).collect();
+        assert!(names.contains("x-crate"), "should collect packages from x");
+        assert!(names.contains("y-crate"), "should collect packages from y");
     }
 }
