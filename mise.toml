@@ -25,7 +25,7 @@ run = "cargo build"
 description = "Install the binaries"
 run = "cargo install --path . --force"
 
-[tasks.run]
+[tasks.over]
 description = "Run the application"
 usage = 'arg "[args]" var=#true help="Arguments to pass to the application"'
 run = "cargo run --bin over -- ${usage_args[@]}"

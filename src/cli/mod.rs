@@ -8,6 +8,7 @@ use crate::ui::style::clap_styles;
 
 mod add;
 mod apply;
+mod lint;
 mod list;
 mod show;
 mod status;
@@ -57,6 +58,9 @@ pub enum Commands {
     #[clap(name = "apply", about = "Apply a given overlay")]
     Apply(apply::Params),
 
+    #[clap(name = "lint", about = "Check overlays for configuration issues")]
+    Lint(lint::Params),
+
     #[clap(
         name = "status",
         about = "Get the current repository/directory overlays status"
@@ -90,6 +94,9 @@ pub async fn main() -> Result<()> {
         }
         Some(Commands::Apply(ref opt)) => {
             apply::execute(&args, opt).await?;
+        }
+        Some(Commands::Lint(ref opt)) => {
+            lint::execute(&args, opt).await?;
         }
         Some(Commands::Show(ref opt)) => {
             show::execute(&args, opt).await?;

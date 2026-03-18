@@ -1,10 +1,10 @@
 use once_cell::sync::Lazy;
 
 /// Overlay files basename
-const BASENAME: &str = "over";
+pub(crate) const BASENAME: &str = "over";
 
 /// Overlay files extensions
-const EXTENSIONS: &[&str] = &["yml", "yaml", "toml", "json"];
+pub(crate) const EXTENSIONS: &[&str] = &["yml", "yaml", "toml", "json"];
 
 pub mod overlay;
 pub mod repository;
