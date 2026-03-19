@@ -30,6 +30,11 @@ description = "Run the application"
 usage = 'arg "[args]" var=#true help="Arguments to pass to the application"'
 run = "cargo run --bin over -- ${usage_args[@]}"
 
+[tasks.git-over]
+description = "Run the git-over subcommand"
+usage = 'arg "[args]" var=#true help="Arguments to pass to git-over"'
+run = "cargo run --bin git-over -- ${usage_args[@]}"
+
 [tasks.fmt]
 description = "Format the code"
 run = "cargo fmt --all"

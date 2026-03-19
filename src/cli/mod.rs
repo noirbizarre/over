@@ -8,6 +8,7 @@ use crate::ui::style::clap_styles;
 
 mod add;
 mod apply;
+pub mod git_over;
 mod lint;
 mod list;
 mod show;
