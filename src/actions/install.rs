@@ -2031,7 +2031,7 @@ post = 'echo "after apt"'
     }
 
     fn test_ctx(root: std::path::PathBuf, repo: Repository, overlay: Option<Overlay>) -> Ctx {
-        Context::new(false, false, false, false, root, repo, overlay)
+        Context::new(false, false, false, false, false, root, repo, overlay)
     }
 
     /// Diamond dependency for package collection:

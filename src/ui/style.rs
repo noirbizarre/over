@@ -60,6 +60,14 @@ pub struct DialogTheme {
     pub hint_style: Style,
     /// The style for values on prompt success
     pub values_style: Style,
+    /// The style for active items
+    pub active_item_style: Style,
+    /// The style for inactive items
+    pub inactive_item_style: Style,
+    /// Active item in select prefix value and style
+    pub active_item_prefix: StyledObject<String>,
+    /// Inactive item in select prefix value and style
+    pub inactive_item_prefix: StyledObject<String>,
 }
 
 impl Default for DialogTheme {
@@ -75,6 +83,10 @@ impl Default for DialogTheme {
             error_style: Style::new().for_stderr().red(),
             hint_style: Style::new().for_stderr().black().bright(),
             values_style: Style::new().for_stderr().green(),
+            active_item_style: Style::new().for_stderr().cyan(),
+            inactive_item_style: Style::new().for_stderr(),
+            active_item_prefix: style("❯".to_string()).for_stderr().green(),
+            inactive_item_prefix: style(" ".to_string()).for_stderr(),
         }
     }
 }
@@ -149,6 +161,66 @@ impl Theme for DialogTheme {
                 write!(f, "{}", &self.success_suffix)
             }
         }
+    }
+
+    /// Formats a select prompt.
+    fn format_select_prompt(&self, f: &mut dyn fmt::Write, prompt: &str) -> fmt::Result {
+        if !prompt.is_empty() {
+            write!(
+                f,
+                "{} {} ",
+                &self.prompt_prefix,
+                self.prompt_style.apply_to(prompt)
+            )?;
+        }
+
+        write!(f, "{}", &self.prompt_suffix)
+    }
+
+    /// Formats a select prompt after selection.
+    fn format_select_prompt_selection(
+        &self,
+        f: &mut dyn fmt::Write,
+        prompt: &str,
+        sel: &str,
+    ) -> fmt::Result {
+        if !prompt.is_empty() {
+            write!(
+                f,
+                "{} {} ",
+                &self.success_prefix,
+                self.prompt_style.apply_to(prompt)
+            )?;
+        }
+
+        write!(
+            f,
+            "{} {}",
+            &self.success_suffix,
+            self.values_style.apply_to(sel)
+        )
+    }
+
+    /// Formats a select prompt item.
+    fn format_select_prompt_item(
+        &self,
+        f: &mut dyn fmt::Write,
+        text: &str,
+        active: bool,
+    ) -> fmt::Result {
+        let details = if active {
+            (
+                &self.active_item_prefix,
+                self.active_item_style.apply_to(text),
+            )
+        } else {
+            (
+                &self.inactive_item_prefix,
+                self.inactive_item_style.apply_to(text),
+            )
+        };
+
+        write!(f, "{} {}", details.0, details.1)
     }
 }
 

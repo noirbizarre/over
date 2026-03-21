@@ -16,8 +16,11 @@ pub struct Context {
     /// Toggle verbose output
     pub verbose: bool,
 
-    /// Run overwriting eveything without prompt
+    /// Run overwriting everything without prompt
     pub force: bool,
+
+    /// Disable interactive prompts (fail on conflict)
+    pub no_prompt: bool,
 
     /// Target root (~)
     pub root: PathBuf,
@@ -54,11 +57,13 @@ impl Progress {
 }
 
 impl Context {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         dry_run: bool,
         debug: bool,
         verbose: bool,
         force: bool,
+        no_prompt: bool,
         root: PathBuf,
         repository: Repository,
         overlay: Option<Overlay>,
@@ -68,6 +73,7 @@ impl Context {
             debug,
             verbose,
             force,
+            no_prompt,
             root,
             repository,
             overlay,
@@ -81,6 +87,7 @@ impl Context {
             debug: self.debug,
             verbose: self.verbose,
             force: self.force,
+            no_prompt: self.no_prompt,
             root: self.root.clone(),
             repository: self.repository.clone(),
             overlay: Some(overlay),
@@ -94,6 +101,7 @@ impl Context {
             debug: self.debug,
             verbose: self.verbose,
             force: self.force,
+            no_prompt: self.no_prompt,
             root: self.root.clone(),
             repository: self.repository.clone(),
             overlay: self.overlay.clone(),
@@ -107,6 +115,7 @@ impl Context {
             debug: self.debug,
             verbose: self.verbose,
             force: self.force,
+            no_prompt: self.no_prompt,
             root: self.root.clone(),
             repository: self.repository.clone(),
             overlay: self.overlay.clone(),
@@ -141,6 +150,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             PathBuf::from("/tmp"),
             dummy_repo(),
             None,
@@ -157,6 +167,7 @@ mod tests {
     #[test]
     fn with_multiprogress_sets_multi() {
         let ctx = Context::new(
+            false,
             false,
             false,
             false,

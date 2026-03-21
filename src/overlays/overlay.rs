@@ -230,7 +230,7 @@ mod tests {
     }
 
     fn ctx(root: PathBuf, repo: Repository, overlay: Option<Overlay>) -> Ctx {
-        Context::new(false, false, false, false, root, repo, overlay)
+        Context::new(false, false, false, false, false, root, repo, overlay)
     }
 
     #[rstest]

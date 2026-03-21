@@ -23,6 +23,9 @@ pub struct Params {
     #[clap(long, short, help = "Overwrite without prompting")]
     force: bool,
 
+    #[clap(long, help = "Fail on conflict instead of prompting")]
+    no_prompt: bool,
+
     #[clap(long, help = "Do not process uses")]
     no_uses: bool,
 
@@ -50,6 +53,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         cli.debug,
         cli.verbose,
         args.force,
+        args.no_prompt,
         args.root
             .clone()
             .or_else(home_dir)

@@ -166,6 +166,7 @@ pub fn repo_relative_path(overlay: &Overlay, root: &Path, repo_workdir: &Path) -
         false,
         false,
         false,
+        false,
         root.to_path_buf(),
         Repository::new(PathBuf::new()),
         Some(overlay.clone()),

@@ -131,6 +131,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         cli.debug,
         cli.verbose,
         args.force,
+        false,
         args.root
             .clone()
             .or_else(home_dir)

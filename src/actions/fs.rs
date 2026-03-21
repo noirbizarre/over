@@ -2,15 +2,16 @@ use std::env::current_dir;
 use std::fmt;
 use std::fs::{self, create_dir_all};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use dialoguer::Confirm;
+use dialoguer::Select;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use globset::GlobBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use once_cell::sync::Lazy;
-use symlink::{remove_symlink_file, symlink_dir, symlink_file};
+use symlink::{remove_symlink_dir, remove_symlink_file, symlink_dir, symlink_file};
 
 use tokio::fs::rename;
 use walkdir::WalkDir;
@@ -26,6 +27,201 @@ static SPINNER_STYLE: Lazy<ProgressStyle> = Lazy::new(|| {
         .unwrap()
         .tick_chars(style::TICK_CHARS_BRAILLE_4_6_DOWN.as_str())
 });
+
+/// Choices presented to the user when a conflict is detected during apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConflictChoice {
+    Skip,
+    Overwrite,
+    Absorb,
+    Diff,
+}
+
+impl ConflictChoice {
+    /// All choices available for conflict resolution.
+    const ALL: &[ConflictChoice] = &[
+        ConflictChoice::Skip,
+        ConflictChoice::Overwrite,
+        ConflictChoice::Absorb,
+        ConflictChoice::Diff,
+    ];
+}
+
+impl fmt::Display for ConflictChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConflictChoice::Skip => write!(f, "Skip"),
+            ConflictChoice::Overwrite => write!(f, "Overwrite"),
+            ConflictChoice::Absorb => write!(f, "Absorb (adopt target into overlay)"),
+            ConflictChoice::Diff => write!(f, "Diff (show differences, then decide)"),
+        }
+    }
+}
+
+/// Prompt the user to resolve a conflict between `source` (overlay) and `target` (existing).
+fn prompt_conflict(source: &Path, target: &Path) -> Result<ConflictChoice> {
+    let prompt = format!(
+        "Conflict: {} already exists (overlay source: {})",
+        style::yellow(short_path(&target.to_string_lossy())),
+        style::yellow(short_path(&source.to_string_lossy())),
+    );
+    let selection = Select::with_theme(&DialogTheme::default())
+        .with_prompt(prompt)
+        .default(0)
+        .items(ConflictChoice::ALL)
+        .interact()
+        .map_err(|e| anyhow::anyhow!("prompt failed: {}", e))?;
+    Ok(ConflictChoice::ALL[selection])
+}
+
+/// Show a diff between the overlay source and the existing target using `git diff --no-index`.
+fn show_diff(source: &Path, target: &Path) -> Result<()> {
+    let status = Command::new("git")
+        .arg("diff")
+        .arg("--no-index")
+        .arg("--")
+        .arg(target)
+        .arg(source)
+        .status()
+        .map_err(|e| anyhow::anyhow!("failed to run git diff: {}", e))?;
+    // git diff --no-index exits with 1 when there are differences, which is expected
+    if !status.success() && status.code() != Some(1) {
+        return Err(anyhow::anyhow!(
+            "git diff exited with unexpected status: {}",
+            status
+        ));
+    }
+    Ok(())
+}
+
+/// Absorb: copy the target file content into the overlay source, replacing it.
+fn absorb_file(source: &Path, target: &Path) -> Result<()> {
+    fs::copy(target, source).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to absorb {} into {}: {}",
+            target.display(),
+            source.display(),
+            e
+        )
+    })?;
+    Ok(())
+}
+
+/// Absorb: recursively copy the target directory contents into the overlay source directory.
+fn absorb_dir(source: &Path, target: &Path) -> Result<()> {
+    // Remove existing overlay source directory and replace with target contents
+    if source.exists() {
+        fs::remove_dir_all(source).map_err(|e| {
+            anyhow::anyhow!("failed to remove overlay dir {}: {}", source.display(), e)
+        })?;
+    }
+    copy_dir_recursive(target, source)
+}
+
+/// Recursively copy a directory tree from `src` to `dst`.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Remove a target path (file, symlink, or directory).
+fn remove_target(target: &Path) -> Result<()> {
+    if target.is_symlink() {
+        // Determine if it's a file or dir symlink
+        if target.is_dir() {
+            remove_symlink_dir(target)?;
+        } else {
+            remove_symlink_file(target)?;
+        }
+    } else if target.is_dir() {
+        fs::remove_dir_all(target)?;
+    } else {
+        fs::remove_file(target)?;
+    }
+    Ok(())
+}
+
+/// Resolve a file-level conflict using force/no_prompt flags or interactive prompt.
+///
+/// Returns `Ok(true)` if the caller should proceed with creating the link,
+/// or `Ok(false)` if the file was skipped.
+fn resolve_file_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool> {
+    if ctx.force {
+        remove_target(target)?;
+        return Ok(true);
+    }
+    if ctx.no_prompt {
+        return Err(anyhow::anyhow!(
+            "Conflict: {} already exists",
+            target.display()
+        ));
+    }
+    // Interactive prompt loop
+    loop {
+        match prompt_conflict(source, target)? {
+            ConflictChoice::Skip => return Ok(false),
+            ConflictChoice::Overwrite => {
+                remove_target(target)?;
+                return Ok(true);
+            }
+            ConflictChoice::Absorb => {
+                absorb_file(source, target)?;
+                remove_target(target)?;
+                return Ok(true);
+            }
+            ConflictChoice::Diff => {
+                show_diff(source, target)?;
+                // Loop back to prompt
+            }
+        }
+    }
+}
+
+/// Resolve a directory-level conflict using force/no_prompt flags or interactive prompt.
+///
+/// Returns `Ok(true)` if the caller should proceed with creating the link,
+/// or `Ok(false)` if the directory was skipped.
+fn resolve_dir_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool> {
+    if ctx.force {
+        remove_target(target)?;
+        return Ok(true);
+    }
+    if ctx.no_prompt {
+        return Err(anyhow::anyhow!(
+            "Conflict: {} already exists",
+            target.display()
+        ));
+    }
+    // Interactive prompt loop
+    loop {
+        match prompt_conflict(source, target)? {
+            ConflictChoice::Skip => return Ok(false),
+            ConflictChoice::Overwrite => {
+                remove_target(target)?;
+                return Ok(true);
+            }
+            ConflictChoice::Absorb => {
+                absorb_dir(source, target)?;
+                remove_target(target)?;
+                return Ok(true);
+            }
+            ConflictChoice::Diff => {
+                show_diff(source, target)?;
+                // Loop back to prompt
+            }
+        }
+    }
+}
 
 pub async fn link(ctx: Ctx, overlay: &Overlay, to: &Path) -> Result<()> {
     ui::info(format!(
@@ -303,32 +499,17 @@ impl Action for EnsureLink {
         if ctx.dry_run {
             return Ok(());
         }
-        if self.target.exists() {
+        if self.target.exists() || self.target.is_symlink() {
             if self.target.is_symlink() {
                 let src = fs::read_link(self.target.as_path())?;
-                if src != self.source {
-                    if ctx.force
-                        || Confirm::with_theme(&DialogTheme::default())
-                            .with_prompt(format!(
-                                " Do you want to overwrite {} currently linked to {}?",
-                                style::yellow(short_path(&self.target.to_string_lossy())),
-                                style::yellow(short_path(&src.to_string_lossy())),
-                            ))
-                            .interact()
-                            .map_err(|e| anyhow::anyhow!("prompt failed: {}", e))?
-                    {
-                        remove_symlink_file(self.target.as_path())?;
-                    } else {
-                        return Err(anyhow::anyhow!("Link {} exists", self.target.display()));
-                    }
-                } else {
+                if src == self.source {
+                    // Already correctly linked, no conflict
                     return Ok(());
                 }
-            } else if self.target.is_file() {
-                // TODO: handle file absorption
-                return Err(anyhow::anyhow!("File {} exists", self.target.display()));
-            } else {
-                return Err(anyhow::anyhow!("{} is a directory", self.target.display()));
+            }
+            // Conflict: target exists and is not the correct symlink
+            if !resolve_file_conflict(&ctx, &self.source, &self.target)? {
+                return Ok(()); // Skipped
             }
         }
         symlink_file(self.source.as_path(), self.target.as_path())?;
@@ -428,27 +609,17 @@ impl Action for EnsureDirLink {
         if ctx.dry_run {
             return Ok(());
         }
-        if self.target.exists() {
+        if self.target.exists() || self.target.is_symlink() {
             if self.target.is_symlink() {
                 let src = fs::read_link(self.target.as_path())?;
                 if src == self.source {
+                    // Already correctly linked, no conflict
                     return Ok(());
                 }
-                return Err(anyhow::anyhow!(
-                    "Symlink {} already exists pointing to {}",
-                    self.target.display(),
-                    src.display(),
-                ));
-            } else if self.target.is_dir() {
-                return Err(anyhow::anyhow!(
-                    "Directory {} already exists",
-                    self.target.display()
-                ));
-            } else {
-                return Err(anyhow::anyhow!(
-                    "{} exists and is not a directory",
-                    self.target.display()
-                ));
+            }
+            // Conflict: target exists and is not the correct symlink
+            if !resolve_dir_conflict(&ctx, &self.source, &self.target)? {
+                return Ok(()); // Skipped
             }
         }
         symlink_dir(self.source.as_path(), self.target.as_path())?;
@@ -532,7 +703,7 @@ mod tests {
     }
 
     fn ctx(root: PathBuf, repo: Repository, overlay: Option<Overlay>) -> Ctx {
-        Context::new(false, false, true, true, root, repo, overlay)
+        Context::new(false, false, true, true, false, root, repo, overlay)
     }
 
     #[tokio::test]
