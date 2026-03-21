@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn test_simple_string_form() {
         let yaml = r#""https://github.com/user/repo.git""#;
-        let cfg: GitRepoConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         assert_eq!(cfg.url, "https://github.com/user/repo.git");
         assert_eq!(cfg.branch, None);
         assert_eq!(cfg.tag, None);
@@ -294,7 +294,7 @@ recurse_submodules = true
     )]
     fn test_detailed_form_branch(#[case] format: &str, #[case] input: &str) {
         let cfg: GitRepoConfig = match format {
-            "yaml" => serde_yaml::from_str(input).unwrap(),
+            "yaml" => serde_yml::from_str(input).unwrap(),
             "toml" => toml::from_str(input).unwrap(),
             _ => unreachable!(),
         };
@@ -310,7 +310,7 @@ recurse_submodules = true
 url: "https://github.com/user/repo.git"
 tag: "v1.0.0"
 "#;
-        let cfg: GitRepoConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         assert_eq!(cfg.tag.as_deref(), Some("v1.0.0"));
     }
 
@@ -320,7 +320,7 @@ tag: "v1.0.0"
 url: "https://github.com/user/repo.git"
 rev: "abc123"
 "#;
-        let cfg: GitRepoConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         assert_eq!(cfg.rev.as_deref(), Some("abc123"));
     }
 
@@ -332,7 +332,7 @@ rev: "abc123"
 url: "git@github.com:user/repo.git"
 worktree: true
 "#;
-        let cfg: GitRepoConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         assert!(cfg.worktree);
         assert!(cfg.worktrees.is_none());
     }
@@ -345,7 +345,7 @@ worktrees:
   feature-x: "feature/x"
   hotfix: "hotfix/123"
 "#;
-        let cfg: GitRepoConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         // worktree auto-enabled when worktrees are listed
         assert!(cfg.worktree);
         let wts = cfg.worktrees.unwrap();
@@ -361,7 +361,7 @@ worktree: false
 worktrees:
   feature-x: "feature/x"
 "#;
-        let cfg: GitRepoConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         // explicit worktree: false disables auto default-branch worktree
         assert!(!cfg.worktree);
         assert!(cfg.worktrees.is_some());
@@ -382,7 +382,7 @@ remotes:
   fork:
     url: "git@github.com:fork/repo.git"
 "#;
-        let cfg: GitRepoConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         let remotes = cfg.remotes.unwrap();
         assert_eq!(remotes.len(), 2);
 
@@ -410,7 +410,7 @@ remotes:
     dmb-hierarchical-branch-names: "true"
     dmb-protected-branches: "main,develop"
 "#;
-        let cfg: GitRepoConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         let upstream = &cfg.remotes.unwrap()["upstream"];
         assert_eq!(
             upstream
@@ -435,7 +435,7 @@ config:
   user.email: "work@example.com"
   core.autocrlf: "true"
 "#;
-        let cfg: GitRepoConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         let config = cfg.config.unwrap();
         assert_eq!(
             config.entries.get("user.email").unwrap(),
@@ -455,7 +455,7 @@ config:
   core:
     autocrlf: "true"
 "#;
-        let cfg: GitRepoConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         let config = cfg.config.unwrap();
         assert_eq!(
             config.entries.get("user.email").unwrap(),
@@ -474,7 +474,7 @@ config:
   core:
     autocrlf: "true"
 "#;
-        let cfg: GitRepoConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         let config = cfg.config.unwrap();
         assert_eq!(
             config.entries.get("user.email").unwrap(),
@@ -504,7 +504,7 @@ config:
   config:
     user.email: "work@example.com"
 "#;
-        let repos: HashMap<String, GitRepoConfig> = serde_yaml::from_str(yaml).unwrap();
+        let repos: HashMap<String, GitRepoConfig> = serde_yml::from_str(yaml).unwrap();
 
         // Simple form
         let tpm = &repos[".tmux/plugins/tpm"];
@@ -579,7 +579,7 @@ url = "git@github.com:upstream/mylib.git"
             git: Option<HashMap<String, GitRepoConfig>>,
         }
         let doc = format!("git: {yaml}");
-        let w: Wrapper = serde_yaml::from_str(&doc).unwrap();
+        let w: Wrapper = serde_yml::from_str(&doc).unwrap();
         w.git
     }
 
@@ -640,7 +640,7 @@ url = "git@github.com:upstream/mylib.git"
             #[serde(default, deserialize_with = "super::deserialize_git_field")]
             git: Option<HashMap<String, GitRepoConfig>>,
         }
-        let w: Wrapper = serde_yaml::from_str("other: value").unwrap();
+        let w: Wrapper = serde_yml::from_str("other: value").unwrap();
         assert!(w.git.is_none());
     }
 }

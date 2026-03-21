@@ -37,8 +37,13 @@ impl Repository {
         let mut dirs: Vec<PathBuf> = WalkDir::new(&self.root)
             .into_iter()
             .filter_map(Result::ok)
-            .filter(|e| glob.is_match(e.path().strip_prefix(&self.root).ok().unwrap()))
-            .map(|e| e.path().parent().unwrap().to_path_buf())
+            .filter(|e| {
+                e.path()
+                    .strip_prefix(&self.root)
+                    .ok()
+                    .is_some_and(|rel| glob.is_match(rel))
+            })
+            .filter_map(|e| e.path().parent().map(|p| p.to_path_buf()))
             .collect();
 
         dirs.sort();

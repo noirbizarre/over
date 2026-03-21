@@ -1,4 +1,4 @@
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 /// Overlay files basename
 pub(crate) const BASENAME: &str = "over";
@@ -13,5 +13,5 @@ pub use overlay::Overlay;
 pub use repository::Repository;
 
 /// Overlay files search pattern
-pub static GLOB_PATTERN: Lazy<String> =
-    Lazy::new(|| format!("**/{}.{{{}}}", BASENAME, EXTENSIONS.join(",")));
+pub static GLOB_PATTERN: LazyLock<String> =
+    LazyLock::new(|| format!("**/{}.{{{}}}", BASENAME, EXTENSIONS.join(",")));

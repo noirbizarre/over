@@ -12,7 +12,7 @@ use futures::future::join_all;
 use git2::{Progress, Repository};
 use git2_credentials::CredentialHandler;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use tokio::{
     spawn,
     sync::mpsc::{self, Sender},
@@ -420,15 +420,15 @@ fn apply_git_config(
     Ok(())
 }
 
-static CLONE_PROGRESS_STYLE: Lazy<ProgressStyle> = Lazy::new(|| {
+static CLONE_PROGRESS_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
     ProgressStyle::with_template("{spinner:.cyan} {prefix} [{bar:.green/yellow}] {msg}")
         .unwrap()
         .tick_chars(style::TICK_CHARS_BRAILLE_4_6_DOWN.as_str())
         .progress_chars(style::THIN_PROGRESS.as_str())
 });
 
-static DONE_PROGRESS_STYLE: Lazy<ProgressStyle> =
-    Lazy::new(|| ProgressStyle::with_template("✅ {prefix}: {msg}").unwrap());
+static DONE_PROGRESS_STYLE: LazyLock<ProgressStyle> =
+    LazyLock::new(|| ProgressStyle::with_template("✅ {prefix}: {msg}").unwrap());
 
 fn clone(
     url: &str,

@@ -170,7 +170,9 @@ fn check_cycles(overlays: &HashMap<String, &Overlay>) -> Vec<Diagnostic> {
         indices.push(0);
 
         while let Some(current) = stack.last().cloned() {
-            let idx = *indices.last().unwrap();
+            let Some(&idx) = indices.last() else {
+                break;
+            };
 
             let deps = overlays
                 .get(&current)
@@ -180,21 +182,25 @@ fn check_cycles(overlays: &HashMap<String, &Overlay>) -> Vec<Diagnostic> {
 
             if idx < deps.len() {
                 // Advance the iterator for the current node
-                *indices.last_mut().unwrap() += 1;
+                if let Some(last) = indices.last_mut() {
+                    *last += 1;
+                }
                 let dep = &deps[idx];
 
                 if stack_set.contains(dep) {
                     // Found a cycle
-                    let cycle_start = stack.iter().position(|s| s == dep).unwrap();
-                    let mut cycle_path: Vec<String> = stack[cycle_start..].to_vec();
-                    cycle_path.push(dep.clone());
-                    diagnostics.push(Diagnostic::error(
-                        dep,
-                        format!(
-                            "cycle detected in `uses` dependencies: {}",
-                            cycle_path.join(" -> ")
-                        ),
-                    ));
+                    let cycle_start = stack.iter().position(|s| s == dep);
+                    if let Some(start) = cycle_start {
+                        let mut cycle_path: Vec<String> = stack[start..].to_vec();
+                        cycle_path.push(dep.clone());
+                        diagnostics.push(Diagnostic::error(
+                            dep,
+                            format!(
+                                "cycle detected in `uses` dependencies: {}",
+                                cycle_path.join(" -> ")
+                            ),
+                        ));
+                    }
                 } else if !fully_visited.contains(dep) && overlays.contains_key(dep) {
                     stack.push(dep.clone());
                     stack_set.insert(dep.clone());

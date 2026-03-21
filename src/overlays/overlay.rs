@@ -230,7 +230,11 @@ mod tests {
     }
 
     fn ctx(root: PathBuf, repo: Repository, overlay: Option<Overlay>) -> Ctx {
-        Context::new(false, false, false, false, false, root, repo, overlay)
+        let mut builder = Context::builder().root(root).repository(repo);
+        if let Some(o) = overlay {
+            builder = builder.overlay(o);
+        }
+        builder.build()
     }
 
     #[rstest]

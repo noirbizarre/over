@@ -58,6 +58,57 @@ fn detect_linux_distro() -> Option<String> {
         .clone()
 }
 
+/// Resolve the platform-specific config override for the current OS.
+fn resolve_platform_override(install: &InstallConfig) -> Option<&PlatformInstallConfig> {
+    if OS == "macos" {
+        install.platforms.get("macos")
+    } else if OS == "linux" {
+        detect_linux_distro().and_then(|distro| install.platforms.get(&distro))
+    } else if OS == "windows" {
+        install.platforms.get("windows")
+    } else {
+        None
+    }
+}
+
+/// Generic recursive package collection across overlays and their `uses` deps.
+///
+/// `extract` receives the install config and optional platform override, and returns
+/// the packages for a single overlay (without recursion into `uses`).
+async fn collect_packages<T, F>(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    visited: &mut HashSet<String>,
+    extract: F,
+) -> Result<BTreeSet<T>>
+where
+    T: Clone + Ord,
+    F: Fn(&InstallConfig, Option<&PlatformInstallConfig>) -> BTreeSet<T> + Copy,
+{
+    if !visited.insert(overlay.name.clone()) {
+        return Ok(BTreeSet::new());
+    }
+    let mut packages = overlay
+        .install
+        .as_ref()
+        .map(|install| {
+            let platform = resolve_platform_override(install);
+            extract(install, platform)
+        })
+        .unwrap_or_default();
+    if let Some(uses) = &overlay.uses {
+        for name in uses {
+            let used = ctx
+                .repository
+                .get(name)
+                .with_context(|| format!("used overlay '{name}' not found"))?;
+            let used_pkgs = Box::pin(collect_packages(ctx, &used, visited, extract)).await?;
+            packages = packages.union(&used_pkgs).cloned().collect();
+        }
+    }
+    Ok(packages)
+}
+
 async fn run_cmd(ctx: &Ctx, program: &str, args: &[&str]) -> Result<()> {
     use tokio::process::Command;
     if ctx.verbose || ctx.dry_run {
@@ -80,6 +131,67 @@ async fn run_cmd(ctx: &Ctx, program: &str, args: &[&str]) -> Result<()> {
 async fn run_scripts(ctx: &Ctx, scripts: &Vec<String>) -> Result<()> {
     for script in scripts {
         run_cmd(ctx, "sh", &["-c", script.as_str()]).await?;
+    }
+    Ok(())
+}
+
+/// Install cross-platform language managers (cargo, python, node).
+///
+/// This block is identical across all three platform orchestrators, so it
+/// is extracted here to avoid repetition.
+async fn install_language_managers(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    install_cfg: &InstallConfig,
+    platform_cfg: Option<&PlatformInstallConfig>,
+) -> Result<()> {
+    // cargo
+    if let Some(cfg) = platform_cfg
+        .and_then(|p| p.cargo.as_ref())
+        .or(install_cfg.cargo.as_ref())
+    {
+        if let Some(pre) = &cfg.pre {
+            run_scripts(ctx, pre).await?;
+        }
+        let crates = get_cargo_packages(ctx, overlay, &mut HashSet::new()).await?;
+        if !crates.is_empty() {
+            install_cargo_crates(ctx, crates).await?;
+        }
+        if let Some(post) = &cfg.post {
+            run_scripts(ctx, post).await?;
+        }
+    }
+    // python
+    if let Some(cfg) = platform_cfg
+        .and_then(|p| p.python.as_ref())
+        .or(install_cfg.python.as_ref())
+    {
+        if let Some(pre) = &cfg.pre {
+            run_scripts(ctx, pre).await?;
+        }
+        let packages = get_python_packages(ctx, overlay, &mut HashSet::new()).await?;
+        if !packages.is_empty() {
+            install_python_packages(ctx, packages).await?;
+        }
+        if let Some(post) = &cfg.post {
+            run_scripts(ctx, post).await?;
+        }
+    }
+    // node
+    if let Some(cfg) = platform_cfg
+        .and_then(|p| p.node.as_ref())
+        .or(install_cfg.node.as_ref())
+    {
+        if let Some(pre) = &cfg.pre {
+            run_scripts(ctx, pre).await?;
+        }
+        let packages = get_node_packages(ctx, overlay, &mut HashSet::new()).await?;
+        if !packages.is_empty() {
+            install_node_packages(ctx, packages).await?;
+        }
+        if let Some(post) = &cfg.post {
+            run_scripts(ctx, post).await?;
+        }
     }
     Ok(())
 }
@@ -346,11 +458,9 @@ pub async fn install(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
 }
 
 async fn install_windows(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
-    let install_cfg = overlay.install.as_ref();
-    if install_cfg.is_none() {
+    let Some(install_cfg) = overlay.install.as_ref() else {
         return Ok(());
-    }
-    let install_cfg = install_cfg.unwrap();
+    };
     let platform_cfg = install_cfg.platforms.get("windows");
 
     if let Some(pre) = &install_cfg.pre {
@@ -380,54 +490,8 @@ async fn install_windows(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         run_scripts(ctx, post).await?;
     }
 
-    // cargo
-    if let Some(cfg) = platform_cfg
-        .and_then(|p| p.cargo.as_ref())
-        .or(install_cfg.cargo.as_ref())
-    {
-        if let Some(pre) = &cfg.pre {
-            run_scripts(ctx, pre).await?;
-        }
-        let crates = get_cargo_packages(ctx, overlay, &mut HashSet::new()).await?;
-        if !crates.is_empty() {
-            install_cargo_crates(ctx, crates).await?;
-        }
-        if let Some(post) = &cfg.post {
-            run_scripts(ctx, post).await?;
-        }
-    }
-    // python
-    if let Some(cfg) = platform_cfg
-        .and_then(|p| p.python.as_ref())
-        .or(install_cfg.python.as_ref())
-    {
-        if let Some(pre) = &cfg.pre {
-            run_scripts(ctx, pre).await?;
-        }
-        let packages = get_python_packages(ctx, overlay, &mut HashSet::new()).await?;
-        if !packages.is_empty() {
-            install_python_packages(ctx, packages).await?;
-        }
-        if let Some(post) = &cfg.post {
-            run_scripts(ctx, post).await?;
-        }
-    }
-    // node
-    if let Some(cfg) = platform_cfg
-        .and_then(|p| p.node.as_ref())
-        .or(install_cfg.node.as_ref())
-    {
-        if let Some(pre) = &cfg.pre {
-            run_scripts(ctx, pre).await?;
-        }
-        let packages = get_node_packages(ctx, overlay, &mut HashSet::new()).await?;
-        if !packages.is_empty() {
-            install_node_packages(ctx, packages).await?;
-        }
-        if let Some(post) = &cfg.post {
-            run_scripts(ctx, post).await?;
-        }
-    }
+    // Language managers after system
+    install_language_managers(ctx, overlay, install_cfg, platform_cfg).await?;
 
     if let Some(post) = platform_cfg.and_then(|p| p.post.as_ref()) {
         run_scripts(ctx, post).await?;
@@ -483,11 +547,9 @@ fn decide_linux_managers(distro: &str, install_cfg: &InstallConfig) -> Vec<Syste
 
 async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     let distro = detect_linux_distro().unwrap_or_else(|| "linux".to_string());
-    let install_cfg = overlay.install.as_ref();
-    if install_cfg.is_none() {
+    let Some(install_cfg) = overlay.install.as_ref() else {
         return Ok(());
-    }
-    let install_cfg = install_cfg.unwrap();
+    };
     let platform_cfg = install_cfg.platforms.get(&distro);
 
     if let Some(pre) = &install_cfg.pre {
@@ -565,54 +627,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     }
 
     // Language managers after system
-    // cargo
-    if let Some(cfg) = platform_cfg
-        .and_then(|p| p.cargo.as_ref())
-        .or(install_cfg.cargo.as_ref())
-    {
-        if let Some(pre) = &cfg.pre {
-            run_scripts(ctx, pre).await?;
-        }
-        let crates = get_cargo_packages(ctx, overlay, &mut HashSet::new()).await?;
-        if !crates.is_empty() {
-            install_cargo_crates(ctx, crates).await?;
-        }
-        if let Some(post) = &cfg.post {
-            run_scripts(ctx, post).await?;
-        }
-    }
-    // python
-    if let Some(cfg) = platform_cfg
-        .and_then(|p| p.python.as_ref())
-        .or(install_cfg.python.as_ref())
-    {
-        if let Some(pre) = &cfg.pre {
-            run_scripts(ctx, pre).await?;
-        }
-        let packages = get_python_packages(ctx, overlay, &mut HashSet::new()).await?;
-        if !packages.is_empty() {
-            install_python_packages(ctx, packages).await?;
-        }
-        if let Some(post) = &cfg.post {
-            run_scripts(ctx, post).await?;
-        }
-    }
-    // node
-    if let Some(cfg) = platform_cfg
-        .and_then(|p| p.node.as_ref())
-        .or(install_cfg.node.as_ref())
-    {
-        if let Some(pre) = &cfg.pre {
-            run_scripts(ctx, pre).await?;
-        }
-        let packages = get_node_packages(ctx, overlay, &mut HashSet::new()).await?;
-        if !packages.is_empty() {
-            install_node_packages(ctx, packages).await?;
-        }
-        if let Some(post) = &cfg.post {
-            run_scripts(ctx, post).await?;
-        }
-    }
+    install_language_managers(ctx, overlay, install_cfg, platform_cfg).await?;
 
     if let Some(post) = platform_cfg.and_then(|p| p.post.as_ref()) {
         run_scripts(ctx, post).await?;
@@ -625,11 +640,9 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
 }
 
 async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
-    let install_cfg = overlay.install.as_ref();
-    if install_cfg.is_none() {
+    let Some(install_cfg) = overlay.install.as_ref() else {
         return Ok(());
-    }
-    let install_cfg = install_cfg.unwrap();
+    };
     let platform_cfg = install_cfg.platforms.get("macos");
 
     if let Some(pre) = &install_cfg.pre {
@@ -659,54 +672,8 @@ async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         run_scripts(ctx, post).await?;
     }
 
-    // cargo
-    if let Some(cfg) = platform_cfg
-        .and_then(|p| p.cargo.as_ref())
-        .or(install_cfg.cargo.as_ref())
-    {
-        if let Some(pre) = &cfg.pre {
-            run_scripts(ctx, pre).await?;
-        }
-        let crates = get_cargo_packages(ctx, overlay, &mut HashSet::new()).await?;
-        if !crates.is_empty() {
-            install_cargo_crates(ctx, crates).await?;
-        }
-        if let Some(post) = &cfg.post {
-            run_scripts(ctx, post).await?;
-        }
-    }
-    // python
-    if let Some(cfg) = platform_cfg
-        .and_then(|p| p.python.as_ref())
-        .or(install_cfg.python.as_ref())
-    {
-        if let Some(pre) = &cfg.pre {
-            run_scripts(ctx, pre).await?;
-        }
-        let packages = get_python_packages(ctx, overlay, &mut HashSet::new()).await?;
-        if !packages.is_empty() {
-            install_python_packages(ctx, packages).await?;
-        }
-        if let Some(post) = &cfg.post {
-            run_scripts(ctx, post).await?;
-        }
-    }
-    // node
-    if let Some(cfg) = platform_cfg
-        .and_then(|p| p.node.as_ref())
-        .or(install_cfg.node.as_ref())
-    {
-        if let Some(pre) = &cfg.pre {
-            run_scripts(ctx, pre).await?;
-        }
-        let packages = get_node_packages(ctx, overlay, &mut HashSet::new()).await?;
-        if !packages.is_empty() {
-            install_node_packages(ctx, packages).await?;
-        }
-        if let Some(post) = &cfg.post {
-            run_scripts(ctx, post).await?;
-        }
-    }
+    // Language managers after system
+    install_language_managers(ctx, overlay, install_cfg, platform_cfg).await?;
 
     if let Some(post) = platform_cfg.and_then(|p| p.post.as_ref()) {
         run_scripts(ctx, post).await?;
@@ -723,13 +690,10 @@ async fn get_archlinux_packages(
     overlay: &Overlay,
     visited: &mut HashSet<String>,
 ) -> Result<BTreeSet<String>> {
-    if !visited.insert(overlay.name.clone()) {
-        return Ok(BTreeSet::new());
-    }
-    let mut packages: BTreeSet<String> = BTreeSet::new();
-    if let Some(install) = &overlay.install {
+    collect_packages(ctx, overlay, visited, |install, _platform| {
+        // Archlinux has special platform resolution: "arch" / "archlinux" aliases
         let platform_override = if OS == "linux" {
-            if let Some(distro) = detect_linux_distro() {
+            detect_linux_distro().and_then(|distro| {
                 let key = if install.platforms.contains_key("arch") {
                     Some("arch")
                 } else if install.platforms.contains_key("archlinux") {
@@ -740,32 +704,18 @@ async fn get_archlinux_packages(
                     None
                 };
                 key.and_then(|k| install.platforms.get(k))
-            } else {
-                None
-            }
+            })
         } else {
             None
         };
         let source = platform_override
             .and_then(|p| p.archlinux.as_ref())
             .or(install.archlinux.as_ref());
-        if let Some(archlinux) = source {
-            packages.extend(archlinux.packages.iter().cloned());
-        }
-    }
-    if let Some(uses) = &overlay.uses {
-        for name in uses {
-            let used = ctx
-                .repository
-                .get(name)
-                .with_context(|| format!("used overlay '{name}' not found"))?;
-            packages = packages
-                .union(&Box::pin(get_archlinux_packages(ctx, &used, visited)).await?)
-                .cloned()
-                .collect();
-        }
-    }
-    Ok(packages)
+        source
+            .map(|cfg| cfg.packages.iter().cloned().collect())
+            .unwrap_or_default()
+    })
+    .await
 }
 
 async fn get_apt_packages(
@@ -773,40 +723,15 @@ async fn get_apt_packages(
     overlay: &Overlay,
     visited: &mut HashSet<String>,
 ) -> Result<BTreeSet<String>> {
-    if !visited.insert(overlay.name.clone()) {
-        return Ok(BTreeSet::new());
-    }
-    let mut packages: BTreeSet<String> = BTreeSet::new();
-    if let Some(install) = &overlay.install {
-        let platform_override = if OS == "linux" {
-            if let Some(distro) = detect_linux_distro() {
-                install.platforms.get(&distro)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let source = platform_override
+    collect_packages(ctx, overlay, visited, |install, platform| {
+        let source = platform
             .and_then(|p| p.apt.as_ref())
             .or(install.apt.as_ref());
-        if let Some(apt) = source {
-            packages.extend(apt.packages.iter().cloned());
-        }
-    }
-    if let Some(uses) = &overlay.uses {
-        for name in uses {
-            let used = ctx
-                .repository
-                .get(name)
-                .with_context(|| format!("used overlay '{name}' not found"))?;
-            packages = packages
-                .union(&Box::pin(get_apt_packages(ctx, &used, visited)).await?)
-                .cloned()
-                .collect();
-        }
-    }
-    Ok(packages)
+        source
+            .map(|cfg| cfg.packages.iter().cloned().collect())
+            .unwrap_or_default()
+    })
+    .await
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -904,18 +829,8 @@ async fn get_brew_packages(
     let mut taps: BTreeSet<String> = BTreeSet::new();
     let mut packages: BTreeSet<BrewPackage> = BTreeSet::new();
     if let Some(install) = &overlay.install {
-        let platform_override = if OS == "macos" {
-            install.platforms.get("macos")
-        } else if OS == "linux" {
-            if let Some(distro) = detect_linux_distro() {
-                install.platforms.get(&distro)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let source = platform_override
+        let platform = resolve_platform_override(install);
+        let source = platform
             .and_then(|p| p.brew.as_ref())
             .or(install.brew.as_ref());
         if let Some(brew) = source {
@@ -1174,40 +1089,15 @@ async fn get_cargo_packages(
     overlay: &Overlay,
     visited: &mut HashSet<String>,
 ) -> Result<BTreeSet<CargoPackage>> {
-    if !visited.insert(overlay.name.clone()) {
-        return Ok(BTreeSet::new());
-    }
-    let mut packages: BTreeSet<CargoPackage> = BTreeSet::new();
-    if let Some(install) = &overlay.install {
-        let platform_override = if OS == "macos" {
-            install.platforms.get("macos")
-        } else if OS == "linux" {
-            if let Some(distro) = detect_linux_distro() {
-                install.platforms.get(&distro)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let source = platform_override
+    collect_packages(ctx, overlay, visited, |install, platform| {
+        let source = platform
             .and_then(|p| p.cargo.as_ref())
             .or(install.cargo.as_ref());
-        if let Some(cfg) = source {
-            packages.extend(cfg.packages.iter().cloned());
-        }
-    }
-    if let Some(uses) = &overlay.uses {
-        for name in uses {
-            let used = ctx
-                .repository
-                .get(name)
-                .with_context(|| format!("used overlay '{name}' not found"))?;
-            let used_pkgs = Box::pin(get_cargo_packages(ctx, &used, visited)).await?;
-            packages = packages.union(&used_pkgs).cloned().collect();
-        }
-    }
-    Ok(packages)
+        source
+            .map(|cfg| cfg.packages.iter().cloned().collect())
+            .unwrap_or_default()
+    })
+    .await
 }
 
 // Python
@@ -1319,40 +1209,15 @@ async fn get_python_packages(
     overlay: &Overlay,
     visited: &mut HashSet<String>,
 ) -> Result<BTreeSet<PythonPackage>> {
-    if !visited.insert(overlay.name.clone()) {
-        return Ok(BTreeSet::new());
-    }
-    let mut packages: BTreeSet<PythonPackage> = BTreeSet::new();
-    if let Some(install) = &overlay.install {
-        let platform_override = if OS == "macos" {
-            install.platforms.get("macos")
-        } else if OS == "linux" {
-            if let Some(distro) = detect_linux_distro() {
-                install.platforms.get(&distro)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let source = platform_override
+    collect_packages(ctx, overlay, visited, |install, platform| {
+        let source = platform
             .and_then(|p| p.python.as_ref())
             .or(install.python.as_ref());
-        if let Some(cfg) = source {
-            packages.extend(cfg.packages.iter().cloned());
-        }
-    }
-    if let Some(uses) = &overlay.uses {
-        for name in uses {
-            let used = ctx
-                .repository
-                .get(name)
-                .with_context(|| format!("used overlay '{name}' not found"))?;
-            let used_pkgs = Box::pin(get_python_packages(ctx, &used, visited)).await?;
-            packages = packages.union(&used_pkgs).cloned().collect();
-        }
-    }
-    Ok(packages)
+        source
+            .map(|cfg| cfg.packages.iter().cloned().collect())
+            .unwrap_or_default()
+    })
+    .await
 }
 
 // Node (npm)
@@ -1438,40 +1303,15 @@ async fn get_node_packages(
     overlay: &Overlay,
     visited: &mut HashSet<String>,
 ) -> Result<BTreeSet<NodePackage>> {
-    if !visited.insert(overlay.name.clone()) {
-        return Ok(BTreeSet::new());
-    }
-    let mut packages: BTreeSet<NodePackage> = BTreeSet::new();
-    if let Some(install) = &overlay.install {
-        let platform_override = if OS == "macos" {
-            install.platforms.get("macos")
-        } else if OS == "linux" {
-            if let Some(distro) = detect_linux_distro() {
-                install.platforms.get(&distro)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let source = platform_override
+    collect_packages(ctx, overlay, visited, |install, platform| {
+        let source = platform
             .and_then(|p| p.node.as_ref())
             .or(install.node.as_ref());
-        if let Some(cfg) = source {
-            packages.extend(cfg.packages.iter().cloned());
-        }
-    }
-    if let Some(uses) = &overlay.uses {
-        for name in uses {
-            let used = ctx
-                .repository
-                .get(name)
-                .with_context(|| format!("used overlay '{name}' not found"))?;
-            let used_pkgs = Box::pin(get_node_packages(ctx, &used, visited)).await?;
-            packages = packages.union(&used_pkgs).cloned().collect();
-        }
-    }
-    Ok(packages)
+        source
+            .map(|cfg| cfg.packages.iter().cloned().collect())
+            .unwrap_or_default()
+    })
+    .await
 }
 
 async fn get_winget_packages(
@@ -1479,34 +1319,15 @@ async fn get_winget_packages(
     overlay: &Overlay,
     visited: &mut HashSet<String>,
 ) -> Result<BTreeSet<WingetPackage>> {
-    if !visited.insert(overlay.name.clone()) {
-        return Ok(BTreeSet::new());
-    }
-    let mut packages: BTreeSet<WingetPackage> = BTreeSet::new();
-    if let Some(install) = &overlay.install {
-        let platform_override = if OS == "windows" {
-            install.platforms.get("windows")
-        } else {
-            None
-        };
-        let source = platform_override
+    collect_packages(ctx, overlay, visited, |install, platform| {
+        let source = platform
             .and_then(|p| p.winget.as_ref())
             .or(install.winget.as_ref());
-        if let Some(cfg) = source {
-            packages.extend(cfg.packages.iter().cloned());
-        }
-    }
-    if let Some(uses) = &overlay.uses {
-        for name in uses {
-            let used = ctx
-                .repository
-                .get(name)
-                .with_context(|| format!("used overlay '{name}' not found"))?;
-            let used_pkgs = Box::pin(get_winget_packages(ctx, &used, visited)).await?;
-            packages = packages.union(&used_pkgs).cloned().collect();
-        }
-    }
-    Ok(packages)
+        source
+            .map(|cfg| cfg.packages.iter().cloned().collect())
+            .unwrap_or_default()
+    })
+    .await
 }
 
 // Winget (Windows Package Manager)
@@ -2031,7 +1852,11 @@ post = 'echo "after apt"'
     }
 
     fn test_ctx(root: std::path::PathBuf, repo: Repository, overlay: Option<Overlay>) -> Ctx {
-        Context::new(false, false, false, false, false, root, repo, overlay)
+        let mut builder = Context::builder().root(root).repository(repo);
+        if let Some(o) = overlay {
+            builder = builder.overlay(o);
+        }
+        builder.build()
     }
 
     /// Diamond dependency for package collection:

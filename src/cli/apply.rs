@@ -48,19 +48,21 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         println!("{:#?}", overlay);
     }
 
-    let ctx = Context::new(
-        args.dry_run,
-        cli.debug,
-        cli.verbose,
-        args.force,
-        args.no_prompt,
-        args.root
-            .clone()
-            .or_else(home_dir)
-            .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?,
-        repo,
-        Some(overlay.clone()),
-    );
+    let ctx = Context::builder()
+        .dry_run(args.dry_run)
+        .debug(cli.debug)
+        .verbose(cli.verbose)
+        .force(args.force)
+        .no_prompt(args.no_prompt)
+        .root(
+            args.root
+                .clone()
+                .or_else(home_dir)
+                .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?,
+        )
+        .repository(repo)
+        .overlay(overlay.clone())
+        .build();
 
     if args.install {
         actions::install::install(&ctx, &overlay).await?;

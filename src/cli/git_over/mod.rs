@@ -161,16 +161,11 @@ pub fn exclude_paths(repo: &git2::Repository, paths: &[&str]) -> Result<()> {
 /// this returns `projects/myapp`.
 pub fn repo_relative_path(overlay: &Overlay, root: &Path, repo_workdir: &Path) -> Result<PathBuf> {
     // Resolve the overlay target (using a minimal context for template rendering)
-    let ctx = crate::exec::Context::new(
-        false,
-        false,
-        false,
-        false,
-        false,
-        root.to_path_buf(),
-        Repository::new(PathBuf::new()),
-        Some(overlay.clone()),
-    );
+    let ctx = crate::exec::Context::builder()
+        .root(root.to_path_buf())
+        .repository(Repository::new(PathBuf::new()))
+        .overlay(overlay.clone())
+        .build();
     let target = overlay.resolve_target(&ctx)?;
 
     repo_workdir

@@ -10,10 +10,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use globset::GlobBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use symlink::{remove_symlink_dir, remove_symlink_file, symlink_dir, symlink_file};
 
 use tokio::fs::rename;
+use tokio::task::spawn_blocking;
 use walkdir::WalkDir;
 
 use crate::exec::{Action, Ctx};
@@ -22,7 +23,7 @@ use crate::ui::style::DialogTheme;
 use crate::ui::{self, emojis, style};
 use crate::utils::short_path;
 
-static SPINNER_STYLE: Lazy<ProgressStyle> = Lazy::new(|| {
+static SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
     ProgressStyle::with_template("{spinner:.cyan} {wide_msg}")
         .unwrap()
         .tick_chars(style::TICK_CHARS_BRAILLE_4_6_DOWN.as_str())
@@ -499,22 +500,27 @@ impl Action for EnsureLink {
         if ctx.dry_run {
             return Ok(());
         }
-        if self.target.exists() || self.target.is_symlink() {
-            if self.target.is_symlink() {
-                let src = fs::read_link(self.target.as_path())?;
-                if src == self.source {
-                    // Already correctly linked, no conflict
-                    return Ok(());
+        let source = self.source.clone();
+        let target = self.target.clone();
+        let ctx2 = ctx.clone();
+        spawn_blocking(move || {
+            if target.exists() || target.is_symlink() {
+                if target.is_symlink() {
+                    let src = fs::read_link(target.as_path())?;
+                    if src == source {
+                        // Already correctly linked, no conflict
+                        return Ok(());
+                    }
+                }
+                // Conflict: target exists and is not the correct symlink
+                if !resolve_file_conflict(&ctx2, &source, &target)? {
+                    return Ok(()); // Skipped
                 }
             }
-            // Conflict: target exists and is not the correct symlink
-            if !resolve_file_conflict(&ctx, &self.source, &self.target)? {
-                return Ok(()); // Skipped
-            }
-        }
-        symlink_file(self.source.as_path(), self.target.as_path())?;
-
-        Ok(())
+            symlink_file(source.as_path(), target.as_path())?;
+            Ok(())
+        })
+        .await?
     }
 }
 
@@ -545,7 +551,12 @@ impl fmt::Display for EnsureDir {
 impl Action for EnsureDir {
     async fn execute(&self, ctx: Ctx) -> Result<()> {
         if !ctx.dry_run {
-            create_dir_all(self.path.as_path())?;
+            let path = self.path.clone();
+            spawn_blocking(move || -> Result<()> {
+                create_dir_all(path.as_path())?;
+                Ok(())
+            })
+            .await??;
         }
         Ok(())
     }
@@ -609,22 +620,27 @@ impl Action for EnsureDirLink {
         if ctx.dry_run {
             return Ok(());
         }
-        if self.target.exists() || self.target.is_symlink() {
-            if self.target.is_symlink() {
-                let src = fs::read_link(self.target.as_path())?;
-                if src == self.source {
-                    // Already correctly linked, no conflict
-                    return Ok(());
+        let source = self.source.clone();
+        let target = self.target.clone();
+        let ctx2 = ctx.clone();
+        spawn_blocking(move || {
+            if target.exists() || target.is_symlink() {
+                if target.is_symlink() {
+                    let src = fs::read_link(target.as_path())?;
+                    if src == source {
+                        // Already correctly linked, no conflict
+                        return Ok(());
+                    }
+                }
+                // Conflict: target exists and is not the correct symlink
+                if !resolve_dir_conflict(&ctx2, &source, &target)? {
+                    return Ok(()); // Skipped
                 }
             }
-            // Conflict: target exists and is not the correct symlink
-            if !resolve_dir_conflict(&ctx, &self.source, &self.target)? {
-                return Ok(()); // Skipped
-            }
-        }
-        symlink_dir(self.source.as_path(), self.target.as_path())?;
-
-        Ok(())
+            symlink_dir(source.as_path(), target.as_path())?;
+            Ok(())
+        })
+        .await?
     }
 }
 
@@ -703,7 +719,15 @@ mod tests {
     }
 
     fn ctx(root: PathBuf, repo: Repository, overlay: Option<Overlay>) -> Ctx {
-        Context::new(false, false, true, true, false, root, repo, overlay)
+        let mut builder = Context::builder()
+            .verbose(true)
+            .force(true)
+            .root(root)
+            .repository(repo);
+        if let Some(o) = overlay {
+            builder = builder.overlay(o);
+        }
+        builder.build()
     }
 
     #[tokio::test]

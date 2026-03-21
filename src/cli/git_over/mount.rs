@@ -291,7 +291,13 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
             // ── Update overlay descriptor ─────────────────────────────
 
-            update_overlay_descriptor(&overlay.root, rel_path_str, &git_repo_config)?;
+            let overlay_root = overlay.root.clone();
+            let rel_path_owned = rel_path_str.to_string();
+            let git_repo_config_owned = git_repo_config.clone();
+            tokio::task::spawn_blocking(move || {
+                update_overlay_descriptor(&overlay_root, &rel_path_owned, &git_repo_config_owned)
+            })
+            .await??;
 
             println!(
                 "{} {} {} {} {}",
@@ -346,109 +352,109 @@ fn find_descriptor(overlay_root: &Path) -> (PathBuf, DescriptorFormat) {
 }
 
 /// Build a git entry as a generic map suitable for both TOML and YAML serialization.
-fn build_git_entry(config: &GitRepoConfig) -> serde_yaml::Mapping {
-    let mut entry = serde_yaml::Mapping::new();
+fn build_git_entry(config: &GitRepoConfig) -> serde_yml::Mapping {
+    let mut entry = serde_yml::Mapping::new();
     entry.insert(
-        serde_yaml::Value::String("url".into()),
-        serde_yaml::Value::String(config.url.clone()),
+        serde_yml::Value::String("url".into()),
+        serde_yml::Value::String(config.url.clone()),
     );
 
     if let Some(ref branch) = config.branch {
         entry.insert(
-            serde_yaml::Value::String("branch".into()),
-            serde_yaml::Value::String(branch.clone()),
+            serde_yml::Value::String("branch".into()),
+            serde_yml::Value::String(branch.clone()),
         );
     }
     if let Some(ref tag) = config.tag {
         entry.insert(
-            serde_yaml::Value::String("tag".into()),
-            serde_yaml::Value::String(tag.clone()),
+            serde_yml::Value::String("tag".into()),
+            serde_yml::Value::String(tag.clone()),
         );
     }
     if let Some(ref rev) = config.rev {
         entry.insert(
-            serde_yaml::Value::String("rev".into()),
-            serde_yaml::Value::String(rev.clone()),
+            serde_yml::Value::String("rev".into()),
+            serde_yml::Value::String(rev.clone()),
         );
     }
     if config.recurse_submodules {
         entry.insert(
-            serde_yaml::Value::String("recurse_submodules".into()),
-            serde_yaml::Value::Bool(true),
+            serde_yml::Value::String("recurse_submodules".into()),
+            serde_yml::Value::Bool(true),
         );
     }
     if config.worktree {
         entry.insert(
-            serde_yaml::Value::String("worktree".into()),
-            serde_yaml::Value::Bool(true),
+            serde_yml::Value::String("worktree".into()),
+            serde_yml::Value::Bool(true),
         );
     }
     if let Some(ref worktrees) = config.worktrees {
-        let mut wt = serde_yaml::Mapping::new();
+        let mut wt = serde_yml::Mapping::new();
         for (name, branch) in worktrees {
             wt.insert(
-                serde_yaml::Value::String(name.clone()),
-                serde_yaml::Value::String(branch.clone()),
+                serde_yml::Value::String(name.clone()),
+                serde_yml::Value::String(branch.clone()),
             );
         }
         entry.insert(
-            serde_yaml::Value::String("worktrees".into()),
-            serde_yaml::Value::Mapping(wt),
+            serde_yml::Value::String("worktrees".into()),
+            serde_yml::Value::Mapping(wt),
         );
     }
     if let Some(ref remotes) = config.remotes {
-        let mut remotes_map = serde_yaml::Mapping::new();
+        let mut remotes_map = serde_yml::Mapping::new();
         for (name, remote_cfg) in remotes {
-            let mut remote_entry = serde_yaml::Mapping::new();
+            let mut remote_entry = serde_yml::Mapping::new();
             remote_entry.insert(
-                serde_yaml::Value::String("url".into()),
-                serde_yaml::Value::String(remote_cfg.url.clone()),
+                serde_yml::Value::String("url".into()),
+                serde_yml::Value::String(remote_cfg.url.clone()),
             );
             if let Some(ref fetch) = remote_cfg.fetch {
                 remote_entry.insert(
-                    serde_yaml::Value::String("fetch".into()),
-                    serde_yaml::Value::String(fetch.clone()),
+                    serde_yml::Value::String("fetch".into()),
+                    serde_yml::Value::String(fetch.clone()),
                 );
             }
             if let Some(ref push) = remote_cfg.push {
                 remote_entry.insert(
-                    serde_yaml::Value::String("push".into()),
-                    serde_yaml::Value::String(push.clone()),
+                    serde_yml::Value::String("push".into()),
+                    serde_yml::Value::String(push.clone()),
                 );
             }
             if let Some(ref tagopt) = remote_cfg.tagopt {
                 remote_entry.insert(
-                    serde_yaml::Value::String("tagopt".into()),
-                    serde_yaml::Value::String(tagopt.clone()),
+                    serde_yml::Value::String("tagopt".into()),
+                    serde_yml::Value::String(tagopt.clone()),
                 );
             }
             for (k, v) in &remote_cfg.extras {
                 remote_entry.insert(
-                    serde_yaml::Value::String(k.clone()),
-                    serde_yaml::Value::String(v.clone()),
+                    serde_yml::Value::String(k.clone()),
+                    serde_yml::Value::String(v.clone()),
                 );
             }
             remotes_map.insert(
-                serde_yaml::Value::String(name.clone()),
-                serde_yaml::Value::Mapping(remote_entry),
+                serde_yml::Value::String(name.clone()),
+                serde_yml::Value::Mapping(remote_entry),
             );
         }
         entry.insert(
-            serde_yaml::Value::String("remotes".into()),
-            serde_yaml::Value::Mapping(remotes_map),
+            serde_yml::Value::String("remotes".into()),
+            serde_yml::Value::Mapping(remotes_map),
         );
     }
     if let Some(ref git_config) = config.config {
-        let mut config_map = serde_yaml::Mapping::new();
+        let mut config_map = serde_yml::Mapping::new();
         for (key, value) in &git_config.entries {
             config_map.insert(
-                serde_yaml::Value::String(key.clone()),
-                serde_yaml::Value::String(value.clone()),
+                serde_yml::Value::String(key.clone()),
+                serde_yml::Value::String(value.clone()),
             );
         }
         entry.insert(
-            serde_yaml::Value::String("config".into()),
-            serde_yaml::Value::Mapping(config_map),
+            serde_yml::Value::String("config".into()),
+            serde_yml::Value::Mapping(config_map),
         );
     }
     entry
@@ -503,7 +509,7 @@ fn update_descriptor_toml(
         .and_then(|v| v.as_table_mut())
         .ok_or_else(|| anyhow!("git section is not a table"))?;
 
-    // Convert serde_yaml::Mapping → toml::Value::Table
+    // Convert serde_yml::Mapping → toml::Value::Table
     let yaml_entry = build_git_entry(config);
     let toml_entry = yaml_mapping_to_toml(&yaml_entry)?;
     git_table.insert(rel_path.to_string(), toml_entry);
@@ -526,10 +532,10 @@ fn update_descriptor_yaml(
         String::new()
     };
 
-    let mut doc: serde_yaml::Value = if content.is_empty() {
-        serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+    let mut doc: serde_yml::Value = if content.is_empty() {
+        serde_yml::Value::Mapping(serde_yml::Mapping::new())
     } else {
-        serde_yaml::from_str(&content)
+        serde_yml::from_str(&content)
             .map_err(|e| anyhow!("failed to parse {}: {}", descriptor_path.display(), e))?
     };
 
@@ -537,11 +543,11 @@ fn update_descriptor_yaml(
         .as_mapping_mut()
         .ok_or_else(|| anyhow!("{} root is not a mapping", descriptor_path.display()))?;
 
-    let git_key = serde_yaml::Value::String("git".into());
+    let git_key = serde_yml::Value::String("git".into());
     if !root.contains_key(&git_key) {
         root.insert(
             git_key.clone(),
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            serde_yml::Value::Mapping(serde_yml::Mapping::new()),
         );
     }
 
@@ -552,19 +558,19 @@ fn update_descriptor_yaml(
 
     let entry = build_git_entry(config);
     git_map.insert(
-        serde_yaml::Value::String(rel_path.to_string()),
-        serde_yaml::Value::Mapping(entry),
+        serde_yml::Value::String(rel_path.to_string()),
+        serde_yml::Value::Mapping(entry),
     );
 
-    let output = serde_yaml::to_string(&doc)
+    let output = serde_yml::to_string(&doc)
         .map_err(|e| anyhow!("failed to serialize {}: {}", descriptor_path.display(), e))?;
     std::fs::write(descriptor_path, output)?;
 
     Ok(())
 }
 
-/// Convert a serde_yaml::Mapping to a toml::Value::Table.
-fn yaml_mapping_to_toml(mapping: &serde_yaml::Mapping) -> Result<toml::Value> {
+/// Convert a serde_yml::Mapping to a toml::Value::Table.
+fn yaml_mapping_to_toml(mapping: &serde_yml::Mapping) -> Result<toml::Value> {
     let mut table = toml::map::Map::new();
     for (k, v) in mapping {
         let key = k
@@ -577,11 +583,11 @@ fn yaml_mapping_to_toml(mapping: &serde_yaml::Mapping) -> Result<toml::Value> {
     Ok(toml::Value::Table(table))
 }
 
-fn yaml_value_to_toml(v: &serde_yaml::Value) -> Result<toml::Value> {
+fn yaml_value_to_toml(v: &serde_yml::Value) -> Result<toml::Value> {
     match v {
-        serde_yaml::Value::String(s) => Ok(toml::Value::String(s.clone())),
-        serde_yaml::Value::Bool(b) => Ok(toml::Value::Boolean(*b)),
-        serde_yaml::Value::Number(n) => {
+        serde_yml::Value::String(s) => Ok(toml::Value::String(s.clone())),
+        serde_yml::Value::Bool(b) => Ok(toml::Value::Boolean(*b)),
+        serde_yml::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Ok(toml::Value::Integer(i))
             } else if let Some(f) = n.as_f64() {
@@ -590,7 +596,7 @@ fn yaml_value_to_toml(v: &serde_yaml::Value) -> Result<toml::Value> {
                 Err(anyhow!("unsupported number in git entry"))
             }
         }
-        serde_yaml::Value::Mapping(m) => yaml_mapping_to_toml(m),
+        serde_yml::Value::Mapping(m) => yaml_mapping_to_toml(m),
         _ => Err(anyhow!("unsupported value type in git entry")),
     }
 }

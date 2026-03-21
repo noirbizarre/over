@@ -189,9 +189,14 @@ fn is_symlink_to(worktree_path: &Path, overlay_file: &Path, overlay_root_canonic
     {
         return true;
     }
-    target_resolved.starts_with(overlay_root_canonical)
-        && target_resolved.strip_prefix(overlay_root_canonical).ok()
-            == overlay_file.strip_prefix(overlay_root_canonical).ok()
+    // Compare relative paths within the overlay root; both must succeed for a valid match
+    match (
+        target_resolved.strip_prefix(overlay_root_canonical),
+        overlay_file.strip_prefix(overlay_root_canonical),
+    ) {
+        (Ok(target_rel), Ok(overlay_rel)) => target_rel == overlay_rel,
+        _ => false,
+    }
 }
 
 /// Check if a path is an overlay descriptor file (e.g., `over.yml`, `over.yaml`, `over.toml`).

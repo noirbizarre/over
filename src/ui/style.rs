@@ -3,16 +3,16 @@ use std::fmt;
 use clap::builder::styling;
 use console::{Style, StyledObject, style};
 use dialoguer::theme::Theme;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
-pub static TICK_CHARS_BRAILLE_4_6_DOWN: Lazy<String> = Lazy::new(|| String::from("⠶⢲⣰⣤⣆⡖"));
-pub static TICK_CHARS_BRAILLE_4_6_UP: Lazy<String> = Lazy::new(|| String::from("⠛⠹⠼⠶⠧⠏"));
-pub static BRAILLE_6: Lazy<String> = Lazy::new(|| String::from("⠿"));
+pub static TICK_CHARS_BRAILLE_4_6_DOWN: LazyLock<String> = LazyLock::new(|| String::from("⠶⢲⣰⣤⣆⡖"));
+pub static TICK_CHARS_BRAILLE_4_6_UP: LazyLock<String> = LazyLock::new(|| String::from("⠛⠹⠼⠶⠧⠏"));
+pub static BRAILLE_6: LazyLock<String> = LazyLock::new(|| String::from("⠿"));
 
-pub static THIN_PROGRESS: Lazy<String> = Lazy::new(|| String::from("━>-"));
-pub static THIN_DUAL_PROGRESS: Lazy<String> = Lazy::new(|| String::from("=>-"));
+pub static THIN_PROGRESS: LazyLock<String> = LazyLock::new(|| String::from("━>-"));
+pub static THIN_DUAL_PROGRESS: LazyLock<String> = LazyLock::new(|| String::from("=>-"));
 
-pub static DOTS_4: Lazy<String> = Lazy::new(|| String::from("::"));
+pub static DOTS_4: LazyLock<String> = LazyLock::new(|| String::from("::"));
 
 // pub static ref SPINNER: ProgressStyle = ProgressStyle::default_spinner()
 //     .template("{prefix:.bold.dim} {spinner.green} {wide_msg}")
