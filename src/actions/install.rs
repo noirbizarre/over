@@ -1949,4 +1949,575 @@ post = 'echo "after apt"'
         assert!(names.contains("x-crate"), "should collect packages from x");
         assert!(names.contains("y-crate"), "should collect packages from y");
     }
+
+    // ── APT packages ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_apt_packages_single() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("[install]\napt = [\"curl\", \"git\"]")
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let mut visited = HashSet::new();
+        let pkgs = get_apt_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+
+        assert_eq!(pkgs, BTreeSet::from(["curl".into(), "git".into()]));
+    }
+
+    #[tokio::test]
+    async fn test_get_apt_packages_diamond() {
+        let (td, repo) = repo_and_root();
+
+        let d = td.child("d");
+        d.create_dir_all().unwrap();
+        d.child("over.toml")
+            .write_str("[install]\napt = [\"shared-pkg\"]")
+            .unwrap();
+
+        let b = td.child("b");
+        b.create_dir_all().unwrap();
+        b.child("over.toml")
+            .write_str("uses = [\"d\"]\n[install]\napt = [\"b-pkg\"]")
+            .unwrap();
+
+        let c_ov = td.child("c");
+        c_ov.create_dir_all().unwrap();
+        c_ov.child("over.toml")
+            .write_str("uses = [\"d\"]\n[install]\napt = [\"c-pkg\"]")
+            .unwrap();
+
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("uses = [\"b\", \"c\"]\n[install]\napt = [\"a-pkg\"]")
+            .unwrap();
+
+        let overlay_a = repo.get("a").unwrap();
+        let ctx = test_ctx(
+            td.path().to_path_buf(),
+            repo.clone(),
+            Some(overlay_a.clone()),
+        );
+        let mut visited = HashSet::new();
+        let pkgs = get_apt_packages(&ctx, &overlay_a, &mut visited)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            pkgs,
+            BTreeSet::from([
+                "a-pkg".into(),
+                "b-pkg".into(),
+                "c-pkg".into(),
+                "shared-pkg".into()
+            ]),
+        );
+        assert_eq!(visited.len(), 4);
+    }
+
+    // ── Brew packages ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_brew_packages_single() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str(
+                "[install.brew]\ntaps = [\"my/tap\"]\npackages = [\"pkg1\", {name=\"pkg2\", cask=true}]",
+            )
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let mut visited = HashSet::new();
+        let (taps, pkgs) = get_brew_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+
+        assert_eq!(taps, BTreeSet::from(["my/tap".into()]));
+        assert!(pkgs.contains(&BrewPackage {
+            name: "pkg1".into(),
+            options: None,
+            cask: None,
+        }));
+        assert!(pkgs.contains(&BrewPackage {
+            name: "pkg2".into(),
+            options: None,
+            cask: Some(true),
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_get_brew_packages_diamond() {
+        let (td, repo) = repo_and_root();
+
+        let d = td.child("d");
+        d.create_dir_all().unwrap();
+        d.child("over.toml")
+            .write_str("[install.brew]\ntaps = [\"shared/tap\"]\npackages = [\"shared-pkg\"]")
+            .unwrap();
+
+        let b = td.child("b");
+        b.create_dir_all().unwrap();
+        b.child("over.toml")
+            .write_str(
+                "uses = [\"d\"]\n[install.brew]\ntaps = [\"b/tap\"]\npackages = [\"b-pkg\"]",
+            )
+            .unwrap();
+
+        let c_ov = td.child("c");
+        c_ov.create_dir_all().unwrap();
+        c_ov.child("over.toml")
+            .write_str(
+                "uses = [\"d\"]\n[install.brew]\ntaps = [\"shared/tap\"]\npackages = [\"c-pkg\"]",
+            )
+            .unwrap();
+
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("uses = [\"b\", \"c\"]\n[install.brew]\npackages = [\"a-pkg\"]")
+            .unwrap();
+
+        let overlay_a = repo.get("a").unwrap();
+        let ctx = test_ctx(
+            td.path().to_path_buf(),
+            repo.clone(),
+            Some(overlay_a.clone()),
+        );
+        let mut visited = HashSet::new();
+        let (taps, pkgs) = get_brew_packages(&ctx, &overlay_a, &mut visited)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            taps,
+            BTreeSet::from(["shared/tap".into(), "b/tap".into()]),
+            "taps should be deduplicated"
+        );
+        let names: BTreeSet<_> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["a-pkg", "b-pkg", "c-pkg", "shared-pkg"]),
+        );
+        assert_eq!(visited.len(), 4);
+    }
+
+    // ── Python packages ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_python_packages_single() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("[install]\npython = [\"requests\"]")
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let mut visited = HashSet::new();
+        let pkgs = get_python_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs.iter().next().unwrap().name, "requests");
+    }
+
+    #[tokio::test]
+    async fn test_get_python_packages_full_form() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("[install.python]\npackages = [{name=\"requests\", tool=\"uv\", extras=[\"security\"], options=\"--force\"}]")
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let mut visited = HashSet::new();
+        let pkgs = get_python_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+
+        let pkg = pkgs.iter().next().unwrap();
+        assert_eq!(pkg.name, "requests");
+        assert_eq!(pkg.tool, Some(PythonTool::Uv));
+        assert_eq!(pkg.extras, Some(vec!["security".into()]));
+        assert_eq!(pkg.options, Some("--force".into()));
+    }
+
+    #[tokio::test]
+    async fn test_get_python_packages_diamond() {
+        let (td, repo) = repo_and_root();
+
+        let d = td.child("d");
+        d.create_dir_all().unwrap();
+        d.child("over.toml")
+            .write_str("[install]\npython = [\"shared-lib\"]")
+            .unwrap();
+
+        let b = td.child("b");
+        b.create_dir_all().unwrap();
+        b.child("over.toml")
+            .write_str("uses = [\"d\"]\n[install]\npython = [\"b-lib\"]")
+            .unwrap();
+
+        let c_ov = td.child("c");
+        c_ov.create_dir_all().unwrap();
+        c_ov.child("over.toml")
+            .write_str("uses = [\"d\"]\n[install]\npython = [\"c-lib\"]")
+            .unwrap();
+
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("uses = [\"b\", \"c\"]\n[install]\npython = [\"a-lib\"]")
+            .unwrap();
+
+        let overlay_a = repo.get("a").unwrap();
+        let ctx = test_ctx(
+            td.path().to_path_buf(),
+            repo.clone(),
+            Some(overlay_a.clone()),
+        );
+        let mut visited = HashSet::new();
+        let pkgs = get_python_packages(&ctx, &overlay_a, &mut visited)
+            .await
+            .unwrap();
+
+        let names: BTreeSet<_> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["a-lib", "b-lib", "c-lib", "shared-lib"]),
+        );
+    }
+
+    // ── Node packages ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_node_packages_single() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("[install]\nnode = [\"typescript\"]")
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let mut visited = HashSet::new();
+        let pkgs = get_node_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs.iter().next().unwrap().name, "typescript");
+    }
+
+    #[tokio::test]
+    async fn test_get_node_packages_full_form() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str(
+                "[install.node]\npackages = [{name=\"typescript\", options=\"--force\"}]",
+            )
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let mut visited = HashSet::new();
+        let pkgs = get_node_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+
+        let pkg = pkgs.iter().next().unwrap();
+        assert_eq!(pkg.name, "typescript");
+        assert_eq!(pkg.options, Some("--force".into()));
+    }
+
+    #[tokio::test]
+    async fn test_get_node_packages_diamond() {
+        let (td, repo) = repo_and_root();
+
+        let d = td.child("d");
+        d.create_dir_all().unwrap();
+        d.child("over.toml")
+            .write_str("[install]\nnode = [\"shared-pkg\"]")
+            .unwrap();
+
+        let b = td.child("b");
+        b.create_dir_all().unwrap();
+        b.child("over.toml")
+            .write_str("uses = [\"d\"]\n[install]\nnode = [\"b-pkg\"]")
+            .unwrap();
+
+        let c_ov = td.child("c");
+        c_ov.create_dir_all().unwrap();
+        c_ov.child("over.toml")
+            .write_str("uses = [\"d\"]\n[install]\nnode = [\"c-pkg\"]")
+            .unwrap();
+
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("uses = [\"b\", \"c\"]\n[install]\nnode = [\"a-pkg\"]")
+            .unwrap();
+
+        let overlay_a = repo.get("a").unwrap();
+        let ctx = test_ctx(
+            td.path().to_path_buf(),
+            repo.clone(),
+            Some(overlay_a.clone()),
+        );
+        let mut visited = HashSet::new();
+        let pkgs = get_node_packages(&ctx, &overlay_a, &mut visited)
+            .await
+            .unwrap();
+
+        let names: BTreeSet<_> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["a-pkg", "b-pkg", "c-pkg", "shared-pkg"]),
+        );
+    }
+
+    // ── Winget packages ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_winget_packages_single() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("[install]\nwinget = [\"bat\"]")
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let mut visited = HashSet::new();
+        let pkgs = get_winget_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(
+            pkgs.iter().next().unwrap(),
+            &WingetPackage {
+                name: Some("bat".into()),
+                id: None,
+                options: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_winget_packages_full_form() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str(
+                "[install.winget]\npackages = [{id=\"sharkdp.bat\"}, {name=\"Git\", options=\"--source winget\"}]",
+            )
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let mut visited = HashSet::new();
+        let pkgs = get_winget_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+
+        assert!(pkgs.contains(&WingetPackage {
+            name: None,
+            id: Some("sharkdp.bat".into()),
+            options: None,
+        }));
+        assert!(pkgs.contains(&WingetPackage {
+            name: Some("Git".into()),
+            id: None,
+            options: Some("--source winget".into()),
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_get_winget_packages_diamond() {
+        let (td, repo) = repo_and_root();
+
+        let d = td.child("d");
+        d.create_dir_all().unwrap();
+        d.child("over.toml")
+            .write_str("[install]\nwinget = [\"shared-pkg\"]")
+            .unwrap();
+
+        let b = td.child("b");
+        b.create_dir_all().unwrap();
+        b.child("over.toml")
+            .write_str("uses = [\"d\"]\n[install]\nwinget = [\"b-pkg\"]")
+            .unwrap();
+
+        let c_ov = td.child("c");
+        c_ov.create_dir_all().unwrap();
+        c_ov.child("over.toml")
+            .write_str("uses = [\"d\"]\n[install]\nwinget = [\"c-pkg\"]")
+            .unwrap();
+
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("uses = [\"b\", \"c\"]\n[install]\nwinget = [\"a-pkg\"]")
+            .unwrap();
+
+        let overlay_a = repo.get("a").unwrap();
+        let ctx = test_ctx(
+            td.path().to_path_buf(),
+            repo.clone(),
+            Some(overlay_a.clone()),
+        );
+        let mut visited = HashSet::new();
+        let pkgs = get_winget_packages(&ctx, &overlay_a, &mut visited)
+            .await
+            .unwrap();
+
+        let names: BTreeSet<_> = pkgs.iter().filter_map(|p| p.name.as_deref()).collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["a-pkg", "b-pkg", "c-pkg", "shared-pkg"]),
+        );
+    }
+
+    // ── Archlinux packages ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_archlinux_packages_single() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("[install]\narchlinux = [\"base-devel\", \"git\"]")
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let mut visited = HashSet::new();
+        let pkgs = get_archlinux_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+
+        assert_eq!(pkgs, BTreeSet::from(["base-devel".into(), "git".into()]));
+    }
+
+    #[tokio::test]
+    async fn test_get_archlinux_packages_diamond() {
+        let (td, repo) = repo_and_root();
+
+        let d = td.child("d");
+        d.create_dir_all().unwrap();
+        d.child("over.toml")
+            .write_str("[install]\narchlinux = [\"shared-pkg\"]")
+            .unwrap();
+
+        let b = td.child("b");
+        b.create_dir_all().unwrap();
+        b.child("over.toml")
+            .write_str("uses = [\"d\"]\n[install]\narchlinux = [\"b-pkg\"]")
+            .unwrap();
+
+        let c_ov = td.child("c");
+        c_ov.create_dir_all().unwrap();
+        c_ov.child("over.toml")
+            .write_str("uses = [\"d\"]\n[install]\narchlinux = [\"c-pkg\"]")
+            .unwrap();
+
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("uses = [\"b\", \"c\"]\n[install]\narchlinux = [\"a-pkg\"]")
+            .unwrap();
+
+        let overlay_a = repo.get("a").unwrap();
+        let ctx = test_ctx(
+            td.path().to_path_buf(),
+            repo.clone(),
+            Some(overlay_a.clone()),
+        );
+        let mut visited = HashSet::new();
+        let pkgs = get_archlinux_packages(&ctx, &overlay_a, &mut visited)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            pkgs,
+            BTreeSet::from([
+                "a-pkg".into(),
+                "b-pkg".into(),
+                "c-pkg".into(),
+                "shared-pkg".into()
+            ]),
+        );
+    }
+
+    // ── No install config ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_packages_no_install_section() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let mut visited = HashSet::new();
+        let apt = get_apt_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+        assert!(apt.is_empty());
+
+        let mut visited = HashSet::new();
+        let brew = get_brew_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+        assert!(brew.0.is_empty());
+        assert!(brew.1.is_empty());
+
+        let mut visited = HashSet::new();
+        let python = get_python_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+        assert!(python.is_empty());
+
+        let mut visited = HashSet::new();
+        let node = get_node_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+        assert!(node.is_empty());
+
+        let mut visited = HashSet::new();
+        let winget = get_winget_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+        assert!(winget.is_empty());
+
+        let mut visited = HashSet::new();
+        let arch = get_archlinux_packages(&ctx, &overlay, &mut visited)
+            .await
+            .unwrap();
+        assert!(arch.is_empty());
+    }
 }

@@ -218,3 +218,160 @@ pub fn resolve_overlay(
 
     Ok(overlay)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_fs::TempDir;
+    use assert_fs::prelude::*;
+    use std::fs;
+
+    /// Helper: create a temp dir and init a bare-style git repo (non-bare, with workdir).
+    fn temp_git_repo() -> (TempDir, git2::Repository) {
+        let td = TempDir::new().unwrap();
+        let repo = git2::Repository::init(td.path()).unwrap();
+        (td, repo)
+    }
+
+    #[test]
+    fn test_main_repo_root_regular() {
+        let (td, repo) = temp_git_repo();
+        let root = main_repo_root(&repo).unwrap();
+        assert_eq!(root, td.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_get_overlay_config_none() {
+        let (_td, repo) = temp_git_repo();
+        let cfg = get_overlay_config(&repo).unwrap();
+        assert_eq!(cfg, None);
+    }
+
+    #[test]
+    fn test_set_and_get_overlay_config() {
+        let (_td, repo) = temp_git_repo();
+        set_overlay_config(&repo, "myoverlay").unwrap();
+        let cfg = get_overlay_config(&repo).unwrap();
+        assert_eq!(cfg, Some("myoverlay".into()));
+    }
+
+    #[test]
+    fn test_set_overlay_config_overwrite() {
+        let (_td, repo) = temp_git_repo();
+        set_overlay_config(&repo, "first").unwrap();
+        set_overlay_config(&repo, "second").unwrap();
+        let cfg = get_overlay_config(&repo).unwrap();
+        assert_eq!(cfg, Some("second".into()));
+    }
+
+    #[test]
+    fn test_exclude_paths_creates_file() {
+        let (_td, repo) = temp_git_repo();
+        exclude_paths(&repo, &["/overlay", "*.bak"]).unwrap();
+
+        let exclude_path = repo.path().join("info").join("exclude");
+        let content = fs::read_to_string(&exclude_path).unwrap();
+        assert!(content.contains("/overlay"));
+        assert!(content.contains("*.bak"));
+    }
+
+    #[test]
+    fn test_exclude_paths_idempotent() {
+        let (_td, repo) = temp_git_repo();
+        exclude_paths(&repo, &["/overlay"]).unwrap();
+        exclude_paths(&repo, &["/overlay"]).unwrap();
+
+        let exclude_path = repo.path().join("info").join("exclude");
+        let content = fs::read_to_string(&exclude_path).unwrap();
+        let count = content.matches("/overlay").count();
+        assert_eq!(count, 1, "path should appear only once");
+    }
+
+    #[test]
+    fn test_exclude_paths_appends_new() {
+        let (_td, repo) = temp_git_repo();
+        exclude_paths(&repo, &["/first"]).unwrap();
+        exclude_paths(&repo, &["/second"]).unwrap();
+
+        let exclude_path = repo.path().join("info").join("exclude");
+        let content = fs::read_to_string(&exclude_path).unwrap();
+        assert!(content.contains("/first"));
+        assert!(content.contains("/second"));
+    }
+
+    #[test]
+    fn test_repo_relative_path_under_target() {
+        let td = TempDir::new().unwrap();
+        // Create a minimal overlay with target = td path
+        let overlay_dir = td.child("overlay");
+        overlay_dir.create_dir_all().unwrap();
+        let target_str = td.path().to_string_lossy().to_string();
+        overlay_dir
+            .child("over.toml")
+            .write_str(&format!("target = \"{}\"", target_str))
+            .unwrap();
+
+        let over_repo = Repository::new(td.path().to_path_buf());
+        let overlay = over_repo.get("overlay").unwrap();
+
+        let repo_dir = td.path().join("projects").join("myapp");
+        fs::create_dir_all(&repo_dir).unwrap();
+
+        let rel = repo_relative_path(&overlay, td.path(), &repo_dir).unwrap();
+        assert_eq!(rel, PathBuf::from("projects/myapp"));
+    }
+
+    #[test]
+    fn test_repo_relative_path_not_under_target() {
+        let td = TempDir::new().unwrap();
+        let overlay_dir = td.child("overlay");
+        overlay_dir.create_dir_all().unwrap();
+        let target_str = td.path().join("subdir").to_string_lossy().to_string();
+        overlay_dir
+            .child("over.toml")
+            .write_str(&format!("target = \"{}\"", target_str))
+            .unwrap();
+
+        let over_repo = Repository::new(td.path().to_path_buf());
+        let overlay = over_repo.get("overlay").unwrap();
+
+        let repo_dir = PathBuf::from("/tmp/elsewhere");
+        let result = repo_relative_path(&overlay, td.path(), &repo_dir);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_overlay_by_name() {
+        let td = TempDir::new().unwrap();
+        let overlay_dir = td.child("myoverlay");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+
+        let over_repo = Repository::new(td.path().to_path_buf());
+        let (_gtd, git_repo) = temp_git_repo();
+
+        let overlay = resolve_overlay(&over_repo, &git_repo, Some("myoverlay")).unwrap();
+        assert_eq!(overlay.name, "myoverlay");
+    }
+
+    #[test]
+    fn test_resolve_overlay_from_git_config() {
+        let td = TempDir::new().unwrap();
+        let overlay_dir = td.child("dev");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+
+        let over_repo = Repository::new(td.path().to_path_buf());
+        let (_gtd, git_repo) = temp_git_repo();
+        set_overlay_config(&git_repo, "dev").unwrap();
+
+        let overlay = resolve_overlay(&over_repo, &git_repo, None).unwrap();
+        assert_eq!(overlay.name, "dev");
+    }
+}

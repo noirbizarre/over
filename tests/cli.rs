@@ -133,3 +133,136 @@ fn add_nonexistent_file_fails() -> TestResult {
     cmd.assert().failure();
     Ok(())
 }
+
+// ── lint integration tests ──────────────────────────────────────────────
+
+#[test]
+fn lint_clean_overlay() -> TestResult {
+    let tmp = TempDir::new()?;
+    let ov = tmp.path().join("clean");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), b"target = \"~\"")?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .arg("lint")
+        .assert()
+        .success()
+        .stdout(contains("No issues found"));
+    Ok(())
+}
+
+#[test]
+fn lint_with_warnings_exits_zero() -> TestResult {
+    let tmp = TempDir::new()?;
+    let ov = tmp.path().join("redundant");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), b"target = \"~\"\nexclude = []")?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .arg("lint")
+        .assert()
+        .success()
+        .stdout(contains("warning"))
+        .stdout(contains("1 warning"));
+    Ok(())
+}
+
+#[test]
+fn lint_with_errors_exits_nonzero() -> TestResult {
+    let tmp = TempDir::new()?;
+    let ov = tmp.path().join("broken");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), b"this is not valid toml [[[")?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .arg("lint")
+        .assert()
+        .failure()
+        .stdout(contains("error"))
+        .stdout(contains("1 error"));
+    Ok(())
+}
+
+#[test]
+fn lint_uses_nonexistent_overlay() -> TestResult {
+    let tmp = TempDir::new()?;
+    let ov = tmp.path().join("badref");
+    fs::create_dir_all(&ov)?;
+    fs::write(
+        ov.join("over.toml"),
+        b"target = \"~\"\nuses = [\"nonexistent\"]",
+    )?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .arg("lint")
+        .assert()
+        .failure()
+        .stdout(contains("error"))
+        .stdout(contains("non-existent overlay"));
+    Ok(())
+}
+
+#[test]
+fn lint_cycle_detection() -> TestResult {
+    let tmp = TempDir::new()?;
+    let a = tmp.path().join("a");
+    fs::create_dir_all(&a)?;
+    fs::write(a.join("over.toml"), b"target = \"~\"\nuses = [\"b\"]")?;
+    let b = tmp.path().join("b");
+    fs::create_dir_all(&b)?;
+    fs::write(b.join("over.toml"), b"target = \"~\"\nuses = [\"a\"]")?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .arg("lint")
+        .assert()
+        .failure()
+        .stdout(contains("cycle detected"));
+    Ok(())
+}
+
+// ── show integration tests ──────────────────────────────────────────────
+
+#[test]
+fn show_overlay_with_target() -> TestResult {
+    let tmp = TempDir::new()?;
+    let ov = tmp.path().join("myoverlay");
+    fs::create_dir_all(&ov)?;
+    fs::write(
+        ov.join("over.toml"),
+        b"target = \"/home/user\"\ndescription = \"My test overlay\"",
+    )?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["show", "myoverlay"])
+        .assert()
+        .success()
+        .stdout(contains("myoverlay"))
+        .stdout(contains("/home/user"))
+        .stdout(contains("My test overlay"));
+    Ok(())
+}
+
+#[test]
+fn show_nonexistent_overlay_fails() -> TestResult {
+    let tmp = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["show", "does_not_exist"])
+        .assert()
+        .failure();
+    Ok(())
+}

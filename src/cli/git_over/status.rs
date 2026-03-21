@@ -209,3 +209,139 @@ fn is_overlay_descriptor(path: &Path) -> bool {
     };
     stem == overlays::BASENAME && overlays::EXTENSIONS.contains(&ext)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_fs::TempDir;
+    use assert_fs::prelude::*;
+    use rstest::rstest;
+    use std::path::PathBuf;
+
+    // ── is_overlay_descriptor ────────────────────────────────────────────
+
+    #[rstest]
+    #[case("over.yml", true)]
+    #[case("over.yaml", true)]
+    #[case("over.toml", true)]
+    fn test_is_overlay_descriptor_valid(#[case] name: &str, #[case] expected: bool) {
+        assert_eq!(is_overlay_descriptor(Path::new(name)), expected);
+    }
+
+    #[rstest]
+    #[case("over.json")]
+    #[case("over.txt")]
+    #[case("config.yml")]
+    #[case("overlay.yaml")]
+    #[case("over")]
+    #[case(".yml")]
+    fn test_is_overlay_descriptor_invalid(#[case] name: &str) {
+        assert!(!is_overlay_descriptor(Path::new(name)));
+    }
+
+    #[test]
+    fn test_is_overlay_descriptor_nested_path() {
+        assert!(is_overlay_descriptor(Path::new("some/deep/path/over.yml")));
+        assert!(!is_overlay_descriptor(Path::new("some/deep/path/readme.md")));
+    }
+
+    // ── is_symlink_to ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_symlink_to_not_a_symlink() {
+        let td = TempDir::new().unwrap();
+        td.child("regular.txt").write_str("hello").unwrap();
+
+        assert!(!is_symlink_to(
+            &td.path().join("regular.txt"),
+            &PathBuf::from("/some/overlay/file"),
+            &PathBuf::from("/some/overlay"),
+        ));
+    }
+
+    #[test]
+    fn test_is_symlink_to_nonexistent_path() {
+        let td = TempDir::new().unwrap();
+
+        assert!(!is_symlink_to(
+            &td.path().join("does_not_exist"),
+            &PathBuf::from("/some/overlay/file"),
+            &PathBuf::from("/some/overlay"),
+        ));
+    }
+
+    #[test]
+    fn test_is_symlink_to_exact_match() {
+        let td = TempDir::new().unwrap();
+        let overlay_dir = td.child("overlay");
+        overlay_dir.create_dir_all().unwrap();
+        let overlay_file = overlay_dir.child("config.txt");
+        overlay_file.write_str("content").unwrap();
+
+        let worktree_dir = td.child("worktree");
+        worktree_dir.create_dir_all().unwrap();
+        let link_path = worktree_dir.path().join("config.txt");
+
+        std::os::unix::fs::symlink(overlay_file.path(), &link_path).unwrap();
+
+        let overlay_root_canonical = overlay_dir.path().canonicalize().unwrap();
+        assert!(is_symlink_to(
+            &link_path,
+            &overlay_file.path().canonicalize().unwrap(),
+            &overlay_root_canonical,
+        ));
+    }
+
+    #[test]
+    fn test_is_symlink_to_different_target() {
+        let td = TempDir::new().unwrap();
+        let overlay_dir = td.child("overlay");
+        overlay_dir.create_dir_all().unwrap();
+        let overlay_file = overlay_dir.child("config.txt");
+        overlay_file.write_str("content").unwrap();
+
+        let other_dir = td.child("other");
+        other_dir.create_dir_all().unwrap();
+        let other_file = other_dir.child("config.txt");
+        other_file.write_str("other content").unwrap();
+
+        let worktree_dir = td.child("worktree");
+        worktree_dir.create_dir_all().unwrap();
+        let link_path = worktree_dir.path().join("config.txt");
+
+        // Symlink to a file NOT in the overlay
+        std::os::unix::fs::symlink(other_file.path(), &link_path).unwrap();
+
+        let overlay_root_canonical = overlay_dir.path().canonicalize().unwrap();
+        assert!(!is_symlink_to(
+            &link_path,
+            &overlay_file.path().canonicalize().unwrap(),
+            &overlay_root_canonical,
+        ));
+    }
+
+    #[test]
+    fn test_is_symlink_to_relative_path_match() {
+        let td = TempDir::new().unwrap();
+        let overlay_dir = td.child("overlay");
+        overlay_dir.create_dir_all().unwrap();
+        let sub = overlay_dir.child("sub");
+        sub.create_dir_all().unwrap();
+        let overlay_file = sub.child("dotfile");
+        overlay_file.write_str("data").unwrap();
+
+        let worktree_dir = td.child("repo");
+        worktree_dir.create_dir_all().unwrap();
+        let link_path = worktree_dir.path().join("dotfile");
+
+        std::os::unix::fs::symlink(overlay_file.path(), &link_path).unwrap();
+
+        let overlay_root_canonical = overlay_dir.path().canonicalize().unwrap();
+        // overlay_file is under overlay_root, so relative path matching should work
+        assert!(is_symlink_to(
+            &link_path,
+            &overlay_file.path().canonicalize().unwrap(),
+            &overlay_root_canonical,
+        ));
+    }
+}

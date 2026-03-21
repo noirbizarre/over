@@ -491,8 +491,7 @@ fn update_descriptor_toml(
     let mut doc: toml::Value = if content.is_empty() {
         toml::Value::Table(toml::map::Map::new())
     } else {
-        content
-            .parse()
+        toml::from_str(&content)
             .map_err(|e| anyhow!("failed to parse {}: {}", descriptor_path.display(), e))?
     };
 
@@ -598,5 +597,546 @@ fn yaml_value_to_toml(v: &serde_yml::Value) -> Result<toml::Value> {
         }
         serde_yml::Value::Mapping(m) => yaml_mapping_to_toml(m),
         _ => Err(anyhow!("unsupported value type in git entry")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::git::config::GitConfig;
+    use assert_fs::TempDir;
+    use assert_fs::prelude::*;
+    use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
+
+    // ── build_git_entry ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_git_entry_url_only() {
+        let config = GitRepoConfig {
+            url: "https://github.com/user/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+        };
+        let entry = build_git_entry(&config);
+        assert_eq!(
+            entry.get(&serde_yml::Value::String("url".into())),
+            Some(&serde_yml::Value::String(
+                "https://github.com/user/repo.git".into()
+            )),
+        );
+        assert_eq!(entry.len(), 1);
+    }
+
+    #[test]
+    fn test_build_git_entry_with_branch() {
+        let config = GitRepoConfig {
+            url: "git@github.com:user/repo.git".into(),
+            branch: Some("main".into()),
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+        };
+        let entry = build_git_entry(&config);
+        assert_eq!(
+            entry.get(&serde_yml::Value::String("branch".into())),
+            Some(&serde_yml::Value::String("main".into())),
+        );
+    }
+
+    #[test]
+    fn test_build_git_entry_with_tag() {
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: Some("v1.0.0".into()),
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+        };
+        let entry = build_git_entry(&config);
+        assert_eq!(
+            entry.get(&serde_yml::Value::String("tag".into())),
+            Some(&serde_yml::Value::String("v1.0.0".into())),
+        );
+    }
+
+    #[test]
+    fn test_build_git_entry_with_rev() {
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: Some("abc123".into()),
+            recurse_submodules: false,
+            worktree: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+        };
+        let entry = build_git_entry(&config);
+        assert_eq!(
+            entry.get(&serde_yml::Value::String("rev".into())),
+            Some(&serde_yml::Value::String("abc123".into())),
+        );
+    }
+
+    #[test]
+    fn test_build_git_entry_with_recurse_submodules() {
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: true,
+            worktree: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+        };
+        let entry = build_git_entry(&config);
+        assert_eq!(
+            entry.get(&serde_yml::Value::String("recurse_submodules".into())),
+            Some(&serde_yml::Value::Bool(true)),
+        );
+    }
+
+    #[test]
+    fn test_build_git_entry_with_worktree() {
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: true,
+            worktrees: None,
+            remotes: None,
+            config: None,
+        };
+        let entry = build_git_entry(&config);
+        assert_eq!(
+            entry.get(&serde_yml::Value::String("worktree".into())),
+            Some(&serde_yml::Value::Bool(true)),
+        );
+    }
+
+    #[test]
+    fn test_build_git_entry_with_worktrees() {
+        let mut worktrees = HashMap::new();
+        worktrees.insert("feature".into(), "feature-branch".into());
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            worktrees: Some(worktrees),
+            remotes: None,
+            config: None,
+        };
+        let entry = build_git_entry(&config);
+        let wt = entry
+            .get(&serde_yml::Value::String("worktrees".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            wt.get(&serde_yml::Value::String("feature".into())),
+            Some(&serde_yml::Value::String("feature-branch".into())),
+        );
+    }
+
+    #[test]
+    fn test_build_git_entry_with_remotes() {
+        let mut remotes = HashMap::new();
+        remotes.insert(
+            "upstream".into(),
+            RemoteConfig {
+                url: "https://github.com/upstream/repo.git".into(),
+                fetch: Some("+refs/heads/*:refs/remotes/upstream/*".into()),
+                push: None,
+                tagopt: None,
+                extras: HashMap::new(),
+            },
+        );
+        let config = GitRepoConfig {
+            url: "git@github.com:user/repo.git".into(),
+            branch: Some("main".into()),
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            worktrees: None,
+            remotes: Some(remotes),
+            config: None,
+        };
+        let entry = build_git_entry(&config);
+        let remotes_map = entry
+            .get(&serde_yml::Value::String("remotes".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let upstream = remotes_map
+            .get(&serde_yml::Value::String("upstream".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            upstream.get(&serde_yml::Value::String("url".into())),
+            Some(&serde_yml::Value::String(
+                "https://github.com/upstream/repo.git".into()
+            )),
+        );
+        assert_eq!(
+            upstream.get(&serde_yml::Value::String("fetch".into())),
+            Some(&serde_yml::Value::String(
+                "+refs/heads/*:refs/remotes/upstream/*".into()
+            )),
+        );
+    }
+
+    #[test]
+    fn test_build_git_entry_with_config() {
+        let mut entries = HashMap::new();
+        entries.insert("user.name".into(), "Test User".into());
+        entries.insert("user.email".into(), "test@example.com".into());
+        let config = GitRepoConfig {
+            url: "git@github.com:user/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            worktrees: None,
+            remotes: None,
+            config: Some(GitConfig { entries }),
+        };
+        let entry = build_git_entry(&config);
+        let config_map = entry
+            .get(&serde_yml::Value::String("config".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            config_map.get(&serde_yml::Value::String("user.name".into())),
+            Some(&serde_yml::Value::String("Test User".into())),
+        );
+        assert_eq!(
+            config_map.get(&serde_yml::Value::String("user.email".into())),
+            Some(&serde_yml::Value::String("test@example.com".into())),
+        );
+    }
+
+    // ── yaml_value_to_toml / yaml_mapping_to_toml ───────────────────────
+
+    #[test]
+    fn test_yaml_value_to_toml_string() {
+        let v = serde_yml::Value::String("hello".into());
+        assert_eq!(yaml_value_to_toml(&v).unwrap(), toml::Value::String("hello".into()));
+    }
+
+    #[test]
+    fn test_yaml_value_to_toml_bool() {
+        let v = serde_yml::Value::Bool(true);
+        assert_eq!(yaml_value_to_toml(&v).unwrap(), toml::Value::Boolean(true));
+    }
+
+    #[test]
+    fn test_yaml_value_to_toml_integer() {
+        let v = serde_yml::Value::Number(serde_yml::Number::from(42));
+        assert_eq!(yaml_value_to_toml(&v).unwrap(), toml::Value::Integer(42));
+    }
+
+    #[test]
+    fn test_yaml_value_to_toml_float() {
+        let v = serde_yml::Value::Number(serde_yml::Number::from(3.14));
+        let result = yaml_value_to_toml(&v).unwrap();
+        match result {
+            toml::Value::Float(f) => assert!((f - 3.14).abs() < f64::EPSILON),
+            _ => panic!("expected float"),
+        }
+    }
+
+    #[test]
+    fn test_yaml_value_to_toml_mapping() {
+        let mut m = serde_yml::Mapping::new();
+        m.insert(
+            serde_yml::Value::String("key".into()),
+            serde_yml::Value::String("value".into()),
+        );
+        let result = yaml_value_to_toml(&serde_yml::Value::Mapping(m)).unwrap();
+        match result {
+            toml::Value::Table(t) => {
+                assert_eq!(t.get("key"), Some(&toml::Value::String("value".into())));
+            }
+            _ => panic!("expected table"),
+        }
+    }
+
+    #[test]
+    fn test_yaml_value_to_toml_null_errors() {
+        let v = serde_yml::Value::Null;
+        assert!(yaml_value_to_toml(&v).is_err());
+    }
+
+    #[test]
+    fn test_yaml_value_to_toml_sequence_errors() {
+        let v = serde_yml::Value::Sequence(vec![serde_yml::Value::String("a".into())]);
+        assert!(yaml_value_to_toml(&v).is_err());
+    }
+
+    #[test]
+    fn test_yaml_mapping_to_toml_nested() {
+        let mut inner = serde_yml::Mapping::new();
+        inner.insert(
+            serde_yml::Value::String("nested_key".into()),
+            serde_yml::Value::Bool(true),
+        );
+        let mut outer = serde_yml::Mapping::new();
+        outer.insert(
+            serde_yml::Value::String("str".into()),
+            serde_yml::Value::String("hello".into()),
+        );
+        outer.insert(
+            serde_yml::Value::String("inner".into()),
+            serde_yml::Value::Mapping(inner),
+        );
+
+        let result = yaml_mapping_to_toml(&outer).unwrap();
+        match result {
+            toml::Value::Table(t) => {
+                assert_eq!(t.get("str"), Some(&toml::Value::String("hello".into())));
+                let inner_table = t.get("inner").unwrap().as_table().unwrap();
+                assert_eq!(
+                    inner_table.get("nested_key"),
+                    Some(&toml::Value::Boolean(true))
+                );
+            }
+            _ => panic!("expected table"),
+        }
+    }
+
+    #[test]
+    fn test_yaml_mapping_to_toml_non_string_key_errors() {
+        let mut m = serde_yml::Mapping::new();
+        m.insert(
+            serde_yml::Value::Number(serde_yml::Number::from(42)),
+            serde_yml::Value::String("val".into()),
+        );
+        assert!(yaml_mapping_to_toml(&m).is_err());
+    }
+
+    // ── find_descriptor ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_find_descriptor_yaml() {
+        let td = TempDir::new().unwrap();
+        td.child("over.yaml").write_str("target: ~").unwrap();
+        let (path, format) = find_descriptor(td.path());
+        assert_eq!(path, td.path().join("over.yaml"));
+        assert!(matches!(format, DescriptorFormat::Yaml));
+    }
+
+    #[test]
+    fn test_find_descriptor_yml() {
+        let td = TempDir::new().unwrap();
+        td.child("over.yml").write_str("target: ~").unwrap();
+        let (path, format) = find_descriptor(td.path());
+        assert_eq!(path, td.path().join("over.yml"));
+        assert!(matches!(format, DescriptorFormat::Yaml));
+    }
+
+    #[test]
+    fn test_find_descriptor_toml() {
+        let td = TempDir::new().unwrap();
+        td.child("over.toml").write_str("target = \"~\"").unwrap();
+        let (path, format) = find_descriptor(td.path());
+        assert_eq!(path, td.path().join("over.toml"));
+        assert!(matches!(format, DescriptorFormat::Toml));
+    }
+
+    #[test]
+    fn test_find_descriptor_default_when_none() {
+        let td = TempDir::new().unwrap();
+        let (path, format) = find_descriptor(td.path());
+        assert_eq!(path, td.path().join("over.yaml"));
+        assert!(matches!(format, DescriptorFormat::Yaml));
+    }
+
+    // ── update_descriptor_yaml ──────────────────────────────────────────
+
+    #[test]
+    fn test_update_descriptor_yaml_new_file() {
+        let td = TempDir::new().unwrap();
+        let config = GitRepoConfig {
+            url: "https://github.com/user/repo.git".into(),
+            branch: Some("main".into()),
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+        };
+        let descriptor = td.path().join("over.yaml");
+        update_descriptor_yaml(&descriptor, "projects/myapp", &config).unwrap();
+
+        let content = std::fs::read_to_string(&descriptor).unwrap();
+        assert!(content.contains("projects/myapp"));
+        assert!(content.contains("https://github.com/user/repo.git"));
+        assert!(content.contains("main"));
+    }
+
+    #[test]
+    fn test_update_descriptor_yaml_existing_file() {
+        let td = TempDir::new().unwrap();
+        td.child("over.yaml")
+            .write_str("target: ~\nuses:\n  - base\n")
+            .unwrap();
+
+        let config = GitRepoConfig {
+            url: "git@github.com:user/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+        };
+        let descriptor = td.path().join("over.yaml");
+        update_descriptor_yaml(&descriptor, "my/repo", &config).unwrap();
+
+        let content = std::fs::read_to_string(&descriptor).unwrap();
+        // Should preserve existing content
+        assert!(content.contains("target"));
+        assert!(content.contains("base"));
+        // And add new git entry
+        assert!(content.contains("my/repo"));
+        assert!(content.contains("git@github.com:user/repo.git"));
+    }
+
+    // ── update_descriptor_toml ──────────────────────────────────────────
+
+    #[test]
+    fn test_update_descriptor_toml_new_file() {
+        let td = TempDir::new().unwrap();
+        let config = GitRepoConfig {
+            url: "https://github.com/user/repo.git".into(),
+            branch: Some("main".into()),
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+        };
+        let descriptor = td.path().join("over.toml");
+        update_descriptor_toml(&descriptor, "projects/myapp", &config).unwrap();
+
+        let content = std::fs::read_to_string(&descriptor).unwrap();
+        assert!(content.contains("projects/myapp"));
+        assert!(content.contains("https://github.com/user/repo.git"));
+        assert!(content.contains("main"));
+    }
+
+    #[test]
+    fn test_update_descriptor_toml_existing_file() {
+        let td = TempDir::new().unwrap();
+        td.child("over.toml")
+            .write_str("target = \"~\"\nuses = [\"base\"]\n")
+            .unwrap();
+
+        let config = GitRepoConfig {
+            url: "git@github.com:user/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+        };
+        let descriptor = td.path().join("over.toml");
+        update_descriptor_toml(&descriptor, "my/repo", &config).unwrap();
+
+        let content = std::fs::read_to_string(&descriptor).unwrap();
+        // Should preserve existing content
+        assert!(content.contains("target"));
+        assert!(content.contains("base"));
+        // And add new git entry
+        assert!(content.contains("my/repo"));
+        assert!(content.contains("git@github.com:user/repo.git"));
+    }
+
+    // ── update_overlay_descriptor (integration) ─────────────────────────
+
+    #[test]
+    fn test_update_overlay_descriptor_detects_yaml() {
+        let td = TempDir::new().unwrap();
+        td.child("over.yaml")
+            .write_str("target: ~\n")
+            .unwrap();
+
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+        };
+        update_overlay_descriptor(td.path(), "my/path", &config).unwrap();
+
+        let content = std::fs::read_to_string(td.path().join("over.yaml")).unwrap();
+        assert!(content.contains("my/path"));
+        assert!(content.contains("https://example.com/repo.git"));
+    }
+
+    #[test]
+    fn test_update_overlay_descriptor_detects_toml() {
+        let td = TempDir::new().unwrap();
+        td.child("over.toml")
+            .write_str("target = \"~\"\n")
+            .unwrap();
+
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+        };
+        update_overlay_descriptor(td.path(), "my/path", &config).unwrap();
+
+        let content = std::fs::read_to_string(td.path().join("over.toml")).unwrap();
+        assert!(content.contains("my/path"));
+        assert!(content.contains("https://example.com/repo.git"));
     }
 }
