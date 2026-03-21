@@ -84,3 +84,71 @@ impl Repository {
         prefs.format
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn preferred_format_returns_toml_from_toml_config() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("over.toml"), b"format = \"toml\"").unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        assert_eq!(repo.preferred_format(), Some(Format::Toml));
+    }
+
+    #[test]
+    fn preferred_format_returns_yaml_from_toml_config() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("over.toml"), b"format = \"yaml\"").unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        assert_eq!(repo.preferred_format(), Some(Format::Yaml));
+    }
+
+    #[test]
+    fn preferred_format_returns_yaml_from_yaml_config() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("over.yaml"), b"format: yaml").unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        assert_eq!(repo.preferred_format(), Some(Format::Yaml));
+    }
+
+    #[test]
+    fn preferred_format_returns_none_when_no_config() {
+        let tmp = TempDir::new().unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        assert_eq!(repo.preferred_format(), None);
+    }
+
+    #[test]
+    fn preferred_format_returns_none_when_field_absent() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("over.toml"), b"target = \"~\"").unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        assert_eq!(repo.preferred_format(), None);
+    }
+
+    #[test]
+    fn preferred_format_returns_none_for_invalid_value() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("over.toml"), b"format = \"invalid\"").unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        assert_eq!(repo.preferred_format(), None);
+    }
+
+    #[test]
+    fn preferred_format_ignores_extra_fields() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("over.toml"),
+            b"format = \"yaml\"\ntarget = \"~\"\ndescription = \"root\"",
+        )
+        .unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        assert_eq!(repo.preferred_format(), Some(Format::Yaml));
+    }
+}

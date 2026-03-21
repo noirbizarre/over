@@ -30,7 +30,7 @@ pub struct Params {
     dry_run: bool,
 
     /// Overwrite without prompting
-    #[clap(long, short, help = "Overwrite without prompting")]
+    #[clap(long, help = "Overwrite without prompting")]
     force: bool,
 }
 
@@ -277,7 +277,13 @@ fn build_yaml_descriptor(target: &str, git_entries: &HashMap<String, String>) ->
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
     use super::*;
+
+    // ── resolve_target_path ─────────────────────────────────────────────
 
     #[test]
     fn test_resolve_target_path_tilde() {
@@ -303,6 +309,25 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_target_path_relative() {
+        assert_eq!(
+            resolve_target_path("relative/path").unwrap(),
+            PathBuf::from("relative/path")
+        );
+    }
+
+    #[test]
+    fn test_resolve_target_path_tilde_deep_nesting() {
+        let home = home_dir().unwrap();
+        assert_eq!(
+            resolve_target_path("~/a/b/c/d").unwrap(),
+            home.join("a/b/c/d")
+        );
+    }
+
+    // ── build_toml_descriptor ───────────────────────────────────────────
+
+    #[test]
     fn test_build_toml_descriptor_simple() {
         let content = build_toml_descriptor("~", &HashMap::new());
         assert_eq!(content, "target = \"~\"\n");
@@ -321,6 +346,38 @@ mod tests {
             "target = \"~/apps/myapp\"\n\n[git]\nmyrepo = { url = \"https://github.com/user/myrepo.git\" }\n"
         );
     }
+
+    #[test]
+    fn test_build_toml_descriptor_git_sorted() {
+        let mut git = HashMap::new();
+        git.insert("zrepo".to_string(), "https://example.com/z.git".to_string());
+        git.insert("arepo".to_string(), "https://example.com/a.git".to_string());
+        let content = build_toml_descriptor("~", &git);
+        let a_pos = content.find("arepo").unwrap();
+        let z_pos = content.find("zrepo").unwrap();
+        assert!(a_pos < z_pos, "entries should be sorted alphabetically");
+    }
+
+    #[test]
+    fn test_build_toml_descriptor_absolute_target() {
+        let content = build_toml_descriptor("/opt/myapp", &HashMap::new());
+        assert_eq!(content, "target = \"/opt/myapp\"\n");
+    }
+
+    #[test]
+    fn test_build_toml_descriptor_multiple_git() {
+        let mut git = HashMap::new();
+        git.insert("alpha".to_string(), "https://example.com/a.git".to_string());
+        git.insert("beta".to_string(), "https://example.com/b.git".to_string());
+        git.insert("gamma".to_string(), "https://example.com/g.git".to_string());
+        let content = build_toml_descriptor("~", &git);
+        assert!(content.contains("[git]"));
+        assert!(content.contains("alpha = { url ="));
+        assert!(content.contains("beta = { url ="));
+        assert!(content.contains("gamma = { url ="));
+    }
+
+    // ── build_yaml_descriptor ───────────────────────────────────────────
 
     #[test]
     fn test_build_yaml_descriptor_simple() {
@@ -343,22 +400,99 @@ mod tests {
     }
 
     #[test]
-    fn test_build_toml_descriptor_git_sorted() {
+    fn test_build_yaml_descriptor_git_sorted() {
         let mut git = HashMap::new();
         git.insert("zrepo".to_string(), "https://example.com/z.git".to_string());
         git.insert("arepo".to_string(), "https://example.com/a.git".to_string());
-        let content = build_toml_descriptor("~", &git);
-        assert!(content.contains("arepo"));
-        assert!(content.contains("zrepo"));
-        // arepo should appear before zrepo
+        let content = build_yaml_descriptor("~", &git);
         let a_pos = content.find("arepo").unwrap();
         let z_pos = content.find("zrepo").unwrap();
-        assert!(a_pos < z_pos);
+        assert!(a_pos < z_pos, "entries should be sorted alphabetically");
+    }
+
+    // ── build_descriptor (dispatch) ─────────────────────────────────────
+
+    #[test]
+    fn test_build_descriptor_dispatches_toml() {
+        let content = build_descriptor("~", Format::Toml, &HashMap::new());
+        assert!(content.starts_with("target = "));
     }
 
     #[test]
+    fn test_build_descriptor_dispatches_yaml() {
+        let content = build_descriptor("~", Format::Yaml, &HashMap::new());
+        assert!(content.starts_with("target: "));
+    }
+
+    #[test]
+    fn test_build_descriptor_toml_with_git() {
+        let mut git = HashMap::new();
+        git.insert("repo".to_string(), "https://example.com/r.git".to_string());
+        let content = build_descriptor("~/test", Format::Toml, &git);
+        assert!(content.contains("[git]"));
+        assert!(content.contains("repo = { url ="));
+    }
+
+    #[test]
+    fn test_build_descriptor_yaml_with_git() {
+        let mut git = HashMap::new();
+        git.insert("repo".to_string(), "https://example.com/r.git".to_string());
+        let content = build_descriptor("~/test", Format::Yaml, &git);
+        assert!(content.contains("git:"));
+        assert!(content.contains("  repo:"));
+        assert!(content.contains("    url:"));
+    }
+
+    // ── extract_git_remote ──────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_git_remote_valid_repo() {
+        let tmp = TempDir::new().unwrap();
+        let repo_path = tmp.path().join("myrepo");
+        fs::create_dir_all(&repo_path).unwrap();
+        let repo = git2::Repository::init(&repo_path).unwrap();
+        repo.remote("origin", "https://github.com/user/myrepo.git")
+            .unwrap();
+
+        let result = extract_git_remote(&repo_path);
+        assert!(result.is_some());
+        let (name, url) = result.unwrap();
+        assert_eq!(name, "myrepo");
+        assert_eq!(url, "https://github.com/user/myrepo.git");
+    }
+
+    #[test]
+    fn test_extract_git_remote_no_origin() {
+        let tmp = TempDir::new().unwrap();
+        let repo_path = tmp.path().join("norepo");
+        fs::create_dir_all(&repo_path).unwrap();
+        git2::Repository::init(&repo_path).unwrap();
+        // No origin remote added
+
+        let result = extract_git_remote(&repo_path);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_git_remote_not_a_repo() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("plaindir");
+        fs::create_dir_all(&dir).unwrap();
+
+        let result = extract_git_remote(&dir);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_git_remote_nonexistent_path() {
+        let result = extract_git_remote(Path::new("/nonexistent/path/xyz"));
+        assert!(result.is_none());
+    }
+
+    // ── format resolution logic ─────────────────────────────────────────
+
+    #[test]
     fn test_format_resolution_flag_wins() {
-        // --format flag takes priority
         let flag = Some(Format::Yaml);
         let config = Some(Format::Toml);
         let result = flag.or(config).unwrap_or_default();
@@ -367,7 +501,6 @@ mod tests {
 
     #[test]
     fn test_format_resolution_config_fallback() {
-        // Root config used when no flag
         let flag: Option<Format> = None;
         let config = Some(Format::Yaml);
         let result = flag.or(config).unwrap_or_default();
@@ -376,7 +509,6 @@ mod tests {
 
     #[test]
     fn test_format_resolution_default() {
-        // Default is Toml when neither flag nor config provided
         let flag: Option<Format> = None;
         let config: Option<Format> = None;
         let result = flag.or(config).unwrap_or_default();

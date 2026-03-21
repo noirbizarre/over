@@ -266,3 +266,238 @@ fn show_nonexistent_overlay_fails() -> TestResult {
         .failure();
     Ok(())
 }
+
+// ── new integration tests ───────────────────────────────────────────────
+
+#[test]
+fn new_overlay_creates_toml_descriptor() -> TestResult {
+    let tmp = TempDir::new()?;
+    // Use a non-existent target so no absorb prompt triggers
+    let target = tmp.path().join("nonexistent_target");
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["new", "myoverlay", target.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("myoverlay"))
+        .stdout(contains("(toml)"));
+
+    // Verify the overlay directory was created
+    assert!(tmp.path().join("myoverlay").is_dir());
+    // Verify the descriptor file was created
+    let descriptor = tmp.path().join("myoverlay/over.toml");
+    assert!(descriptor.exists());
+    let content = fs::read_to_string(&descriptor)?;
+    assert!(content.contains("target"));
+    assert!(content.contains(target.to_str().unwrap()));
+    Ok(())
+}
+
+#[test]
+fn new_overlay_creates_yaml_descriptor() -> TestResult {
+    let tmp = TempDir::new()?;
+    let target = tmp.path().join("nonexistent_target");
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args([
+            "new",
+            "yamloverlay",
+            target.to_str().unwrap(),
+            "--format",
+            "yaml",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("yamloverlay"))
+        .stdout(contains("(yaml)"));
+
+    // Verify yaml descriptor was created (not toml)
+    let descriptor = tmp.path().join("yamloverlay/over.yaml");
+    assert!(descriptor.exists());
+    assert!(!tmp.path().join("yamloverlay/over.toml").exists());
+    let content = fs::read_to_string(&descriptor)?;
+    assert!(content.contains("target:"));
+    Ok(())
+}
+
+#[test]
+fn new_overlay_dry_run_does_not_write() -> TestResult {
+    let tmp = TempDir::new()?;
+    let target = tmp.path().join("nonexistent_target");
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["new", "dryoverlay", target.to_str().unwrap(), "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains("Descriptor content (dry-run)"));
+
+    // The overlay directory should NOT exist
+    assert!(!tmp.path().join("dryoverlay").is_dir());
+    // No descriptor should exist
+    assert!(!tmp.path().join("dryoverlay/over.toml").exists());
+    Ok(())
+}
+
+#[test]
+fn new_overlay_already_exists_fails() -> TestResult {
+    let tmp = TempDir::new()?;
+    let overlay_dir = tmp.path().join("existing");
+    fs::create_dir_all(&overlay_dir)?;
+    fs::write(overlay_dir.join("over.toml"), b"target = \"~\"")?;
+    let target = tmp.path().join("nonexistent_target");
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["new", "existing", target.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(contains("overlay already exists"));
+    Ok(())
+}
+
+#[test]
+fn new_overlay_force_overwrites_existing() -> TestResult {
+    let tmp = TempDir::new()?;
+    let overlay_dir = tmp.path().join("forced");
+    fs::create_dir_all(&overlay_dir)?;
+    fs::write(overlay_dir.join("over.toml"), b"target = \"~\"")?;
+    let target = tmp.path().join("nonexistent_target");
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["new", "forced", target.to_str().unwrap(), "--force"])
+        .assert()
+        .success()
+        .stdout(contains("forced"));
+
+    // Verify the descriptor was overwritten with new target
+    let content = fs::read_to_string(overlay_dir.join("over.toml"))?;
+    assert!(content.contains(target.to_str().unwrap()));
+    Ok(())
+}
+
+#[test]
+fn new_overlay_nested_path() -> TestResult {
+    let tmp = TempDir::new()?;
+    let target = tmp.path().join("nonexistent_target");
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["new", "apps/nested/deep", target.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("apps/nested/deep"));
+
+    // Verify the nested directory structure was created
+    assert!(tmp.path().join("apps/nested/deep").is_dir());
+    assert!(tmp.path().join("apps/nested/deep/over.toml").exists());
+    Ok(())
+}
+
+#[test]
+fn new_overlay_reads_format_from_root_config() -> TestResult {
+    let tmp = TempDir::new()?;
+    // Write root config with format preference
+    fs::write(tmp.path().join("over.toml"), b"format = \"yaml\"")?;
+    let target = tmp.path().join("nonexistent_target");
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["new", "fromconfig", target.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(contains("(yaml)"));
+
+    // Should create yaml descriptor, not toml
+    assert!(tmp.path().join("fromconfig/over.yaml").exists());
+    assert!(!tmp.path().join("fromconfig/over.toml").exists());
+    Ok(())
+}
+
+#[test]
+fn new_overlay_format_flag_overrides_root_config() -> TestResult {
+    let tmp = TempDir::new()?;
+    // Root config says yaml
+    fs::write(tmp.path().join("over.toml"), b"format = \"yaml\"")?;
+    let target = tmp.path().join("nonexistent_target");
+
+    // But --format toml should win
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args([
+            "new",
+            "flagwins",
+            target.to_str().unwrap(),
+            "--format",
+            "toml",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("(toml)"));
+
+    assert!(tmp.path().join("flagwins/over.toml").exists());
+    assert!(!tmp.path().join("flagwins/over.yaml").exists());
+    Ok(())
+}
+
+#[test]
+fn new_overlay_with_tilde_target() -> TestResult {
+    let tmp = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["new", "homeoverlay", "~", "--force"])
+        .assert()
+        .success()
+        .stdout(contains("homeoverlay"));
+
+    let content = fs::read_to_string(tmp.path().join("homeoverlay/over.toml"))?;
+    assert_eq!(content, "target = \"~\"\n");
+    Ok(())
+}
+
+#[test]
+fn new_overlay_with_tilde_subdir_target() -> TestResult {
+    let tmp = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["new", "suboverlay", "~/.config/myapp"])
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(tmp.path().join("suboverlay/over.toml"))?;
+    assert!(content.contains("~/.config/myapp"));
+    Ok(())
+}
+
+#[test]
+fn new_overlay_debug_output() -> TestResult {
+    let tmp = TempDir::new()?;
+    let target = tmp.path().join("nonexistent_target");
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .arg("--debug")
+        .args(["new", "debugoverlay", target.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(contains("overlay root:"))
+        .stderr(contains("descriptor:"))
+        .stderr(contains("format:"));
+    Ok(())
+}
