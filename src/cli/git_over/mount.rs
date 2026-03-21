@@ -8,7 +8,7 @@ use dialoguer::{FuzzySelect, MultiSelect};
 use dirs::home_dir;
 
 use crate::actions::git::config::{GitConfig, GitRepoConfig, RemoteConfig};
-use crate::overlays::{self, Repository};
+use crate::overlays::{self, Format, Repository};
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
@@ -323,23 +323,17 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     Ok(())
 }
 
-/// Supported overlay descriptor formats.
-enum DescriptorFormat {
-    Toml,
-    Yaml,
-}
-
 /// Find the overlay descriptor file in the given directory.
 ///
 /// Probes for `over.{yml,yaml,toml}` and returns the path and format of
 /// the first match found.  If none exists, defaults to `over.yaml`.
-fn find_descriptor(overlay_root: &Path) -> (PathBuf, DescriptorFormat) {
+fn find_descriptor(overlay_root: &Path) -> (PathBuf, Format) {
     for ext in overlays::EXTENSIONS {
         let path = overlay_root.join(format!("{}.{}", overlays::BASENAME, ext));
         if path.exists() {
             let format = match *ext {
-                "toml" => DescriptorFormat::Toml,
-                _ => DescriptorFormat::Yaml,
+                "toml" => Format::Toml,
+                _ => Format::Yaml,
             };
             return (path, format);
         }
@@ -347,7 +341,7 @@ fn find_descriptor(overlay_root: &Path) -> (PathBuf, DescriptorFormat) {
     // Default to YAML when no descriptor exists yet
     (
         overlay_root.join(format!("{}.yaml", overlays::BASENAME)),
-        DescriptorFormat::Yaml,
+        Format::Yaml,
     )
 }
 
@@ -472,8 +466,8 @@ fn update_overlay_descriptor(
     let (descriptor_path, format) = find_descriptor(overlay_root);
 
     match format {
-        DescriptorFormat::Toml => update_descriptor_toml(&descriptor_path, rel_path, config),
-        DescriptorFormat::Yaml => update_descriptor_yaml(&descriptor_path, rel_path, config),
+        Format::Toml => update_descriptor_toml(&descriptor_path, rel_path, config),
+        Format::Yaml => update_descriptor_yaml(&descriptor_path, rel_path, config),
     }
 }
 
@@ -847,7 +841,10 @@ mod tests {
     #[test]
     fn test_yaml_value_to_toml_string() {
         let v = serde_yml::Value::String("hello".into());
-        assert_eq!(yaml_value_to_toml(&v).unwrap(), toml::Value::String("hello".into()));
+        assert_eq!(
+            yaml_value_to_toml(&v).unwrap(),
+            toml::Value::String("hello".into())
+        );
     }
 
     #[test]
@@ -949,7 +946,7 @@ mod tests {
         td.child("over.yaml").write_str("target: ~").unwrap();
         let (path, format) = find_descriptor(td.path());
         assert_eq!(path, td.path().join("over.yaml"));
-        assert!(matches!(format, DescriptorFormat::Yaml));
+        assert!(matches!(format, Format::Yaml));
     }
 
     #[test]
@@ -958,7 +955,7 @@ mod tests {
         td.child("over.yml").write_str("target: ~").unwrap();
         let (path, format) = find_descriptor(td.path());
         assert_eq!(path, td.path().join("over.yml"));
-        assert!(matches!(format, DescriptorFormat::Yaml));
+        assert!(matches!(format, Format::Yaml));
     }
 
     #[test]
@@ -967,7 +964,7 @@ mod tests {
         td.child("over.toml").write_str("target = \"~\"").unwrap();
         let (path, format) = find_descriptor(td.path());
         assert_eq!(path, td.path().join("over.toml"));
-        assert!(matches!(format, DescriptorFormat::Toml));
+        assert!(matches!(format, Format::Toml));
     }
 
     #[test]
@@ -975,7 +972,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         let (path, format) = find_descriptor(td.path());
         assert_eq!(path, td.path().join("over.yaml"));
-        assert!(matches!(format, DescriptorFormat::Yaml));
+        assert!(matches!(format, Format::Yaml));
     }
 
     // ── update_descriptor_yaml ──────────────────────────────────────────
@@ -1093,9 +1090,7 @@ mod tests {
     #[test]
     fn test_update_overlay_descriptor_detects_yaml() {
         let td = TempDir::new().unwrap();
-        td.child("over.yaml")
-            .write_str("target: ~\n")
-            .unwrap();
+        td.child("over.yaml").write_str("target: ~\n").unwrap();
 
         let config = GitRepoConfig {
             url: "https://example.com/repo.git".into(),
@@ -1118,9 +1113,7 @@ mod tests {
     #[test]
     fn test_update_overlay_descriptor_detects_toml() {
         let td = TempDir::new().unwrap();
-        td.child("over.toml")
-            .write_str("target = \"~\"\n")
-            .unwrap();
+        td.child("over.toml").write_str("target = \"~\"\n").unwrap();
 
         let config = GitRepoConfig {
             url: "https://example.com/repo.git".into(),

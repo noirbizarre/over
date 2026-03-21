@@ -201,6 +201,95 @@ impl Theme for DialogTheme {
         )
     }
 
+    /// Formats an input prompt.
+    fn format_input_prompt(
+        &self,
+        f: &mut dyn fmt::Write,
+        prompt: &str,
+        default: Option<&str>,
+    ) -> fmt::Result {
+        if !prompt.is_empty() {
+            write!(
+                f,
+                "{} {} ",
+                &self.prompt_prefix,
+                self.prompt_style.apply_to(prompt),
+            )?;
+        }
+
+        match default {
+            Some(default) => write!(
+                f,
+                "{} {}",
+                self.hint_style.apply_to(format!("({})", default)),
+                &self.prompt_suffix,
+            ),
+            None => write!(f, "{}", &self.prompt_suffix),
+        }
+    }
+
+    /// Formats an input prompt after selection.
+    fn format_input_prompt_selection(
+        &self,
+        f: &mut dyn fmt::Write,
+        prompt: &str,
+        sel: &str,
+    ) -> fmt::Result {
+        if !prompt.is_empty() {
+            write!(
+                f,
+                "{} {} ",
+                &self.success_prefix,
+                self.prompt_style.apply_to(prompt)
+            )?;
+        }
+
+        write!(
+            f,
+            "{} {}",
+            &self.success_suffix,
+            self.values_style.apply_to(sel)
+        )
+    }
+
+    /// Formats a multi-select prompt.
+    fn format_multi_select_prompt(&self, f: &mut dyn fmt::Write, prompt: &str) -> fmt::Result {
+        if !prompt.is_empty() {
+            write!(
+                f,
+                "{} {} ",
+                &self.prompt_prefix,
+                self.prompt_style.apply_to(prompt),
+            )?;
+        }
+
+        write!(f, "{}", &self.prompt_suffix)
+    }
+
+    /// Formats a multi-select prompt after selection.
+    fn format_multi_select_prompt_selection(
+        &self,
+        f: &mut dyn fmt::Write,
+        prompt: &str,
+        selections: &[&str],
+    ) -> fmt::Result {
+        if !prompt.is_empty() {
+            write!(
+                f,
+                "{} {} ",
+                &self.success_prefix,
+                self.prompt_style.apply_to(prompt)
+            )?;
+        }
+
+        write!(
+            f,
+            "{} {}",
+            &self.success_suffix,
+            self.values_style.apply_to(selections.join(", "))
+        )
+    }
+
     /// Formats a select prompt item.
     fn format_select_prompt_item(
         &self,

@@ -242,7 +242,9 @@ mod tests {
     #[test]
     fn test_is_overlay_descriptor_nested_path() {
         assert!(is_overlay_descriptor(Path::new("some/deep/path/over.yml")));
-        assert!(!is_overlay_descriptor(Path::new("some/deep/path/readme.md")));
+        assert!(!is_overlay_descriptor(Path::new(
+            "some/deep/path/readme.md"
+        )));
     }
 
     // ── is_symlink_to ────────────────────────────────────────────────────

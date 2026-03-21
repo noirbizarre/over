@@ -12,6 +12,7 @@ pub(crate) mod common;
 pub mod git_over;
 mod lint;
 mod list;
+mod new;
 mod show;
 mod status;
 
@@ -51,6 +52,9 @@ pub enum Commands {
     #[clap(name = "add", about = "Add files or directories to an overlay")]
     Add(add::Params),
 
+    #[clap(name = "new", about = "Create a new overlay")]
+    New(new::Params),
+
     #[clap(name = "list", about = "List known overlays", alias = "ls")]
     List(list::Params),
 
@@ -89,6 +93,10 @@ pub async fn main() -> Result<()> {
     match args.cmd {
         Some(Commands::Add(ref opt)) => {
             add::execute(&args, opt).await?;
+        }
+
+        Some(Commands::New(ref opt)) => {
+            new::execute(&args, opt).await?;
         }
 
         Some(Commands::List(ref opt)) => {

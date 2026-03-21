@@ -1,16 +1,17 @@
 use std::path::PathBuf;
 
+use config::{Config, File};
 use globset::GlobBuilder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use anyhow::{Context as AnyhowContext, Result};
 
-use super::GLOB_PATTERN;
 use super::overlay::Overlay;
+use super::{BASENAME, Format, GLOB_PATTERN};
 
 /// Manage all overlays
-#[derive(Debug, Default, Serialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Repository {
     /// Repository root directory
     pub root: PathBuf,
@@ -63,5 +64,23 @@ impl Repository {
         let root = self.root.join(name);
         let overlay = Overlay::new(self, &root)?;
         Ok(overlay)
+    }
+
+    /// Load the preferred overlay descriptor format from the root config.
+    ///
+    /// Reads `format` from the repository root `over.{toml,yaml,yml}`.
+    /// Returns `None` when no root config exists or the field is absent.
+    pub fn preferred_format(&self) -> Option<Format> {
+        #[derive(Deserialize)]
+        struct RootPrefs {
+            format: Option<Format>,
+        }
+        let basename = self.root.join(BASENAME);
+        let cfg = Config::builder()
+            .add_source(File::with_name(basename.to_str()?).required(false))
+            .build()
+            .ok()?;
+        let prefs: RootPrefs = cfg.try_deserialize().ok()?;
+        prefs.format
     }
 }

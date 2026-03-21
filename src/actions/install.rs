@@ -2068,9 +2068,7 @@ post = 'echo "after apt"'
         let b = td.child("b");
         b.create_dir_all().unwrap();
         b.child("over.toml")
-            .write_str(
-                "uses = [\"d\"]\n[install.brew]\ntaps = [\"b/tap\"]\npackages = [\"b-pkg\"]",
-            )
+            .write_str("uses = [\"d\"]\n[install.brew]\ntaps = [\"b/tap\"]\npackages = [\"b-pkg\"]")
             .unwrap();
 
         let c_ov = td.child("c");
@@ -2230,9 +2228,7 @@ post = 'echo "after apt"'
         let a = td.child("a");
         a.create_dir_all().unwrap();
         a.child("over.toml")
-            .write_str(
-                "[install.node]\npackages = [{name=\"typescript\", options=\"--force\"}]",
-            )
+            .write_str("[install.node]\npackages = [{name=\"typescript\", options=\"--force\"}]")
             .unwrap();
 
         let overlay = repo.get("a").unwrap();
@@ -2476,9 +2472,7 @@ post = 'echo "after apt"'
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
-        a.child("over.toml")
-            .write_str("target = \"~\"")
-            .unwrap();
+        a.child("over.toml").write_str("target = \"~\"").unwrap();
 
         let overlay = repo.get("a").unwrap();
         let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
