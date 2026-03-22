@@ -34,6 +34,7 @@ anyhow = "1.0"
 futures = "0.3"
 serde_yml = "0.0.12"
 which = "8.0"
+libz-sys = { version = "1.1", optional = true }
 
 [dependencies.clap]
 features = ["derive", "env", "unicode", "cargo", "color"]
@@ -57,3 +58,4 @@ rstest = "0.25"
 tempfile = "3.27"
 
 [features]
+vendored = ["git2/vendored-libgit2", "git2/vendored-openssl", "libz-sys/static"]

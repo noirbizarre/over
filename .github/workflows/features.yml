@@ -1,0 +1,69 @@
+name: 📦 Devcontainer Features
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  publish:
+    name: 🚀 Publish Features
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish features
+        uses: devcontainers/action@v1
+        with:
+          base-path-to-features: features
+          publish-features: true
+          generate-docs: true
+
+  test:
+    name: 🧪 Test Features
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Validate feature metadata
+        run: |
+          for feature_dir in features/*/; do
+            feature_name="$(basename "${feature_dir}")"
+            echo "Validating feature: ${feature_name}"
+
+            # Check required files exist
+            if [ ! -f "${feature_dir}/devcontainer-feature.json" ]; then
+              echo "ERROR: Missing devcontainer-feature.json in ${feature_dir}"
+              exit 1
+            fi
+            if [ ! -f "${feature_dir}/install.sh" ]; then
+              echo "ERROR: Missing install.sh in ${feature_dir}"
+              exit 1
+            fi
+
+            # Validate JSON
+            python3 -m json.tool "${feature_dir}/devcontainer-feature.json" > /dev/null
+
+            # Check install.sh is executable
+            if [ ! -x "${feature_dir}/install.sh" ]; then
+              echo "ERROR: install.sh is not executable in ${feature_dir}"
+              exit 1
+            fi
+
+            echo "  OK"
+          done
