@@ -91,16 +91,27 @@ pub fn discover_repo() -> Result<git2::Repository> {
 /// back to the parent repo's root via `commondir().parent()`, since
 /// the overlay config is keyed by the main repo path, not individual
 /// worktree paths.
+///
+/// For bare repos (worktree workspace root), the root is
+/// `path().parent()` – i.e. the parent of the `.git` directory.
+/// This matches the convention used by `over` where bare repos are
+/// cloned to `<path>/.git` with worktrees alongside.
 pub fn main_repo_root(repo: &git2::Repository) -> Result<PathBuf> {
     if repo.is_worktree() {
         repo.commondir()
             .parent()
             .map(|p| p.to_path_buf())
             .ok_or_else(|| anyhow!("could not determine main repository root from worktree"))
+    } else if repo.is_bare() {
+        // Bare repo at worktree workspace root: <workspace>/.git
+        repo.path()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .ok_or_else(|| anyhow!("could not determine workspace root from bare repository"))
     } else {
         repo.workdir()
             .map(|p| p.to_path_buf())
-            .ok_or_else(|| anyhow!("bare repositories are not supported"))
+            .ok_or_else(|| anyhow!("could not determine repository root"))
     }
 }
 
@@ -236,6 +247,15 @@ mod tests {
     #[test]
     fn test_main_repo_root_regular() {
         let (td, repo) = temp_git_repo();
+        let root = main_repo_root(&repo).unwrap();
+        assert_eq!(root, td.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_main_repo_root_bare() {
+        let td = TempDir::new().unwrap();
+        let bare_path = td.path().join(".git");
+        let repo = git2::Repository::init_bare(&bare_path).unwrap();
         let root = main_repo_root(&repo).unwrap();
         assert_eq!(root, td.path().canonicalize().unwrap());
     }

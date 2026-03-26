@@ -35,6 +35,8 @@ enum ExportKey {
     Branch(String),
     Remote { name: String, config: RemoteConfig },
     Config { key: String, value: String },
+    Worktree,
+    Worktrees(HashMap<String, String>),
 }
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
@@ -49,6 +51,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         println!("Repository: {}", repo_root.display());
         if git_repo.is_worktree() {
             println!("Worktree: {}", workdir.display());
+        } else if git_repo.is_bare() {
+            println!("Worktree workspace (bare repo)");
         }
     }
 
@@ -171,6 +175,32 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         }
     }
 
+    // Worktree mode detection (bare repo or linked worktree)
+    if git_repo.is_bare() || git_repo.is_worktree() {
+        exportable.push(ExportableProperty {
+            label: "worktree: true".to_string(),
+            key: ExportKey::Worktree,
+        });
+
+        // Detect existing named worktrees
+        if let Ok(wt_names) = git_repo.worktrees() {
+            let mut wt_map: HashMap<String, String> = HashMap::new();
+            for name in wt_names.iter().flatten() {
+                // Resolve each worktree to its checked-out branch
+                let branch =
+                    resolve_worktree_branch(&git_repo, name).unwrap_or_else(|| name.to_string());
+                wt_map.insert(name.to_string(), branch);
+            }
+            if !wt_map.is_empty() {
+                let names: Vec<String> = wt_map.iter().map(|(n, b)| format!("{n}={b}")).collect();
+                exportable.push(ExportableProperty {
+                    label: format!("worktrees: {}", names.join(", ")),
+                    key: ExportKey::Worktrees(wt_map),
+                });
+            }
+        }
+    }
+
     // ── Check if overlay already has an entry for this repo ──────────────
 
     let existing_entry = overlay.git.as_ref().and_then(|git| git.get(rel_path_str));
@@ -211,7 +241,15 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         let labels: Vec<&str> = exportable.iter().map(|p| p.label.as_str()).collect();
         let defaults: Vec<bool> = exportable
             .iter()
-            .map(|p| matches!(p.key, ExportKey::Url(_) | ExportKey::Branch(_)))
+            .map(|p| {
+                matches!(
+                    p.key,
+                    ExportKey::Url(_)
+                        | ExportKey::Branch(_)
+                        | ExportKey::Worktree
+                        | ExportKey::Worktrees(_)
+                )
+            })
             .collect();
 
         let selections = MultiSelect::with_theme(&ColorfulTheme::default())
@@ -233,11 +271,15 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             let mut branch: Option<String> = None;
             let mut remotes: HashMap<String, RemoteConfig> = HashMap::new();
             let mut config_entries: HashMap<String, String> = HashMap::new();
+            let mut worktree = false;
+            let mut worktrees: Option<HashMap<String, String>> = None;
 
             // Start from existing entry if present
             if let Some(existing) = existing_entry {
                 url = existing.url.clone();
                 branch = existing.branch.clone();
+                worktree = existing.worktree;
+                worktrees = existing.worktrees.clone();
                 if let Some(ref r) = existing.remotes {
                     remotes = r.clone();
                 }
@@ -256,6 +298,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                     ExportKey::Config { key, value } => {
                         config_entries.insert(key.clone(), value.clone());
                     }
+                    ExportKey::Worktree => worktree = true,
+                    ExportKey::Worktrees(wt) => worktrees = Some(wt.clone()),
                 }
             }
 
@@ -273,8 +317,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 recurse_submodules: existing_entry
                     .map(|e| e.recurse_submodules)
                     .unwrap_or(false),
-                worktree: existing_entry.map(|e| e.worktree).unwrap_or(false),
-                worktrees: existing_entry.and_then(|e| e.worktrees.clone()),
+                worktree,
+                worktrees,
                 remotes: if remotes.is_empty() {
                     None
                 } else {
@@ -592,6 +636,18 @@ fn yaml_value_to_toml(v: &serde_yml::Value) -> Result<toml::Value> {
         serde_yml::Value::Mapping(m) => yaml_mapping_to_toml(m),
         _ => Err(anyhow!("unsupported value type in git entry")),
     }
+}
+
+/// Resolve the branch checked out in a named worktree.
+///
+/// Opens the worktree by name, looks up its HEAD, and returns the
+/// short branch name (e.g. `"main"`).  Returns `None` when the branch
+/// cannot be determined (detached HEAD, pruned worktree, etc.).
+fn resolve_worktree_branch(repo: &git2::Repository, name: &str) -> Option<String> {
+    let wt = repo.find_worktree(name).ok()?;
+    let wt_repo = git2::Repository::open_from_worktree(&wt).ok()?;
+    let head = wt_repo.head().ok()?;
+    head.shorthand().map(|s| s.to_string())
 }
 
 #[cfg(test)]

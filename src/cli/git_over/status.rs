@@ -18,6 +18,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| repo_root.clone());
     let is_worktree = git_repo.is_worktree();
+    let is_bare = git_repo.is_bare();
 
     let home = cli.resolve_home()?;
     let over_repo = Repository::new(home);
@@ -42,6 +43,12 @@ pub async fn execute(cli: &CLI) -> Result<()> {
             "  {} {}",
             style::white("Worktree:"),
             style::cyan(&short_path(&workdir.to_string_lossy())),
+        );
+    } else if is_bare {
+        println!(
+            "  {} {}",
+            style::white("Mode:"),
+            style::cyan("worktree workspace (bare)"),
         );
     }
     println!(

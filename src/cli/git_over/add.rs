@@ -39,6 +39,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         println!("Repository: {}", repo_root.display());
         if git_repo.is_worktree() {
             println!("Worktree: {}", workdir.display());
+        } else if git_repo.is_bare() {
+            println!("Worktree workspace (bare repo)");
         }
     }
 
