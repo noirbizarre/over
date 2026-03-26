@@ -40,9 +40,10 @@ pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Resul
                 to.join(path)
             };
             let repo_config = repo_config.clone();
+            let overlay_name = overlay.name.clone();
             let ctx = subctx.clone();
             spawn(async move {
-                let action = EnsureGitRepository::new(target, repo_config);
+                let action = EnsureGitRepository::new(target, repo_config, overlay_name);
                 action.execute(ctx).await
             })
         }))
@@ -70,11 +71,16 @@ pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Resul
 pub struct EnsureGitRepository {
     pub path: PathBuf,
     pub config: GitRepoConfig,
+    pub overlay_name: String,
 }
 
 impl EnsureGitRepository {
-    pub fn new(path: PathBuf, config: GitRepoConfig) -> Self {
-        Self { path, config }
+    pub fn new(path: PathBuf, config: GitRepoConfig, overlay_name: String) -> Self {
+        Self {
+            path,
+            config,
+            overlay_name,
+        }
     }
 
     fn short_name(&self) -> String {
@@ -164,6 +170,7 @@ impl Action for EnsureGitRepository {
             let repo_path = repo_path.clone();
             let base_path = self.path.clone();
             let config = self.config.clone();
+            let overlay_name = self.overlay_name.clone();
             let verbose = ctx.verbose;
             spawn_blocking(move || {
                 let repo = if config.worktree || config.worktrees.is_some() {
@@ -192,6 +199,23 @@ impl Action for EnsureGitRepository {
                 if let Some(git_config) = &config.config {
                     apply_git_config(&repo, &git_config.entries, verbose)?;
                 }
+
+                // Associate the overlay with this repository so that
+                // subsequent `git over mount` skips the overlay prompt.
+                let mut git_config = repo.config().with_context(|| {
+                    format!(
+                        "failed to open git config for {}",
+                        repo_path.display()
+                    )
+                })?;
+                git_config
+                    .set_str("over.overlay", &overlay_name)
+                    .with_context(|| {
+                        format!(
+                            "failed to set over.overlay in git config for {}",
+                            repo_path.display()
+                        )
+                    })?;
 
                 Ok::<(), anyhow::Error>(())
             })
@@ -998,6 +1022,7 @@ mod tests {
                 remotes: None,
                 config: None,
             },
+            "test-overlay".to_string(),
         );
         assert_eq!(action.short_name(), "my-repo");
     }
@@ -1017,6 +1042,7 @@ mod tests {
                 remotes: None,
                 config: None,
             },
+            "test-overlay".to_string(),
         );
         assert_eq!(action.short_name(), "my-repo");
     }
