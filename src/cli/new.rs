@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
 use clap::Args;
+use config::{Config, File, FileFormat, FileSourceFile};
 use dialoguer::{Input, MultiSelect};
 use dirs::home_dir;
 
 use crate::exec::Context;
-use crate::overlays::{BASENAME, Format, Repository};
+use crate::overlays::{BASENAME, DEFAULT_TARGET, Format, Repository};
 use crate::ui::style::{self, DialogTheme};
 
 use super::CLI;
@@ -59,7 +60,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         Some(t) => t.clone(),
         None => Input::with_theme(&theme)
             .with_prompt("Target directory")
-            .default("~".to_string())
+            .default(DEFAULT_TARGET.to_string())
             .interact_text()
             .map_err(|e| anyhow!("prompt cancelled: {}", e))?,
     };
@@ -111,7 +112,14 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     );
 
     // Write the overlay descriptor
-    let content = build_descriptor(&target_str, format, &git_entries);
+    // Only include the target if it differs from the inherited value
+    let inherited_target = resolve_inherited_target(&home, &overlay_root);
+    let descriptor_target = if target_str == inherited_target {
+        None
+    } else {
+        Some(target_str.as_str())
+    };
+    let content = build_descriptor(descriptor_target, format, &git_entries);
     if args.dry_run {
         println!("{}", style::white_b("Descriptor content (dry-run):"));
         println!("{}", content);
@@ -237,19 +245,67 @@ fn extract_git_remote(path: &Path) -> Option<(String, String)> {
     Some((name, url))
 }
 
+/// Resolve the target that would be inherited from ancestor overlay configs.
+///
+/// Walks from the overlay's parent directory up to the repository root,
+/// collecting any `over.{toml,yaml,yml}` configs that define a `target`.
+/// Returns the effective inherited target, falling back to [`DEFAULT_TARGET`].
+fn resolve_inherited_target(repo_root: &Path, overlay_root: &Path) -> String {
+    let mut sources: Vec<File<FileSourceFile, FileFormat>> = Vec::new();
+    let mut dir = overlay_root;
+
+    // Walk from overlay's parent up to repo root
+    while let Some(parent) = dir.parent() {
+        dir = parent;
+        let basename = dir.join(BASENAME);
+        if let Some(basename_str) = basename.to_str() {
+            sources.push(File::with_name(basename_str).required(false));
+        }
+        if dir == repo_root {
+            break;
+        }
+    }
+
+    if sources.is_empty() {
+        return DEFAULT_TARGET.to_string();
+    }
+
+    // Reverse so ancestor configs are lower priority (repo root first)
+    sources.reverse();
+
+    Config::builder()
+        .add_source(sources)
+        .set_default("target", DEFAULT_TARGET)
+        .ok()
+        .and_then(|b| b.build().ok())
+        .and_then(|c| c.get_string("target").ok())
+        .unwrap_or_else(|| DEFAULT_TARGET.to_string())
+}
+
 /// Build the overlay descriptor file content in the given format.
-fn build_descriptor(target: &str, format: Format, git_entries: &HashMap<String, String>) -> String {
+fn build_descriptor(
+    target: Option<&str>,
+    format: Format,
+    git_entries: &HashMap<String, String>,
+) -> String {
     match format {
         Format::Toml => build_toml_descriptor(target, git_entries),
         Format::Yaml => build_yaml_descriptor(target, git_entries),
     }
 }
 
-fn build_toml_descriptor(target: &str, git_entries: &HashMap<String, String>) -> String {
-    let mut out = format!("target = \"{target}\"\n");
+fn build_toml_descriptor(target: Option<&str>, git_entries: &HashMap<String, String>) -> String {
+    let mut out = String::new();
+
+    if let Some(target) = target {
+        out.push_str(&format!("target = \"{target}\"\n"));
+    }
 
     if !git_entries.is_empty() {
-        out.push_str("\n[git]\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("[git]\n");
         let mut entries: Vec<_> = git_entries.iter().collect();
         entries.sort_by_key(|(k, _)| *k);
         for (name, url) in entries {
@@ -260,11 +316,18 @@ fn build_toml_descriptor(target: &str, git_entries: &HashMap<String, String>) ->
     out
 }
 
-fn build_yaml_descriptor(target: &str, git_entries: &HashMap<String, String>) -> String {
-    let mut out = format!("target: \"{target}\"\n");
+fn build_yaml_descriptor(target: Option<&str>, git_entries: &HashMap<String, String>) -> String {
+    let mut out = String::new();
+
+    if let Some(target) = target {
+        out.push_str(&format!("target: \"{target}\"\n"));
+    }
 
     if !git_entries.is_empty() {
-        out.push_str("\ngit:\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("git:\n");
         let mut entries: Vec<_> = git_entries.iter().collect();
         entries.sort_by_key(|(k, _)| *k);
         for (name, url) in entries {
@@ -328,9 +391,15 @@ mod tests {
     // ── build_toml_descriptor ───────────────────────────────────────────
 
     #[test]
-    fn test_build_toml_descriptor_simple() {
-        let content = build_toml_descriptor("~", &HashMap::new());
-        assert_eq!(content, "target = \"~\"\n");
+    fn test_build_toml_descriptor_no_target() {
+        let content = build_toml_descriptor(None, &HashMap::new());
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn test_build_toml_descriptor_with_target() {
+        let content = build_toml_descriptor(Some("~/apps/myapp"), &HashMap::new());
+        assert_eq!(content, "target = \"~/apps/myapp\"\n");
     }
 
     #[test]
@@ -340,7 +409,7 @@ mod tests {
             "myrepo".to_string(),
             "https://github.com/user/myrepo.git".to_string(),
         );
-        let content = build_toml_descriptor("~/apps/myapp", &git);
+        let content = build_toml_descriptor(Some("~/apps/myapp"), &git);
         assert_eq!(
             content,
             "target = \"~/apps/myapp\"\n\n[git]\nmyrepo = { url = \"https://github.com/user/myrepo.git\" }\n"
@@ -348,11 +417,26 @@ mod tests {
     }
 
     #[test]
+    fn test_build_toml_descriptor_git_only() {
+        let mut git = HashMap::new();
+        git.insert("zrepo".to_string(), "https://example.com/z.git".to_string());
+        git.insert("arepo".to_string(), "https://example.com/a.git".to_string());
+        let content = build_toml_descriptor(None, &git);
+        assert!(
+            !content.contains("target"),
+            "should not contain target when None"
+        );
+        let a_pos = content.find("arepo").unwrap();
+        let z_pos = content.find("zrepo").unwrap();
+        assert!(a_pos < z_pos, "entries should be sorted alphabetically");
+    }
+
+    #[test]
     fn test_build_toml_descriptor_git_sorted() {
         let mut git = HashMap::new();
         git.insert("zrepo".to_string(), "https://example.com/z.git".to_string());
         git.insert("arepo".to_string(), "https://example.com/a.git".to_string());
-        let content = build_toml_descriptor("~", &git);
+        let content = build_toml_descriptor(Some("~"), &git);
         let a_pos = content.find("arepo").unwrap();
         let z_pos = content.find("zrepo").unwrap();
         assert!(a_pos < z_pos, "entries should be sorted alphabetically");
@@ -360,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_build_toml_descriptor_absolute_target() {
-        let content = build_toml_descriptor("/opt/myapp", &HashMap::new());
+        let content = build_toml_descriptor(Some("/opt/myapp"), &HashMap::new());
         assert_eq!(content, "target = \"/opt/myapp\"\n");
     }
 
@@ -370,7 +454,7 @@ mod tests {
         git.insert("alpha".to_string(), "https://example.com/a.git".to_string());
         git.insert("beta".to_string(), "https://example.com/b.git".to_string());
         git.insert("gamma".to_string(), "https://example.com/g.git".to_string());
-        let content = build_toml_descriptor("~", &git);
+        let content = build_toml_descriptor(None, &git);
         assert!(content.contains("[git]"));
         assert!(content.contains("alpha = { url ="));
         assert!(content.contains("beta = { url ="));
@@ -380,9 +464,15 @@ mod tests {
     // ── build_yaml_descriptor ───────────────────────────────────────────
 
     #[test]
-    fn test_build_yaml_descriptor_simple() {
-        let content = build_yaml_descriptor("~", &HashMap::new());
-        assert_eq!(content, "target: \"~\"\n");
+    fn test_build_yaml_descriptor_no_target() {
+        let content = build_yaml_descriptor(None, &HashMap::new());
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn test_build_yaml_descriptor_with_target() {
+        let content = build_yaml_descriptor(Some("~/apps/myapp"), &HashMap::new());
+        assert_eq!(content, "target: \"~/apps/myapp\"\n");
     }
 
     #[test]
@@ -392,7 +482,7 @@ mod tests {
             "myrepo".to_string(),
             "https://github.com/user/myrepo.git".to_string(),
         );
-        let content = build_yaml_descriptor("~/apps/myapp", &git);
+        let content = build_yaml_descriptor(Some("~/apps/myapp"), &git);
         assert_eq!(
             content,
             "target: \"~/apps/myapp\"\n\ngit:\n  myrepo:\n    url: \"https://github.com/user/myrepo.git\"\n"
@@ -404,7 +494,7 @@ mod tests {
         let mut git = HashMap::new();
         git.insert("zrepo".to_string(), "https://example.com/z.git".to_string());
         git.insert("arepo".to_string(), "https://example.com/a.git".to_string());
-        let content = build_yaml_descriptor("~", &git);
+        let content = build_yaml_descriptor(None, &git);
         let a_pos = content.find("arepo").unwrap();
         let z_pos = content.find("zrepo").unwrap();
         assert!(a_pos < z_pos, "entries should be sorted alphabetically");
@@ -414,21 +504,33 @@ mod tests {
 
     #[test]
     fn test_build_descriptor_dispatches_toml() {
-        let content = build_descriptor("~", Format::Toml, &HashMap::new());
+        let content = build_descriptor(Some("~/test"), Format::Toml, &HashMap::new());
         assert!(content.starts_with("target = "));
     }
 
     #[test]
     fn test_build_descriptor_dispatches_yaml() {
-        let content = build_descriptor("~", Format::Yaml, &HashMap::new());
+        let content = build_descriptor(Some("~/test"), Format::Yaml, &HashMap::new());
         assert!(content.starts_with("target: "));
+    }
+
+    #[test]
+    fn test_build_descriptor_no_target_toml() {
+        let content = build_descriptor(None, Format::Toml, &HashMap::new());
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn test_build_descriptor_no_target_yaml() {
+        let content = build_descriptor(None, Format::Yaml, &HashMap::new());
+        assert_eq!(content, "");
     }
 
     #[test]
     fn test_build_descriptor_toml_with_git() {
         let mut git = HashMap::new();
         git.insert("repo".to_string(), "https://example.com/r.git".to_string());
-        let content = build_descriptor("~/test", Format::Toml, &git);
+        let content = build_descriptor(Some("~/test"), Format::Toml, &git);
         assert!(content.contains("[git]"));
         assert!(content.contains("repo = { url ="));
     }
@@ -437,7 +539,7 @@ mod tests {
     fn test_build_descriptor_yaml_with_git() {
         let mut git = HashMap::new();
         git.insert("repo".to_string(), "https://example.com/r.git".to_string());
-        let content = build_descriptor("~/test", Format::Yaml, &git);
+        let content = build_descriptor(Some("~/test"), Format::Yaml, &git);
         assert!(content.contains("git:"));
         assert!(content.contains("  repo:"));
         assert!(content.contains("    url:"));
@@ -487,6 +589,73 @@ mod tests {
     fn test_extract_git_remote_nonexistent_path() {
         let result = extract_git_remote(Path::new("/nonexistent/path/xyz"));
         assert!(result.is_none());
+    }
+
+    // ── resolve_inherited_target ────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_inherited_target_no_parent_configs() {
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path();
+        let overlay_root = repo_root.join("myoverlay");
+        fs::create_dir_all(&overlay_root).unwrap();
+
+        let result = resolve_inherited_target(repo_root, &overlay_root);
+        assert_eq!(result, DEFAULT_TARGET);
+    }
+
+    #[test]
+    fn test_resolve_inherited_target_parent_defines_target() {
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path();
+        fs::write(repo_root.join("over.toml"), "target = \"~/Documents\"").unwrap();
+        let overlay_root = repo_root.join("myoverlay");
+        fs::create_dir_all(&overlay_root).unwrap();
+
+        let result = resolve_inherited_target(repo_root, &overlay_root);
+        assert_eq!(result, "~/Documents");
+    }
+
+    #[test]
+    fn test_resolve_inherited_target_parent_defines_default() {
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path();
+        fs::write(repo_root.join("over.toml"), "target = \"~\"").unwrap();
+        let overlay_root = repo_root.join("myoverlay");
+        fs::create_dir_all(&overlay_root).unwrap();
+
+        let result = resolve_inherited_target(repo_root, &overlay_root);
+        assert_eq!(result, DEFAULT_TARGET);
+    }
+
+    #[test]
+    fn test_resolve_inherited_target_nested_parent_wins() {
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path();
+        // Root defines one target
+        fs::write(repo_root.join("over.toml"), "target = \"~/Documents\"").unwrap();
+        // Intermediate dir defines a closer target
+        let parent = repo_root.join("apps");
+        fs::create_dir_all(&parent).unwrap();
+        fs::write(parent.join("over.toml"), "target = \"~/apps\"").unwrap();
+
+        let overlay_root = parent.join("myapp");
+        fs::create_dir_all(&overlay_root).unwrap();
+
+        let result = resolve_inherited_target(repo_root, &overlay_root);
+        assert_eq!(result, "~/apps");
+    }
+
+    #[test]
+    fn test_resolve_inherited_target_overlay_at_repo_root() {
+        // Overlay is directly at the repo root — no parents to check
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path();
+        fs::write(repo_root.join("over.toml"), "target = \"~/custom\"").unwrap();
+
+        // overlay_root == repo_root: no ancestors to walk
+        let result = resolve_inherited_target(repo_root, repo_root);
+        assert_eq!(result, DEFAULT_TARGET);
     }
 
     // ── format resolution logic ─────────────────────────────────────────

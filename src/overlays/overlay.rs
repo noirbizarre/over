@@ -16,7 +16,7 @@ use crate::actions::{self, EnsureDir};
 use crate::exec::{self, Action, Ctx};
 use crate::ui::{emojis, style};
 
-use super::Repository;
+use super::{DEFAULT_TARGET, Repository};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Overlay {
@@ -82,7 +82,7 @@ impl Overlay {
             .add_source(sources)
             .set_override("name", name)?
             .set_override("root", root.to_str())?
-            .set_default("target", "~")?
+            .set_default("target", DEFAULT_TARGET)?
             .build()?;
 
         Ok(s.try_deserialize()?)

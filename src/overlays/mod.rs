@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 /// Overlay files basename
 pub(crate) const BASENAME: &str = "over";
 
+/// Default overlay target directory
+pub(crate) const DEFAULT_TARGET: &str = "~";
+
 /// Overlay files extensions
 pub(crate) const EXTENSIONS: &[&str] = &["yml", "yaml", "toml"];
 

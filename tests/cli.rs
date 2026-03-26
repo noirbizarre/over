@@ -464,7 +464,7 @@ fn new_overlay_with_tilde_target() -> TestResult {
         .stdout(contains("homeoverlay"));
 
     let content = fs::read_to_string(tmp.path().join("homeoverlay/over.toml"))?;
-    assert_eq!(content, "target = \"~\"\n");
+    assert_eq!(content, "", "default target should not be written");
     Ok(())
 }
 
@@ -481,6 +481,28 @@ fn new_overlay_with_tilde_subdir_target() -> TestResult {
 
     let content = fs::read_to_string(tmp.path().join("suboverlay/over.toml"))?;
     assert!(content.contains("~/.config/myapp"));
+    Ok(())
+}
+
+#[test]
+fn new_overlay_tilde_target_written_when_parent_overrides() -> TestResult {
+    let tmp = TempDir::new()?;
+
+    // Parent config defines a non-default target
+    fs::write(tmp.path().join("over.toml"), "target = \"~/Documents\"")?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["new", "childoverlay", "~", "--force"])
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(tmp.path().join("childoverlay/over.toml"))?;
+    assert_eq!(
+        content, "target = \"~\"\n",
+        "target should be written when it differs from inherited parent target"
+    );
     Ok(())
 }
 
