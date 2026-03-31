@@ -24,13 +24,35 @@ pub struct GitRepoConfig {
     /// Enable worktree mode: clone as bare repo with worktrees.
     /// When `true`, the default branch worktree is created automatically.
     pub worktree: bool,
-    /// Additional worktrees to create (name → branch).
+    /// Enable per-worktree git configuration (`extensions.worktreeConfig`).
+    ///
+    /// When `true` (the default for worktree-mode repos), the following
+    /// entries are auto-managed:
+    /// - `.git/config`: `core.bare = false`, `extensions.worktreeConfig = true`
+    /// - `.git/config.worktree`: `core.bare = true`
+    ///
+    /// Defaults to `true` when `worktree` is `true`.
+    pub per_worktree_config: bool,
+    /// Additional worktrees to create (name → branch or detailed config).
     /// Each entry creates a worktree directory alongside the bare `.git`.
-    pub worktrees: Option<HashMap<String, String>>,
+    ///
+    /// Supports two forms:
+    /// - **Simple**: `"name" = "branch"` (just a branch name string)
+    /// - **Detailed**: `{ branch = "...", config = { ... } }` with optional
+    ///   per-worktree git config entries written to
+    ///   `.git/worktrees/<name>/config.worktree`
+    pub worktrees: Option<HashMap<String, WorktreeEntry>>,
     /// Extra remotes beyond origin (name → config).
     pub remotes: Option<HashMap<String, RemoteConfig>>,
-    /// Arbitrary git config entries to set on the repository.
+    /// Arbitrary git config entries to set on the repository (`.git/config`).
     pub config: Option<GitConfig>,
+    /// Worktree-level git config entries for the bare repository
+    /// (`.git/config.worktree`).
+    ///
+    /// Only meaningful when `per_worktree_config` is `true`.
+    /// These entries are written *in addition to* the auto-managed
+    /// `core.bare = true`.
+    pub worktree_config: Option<GitConfig>,
 }
 
 impl<'de> Deserialize<'de> for GitRepoConfig {
@@ -53,9 +75,11 @@ impl From<AllGitRepoForms> for GitRepoConfig {
                 rev: None,
                 recurse_submodules: false,
                 worktree: false,
+                per_worktree_config: false,
                 worktrees: None,
                 remotes: None,
                 config: None,
+                worktree_config: None,
             },
             AllGitRepoForms::Detailed {
                 url,
@@ -64,20 +88,27 @@ impl From<AllGitRepoForms> for GitRepoConfig {
                 rev,
                 recurse_submodules,
                 worktree,
+                per_worktree_config,
                 worktrees,
                 remotes,
                 config,
-            } => Self {
-                url,
-                branch,
-                tag,
-                rev,
-                recurse_submodules: recurse_submodules.unwrap_or(false),
-                worktree: worktree.unwrap_or_else(|| worktrees.is_some()),
-                worktrees,
-                remotes,
-                config: config.map(|c| *c),
-            },
+                worktree_config,
+            } => {
+                let is_worktree = worktree.unwrap_or_else(|| worktrees.is_some());
+                Self {
+                    url,
+                    branch,
+                    tag,
+                    rev,
+                    recurse_submodules: recurse_submodules.unwrap_or(false),
+                    worktree: is_worktree,
+                    per_worktree_config: per_worktree_config.unwrap_or(is_worktree),
+                    worktrees,
+                    remotes,
+                    config: config.map(|c| *c),
+                    worktree_config: worktree_config.map(|c| *c),
+                }
+            }
         }
     }
 }
@@ -96,10 +127,64 @@ enum AllGitRepoForms {
         rev: Option<String>,
         recurse_submodules: Option<bool>,
         worktree: Option<bool>,
-        worktrees: Option<HashMap<String, String>>,
+        per_worktree_config: Option<bool>,
+        worktrees: Option<HashMap<String, WorktreeEntry>>,
         remotes: Option<HashMap<String, RemoteConfig>>,
         config: Option<Box<GitConfig>>,
+        worktree_config: Option<Box<GitConfig>>,
     },
+}
+
+/// Configuration for a single named worktree.
+///
+/// Supports two forms:
+/// - **Simple**: just a branch name string (e.g. `"feature-x" = "feature/x"`)
+/// - **Detailed**: an object with `branch` and optional `config`
+#[derive(Debug, Serialize, Clone)]
+pub struct WorktreeEntry {
+    /// The branch to check out in this worktree.
+    pub branch: String,
+    /// Optional per-worktree git config entries written to
+    /// `.git/worktrees/<name>/config.worktree`.
+    pub config: Option<GitConfig>,
+}
+
+impl<'de> Deserialize<'de> for WorktreeEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let form = AllWorktreeEntryForms::deserialize(deserializer)?;
+        Ok(Self::from(form))
+    }
+}
+
+/// Intermediate enum for untagged deserialization of worktree entries.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum AllWorktreeEntryForms {
+    /// Just a branch name string.
+    Simple(String),
+    /// Full object with `branch` and optional `config`.
+    Detailed {
+        branch: String,
+        config: Option<Box<GitConfig>>,
+    },
+}
+
+impl From<AllWorktreeEntryForms> for WorktreeEntry {
+    fn from(f: AllWorktreeEntryForms) -> Self {
+        match f {
+            AllWorktreeEntryForms::Simple(branch) => Self {
+                branch,
+                config: None,
+            },
+            AllWorktreeEntryForms::Detailed { branch, config } => Self {
+                branch,
+                config: config.map(|c| *c),
+            },
+        }
+    }
 }
 
 /// Configuration for a git remote.
@@ -223,7 +308,7 @@ pub const ROOT_PATH: &str = ".";
 #[serde(untagged)]
 enum AllGitForms {
     /// A single repo config (string URL or detailed object).
-    Single(GitRepoConfig),
+    Single(Box<GitRepoConfig>),
     /// Map of `<path> → <repo config>`.
     Map(HashMap<String, GitRepoConfig>),
 }
@@ -231,7 +316,7 @@ enum AllGitForms {
 impl From<AllGitForms> for HashMap<String, GitRepoConfig> {
     fn from(form: AllGitForms) -> Self {
         match form {
-            AllGitForms::Single(cfg) => HashMap::from([(ROOT_PATH.to_string(), cfg)]),
+            AllGitForms::Single(cfg) => HashMap::from([(ROOT_PATH.to_string(), *cfg)]),
             AllGitForms::Map(m) => m,
         }
     }
@@ -348,9 +433,11 @@ worktrees:
         let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         // worktree auto-enabled when worktrees are listed
         assert!(cfg.worktree);
+        // per_worktree_config auto-enabled when worktree is true
+        assert!(cfg.per_worktree_config);
         let wts = cfg.worktrees.unwrap();
-        assert_eq!(wts.get("feature-x").unwrap(), "feature/x");
-        assert_eq!(wts.get("hotfix").unwrap(), "hotfix/123");
+        assert_eq!(wts.get("feature-x").unwrap().branch, "feature/x");
+        assert_eq!(wts.get("hotfix").unwrap().branch, "hotfix/123");
     }
 
     #[test]
@@ -364,6 +451,8 @@ worktrees:
         let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         // explicit worktree: false disables auto default-branch worktree
         assert!(!cfg.worktree);
+        // per_worktree_config follows worktree value
+        assert!(!cfg.per_worktree_config);
         assert!(cfg.worktrees.is_some());
     }
 
@@ -521,7 +610,13 @@ config:
         let mylib = &repos["projects/mylib"];
         assert!(mylib.worktree);
         assert_eq!(
-            mylib.worktrees.as_ref().unwrap().get("feature-x").unwrap(),
+            mylib
+                .worktrees
+                .as_ref()
+                .unwrap()
+                .get("feature-x")
+                .unwrap()
+                .branch,
             "feature/x"
         );
         assert!(mylib.remotes.is_some());
@@ -563,7 +658,13 @@ url = "git@github.com:upstream/mylib.git"
         let mylib = &repos["projects/mylib"];
         assert!(mylib.worktree);
         assert_eq!(
-            mylib.worktrees.as_ref().unwrap().get("feature-x").unwrap(),
+            mylib
+                .worktrees
+                .as_ref()
+                .unwrap()
+                .get("feature-x")
+                .unwrap()
+                .branch,
             "feature/x"
         );
     }
@@ -642,5 +743,248 @@ url = "git@github.com:upstream/mylib.git"
         }
         let w: Wrapper = serde_yml::from_str("other: value").unwrap();
         assert!(w.git.is_none());
+    }
+
+    // ── per_worktree_config defaults ─────────────────────────────────────
+
+    #[test]
+    fn test_per_worktree_config_defaults_true_when_worktree() {
+        let yaml = r#"
+url: "git@github.com:user/repo.git"
+worktree: true
+"#;
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
+        assert!(cfg.worktree);
+        assert!(cfg.per_worktree_config);
+    }
+
+    #[test]
+    fn test_per_worktree_config_defaults_false_without_worktree() {
+        let yaml = r#"
+url: "git@github.com:user/repo.git"
+"#;
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
+        assert!(!cfg.worktree);
+        assert!(!cfg.per_worktree_config);
+    }
+
+    #[test]
+    fn test_per_worktree_config_explicit_false() {
+        let yaml = r#"
+url: "git@github.com:user/repo.git"
+worktree: true
+per_worktree_config: false
+"#;
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
+        assert!(cfg.worktree);
+        assert!(!cfg.per_worktree_config);
+    }
+
+    #[test]
+    fn test_per_worktree_config_explicit_true_without_worktree() {
+        let yaml = r#"
+url: "git@github.com:user/repo.git"
+per_worktree_config: true
+"#;
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
+        assert!(!cfg.worktree);
+        assert!(cfg.per_worktree_config);
+    }
+
+    // ── worktree_config ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_worktree_config_field() {
+        let yaml = r#"
+url: "git@github.com:user/repo.git"
+worktree: true
+config:
+  core.bare: "false"
+  extensions.worktreeConfig: "true"
+worktree_config:
+  core.bare: "true"
+"#;
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
+        let config = cfg.config.unwrap();
+        assert_eq!(config.entries.get("core.bare").unwrap(), "false");
+        assert_eq!(
+            config.entries.get("extensions.worktreeConfig").unwrap(),
+            "true"
+        );
+        let wt_config = cfg.worktree_config.unwrap();
+        assert_eq!(wt_config.entries.get("core.bare").unwrap(), "true");
+    }
+
+    #[test]
+    fn test_worktree_config_toml() {
+        let toml_str = r#"
+url = "git@github.com:user/repo.git"
+worktree = true
+
+[config]
+"core.bare" = "false"
+"extensions.worktreeConfig" = "true"
+
+[worktree_config]
+"core.bare" = "true"
+"#;
+        let cfg: GitRepoConfig = toml::from_str(toml_str).unwrap();
+        let config = cfg.config.unwrap();
+        assert_eq!(config.entries.get("core.bare").unwrap(), "false");
+        let wt_config = cfg.worktree_config.unwrap();
+        assert_eq!(wt_config.entries.get("core.bare").unwrap(), "true");
+    }
+
+    // ── WorktreeEntry ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_worktree_entry_simple_string() {
+        let yaml = r#""feature/x""#;
+        let entry: WorktreeEntry = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(entry.branch, "feature/x");
+        assert!(entry.config.is_none());
+    }
+
+    #[test]
+    fn test_worktree_entry_detailed() {
+        let yaml = r#"
+branch: "develop"
+config:
+  user.email: "dev@example.com"
+"#;
+        let entry: WorktreeEntry = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(entry.branch, "develop");
+        let config = entry.config.unwrap();
+        assert_eq!(config.entries.get("user.email").unwrap(), "dev@example.com");
+    }
+
+    #[test]
+    fn test_worktree_entry_detailed_without_config() {
+        let yaml = r#"
+branch: "develop"
+"#;
+        let entry: WorktreeEntry = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(entry.branch, "develop");
+        assert!(entry.config.is_none());
+    }
+
+    #[test]
+    fn test_worktree_entries_mixed_forms() {
+        let yaml = r#"
+feature-x: "feature/x"
+dev:
+  branch: "develop"
+  config:
+    user.email: "dev@example.com"
+hotfix:
+  branch: "hotfix/123"
+"#;
+        let entries: HashMap<String, WorktreeEntry> = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(entries.len(), 3);
+
+        let fx = &entries["feature-x"];
+        assert_eq!(fx.branch, "feature/x");
+        assert!(fx.config.is_none());
+
+        let dev = &entries["dev"];
+        assert_eq!(dev.branch, "develop");
+        assert_eq!(
+            dev.config
+                .as_ref()
+                .unwrap()
+                .entries
+                .get("user.email")
+                .unwrap(),
+            "dev@example.com"
+        );
+
+        let hotfix = &entries["hotfix"];
+        assert_eq!(hotfix.branch, "hotfix/123");
+        assert!(hotfix.config.is_none());
+    }
+
+    #[test]
+    fn test_worktree_entries_mixed_forms_toml() {
+        let toml_str = r#"
+[worktrees]
+feature-x = "feature/x"
+
+[worktrees.dev]
+branch = "develop"
+
+[worktrees.dev.config]
+"user.email" = "dev@example.com"
+"#;
+        #[derive(Deserialize)]
+        struct Wrapper {
+            worktrees: HashMap<String, WorktreeEntry>,
+        }
+        let w: Wrapper = toml::from_str(toml_str).unwrap();
+
+        let fx = &w.worktrees["feature-x"];
+        assert_eq!(fx.branch, "feature/x");
+        assert!(fx.config.is_none());
+
+        let dev = &w.worktrees["dev"];
+        assert_eq!(dev.branch, "develop");
+        assert_eq!(
+            dev.config
+                .as_ref()
+                .unwrap()
+                .entries
+                .get("user.email")
+                .unwrap(),
+            "dev@example.com"
+        );
+    }
+
+    // ── Full repo config with worktree_config + WorktreeEntry ────────────
+
+    #[test]
+    fn test_full_repo_config_with_worktree_features() {
+        let yaml = r#"
+url: "git@github.com:user/repo.git"
+worktree: true
+config:
+  user.email: "work@example.com"
+worktree_config:
+  core.bare: "true"
+worktrees:
+  feature-x: "feature/x"
+  dev:
+    branch: "develop"
+    config:
+      user.email: "dev@example.com"
+"#;
+        let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
+        assert!(cfg.worktree);
+        assert!(cfg.per_worktree_config);
+
+        // Shared config
+        let config = cfg.config.unwrap();
+        assert_eq!(
+            config.entries.get("user.email").unwrap(),
+            "work@example.com"
+        );
+
+        // Bare repo worktree config
+        let wt_config = cfg.worktree_config.unwrap();
+        assert_eq!(wt_config.entries.get("core.bare").unwrap(), "true");
+
+        // Worktrees
+        let wts = cfg.worktrees.unwrap();
+        assert_eq!(wts["feature-x"].branch, "feature/x");
+        assert!(wts["feature-x"].config.is_none());
+        assert_eq!(wts["dev"].branch, "develop");
+        assert_eq!(
+            wts["dev"]
+                .config
+                .as_ref()
+                .unwrap()
+                .entries
+                .get("user.email")
+                .unwrap(),
+            "dev@example.com"
+        );
     }
 }

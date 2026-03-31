@@ -7,7 +7,7 @@ use dialoguer::theme::ColorfulTheme;
 use dialoguer::{FuzzySelect, MultiSelect};
 use dirs::home_dir;
 
-use crate::actions::git::config::{GitConfig, GitRepoConfig, RemoteConfig};
+use crate::actions::git::config::{GitConfig, GitRepoConfig, RemoteConfig, WorktreeEntry};
 use crate::overlays::{self, Format, Repository};
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
@@ -35,8 +35,10 @@ enum ExportKey {
     Branch(String),
     Remote { name: String, config: RemoteConfig },
     Config { key: String, value: String },
+    WorktreeConfig { key: String, value: String },
     Worktree,
-    Worktrees(HashMap<String, String>),
+    PerWorktreeConfig,
+    Worktrees(HashMap<String, WorktreeEntry>),
 }
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
@@ -184,19 +186,63 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
         // Detect existing named worktrees
         if let Ok(wt_names) = git_repo.worktrees() {
-            let mut wt_map: HashMap<String, String> = HashMap::new();
+            let mut wt_map: HashMap<String, WorktreeEntry> = HashMap::new();
             for name in wt_names.iter().flatten() {
                 // Resolve each worktree to its checked-out branch
                 let branch =
                     resolve_worktree_branch(&git_repo, name).unwrap_or_else(|| name.to_string());
-                wt_map.insert(name.to_string(), branch);
+
+                // Detect per-worktree config entries
+                let wt_config = read_worktree_config(&git_repo, name);
+
+                wt_map.insert(
+                    name.to_string(),
+                    WorktreeEntry {
+                        branch,
+                        config: wt_config,
+                    },
+                );
             }
             if !wt_map.is_empty() {
-                let names: Vec<String> = wt_map.iter().map(|(n, b)| format!("{n}={b}")).collect();
+                let names: Vec<String> = wt_map
+                    .iter()
+                    .map(|(n, e)| format!("{n}={}", e.branch))
+                    .collect();
                 exportable.push(ExportableProperty {
                     label: format!("worktrees: {}", names.join(", ")),
                     key: ExportKey::Worktrees(wt_map),
                 });
+            }
+        }
+
+        // Detect per_worktree_config (extensions.worktreeConfig)
+        if let Ok(mut config) = git_repo.config()
+            && let Ok(snapshot) = config.snapshot()
+            && snapshot.get_str("extensions.worktreeConfig").is_ok()
+        {
+            exportable.push(ExportableProperty {
+                label: "per_worktree_config: true".to_string(),
+                key: ExportKey::PerWorktreeConfig,
+            });
+
+            // Read bare repo's config.worktree entries
+            let wt_config_path = git_repo.path().join("config.worktree");
+            if wt_config_path.exists()
+                && let Ok(mut wt_cfg) = git2::Config::open(&wt_config_path)
+                && let Ok(wt_snap) = wt_cfg.snapshot()
+            {
+                // Export worktree config entries (skip auto-managed core.bare)
+                for key in &["core.sparseCheckout", "core.sparseCheckoutCone"] {
+                    if let Ok(value) = wt_snap.get_str(key) {
+                        exportable.push(ExportableProperty {
+                            label: format!("worktree config {}: {}", key, value),
+                            key: ExportKey::WorktreeConfig {
+                                key: key.to_string(),
+                                value: value.to_string(),
+                            },
+                        });
+                    }
+                }
             }
         }
     }
@@ -226,6 +272,14 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 println!("  config {}: {}", style::cyan(key), value);
             }
         }
+        if existing.per_worktree_config {
+            println!("  per_worktree_config: {}", style::cyan("true"));
+        }
+        if let Some(ref wt_config) = existing.worktree_config {
+            for (key, value) in &wt_config.entries {
+                println!("  worktree_config {}: {}", style::cyan(key), value);
+            }
+        }
         println!();
     }
 
@@ -247,6 +301,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                     ExportKey::Url(_)
                         | ExportKey::Branch(_)
                         | ExportKey::Worktree
+                        | ExportKey::PerWorktreeConfig
                         | ExportKey::Worktrees(_)
                 )
             })
@@ -271,20 +326,26 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             let mut branch: Option<String> = None;
             let mut remotes: HashMap<String, RemoteConfig> = HashMap::new();
             let mut config_entries: HashMap<String, String> = HashMap::new();
+            let mut worktree_config_entries: HashMap<String, String> = HashMap::new();
             let mut worktree = false;
-            let mut worktrees: Option<HashMap<String, String>> = None;
+            let mut per_worktree_config = false;
+            let mut worktrees: Option<HashMap<String, WorktreeEntry>> = None;
 
             // Start from existing entry if present
             if let Some(existing) = existing_entry {
                 url = existing.url.clone();
                 branch = existing.branch.clone();
                 worktree = existing.worktree;
+                per_worktree_config = existing.per_worktree_config;
                 worktrees = existing.worktrees.clone();
                 if let Some(ref r) = existing.remotes {
                     remotes = r.clone();
                 }
                 if let Some(ref c) = existing.config {
                     config_entries = c.entries.clone();
+                }
+                if let Some(ref c) = existing.worktree_config {
+                    worktree_config_entries = c.entries.clone();
                 }
             }
 
@@ -298,7 +359,11 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                     ExportKey::Config { key, value } => {
                         config_entries.insert(key.clone(), value.clone());
                     }
+                    ExportKey::WorktreeConfig { key, value } => {
+                        worktree_config_entries.insert(key.clone(), value.clone());
+                    }
                     ExportKey::Worktree => worktree = true,
+                    ExportKey::PerWorktreeConfig => per_worktree_config = true,
                     ExportKey::Worktrees(wt) => worktrees = Some(wt.clone()),
                 }
             }
@@ -318,6 +383,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                     .map(|e| e.recurse_submodules)
                     .unwrap_or(false),
                 worktree,
+                per_worktree_config,
                 worktrees,
                 remotes: if remotes.is_empty() {
                     None
@@ -329,6 +395,13 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 } else {
                     Some(GitConfig {
                         entries: config_entries,
+                    })
+                },
+                worktree_config: if worktree_config_entries.is_empty() {
+                    None
+                } else {
+                    Some(GitConfig {
+                        entries: worktree_config_entries,
                     })
                 },
             };
@@ -427,13 +500,48 @@ fn build_git_entry(config: &GitRepoConfig) -> serde_yml::Mapping {
             serde_yml::Value::Bool(true),
         );
     }
+    // Only emit per_worktree_config when it differs from the default
+    // (default is true when worktree is true, false otherwise)
+    if config.per_worktree_config != config.worktree {
+        entry.insert(
+            serde_yml::Value::String("per_worktree_config".into()),
+            serde_yml::Value::Bool(config.per_worktree_config),
+        );
+    }
     if let Some(ref worktrees) = config.worktrees {
         let mut wt = serde_yml::Mapping::new();
-        for (name, branch) in worktrees {
-            wt.insert(
-                serde_yml::Value::String(name.clone()),
-                serde_yml::Value::String(branch.clone()),
-            );
+        for (name, wt_entry) in worktrees {
+            if wt_entry.config.is_some() {
+                // Detailed form: { branch: "...", config: { ... } }
+                let mut wt_detail = serde_yml::Mapping::new();
+                wt_detail.insert(
+                    serde_yml::Value::String("branch".into()),
+                    serde_yml::Value::String(wt_entry.branch.clone()),
+                );
+                if let Some(ref wt_config) = wt_entry.config {
+                    let mut config_map = serde_yml::Mapping::new();
+                    for (key, value) in &wt_config.entries {
+                        config_map.insert(
+                            serde_yml::Value::String(key.clone()),
+                            serde_yml::Value::String(value.clone()),
+                        );
+                    }
+                    wt_detail.insert(
+                        serde_yml::Value::String("config".into()),
+                        serde_yml::Value::Mapping(config_map),
+                    );
+                }
+                wt.insert(
+                    serde_yml::Value::String(name.clone()),
+                    serde_yml::Value::Mapping(wt_detail),
+                );
+            } else {
+                // Simple form: just the branch name
+                wt.insert(
+                    serde_yml::Value::String(name.clone()),
+                    serde_yml::Value::String(wt_entry.branch.clone()),
+                );
+            }
         }
         entry.insert(
             serde_yml::Value::String("worktrees".into()),
@@ -492,6 +600,19 @@ fn build_git_entry(config: &GitRepoConfig) -> serde_yml::Mapping {
         }
         entry.insert(
             serde_yml::Value::String("config".into()),
+            serde_yml::Value::Mapping(config_map),
+        );
+    }
+    if let Some(ref wt_config) = config.worktree_config {
+        let mut config_map = serde_yml::Mapping::new();
+        for (key, value) in &wt_config.entries {
+            config_map.insert(
+                serde_yml::Value::String(key.clone()),
+                serde_yml::Value::String(value.clone()),
+            );
+        }
+        entry.insert(
+            serde_yml::Value::String("worktree_config".into()),
             serde_yml::Value::Mapping(config_map),
         );
     }
@@ -638,6 +759,41 @@ fn yaml_value_to_toml(v: &serde_yml::Value) -> Result<toml::Value> {
     }
 }
 
+/// Read per-worktree config entries from a named worktree's `config.worktree` file.
+///
+/// Looks for `.git/worktrees/<name>/config.worktree` and reads user-relevant
+/// entries (skipping auto-managed keys like `core.bare`).  Returns `None` when
+/// no config file exists or it contains no exportable entries.
+fn read_worktree_config(repo: &git2::Repository, name: &str) -> Option<GitConfig> {
+    let wt_config_path = repo
+        .path()
+        .join("worktrees")
+        .join(name)
+        .join("config.worktree");
+    if !wt_config_path.exists() {
+        return None;
+    }
+    let mut cfg = git2::Config::open(&wt_config_path).ok()?;
+    let snap = cfg.snapshot().ok()?;
+    let mut entries = HashMap::new();
+    // Read known per-worktree config keys (skip auto-managed core.bare)
+    for key in &[
+        "user.name",
+        "user.email",
+        "core.sparseCheckout",
+        "core.sparseCheckoutCone",
+    ] {
+        if let Ok(value) = snap.get_str(key) {
+            entries.insert(key.to_string(), value.to_string());
+        }
+    }
+    if entries.is_empty() {
+        None
+    } else {
+        Some(GitConfig { entries })
+    }
+}
+
 /// Resolve the branch checked out in a named worktree.
 ///
 /// Opens the worktree by name, looks up its HEAD, and returns the
@@ -670,9 +826,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         let entry = build_git_entry(&config);
         assert_eq!(
@@ -693,9 +851,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         let entry = build_git_entry(&config);
         assert_eq!(
@@ -713,9 +873,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         let entry = build_git_entry(&config);
         assert_eq!(
@@ -733,9 +895,11 @@ mod tests {
             rev: Some("abc123".into()),
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         let entry = build_git_entry(&config);
         assert_eq!(
@@ -753,9 +917,11 @@ mod tests {
             rev: None,
             recurse_submodules: true,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         let entry = build_git_entry(&config);
         assert_eq!(
@@ -773,9 +939,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: true,
+            per_worktree_config: true,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         let entry = build_git_entry(&config);
         assert_eq!(
@@ -787,7 +955,13 @@ mod tests {
     #[test]
     fn test_build_git_entry_with_worktrees() {
         let mut worktrees = HashMap::new();
-        worktrees.insert("feature".into(), "feature-branch".into());
+        worktrees.insert(
+            "feature".to_string(),
+            WorktreeEntry {
+                branch: "feature-branch".to_string(),
+                config: None,
+            },
+        );
         let config = GitRepoConfig {
             url: "https://example.com/repo.git".into(),
             branch: None,
@@ -795,9 +969,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: Some(worktrees),
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         let entry = build_git_entry(&config);
         let wt = entry
@@ -831,9 +1007,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: Some(remotes),
             config: None,
+            worktree_config: None,
         };
         let entry = build_git_entry(&config);
         let remotes_map = entry
@@ -872,9 +1050,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: Some(GitConfig { entries }),
+            worktree_config: None,
         };
         let entry = build_git_entry(&config);
         let config_map = entry
@@ -1043,9 +1223,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         let descriptor = td.path().join("over.yaml");
         update_descriptor_yaml(&descriptor, "projects/myapp", &config).unwrap();
@@ -1070,9 +1252,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         let descriptor = td.path().join("over.yaml");
         update_descriptor_yaml(&descriptor, "my/repo", &config).unwrap();
@@ -1098,9 +1282,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         let descriptor = td.path().join("over.toml");
         update_descriptor_toml(&descriptor, "projects/myapp", &config).unwrap();
@@ -1125,9 +1311,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         let descriptor = td.path().join("over.toml");
         update_descriptor_toml(&descriptor, "my/repo", &config).unwrap();
@@ -1155,9 +1343,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         update_overlay_descriptor(td.path(), "my/path", &config).unwrap();
 
@@ -1178,9 +1368,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         update_overlay_descriptor(td.path(), "my/path", &config).unwrap();
 

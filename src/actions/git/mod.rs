@@ -200,13 +200,13 @@ impl Action for EnsureGitRepository {
                     apply_git_config(&repo, &git_config.entries, verbose)?;
                 }
 
+                // Apply per-worktree config (auto-managed + user entries)
+                apply_per_worktree_config(&repo, &config, verbose)?;
+
                 // Associate the overlay with this repository so that
                 // subsequent `git over mount` skips the overlay prompt.
                 let mut git_config = repo.config().with_context(|| {
-                    format!(
-                        "failed to open git config for {}",
-                        repo_path.display()
-                    )
+                    format!("failed to open git config for {}", repo_path.display())
                 })?;
                 git_config
                     .set_str("over.overlay", &overlay_name)
@@ -342,10 +342,23 @@ fn ensure_worktrees(
 
     // Create explicitly named worktrees
     if let Some(worktrees) = &config.worktrees {
-        for (name, branch) in worktrees {
+        for (name, entry) in worktrees {
             let wt_path = base_path.join(name);
             if !existing_names.contains(&name.as_str()) && !wt_path.exists() {
-                create_worktree(repo, name, branch, &wt_path, verbose)?;
+                create_worktree(repo, name, &entry.branch, &wt_path, verbose)?;
+            }
+
+            // Apply per-worktree config if specified
+            if let Some(ref wt_config) = entry.config {
+                let wt_config_path = repo
+                    .path()
+                    .join("worktrees")
+                    .join(name)
+                    .join("config.worktree");
+                // Only apply if the worktree directory exists (i.e. was created or already existed)
+                if wt_config_path.parent().is_some_and(|p| p.exists()) {
+                    apply_config_to_file(&wt_config_path, &wt_config.entries, verbose)?;
+                }
             }
         }
     }
@@ -441,6 +454,83 @@ fn apply_git_config(
             println!("  Set config {key} = {value}");
         }
     }
+    Ok(())
+}
+
+/// Apply git config entries to a `config.worktree` file at the given path.
+///
+/// Opens (or creates) the file via `git2::Config::open` and writes each
+/// entry.  This is used for both the bare repository's own
+/// `.git/config.worktree` and for per-worktree files under
+/// `.git/worktrees/<name>/config.worktree`.
+fn apply_config_to_file(
+    path: &Path,
+    entries: &HashMap<String, String>,
+    verbose: bool,
+) -> Result<()> {
+    let mut cfg = git2::Config::open(path)
+        .with_context(|| format!("failed to open config at {}", path.display()))?;
+    for (key, value) in entries {
+        cfg.set_str(key, value)
+            .with_context(|| format!("failed to set {key} in {}", path.display()))?;
+        if verbose {
+            println!("  Set {} {key} = {value}", path.display());
+        }
+    }
+    Ok(())
+}
+
+/// Apply auto-managed worktree config entries for bare repos.
+///
+/// When `per_worktree_config` is enabled:
+/// - Writes `core.bare = false` and `extensions.worktreeConfig = true` to
+///   `.git/config` (shared config).
+/// - Writes `core.bare = true` to `.git/config.worktree` (bare repo's own
+///   worktree config).
+/// - Writes any additional user-specified entries from `worktree_config`
+///   to `.git/config.worktree`.
+fn apply_per_worktree_config(
+    repo: &Repository,
+    config: &GitRepoConfig,
+    verbose: bool,
+) -> Result<()> {
+    if !config.per_worktree_config {
+        return Ok(());
+    }
+
+    // Auto-managed shared config entries
+    let mut git_cfg = repo.config()?;
+    git_cfg
+        .set_str("extensions.worktreeConfig", "true")
+        .context("failed to set extensions.worktreeConfig")?;
+    if verbose {
+        println!("  Set config extensions.worktreeConfig = true");
+    }
+
+    let is_bare = config.worktree || config.worktrees.is_some();
+    if is_bare {
+        git_cfg
+            .set_str("core.bare", "false")
+            .context("failed to set core.bare = false in shared config")?;
+        if verbose {
+            println!("  Set config core.bare = false");
+        }
+    }
+    drop(git_cfg);
+
+    // Auto-managed + user entries in config.worktree
+    let wt_config_path = repo.path().join("config.worktree");
+    if is_bare {
+        let mut auto_entries = HashMap::new();
+        auto_entries.insert("core.bare".to_string(), "true".to_string());
+        apply_config_to_file(&wt_config_path, &auto_entries, verbose)?;
+    }
+
+    // Additional user-specified worktree config entries
+    if let Some(ref wt_config) = config.worktree_config {
+        apply_config_to_file(&wt_config_path, &wt_config.entries, verbose)?;
+    }
+
     Ok(())
 }
 
@@ -832,9 +922,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         checkout_ref(&repo, &config).unwrap();
 
@@ -872,9 +964,11 @@ mod tests {
             rev: Some(first_commit_id.to_string()),
             recurse_submodules: false,
             worktree: false,
+            per_worktree_config: false,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
         checkout_ref(&repo, &config).unwrap();
 
@@ -912,9 +1006,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: true,
+            per_worktree_config: true,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
 
         let wt_base = bare_path.parent().unwrap();
@@ -945,7 +1041,13 @@ mod tests {
             .unwrap();
 
         let mut worktrees = HashMap::new();
-        worktrees.insert("dev".to_string(), "develop".to_string());
+        worktrees.insert(
+            "dev".to_string(),
+            config::WorktreeEntry {
+                branch: "develop".to_string(),
+                config: None,
+            },
+        );
 
         let config = GitRepoConfig {
             url: String::new(),
@@ -954,9 +1056,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: true,
+            per_worktree_config: true,
             worktrees: Some(worktrees),
             remotes: None,
             config: None,
+            worktree_config: None,
         };
 
         let wt_base = bare_path.parent().unwrap();
@@ -987,9 +1091,11 @@ mod tests {
             rev: None,
             recurse_submodules: false,
             worktree: true,
+            per_worktree_config: true,
             worktrees: None,
             remotes: None,
             config: None,
+            worktree_config: None,
         };
 
         let wt_base = bare_path.parent().unwrap();
@@ -1018,9 +1124,11 @@ mod tests {
                 rev: None,
                 recurse_submodules: false,
                 worktree: false,
+                per_worktree_config: false,
                 worktrees: None,
                 remotes: None,
                 config: None,
+                worktree_config: None,
             },
             "test-overlay".to_string(),
         );
@@ -1038,12 +1146,175 @@ mod tests {
                 rev: None,
                 recurse_submodules: false,
                 worktree: false,
+                per_worktree_config: false,
                 worktrees: None,
                 remotes: None,
                 config: None,
+                worktree_config: None,
             },
             "test-overlay".to_string(),
         );
         assert_eq!(action.short_name(), "my-repo");
+    }
+
+    #[test]
+    fn test_apply_per_worktree_config() {
+        let (source_td, _source_repo) = create_source_repo();
+
+        let dest_td = TempDir::new().unwrap();
+        let bare_path = dest_td.path().join("bare.git");
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.bare(true);
+        let bare_repo = builder
+            .clone(source_td.path().to_str().unwrap(), &bare_path)
+            .unwrap();
+
+        let config = GitRepoConfig {
+            url: String::new(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: true,
+            per_worktree_config: true,
+            worktrees: None,
+            remotes: None,
+            config: None,
+            worktree_config: None,
+        };
+
+        apply_per_worktree_config(&bare_repo, &config, false).unwrap();
+
+        // Shared config should have core.bare=false and extensions.worktreeConfig=true
+        let cfg = bare_repo.config().unwrap();
+        assert_eq!(cfg.get_string("core.bare").unwrap(), "false");
+        assert_eq!(cfg.get_string("extensions.worktreeConfig").unwrap(), "true");
+
+        // config.worktree should have core.bare=true
+        let wt_config_path = bare_path.join("config.worktree");
+        assert!(wt_config_path.exists());
+        let wt_cfg = git2::Config::open(&wt_config_path).unwrap();
+        assert_eq!(wt_cfg.get_string("core.bare").unwrap(), "true");
+    }
+
+    #[test]
+    fn test_apply_per_worktree_config_with_user_entries() {
+        let (source_td, _source_repo) = create_source_repo();
+
+        let dest_td = TempDir::new().unwrap();
+        let bare_path = dest_td.path().join("bare.git");
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.bare(true);
+        let bare_repo = builder
+            .clone(source_td.path().to_str().unwrap(), &bare_path)
+            .unwrap();
+
+        let mut wt_entries = HashMap::new();
+        wt_entries.insert("core.sparseCheckout".to_string(), "true".to_string());
+
+        let config = GitRepoConfig {
+            url: String::new(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: true,
+            per_worktree_config: true,
+            worktrees: None,
+            remotes: None,
+            config: None,
+            worktree_config: Some(config::GitConfig {
+                entries: wt_entries,
+            }),
+        };
+
+        apply_per_worktree_config(&bare_repo, &config, false).unwrap();
+
+        // config.worktree should have both auto-managed and user entries
+        let wt_config_path = bare_path.join("config.worktree");
+        let wt_cfg = git2::Config::open(&wt_config_path).unwrap();
+        assert_eq!(wt_cfg.get_string("core.bare").unwrap(), "true");
+        assert_eq!(wt_cfg.get_string("core.sparseCheckout").unwrap(), "true");
+    }
+
+    #[test]
+    fn test_apply_per_worktree_config_disabled() {
+        let (_td, repo) = create_source_repo();
+
+        let config = GitRepoConfig {
+            url: String::new(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            per_worktree_config: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+            worktree_config: None,
+        };
+
+        apply_per_worktree_config(&repo, &config, false).unwrap();
+
+        // Should not have set extensions.worktreeConfig
+        let cfg = repo.config().unwrap();
+        assert!(cfg.get_string("extensions.worktreeConfig").is_err());
+    }
+
+    #[test]
+    fn test_ensure_worktrees_with_per_worktree_config() {
+        let (source_td, _source_repo) = create_source_repo();
+
+        let dest_td = TempDir::new().unwrap();
+        let bare_path = dest_td.path().join("bare.git");
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.bare(true);
+        let bare_repo = builder
+            .clone(source_td.path().to_str().unwrap(), &bare_path)
+            .unwrap();
+
+        let mut wt_entries = HashMap::new();
+        wt_entries.insert("user.email".to_string(), "dev@example.com".to_string());
+
+        let mut worktrees = HashMap::new();
+        worktrees.insert(
+            "dev".to_string(),
+            config::WorktreeEntry {
+                branch: "develop".to_string(),
+                config: Some(config::GitConfig {
+                    entries: wt_entries,
+                }),
+            },
+        );
+
+        let config = GitRepoConfig {
+            url: String::new(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: true,
+            per_worktree_config: true,
+            worktrees: Some(worktrees),
+            remotes: None,
+            config: None,
+            worktree_config: None,
+        };
+
+        let wt_base = bare_path.parent().unwrap();
+        ensure_worktrees(&bare_repo, wt_base, &config, false).unwrap();
+
+        // The "dev" worktree should exist
+        assert!(wt_base.join("dev").exists());
+
+        // Per-worktree config should be written
+        let wt_config_path = bare_path
+            .join("worktrees")
+            .join("dev")
+            .join("config.worktree");
+        assert!(wt_config_path.exists());
+        let wt_cfg = git2::Config::open(&wt_config_path).unwrap();
+        assert_eq!(wt_cfg.get_string("user.email").unwrap(), "dev@example.com");
     }
 }
