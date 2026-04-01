@@ -253,7 +253,14 @@ pub async fn link(ctx: Ctx, overlay: &Overlay, to: &Path) -> Result<()> {
                 None
             }
         })
-        .filter(|e| !exclude.is_match(e.path()) && !symlink_config.is_match(e.path()));
+        .filter(|e| !exclude.is_match(e.path()) && !symlink_config.is_match(e.path()))
+        .filter(|e| {
+            let rel = match e.path().strip_prefix(&overlay.root) {
+                Ok(r) => r,
+                Err(_) => return false,
+            };
+            !overlay.is_excluded(rel)
+        });
 
     for file in files {
         // progress.tick();
@@ -415,6 +422,13 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
                 }
             })
             .filter(|e| e.path().is_file())
+            .filter(|e| {
+                let rel = match e.path().strip_prefix(&src) {
+                    Ok(r) => r,
+                    Err(_) => return false,
+                };
+                !overlay.is_excluded(rel)
+            })
             .map(|e| e.path().to_path_buf())
             .collect();
 
