@@ -8,7 +8,7 @@ use walkdir::WalkDir;
 use anyhow::{Context as AnyhowContext, Result};
 
 use super::overlay::Overlay;
-use super::{Format, BASENAME, GLOB_PATTERN};
+use super::{BASENAME, Format, GLOB_PATTERN};
 use crate::ui::style;
 
 /// Manage all overlays

@@ -10,6 +10,7 @@ pub static CROSSMARK: Emoji<'_, '_> = Emoji("❌", "");
 pub static GREEN_CIRCLE: Emoji<'_, '_> = Emoji("🟢", "");
 pub static SPARKLE: Emoji<'_, '_> = Emoji("✨", "");
 pub static MOVE_FILE: Emoji<'_, '_> = Emoji("📃", "");
+pub static WARNING: Emoji<'_, '_> = Emoji("⚠️", "");
 // static LOOKING_GLASS: Emoji<'_, '_> = Emoji("🔍  ", "");
 // static TRUCK: Emoji<'_, '_> = Emoji("🚚  ", "");
 // static CLIP: Emoji<'_, '_> = Emoji("🔗  ", "");

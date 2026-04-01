@@ -1,7 +1,9 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Args;
+use dialoguer::Input;
 
+use crate::actions::symlink::SymlinkConfig;
 use crate::cli::CLI;
 use crate::cli::common::resolve_inputs;
 use crate::exec::Context;
@@ -37,7 +39,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
 
     let home = cli.resolve_home()?;
-    let repo = Repository::new(home);
+    let repo = Repository::new(home.clone());
     if cli.debug {
         println!("{:#?}", repo);
     }
@@ -80,16 +82,115 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let resolved = resolve_inputs(&args.files)?;
 
-    overlay.add_files(&ctx, &resolved).await.map_err(|e| {
-        println!(
-            "{} {} {} {}",
-            emojis::CROSSMARK,
-            style::white_b("Failed to add to overlay"),
-            style::cyan(&overlay.name),
-            style::white_b(&format!(": {}", e)),
-        );
-        e
-    })?;
+    let (symlinks, regulars): (Vec<_>, Vec<_>) = resolved.iter().partition(|p| p.is_symlink());
+
+    for symlink_path in &symlinks {
+        add_symlink(&overlay, &home, symlink_path, cli)?;
+    }
+
+    if !regulars.is_empty() {
+        let regular_paths: Vec<PathBuf> = regulars.into_iter().cloned().collect();
+        overlay.add_files(&ctx, &regular_paths).await.map_err(|e| {
+            println!(
+                "{} {} {} {}",
+                emojis::CROSSMARK,
+                style::white_b("Failed to add to overlay"),
+                style::cyan(&overlay.name),
+                style::white_b(&format!(": {}", e)),
+            );
+            e
+        })?;
+    }
 
     Ok(())
+}
+
+fn add_symlink(
+    overlay: &crate::overlays::Overlay,
+    home: &PathBuf,
+    symlink_path: &PathBuf,
+    _cli: &CLI,
+) -> Result<()> {
+    let link_target = std::fs::read_link(symlink_path)
+        .map_err(|e| anyhow!("failed to read symlink {}: {}", symlink_path.display(), e))?;
+
+    let default_target = compute_default_target(&link_target, &overlay.root, home);
+
+    let target: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!(
+            "Target for {}",
+            style::cyan(symlink_path.display())
+        ))
+        .default(default_target)
+        .interact_text()
+        .map_err(|e| anyhow!("target input cancelled: {}", e))?;
+
+    let rel_path = symlink_path.strip_prefix(home).unwrap_or(symlink_path);
+    let link_config_name = rel_path.to_string_lossy();
+    let config_path = overlay.root.join(format!("{}.link.toml", link_config_name));
+
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let config = SymlinkConfig {
+        target,
+        r#type: crate::actions::symlink::LinkType::Soft,
+    };
+    let toml_content = toml::to_string_pretty(&config)?;
+    std::fs::write(&config_path, toml_content)?;
+
+    println!(
+        "{} {} {} {}",
+        emojis::CHECKMARK,
+        style::white_b("Created symlink config"),
+        style::cyan(config_path.display()),
+        style::white_b("in overlay"),
+    );
+
+    Ok(())
+}
+
+fn compute_default_target(link_target: &Path, overlay_root: &Path, home: &Path) -> String {
+    if let Ok(rel) = link_target.strip_prefix(overlay_root) {
+        return rel.to_string_lossy().to_string();
+    }
+
+    if let Ok(rel) = link_target.strip_prefix(home) {
+        return format!("~/{}", rel.display());
+    }
+
+    link_target.to_string_lossy().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_default_target_inside_overlay() {
+        let overlay_root = PathBuf::from("/home/user/.over/myoverlay");
+        let home = PathBuf::from("/home/user");
+        let link_target = PathBuf::from("/home/user/.over/myoverlay/subdir/file.txt");
+        let result = compute_default_target(&link_target, &overlay_root, &home);
+        assert_eq!(result, "subdir/file.txt");
+    }
+
+    #[test]
+    fn compute_default_target_inside_home() {
+        let overlay_root = PathBuf::from("/home/user/.over/myoverlay");
+        let home = PathBuf::from("/home/user");
+        let link_target = PathBuf::from("/home/user/.config/nvim");
+        let result = compute_default_target(&link_target, &overlay_root, &home);
+        assert_eq!(result, "~/.config/nvim");
+    }
+
+    #[test]
+    fn compute_default_target_outside_home() {
+        let overlay_root = PathBuf::from("/home/user/.over/myoverlay");
+        let home = PathBuf::from("/home/user");
+        let link_target = PathBuf::from("/opt/nvim/bin/nvim");
+        let result = compute_default_target(&link_target, &overlay_root, &home);
+        assert_eq!(result, "/opt/nvim/bin/nvim");
+    }
 }
