@@ -542,6 +542,7 @@ fn new_overlay_debug_output() -> TestResult {
 // ── add integration tests (symlink handling) ──────────────────────────────
 
 #[test]
+#[cfg(unix)]
 fn add_symlink_to_overlay_dry_run() -> TestResult {
     let repo = setup_overlay_repo();
     // Create a symlink that points into the overlay root
