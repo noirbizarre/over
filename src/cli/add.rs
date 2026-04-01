@@ -193,4 +193,22 @@ mod tests {
         let result = compute_default_target(&link_target, &overlay_root, &home);
         assert_eq!(result, "/opt/nvim/bin/nvim");
     }
+
+    #[test]
+    fn compute_default_target_overlay_root_same_as_home() {
+        let overlay_root = PathBuf::from("/home/user");
+        let home = PathBuf::from("/home/user");
+        let link_target = PathBuf::from("/home/user/.config/nvim");
+        let result = compute_default_target(&link_target, &overlay_root, &home);
+        assert_eq!(result, ".config/nvim");
+    }
+
+    #[test]
+    fn compute_default_target_link_target_is_overlay_root() {
+        let overlay_root = PathBuf::from("/home/user/.over/myoverlay");
+        let home = PathBuf::from("/home/user");
+        let link_target = PathBuf::from("/home/user/.over/myoverlay");
+        let result = compute_default_target(&link_target, &overlay_root, &home);
+        assert_eq!(result, "");
+    }
 }

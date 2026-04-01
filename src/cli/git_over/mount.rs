@@ -1380,4 +1380,367 @@ mod tests {
         assert!(content.contains("my/path"));
         assert!(content.contains("https://example.com/repo.git"));
     }
+
+    // ── build_git_entry: per_worktree_config differs from worktree ──────
+
+    #[test]
+    fn test_build_git_entry_per_worktree_config_differs() {
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: true,
+            per_worktree_config: false, // differs from worktree=true
+            worktrees: None,
+            remotes: None,
+            config: None,
+            worktree_config: None,
+        };
+        let entry = build_git_entry(&config);
+        assert_eq!(
+            entry.get(&serde_yml::Value::String("per_worktree_config".into())),
+            Some(&serde_yml::Value::Bool(false)),
+        );
+    }
+
+    #[test]
+    fn test_build_git_entry_per_worktree_config_same_as_worktree() {
+        // When per_worktree_config == worktree, the field should NOT appear
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: true,
+            per_worktree_config: true, // same as worktree
+            worktrees: None,
+            remotes: None,
+            config: None,
+            worktree_config: None,
+        };
+        let entry = build_git_entry(&config);
+        assert_eq!(
+            entry.get(&serde_yml::Value::String("per_worktree_config".into())),
+            None,
+        );
+    }
+
+    // ── build_git_entry: worktrees with config (detailed form) ──────────
+
+    #[test]
+    fn test_build_git_entry_with_worktrees_detailed_form() {
+        let mut wt_entries = HashMap::new();
+        wt_entries.insert("user.email".to_string(), "dev@test.com".to_string());
+        let mut worktrees = HashMap::new();
+        worktrees.insert(
+            "feat".to_string(),
+            WorktreeEntry {
+                branch: "feature".to_string(),
+                config: Some(GitConfig {
+                    entries: wt_entries,
+                }),
+            },
+        );
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            per_worktree_config: false,
+            worktrees: Some(worktrees),
+            remotes: None,
+            config: None,
+            worktree_config: None,
+        };
+        let entry = build_git_entry(&config);
+        let wt = entry
+            .get(&serde_yml::Value::String("worktrees".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let feat = wt
+            .get(&serde_yml::Value::String("feat".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            feat.get(&serde_yml::Value::String("branch".into())),
+            Some(&serde_yml::Value::String("feature".into())),
+        );
+        let cfg = feat
+            .get(&serde_yml::Value::String("config".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            cfg.get(&serde_yml::Value::String("user.email".into())),
+            Some(&serde_yml::Value::String("dev@test.com".into())),
+        );
+    }
+
+    // ── build_git_entry: remote with push ───────────────────────────────
+
+    #[test]
+    fn test_build_git_entry_with_remotes_push() {
+        let mut remotes = HashMap::new();
+        remotes.insert(
+            "upstream".to_string(),
+            RemoteConfig {
+                url: "https://github.com/upstream/repo.git".into(),
+                fetch: None,
+                push: Some("+refs/heads/*:refs/heads/*".into()),
+                tagopt: None,
+                extras: HashMap::new(),
+            },
+        );
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            per_worktree_config: false,
+            worktrees: None,
+            remotes: Some(remotes),
+            config: None,
+            worktree_config: None,
+        };
+        let entry = build_git_entry(&config);
+        let remotes_map = entry
+            .get(&serde_yml::Value::String("remotes".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let upstream = remotes_map
+            .get(&serde_yml::Value::String("upstream".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            upstream.get(&serde_yml::Value::String("push".into())),
+            Some(&serde_yml::Value::String(
+                "+refs/heads/*:refs/heads/*".into()
+            )),
+        );
+    }
+
+    // ── build_git_entry: remote with tagopt ─────────────────────────────
+
+    #[test]
+    fn test_build_git_entry_with_remotes_tagopt() {
+        let mut remotes = HashMap::new();
+        remotes.insert(
+            "upstream".to_string(),
+            RemoteConfig {
+                url: "https://github.com/upstream/repo.git".into(),
+                fetch: None,
+                push: None,
+                tagopt: Some("--no-tags".into()),
+                extras: HashMap::new(),
+            },
+        );
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            per_worktree_config: false,
+            worktrees: None,
+            remotes: Some(remotes),
+            config: None,
+            worktree_config: None,
+        };
+        let entry = build_git_entry(&config);
+        let remotes_map = entry
+            .get(&serde_yml::Value::String("remotes".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let upstream = remotes_map
+            .get(&serde_yml::Value::String("upstream".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            upstream.get(&serde_yml::Value::String("tagopt".into())),
+            Some(&serde_yml::Value::String("--no-tags".into())),
+        );
+    }
+
+    // ── build_git_entry: remote with extras ─────────────────────────────
+
+    #[test]
+    fn test_build_git_entry_with_remotes_extras() {
+        let mut extras = HashMap::new();
+        extras.insert("prune".to_string(), "true".to_string());
+        let mut remotes = HashMap::new();
+        remotes.insert(
+            "upstream".to_string(),
+            RemoteConfig {
+                url: "https://github.com/upstream/repo.git".into(),
+                fetch: None,
+                push: None,
+                tagopt: None,
+                extras,
+            },
+        );
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            per_worktree_config: false,
+            worktrees: None,
+            remotes: Some(remotes),
+            config: None,
+            worktree_config: None,
+        };
+        let entry = build_git_entry(&config);
+        let remotes_map = entry
+            .get(&serde_yml::Value::String("remotes".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let upstream = remotes_map
+            .get(&serde_yml::Value::String("upstream".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            upstream.get(&serde_yml::Value::String("prune".into())),
+            Some(&serde_yml::Value::String("true".into())),
+        );
+    }
+
+    // ── build_git_entry: worktree_config ────────────────────────────────
+
+    #[test]
+    fn test_build_git_entry_with_worktree_config() {
+        let mut entries = HashMap::new();
+        entries.insert("core.sparseCheckout".to_string(), "true".to_string());
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            per_worktree_config: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+            worktree_config: Some(GitConfig { entries }),
+        };
+        let entry = build_git_entry(&config);
+        let wt_cfg = entry
+            .get(&serde_yml::Value::String("worktree_config".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(
+            wt_cfg.get(&serde_yml::Value::String("core.sparseCheckout".into())),
+            Some(&serde_yml::Value::String("true".into())),
+        );
+    }
+
+    // ── update_descriptor error paths ───────────────────────────────────
+
+    #[test]
+    fn test_update_descriptor_toml_invalid_content() {
+        let td = TempDir::new().unwrap();
+        td.child("over.toml")
+            .write_str("not valid {{{{ toml")
+            .unwrap();
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            per_worktree_config: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+            worktree_config: None,
+        };
+        let result =
+            update_descriptor_toml(&td.path().join("over.toml"), "my/path", &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_descriptor_yaml_invalid_content() {
+        let td = TempDir::new().unwrap();
+        td.child("over.yaml")
+            .write_str(":\n  :\n  - ][invalid")
+            .unwrap();
+        let config = GitRepoConfig {
+            url: "https://example.com/repo.git".into(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            per_worktree_config: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+            worktree_config: None,
+        };
+        let result =
+            update_descriptor_yaml(&td.path().join("over.yaml"), "my/path", &config);
+        assert!(result.is_err());
+    }
+
+    // ── read_worktree_config ────────────────────────────────────────────
+
+    #[test]
+    fn test_read_worktree_config_no_file() {
+        let td = TempDir::new().unwrap();
+        let repo = git2::Repository::init(td.path()).unwrap();
+        assert!(read_worktree_config(&repo, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_read_worktree_config_with_entries() {
+        let td = TempDir::new().unwrap();
+        let repo = git2::Repository::init(td.path()).unwrap();
+
+        // Create worktree config directory and file
+        let wt_dir = td.path().join(".git/worktrees/myworktree");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+        let config_path = wt_dir.join("config.worktree");
+        let mut cfg = git2::Config::open(&config_path).unwrap();
+        cfg.set_str("user.name", "WT Test").unwrap();
+        cfg.set_str("user.email", "wt@test.com").unwrap();
+        drop(cfg);
+
+        let result = read_worktree_config(&repo, "myworktree");
+        assert!(result.is_some());
+        let git_config = result.unwrap();
+        assert!(
+            !git_config.entries.is_empty(),
+            "Expected entries in worktree config"
+        );
+    }
+
+    // ── resolve_worktree_branch ─────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_worktree_branch_not_found() {
+        let td = TempDir::new().unwrap();
+        let repo = git2::Repository::init(td.path()).unwrap();
+        assert_eq!(resolve_worktree_branch(&repo, "nonexistent"), None);
+    }
 }

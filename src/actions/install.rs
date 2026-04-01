@@ -2465,6 +2465,456 @@ post = 'echo "after apt"'
         );
     }
 
+    // ── decide_linux_managers edge cases ────────────────────────────────
+
+    #[test]
+    fn test_linux_precedence_no_config() {
+        // No manager configured at all => empty
+        let install = InstallConfig {
+            pre: None,
+            apt: None,
+            archlinux: None,
+            brew: None,
+            cargo: None,
+            python: None,
+            node: None,
+            winget: None,
+            post: None,
+            platforms: Default::default(),
+        };
+        let managers = decide_linux_managers("ubuntu", &install);
+        assert!(managers.is_empty());
+        let managers = decide_linux_managers("archlinux", &install);
+        assert!(managers.is_empty());
+        let managers = decide_linux_managers("fedora", &install);
+        assert!(managers.is_empty());
+    }
+
+    #[test]
+    fn test_linux_precedence_brew_only_top_level() {
+        let install = InstallConfig {
+            pre: None,
+            apt: None,
+            archlinux: None,
+            brew: Some(BrewConfig {
+                taps: None,
+                packages: Some(vec![]),
+                pre: None,
+                post: None,
+            }),
+            cargo: None,
+            python: None,
+            node: None,
+            winget: None,
+            post: None,
+            platforms: Default::default(),
+        };
+        // On debian, brew is second in precedence but first found
+        let managers = decide_linux_managers("ubuntu", &install);
+        assert_eq!(managers, vec![SystemManager::Brew]);
+        // On arch, brew is second in precedence but first found
+        let managers = decide_linux_managers("archlinux", &install);
+        assert_eq!(managers, vec![SystemManager::Brew]);
+    }
+
+    #[test]
+    fn test_linux_precedence_generic_distro() {
+        // Unknown distro falls back to generic precedence
+        let install = InstallConfig {
+            pre: None,
+            apt: Some(AptConfig {
+                packages: vec!["a".into()],
+                pre: None,
+                post: None,
+            }),
+            archlinux: None,
+            brew: None,
+            cargo: None,
+            python: None,
+            node: None,
+            winget: None,
+            post: None,
+            platforms: Default::default(),
+        };
+        let managers = decide_linux_managers("fedora", &install);
+        assert_eq!(managers, vec![SystemManager::Apt]);
+    }
+
+    #[test]
+    fn test_linux_precedence_platform_section_empty_managers() {
+        // Platform section exists but none of its managers are configured
+        let mut platforms = std::collections::HashMap::new();
+        platforms.insert(
+            "ubuntu".into(),
+            PlatformInstallConfig {
+                pre: None,
+                apt: None,
+                archlinux: None,
+                brew: None,
+                cargo: None,
+                python: None,
+                node: None,
+                winget: None,
+                post: None,
+            },
+        );
+        let install = InstallConfig {
+            pre: None,
+            apt: Some(AptConfig {
+                packages: vec!["a".into()],
+                pre: None,
+                post: None,
+            }),
+            archlinux: None,
+            brew: None,
+            cargo: None,
+            python: None,
+            node: None,
+            winget: None,
+            post: None,
+            platforms,
+        };
+        // Platform section takes priority over top-level, but has no managers
+        let managers = decide_linux_managers("ubuntu", &install);
+        assert!(managers.is_empty());
+    }
+
+    #[test]
+    fn test_linux_precedence_arch_alias() {
+        // "arch" should match the arch precedence
+        let install = InstallConfig {
+            pre: None,
+            apt: None,
+            archlinux: Some(ArchlinuxConfig {
+                packages: vec!["x".into()],
+                pre: None,
+                post: None,
+            }),
+            brew: None,
+            cargo: None,
+            python: None,
+            node: None,
+            winget: None,
+            post: None,
+            platforms: Default::default(),
+        };
+        let managers = decide_linux_managers("arch", &install);
+        assert_eq!(managers, vec![SystemManager::Archlinux]);
+    }
+
+    // ── run_cmd dry_run ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_run_cmd_dry_run() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml").write_str("target = \"~\"").unwrap();
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .dry_run(true)
+            .verbose(true)
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay)
+            .build();
+        // dry_run should not actually execute the command
+        let result = run_cmd(&ctx, "false", &[]).await;
+        assert!(result.is_ok(), "dry_run should not actually run command");
+    }
+
+    #[tokio::test]
+    async fn test_run_cmd_verbose() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml").write_str("target = \"~\"").unwrap();
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .verbose(true)
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay)
+            .build();
+        // "true" command should succeed
+        let result = run_cmd(&ctx, "true", &[]).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_run_cmd_failure() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml").write_str("target = \"~\"").unwrap();
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay)
+            .build();
+        // "false" command should fail
+        let result = run_cmd(&ctx, "false", &[]).await;
+        assert!(result.is_err());
+    }
+
+    // ── run_scripts ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_run_scripts_dry_run() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml").write_str("target = \"~\"").unwrap();
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .dry_run(true)
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay)
+            .build();
+        let scripts = vec!["echo hello".to_string(), "exit 1".to_string()];
+        // dry_run should not actually run the scripts
+        let result = run_scripts(&ctx, &scripts).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_run_scripts_success() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml").write_str("target = \"~\"").unwrap();
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay)
+            .build();
+        let scripts = vec!["true".to_string(), "true".to_string()];
+        let result = run_scripts(&ctx, &scripts).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_run_scripts_failure_stops() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml").write_str("target = \"~\"").unwrap();
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay)
+            .build();
+        let scripts = vec!["false".to_string(), "true".to_string()];
+        let result = run_scripts(&ctx, &scripts).await;
+        assert!(result.is_err(), "should stop on first failure");
+    }
+
+    // ── install with no config / dry_run ─────────────────────────────────
+
+    #[tokio::test]
+    async fn test_install_no_config() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml").write_str("target = \"~\"").unwrap();
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay.clone())
+            .build();
+        // No install section => should succeed as no-op
+        let result = install(&ctx, &overlay).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_install_linux_no_install_section() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml").write_str("target = \"~\"").unwrap();
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay.clone())
+            .build();
+        let result = install_linux(&ctx, &overlay).await;
+        assert!(result.is_ok());
+    }
+
+    // ── config deserialization: platform overrides ─────────────────────────
+
+    #[test]
+    fn test_config_with_platform_override_toml() {
+        let content = r#"
+[install]
+apt = ["base-pkg"]
+[install.ubuntu]
+apt = ["ubuntu-specific"]
+"#;
+        let c = Config::builder()
+            .add_source(File::from_str(content, FileFormat::Toml))
+            .build()
+            .unwrap();
+        let data: Data = c.try_deserialize().unwrap();
+        let install = data.install.unwrap();
+        assert_eq!(install.apt.unwrap().packages, ["base-pkg"]);
+        let ubuntu = install.platforms.get("ubuntu").unwrap();
+        assert_eq!(ubuntu.apt.as_ref().unwrap().packages, ["ubuntu-specific"]);
+    }
+
+    #[test]
+    fn test_config_with_platform_override_yaml() {
+        let content = r#"
+install:
+  brew:
+    - base-pkg
+  macos:
+    brew:
+      - mac-only
+"#;
+        let c = Config::builder()
+            .add_source(File::from_str(content, FileFormat::Yaml))
+            .build()
+            .unwrap();
+        let data: Data = c.try_deserialize().unwrap();
+        let install = data.install.unwrap();
+        assert!(install.brew.is_some());
+        let macos = install.platforms.get("macos").unwrap();
+        assert!(macos.brew.is_some());
+    }
+
+    #[test]
+    fn test_config_with_pre_post_scripts_in_managers() {
+        let content = r#"
+[install.cargo]
+packages = [{name = "ripgrep"}]
+pre = ["echo before cargo"]
+post = ["echo after cargo"]
+[install.python]
+packages = [{name = "requests"}]
+pre = "echo before python"
+post = "echo after python"
+[install.node]
+packages = [{name = "typescript"}]
+pre = "echo before node"
+post = "echo after node"
+"#;
+        let c = Config::builder()
+            .add_source(File::from_str(content, FileFormat::Toml))
+            .build()
+            .unwrap();
+        let data: Data = c.try_deserialize().unwrap();
+        let install = data.install.unwrap();
+        let cargo = install.cargo.unwrap();
+        assert_eq!(cargo.pre.unwrap(), vec!["echo before cargo"]);
+        assert_eq!(cargo.post.unwrap(), vec!["echo after cargo"]);
+        let python = install.python.unwrap();
+        assert_eq!(python.pre.unwrap(), vec!["echo before python"]);
+        assert_eq!(python.post.unwrap(), vec!["echo after python"]);
+        let node = install.node.unwrap();
+        assert_eq!(node.pre.unwrap(), vec!["echo before node"]);
+        assert_eq!(node.post.unwrap(), vec!["echo after node"]);
+    }
+
+    #[test]
+    fn test_cargo_package_full_form_deserialization() {
+        let content = r#"
+[install.cargo]
+packages = [
+    {name = "ripgrep", version = "13.0", locked = true},
+    {git = "https://github.com/user/repo.git", tag = "v1.0", name = "my-tool"},
+    {git = "https://github.com/user/repo2.git", branch = "main"},
+    {git = "https://github.com/user/repo3.git", rev = "abc123"},
+    {path = "/local/path/to/crate"},
+    {name = "tool", features = ["feat1", "feat2"], options = "--force"},
+]
+"#;
+        let c = Config::builder()
+            .add_source(File::from_str(content, FileFormat::Toml))
+            .build()
+            .unwrap();
+        let data: Data = c.try_deserialize().unwrap();
+        let cargo = data.install.unwrap().cargo.unwrap();
+        assert_eq!(cargo.packages.len(), 6);
+        // Versioned crate
+        assert_eq!(cargo.packages[0].name, Some("ripgrep".into()));
+        assert_eq!(cargo.packages[0].version, Some("13.0".into()));
+        assert_eq!(cargo.packages[0].locked, Some(true));
+        // Git with tag
+        assert_eq!(
+            cargo.packages[1].git,
+            Some("https://github.com/user/repo.git".into())
+        );
+        assert_eq!(cargo.packages[1].tag, Some("v1.0".into()));
+        assert_eq!(cargo.packages[1].name, Some("my-tool".into()));
+        // Git with branch
+        assert_eq!(cargo.packages[2].branch, Some("main".into()));
+        // Git with rev
+        assert_eq!(cargo.packages[3].rev, Some("abc123".into()));
+        // Path
+        assert_eq!(cargo.packages[4].path, Some("/local/path/to/crate".into()));
+        // Features + options
+        assert_eq!(
+            cargo.packages[5].features,
+            Some(vec!["feat1".into(), "feat2".into()])
+        );
+        assert_eq!(cargo.packages[5].options, Some("--force".into()));
+    }
+
+    #[test]
+    fn test_winget_package_forms() {
+        let content = r#"
+[install.winget]
+packages = [
+    {id = "Microsoft.VisualStudioCode"},
+    {name = "Git", options = "--source winget --override /SILENT"},
+]
+"#;
+        let c = Config::builder()
+            .add_source(File::from_str(content, FileFormat::Toml))
+            .build()
+            .unwrap();
+        let data: Data = c.try_deserialize().unwrap();
+        let winget = data.install.unwrap().winget.unwrap();
+        assert_eq!(winget.packages.len(), 2);
+        assert_eq!(
+            winget.packages[0].id,
+            Some("Microsoft.VisualStudioCode".into())
+        );
+        assert!(winget.packages[0].name.is_none());
+        assert_eq!(winget.packages[1].name, Some("Git".into()));
+        assert!(winget.packages[1].options.is_some());
+    }
+
+    // ── resolve_platform_override ────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_platform_override_no_platforms() {
+        let install = InstallConfig {
+            pre: None,
+            apt: None,
+            archlinux: None,
+            brew: None,
+            cargo: None,
+            python: None,
+            node: None,
+            winget: None,
+            post: None,
+            platforms: Default::default(),
+        };
+        let result = resolve_platform_override(&install);
+        // On CI/test machines, there may or may not be a matching platform
+        // The key point is this doesn't panic
+        let _ = result;
+    }
+
     // ── No install config ───────────────────────────────────────────────
 
     #[tokio::test]
@@ -2513,5 +2963,731 @@ post = 'echo "after apt"'
             .await
             .unwrap();
         assert!(arch.is_empty());
+    }
+
+    // ── install_cargo_crates (dry_run) ──────────────────────────────────
+
+    #[tokio::test]
+    async fn test_install_cargo_crates_empty() {
+        let (td, repo) = repo_and_root();
+        let ctx = test_ctx(td.path().to_path_buf(), repo, None);
+        let ctx = Context::builder()
+            .root(ctx.root.clone())
+            .repository(ctx.repository.clone())
+            .dry_run(true)
+            .build();
+        let crates = BTreeSet::new();
+        install_cargo_crates(&ctx, crates).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_cargo_crates_name_only_dry_run() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let mut crates = BTreeSet::new();
+        crates.insert(CargoPackage {
+            name: Some("ripgrep".into()),
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+            path: None,
+            version: Some("14.0.0".into()),
+            features: None,
+            locked: None,
+            options: None,
+        });
+        install_cargo_crates(&ctx, crates).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_cargo_crates_git_with_tag_dry_run() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let mut crates = BTreeSet::new();
+        crates.insert(CargoPackage {
+            name: Some("my-crate".into()),
+            git: Some("https://github.com/user/repo.git".into()),
+            branch: None,
+            tag: Some("v1.0.0".into()),
+            rev: None,
+            path: None,
+            version: None,
+            features: Some(vec!["feat1".into(), "feat2".into()]),
+            locked: Some(true),
+            options: Some("--force".into()),
+        });
+        install_cargo_crates(&ctx, crates).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_cargo_crates_git_with_branch_dry_run() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let mut crates = BTreeSet::new();
+        crates.insert(CargoPackage {
+            name: None,
+            git: Some("https://github.com/user/repo.git".into()),
+            branch: Some("develop".into()),
+            tag: None,
+            rev: None,
+            path: None,
+            version: None,
+            features: None,
+            locked: None,
+            options: None,
+        });
+        install_cargo_crates(&ctx, crates).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_cargo_crates_git_with_rev_dry_run() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let mut crates = BTreeSet::new();
+        crates.insert(CargoPackage {
+            name: None,
+            git: Some("https://github.com/user/repo.git".into()),
+            branch: None,
+            tag: None,
+            rev: Some("abc1234".into()),
+            path: None,
+            version: None,
+            features: None,
+            locked: None,
+            options: None,
+        });
+        install_cargo_crates(&ctx, crates).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_cargo_crates_path_dry_run() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let mut crates = BTreeSet::new();
+        crates.insert(CargoPackage {
+            name: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+            path: Some("/path/to/crate".into()),
+            version: None,
+            features: None,
+            locked: None,
+            options: None,
+        });
+        install_cargo_crates(&ctx, crates).await.unwrap();
+    }
+
+    // ── install_python_packages (dry_run) ───────────────────────────────
+
+    #[tokio::test]
+    async fn test_install_python_packages_empty() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let pkgs = BTreeSet::new();
+        install_python_packages(&ctx, pkgs).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_python_packages_with_extras_dry_run() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let mut pkgs = BTreeSet::new();
+        pkgs.insert(PythonPackage {
+            name: "requests".into(),
+            extras: Some(vec!["security".into(), "socks".into()]),
+            tool: None,
+            options: Some("--user".into()),
+        });
+        install_python_packages(&ctx, pkgs).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_python_packages_with_explicit_tool_dry_run() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let mut pkgs = BTreeSet::new();
+        pkgs.insert(PythonPackage {
+            name: "black".into(),
+            extras: None,
+            tool: Some(PythonTool::Pip),
+            options: None,
+        });
+        install_python_packages(&ctx, pkgs).await.unwrap();
+    }
+
+    // ── install_node_packages (dry_run) ─────────────────────────────────
+
+    #[tokio::test]
+    async fn test_install_node_packages_empty() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let pkgs = BTreeSet::new();
+        install_node_packages(&ctx, pkgs).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_node_packages_dry_run() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let mut pkgs = BTreeSet::new();
+        pkgs.insert(NodePackage {
+            name: "typescript".into(),
+            options: Some("--force".into()),
+        });
+        install_node_packages(&ctx, pkgs).await.unwrap();
+    }
+
+    // ── install_apt_pkgs (dry_run) ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_install_apt_pkgs_empty() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let pkgs = BTreeSet::new();
+        install_apt_pkgs(&ctx, pkgs).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_apt_pkgs_dry_run() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let mut pkgs = BTreeSet::new();
+        pkgs.insert("git".into());
+        pkgs.insert("vim".into());
+        install_apt_pkgs(&ctx, pkgs).await.unwrap();
+    }
+
+    // ── install_arch_pkgs (dry_run) ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_install_arch_pkgs_empty() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let pkgs = BTreeSet::new();
+        install_arch_pkgs(&ctx, pkgs).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_arch_pkgs_dry_run() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .verbose(true)
+            .build();
+        let mut pkgs = BTreeSet::new();
+        pkgs.insert("base-devel".into());
+        // Regardless of whether yay/paru/pacman is available,
+        // with dry_run=true this should succeed
+        install_arch_pkgs(&ctx, pkgs).await.unwrap();
+    }
+
+    // ── install_brew_pkgs (dry_run) ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_install_brew_pkgs_empty() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        install_brew_pkgs(&ctx, BTreeSet::new(), BTreeSet::new())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_brew_pkgs_no_brew() {
+        // When brew is not found, it should print a message and return Ok
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let mut pkgs = BTreeSet::new();
+        pkgs.insert(BrewPackage {
+            name: "git".into(),
+            cask: None,
+            options: None,
+        });
+        // This will succeed either way (brew found → dry_run, brew not found → early return)
+        install_brew_pkgs(&ctx, BTreeSet::new(), pkgs)
+            .await
+            .unwrap();
+    }
+
+    // ── install_winget_pkgs ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_install_winget_pkgs_empty() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        install_winget_pkgs(&ctx, BTreeSet::new()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_winget_pkgs_not_found() {
+        // winget is not available on Linux → should return Ok
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .verbose(true)
+            .build();
+        let mut pkgs = BTreeSet::new();
+        pkgs.insert(WingetPackage {
+            name: Some("Git.Git".into()),
+            id: None,
+            options: None,
+        });
+        install_winget_pkgs(&ctx, pkgs).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_winget_pkgs_not_found_non_verbose() {
+        let (td, repo) = repo_and_root();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .build();
+        let mut pkgs = BTreeSet::new();
+        pkgs.insert(WingetPackage {
+            name: None,
+            id: Some("Microsoft.VisualStudioCode".into()),
+            options: Some("--scope machine".into()),
+        });
+        install_winget_pkgs(&ctx, pkgs).await.unwrap();
+    }
+
+    // ── install_language_managers (dry_run) ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_install_language_managers_with_all_dry_run() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str(
+                r#"
+target = "~"
+[install]
+cargo = ["ripgrep"]
+python = ["black"]
+node = ["typescript"]
+"#,
+            )
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .dry_run(true)
+            .build();
+
+        let install_cfg = overlay.install.as_ref().unwrap();
+        install_language_managers(&ctx, &overlay, install_cfg, None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_language_managers_with_pre_post_dry_run() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str(
+                r#"
+target = "~"
+[install.cargo]
+pre = ["echo cargo-pre"]
+packages = [{name = "ripgrep"}]
+post = ["echo cargo-post"]
+[install.python]
+pre = ["echo py-pre"]
+packages = [{name = "black"}]
+post = ["echo py-post"]
+[install.node]
+pre = ["echo node-pre"]
+packages = [{name = "typescript"}]
+post = ["echo node-post"]
+"#,
+            )
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .dry_run(true)
+            .build();
+
+        let install_cfg = overlay.install.as_ref().unwrap();
+        install_language_managers(&ctx, &overlay, install_cfg, None)
+            .await
+            .unwrap();
+    }
+
+    // ── install_linux (full orchestration, dry_run) ─────────────────────
+
+    #[tokio::test]
+    async fn test_install_linux_full_dry_run() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str(
+                r#"
+target = "~"
+[install]
+pre = ["echo global-pre"]
+apt = ["git", "curl"]
+cargo = ["ripgrep"]
+python = ["black"]
+node = ["typescript"]
+post = ["echo global-post"]
+"#,
+            )
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .dry_run(true)
+            .build();
+
+        install_linux(&ctx, &overlay).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_linux_with_brew_dry_run() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str(
+                r#"
+target = "~"
+[install]
+brew = ["git"]
+"#,
+            )
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .dry_run(true)
+            .build();
+
+        install_linux(&ctx, &overlay).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_linux_with_archlinux_dry_run() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str(
+                r#"
+target = "~"
+[install]
+archlinux = ["base-devel"]
+"#,
+            )
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .dry_run(true)
+            .build();
+
+        install_linux(&ctx, &overlay).await.unwrap();
+    }
+
+    // ── install_macos (dry_run, called directly on Linux) ───────────────
+
+    #[tokio::test]
+    async fn test_install_macos_no_config() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .dry_run(true)
+            .build();
+
+        install_macos(&ctx, &overlay).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_macos_dry_run() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str(
+                r#"
+target = "~"
+[install]
+pre = ["echo mac-pre"]
+brew = ["git"]
+cargo = ["ripgrep"]
+post = ["echo mac-post"]
+"#,
+            )
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .dry_run(true)
+            .build();
+
+        install_macos(&ctx, &overlay).await.unwrap();
+    }
+
+    // ── install_windows (dry_run, called directly on Linux) ─────────────
+
+    #[tokio::test]
+    async fn test_install_windows_no_config() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .dry_run(true)
+            .build();
+
+        install_windows(&ctx, &overlay).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_windows_dry_run() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str(
+                r#"
+target = "~"
+[install]
+pre = ["echo win-pre"]
+winget = ["Git.Git"]
+cargo = ["ripgrep"]
+post = ["echo win-post"]
+"#,
+            )
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .dry_run(true)
+            .build();
+
+        install_windows(&ctx, &overlay).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_install_windows_with_platform_pre_post_dry_run() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str(
+                r#"
+target = "~"
+[install]
+pre = ["echo top-pre"]
+winget = ["Git.Git"]
+post = ["echo top-post"]
+
+[install.platforms.windows]
+pre = ["echo win-pre"]
+post = ["echo win-post"]
+"#,
+            )
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .dry_run(true)
+            .build();
+
+        install_windows(&ctx, &overlay).await.unwrap();
+    }
+
+    // ── install_linux with platform overrides ───────────────────────────
+
+    #[tokio::test]
+    async fn test_install_linux_with_platform_pre_post_dry_run() {
+        let distro = detect_linux_distro().unwrap_or_else(|| "linux".to_string());
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.yaml")
+            .write_str(&format!(
+                r#"
+target: "~"
+install:
+  pre:
+    - echo top-pre
+  apt:
+    - git
+  post:
+    - echo top-post
+  platforms:
+    {distro}:
+      pre:
+        - echo platform-pre
+      apt:
+        packages:
+          - curl
+      post:
+        - echo platform-post
+"#
+            ))
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .dry_run(true)
+            .build();
+
+        install_linux(&ctx, &overlay).await.unwrap();
+    }
+
+    // ── install_macos with brew pre/post ─────────────────────────────────
+
+    #[tokio::test]
+    async fn test_install_macos_with_brew_hooks_dry_run() {
+        let (td, repo) = repo_and_root();
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.yaml")
+            .write_str(
+                r#"
+target: "~"
+install:
+  brew:
+    pre:
+      - echo brew-pre
+    packages:
+      - git
+    post:
+      - echo brew-post
+"#,
+            )
+            .unwrap();
+
+        let overlay = repo.get("a").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .dry_run(true)
+            .build();
+
+        install_macos(&ctx, &overlay).await.unwrap();
     }
 }

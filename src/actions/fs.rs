@@ -997,6 +997,556 @@ mod tests {
         assert!(res.is_err(), "add_path for nonexistent should error");
     }
 
+    // ── ConflictChoice Display ──────────────────────────────────────────
+
+    #[test]
+    fn conflict_choice_display() {
+        assert_eq!(format!("{}", ConflictChoice::Skip), "Skip");
+        assert_eq!(format!("{}", ConflictChoice::Overwrite), "Overwrite");
+        assert_eq!(
+            format!("{}", ConflictChoice::Absorb),
+            "Absorb (adopt target into overlay)"
+        );
+        assert_eq!(
+            format!("{}", ConflictChoice::Diff),
+            "Diff (show differences, then decide)"
+        );
+    }
+
+    #[test]
+    fn conflict_choice_all_has_four_variants() {
+        assert_eq!(ConflictChoice::ALL.len(), 4);
+    }
+
+    // ── copy_dir_recursive ──────────────────────────────────────────────
+
+    #[test]
+    fn copy_dir_recursive_copies_nested_tree() {
+        let td = TempDir::new().unwrap();
+        let src = td.path().join("src_dir");
+        fs::create_dir_all(src.join("sub1/sub2")).unwrap();
+        fs::write(src.join("a.txt"), "aaa").unwrap();
+        fs::write(src.join("sub1/b.txt"), "bbb").unwrap();
+        fs::write(src.join("sub1/sub2/c.txt"), "ccc").unwrap();
+
+        let dst = td.path().join("dst_dir");
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        assert!(dst.join("a.txt").exists());
+        assert!(dst.join("sub1/b.txt").exists());
+        assert!(dst.join("sub1/sub2/c.txt").exists());
+        assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "aaa");
+        assert_eq!(
+            fs::read_to_string(dst.join("sub1/sub2/c.txt")).unwrap(),
+            "ccc"
+        );
+    }
+
+    #[test]
+    fn copy_dir_recursive_empty_dir() {
+        let td = TempDir::new().unwrap();
+        let src = td.path().join("empty_src");
+        fs::create_dir_all(&src).unwrap();
+
+        let dst = td.path().join("empty_dst");
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        assert!(dst.exists());
+        assert!(dst.is_dir());
+    }
+
+    // ── remove_target ────────────────────────────────────────────────────
+
+    #[test]
+    fn remove_target_removes_file() {
+        let td = TempDir::new().unwrap();
+        let file = td.path().join("removable.txt");
+        fs::write(&file, "content").unwrap();
+        assert!(file.exists());
+        remove_target(&file).unwrap();
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn remove_target_removes_directory() {
+        let td = TempDir::new().unwrap();
+        let dir = td.path().join("removable_dir");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/file.txt"), "content").unwrap();
+        assert!(dir.exists());
+        remove_target(&dir).unwrap();
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn remove_target_removes_file_symlink() {
+        let td = TempDir::new().unwrap();
+        let real_file = td.path().join("real.txt");
+        fs::write(&real_file, "content").unwrap();
+        let link = td.path().join("link.txt");
+        symlink::symlink_file(&real_file, &link).unwrap();
+        assert!(link.is_symlink());
+        remove_target(&link).unwrap();
+        assert!(!link.exists());
+        // Original should still exist
+        assert!(real_file.exists());
+    }
+
+    #[test]
+    fn remove_target_removes_dir_symlink() {
+        let td = TempDir::new().unwrap();
+        let real_dir = td.path().join("real_dir");
+        fs::create_dir_all(&real_dir).unwrap();
+        let link = td.path().join("dir_link");
+        symlink::symlink_dir(&real_dir, &link).unwrap();
+        assert!(link.is_symlink());
+        remove_target(&link).unwrap();
+        assert!(!link.exists() || !link.is_symlink());
+        // Original should still exist
+        assert!(real_dir.exists());
+    }
+
+    // ── absorb_file / absorb_dir ─────────────────────────────────────────
+
+    #[test]
+    fn absorb_file_copies_target_to_source() {
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("overlay_file.txt");
+        fs::write(&source, "old content").unwrap();
+        let target = td.path().join("target_file.txt");
+        fs::write(&target, "new content").unwrap();
+
+        absorb_file(&source, &target).unwrap();
+        assert_eq!(fs::read_to_string(&source).unwrap(), "new content");
+    }
+
+    #[test]
+    fn absorb_dir_replaces_source_with_target() {
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("overlay_dir");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("old.txt"), "old").unwrap();
+
+        let target = td.path().join("target_dir");
+        fs::create_dir_all(target.join("sub")).unwrap();
+        fs::write(target.join("new.txt"), "new").unwrap();
+        fs::write(target.join("sub/deep.txt"), "deep").unwrap();
+
+        absorb_dir(&source, &target).unwrap();
+        assert!(source.join("new.txt").exists());
+        assert!(source.join("sub/deep.txt").exists());
+        assert!(!source.join("old.txt").exists());
+    }
+
+    #[test]
+    fn absorb_dir_source_does_not_exist() {
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("nonexistent_dir");
+        let target = td.path().join("target_dir");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("file.txt"), "data").unwrap();
+
+        absorb_dir(&source, &target).unwrap();
+        assert!(source.join("file.txt").exists());
+    }
+
+    // ── resolve_file_conflict / resolve_dir_conflict ─────────────────────
+
+    #[test]
+    fn resolve_file_conflict_force_removes_target() {
+        let td = TempDir::new().unwrap();
+        let (_, repo) = repo_and_root();
+        let c = ctx(
+            td.path().to_path_buf(),
+            repo,
+            None,
+        );
+        // c has force=true
+
+        let source = td.path().join("source.txt");
+        fs::write(&source, "source").unwrap();
+        let target = td.path().join("target.txt");
+        fs::write(&target, "target").unwrap();
+
+        let result = resolve_file_conflict(&c, &source, &target).unwrap();
+        assert!(result, "force should resolve conflict by removing target");
+        assert!(!target.exists(), "target should be removed");
+    }
+
+    #[test]
+    fn resolve_dir_conflict_force_removes_target() {
+        let td = TempDir::new().unwrap();
+        let (_, repo) = repo_and_root();
+        let c = ctx(
+            td.path().to_path_buf(),
+            repo,
+            None,
+        );
+
+        let source = td.path().join("source_dir");
+        fs::create_dir_all(&source).unwrap();
+        let target = td.path().join("target_dir");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("file.txt"), "data").unwrap();
+
+        let result = resolve_dir_conflict(&c, &source, &target).unwrap();
+        assert!(result);
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn resolve_file_conflict_no_prompt_returns_error() {
+        let td = TempDir::new().unwrap();
+        let (_, repo) = repo_and_root();
+        let c = Context::builder()
+            .no_prompt(true)
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .build();
+
+        let source = td.path().join("source.txt");
+        fs::write(&source, "source").unwrap();
+        let target = td.path().join("target.txt");
+        fs::write(&target, "target").unwrap();
+
+        let result = resolve_file_conflict(&c, &source, &target);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_dir_conflict_no_prompt_returns_error() {
+        let td = TempDir::new().unwrap();
+        let (_, repo) = repo_and_root();
+        let c = Context::builder()
+            .no_prompt(true)
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .build();
+
+        let source = td.path().join("source_dir");
+        fs::create_dir_all(&source).unwrap();
+        let target = td.path().join("target_dir");
+        fs::create_dir_all(&target).unwrap();
+
+        let result = resolve_dir_conflict(&c, &source, &target);
+        assert!(result.is_err());
+    }
+
+    // ── Display impls fallback (no overlay in ctx) ──────────────────────
+
+    #[test]
+    fn ensure_link_display_without_overlay() {
+        let (_, repo) = repo_and_root();
+        let c = Context::builder()
+            .root(PathBuf::from("/tmp"))
+            .repository(repo)
+            .build();
+        let action = EnsureLink::new(
+            c,
+            PathBuf::from("/overlay/file.txt"),
+            PathBuf::from("/target/file.txt"),
+        );
+        let display = format!("{}", action);
+        assert!(display.contains("link:"));
+        assert!(display.contains("/overlay/file.txt"));
+        assert!(display.contains("/target/file.txt"));
+    }
+
+    #[test]
+    fn ensure_dir_link_display_without_overlay() {
+        let (_, repo) = repo_and_root();
+        let c = Context::builder()
+            .root(PathBuf::from("/tmp"))
+            .repository(repo)
+            .build();
+        let action = EnsureDirLink::new(
+            c,
+            PathBuf::from("/overlay/mydir"),
+            PathBuf::from("/target/mydir"),
+        );
+        let display = format!("{}", action);
+        assert!(display.contains("link dir:"));
+        assert!(display.contains("/overlay/mydir"));
+        assert!(display.contains("/target/mydir"));
+    }
+
+    #[test]
+    fn move_file_display_without_overlay() {
+        let (_, repo) = repo_and_root();
+        let c = Context::builder()
+            .root(PathBuf::from("/tmp"))
+            .repository(repo)
+            .build();
+        let action = MoveFile::new(
+            c,
+            PathBuf::from("/src/file.txt"),
+            PathBuf::from("/dst/file.txt"),
+        );
+        let display = format!("{}", action);
+        assert!(display.contains("move file:"));
+        assert!(display.contains("/src/file.txt"));
+        assert!(display.contains("/dst/file.txt"));
+    }
+
+    // ── Display impls with overlay context ───────────────────────────────
+
+    #[test]
+    fn ensure_link_display_with_overlay_context() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_display");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_display").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let source = overlay.root.join("inner/file.txt");
+        let target = td.path().join("inner/file.txt");
+        let action = EnsureLink::new(c, source, target);
+        let display = format!("{}", action);
+        assert!(display.contains("link:"));
+        assert!(display.contains("inner/file.txt"));
+    }
+
+    #[test]
+    fn ensure_dir_link_display_with_overlay_context() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_display2");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_display2").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let source = overlay.root.join("mydir");
+        let target = td.path().join("mydir");
+        let action = EnsureDirLink::new(c, source, target);
+        let display = format!("{}", action);
+        assert!(display.contains("link dir:"));
+        assert!(display.contains("mydir"));
+    }
+
+    #[test]
+    fn move_file_display_with_overlay_context() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_display3");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str(&format!("target = \"{}\"", td.path().display()))
+            .unwrap();
+        let overlay = repo.get("ov_display3").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let src = td.path().join("myfile.txt");
+        let dst = overlay.root.join("myfile.txt");
+        let action = MoveFile::new(c, src, dst);
+        let display = format!("{}", action);
+        assert!(display.contains("move file:"));
+        assert!(display.contains("myfile.txt"));
+    }
+
+    // ── EnsureDir Display ───────────────────────────────────────────────
+
+    #[test]
+    fn ensure_dir_display() {
+        let action = EnsureDir::new(PathBuf::from("/some/path/dir"));
+        let display = format!("{}", action);
+        assert!(display.contains("create directory:"));
+        assert!(display.contains("/some/path/dir"));
+    }
+
+    // ── EnsureLink already linked (idempotent) ─────────────────────────
+
+    #[tokio::test]
+    async fn ensure_link_idempotent_same_target() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_idem");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_idem").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let src_file = overlay.root.join("idem.txt");
+        fs::write(&src_file, "hello").unwrap();
+        let target = td.path().join("idem.txt");
+
+        // Create first
+        let action = EnsureLink::new(c.clone(), src_file.clone(), target.clone());
+        action.execute(c.clone()).await.unwrap();
+        assert!(target.is_symlink());
+
+        // Should be idempotent
+        let action2 = EnsureLink::new(c.clone(), src_file.clone(), target.clone());
+        action2.execute(c.clone()).await.unwrap();
+        assert!(target.is_symlink());
+        assert_eq!(fs::read_link(&target).unwrap(), src_file);
+    }
+
+    // ── EnsureLink dry_run doesn't create symlink ──────────────────────
+
+    #[tokio::test]
+    async fn ensure_link_dry_run_no_op() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_dry");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_dry").unwrap();
+        let c = Context::builder()
+            .dry_run(true)
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay.clone())
+            .build();
+
+        let src_file = overlay.root.join("dry.txt");
+        fs::write(&src_file, "hello").unwrap();
+        let target = td.path().join("dry.txt");
+
+        let action = EnsureLink::new(c.clone(), src_file, target.clone());
+        action.execute(c.clone()).await.unwrap();
+        assert!(!target.exists(), "dry_run should not create symlink");
+    }
+
+    // ── EnsureDirLink dry_run doesn't create symlink ───────────────────
+
+    #[tokio::test]
+    async fn ensure_dir_link_dry_run_no_op() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_dry2");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_dry2").unwrap();
+        let c = Context::builder()
+            .dry_run(true)
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay.clone())
+            .build();
+
+        let src_dir = overlay.root.join("dry_dir");
+        fs::create_dir_all(&src_dir).unwrap();
+        let target = td.path().join("dry_dir");
+
+        let action = EnsureDirLink::new(c.clone(), src_dir, target.clone());
+        action.execute(c.clone()).await.unwrap();
+        assert!(!target.exists(), "dry_run should not create dir symlink");
+    }
+
+    // ── MoveFile dry_run doesn't move ──────────────────────────────────
+
+    #[tokio::test]
+    async fn move_file_dry_run_no_op() {
+        let (td, repo) = repo_and_root();
+        let c = Context::builder()
+            .dry_run(true)
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .build();
+
+        let src = td.path().join("dry_src.txt");
+        fs::write(&src, "content").unwrap();
+        let dst = td.path().join("dry_dst.txt");
+
+        let action = MoveFile::new(c.clone(), src.clone(), dst.clone());
+        action.execute(c.clone()).await.unwrap();
+        assert!(src.exists(), "source should still exist in dry_run");
+        assert!(!dst.exists(), "destination should not be created in dry_run");
+    }
+
+    // ── EnsureLink conflict with force ──────────────────────────────────
+
+    #[tokio::test]
+    async fn ensure_link_conflict_with_force_replaces() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_conflict");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_conflict").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let src_file = overlay.root.join("conflict.txt");
+        fs::write(&src_file, "overlay").unwrap();
+        let target = td.path().join("conflict.txt");
+        fs::write(&target, "existing").unwrap();
+
+        let action = EnsureLink::new(c.clone(), src_file.clone(), target.clone());
+        action.execute(c.clone()).await.unwrap();
+        assert!(target.is_symlink());
+        assert_eq!(fs::read_link(&target).unwrap(), src_file);
+    }
+
+    // ── EnsureDirLink conflict with force ───────────────────────────────
+
+    #[tokio::test]
+    async fn ensure_dir_link_conflict_with_force_replaces() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_dir_conflict");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_dir_conflict").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let src_dir = overlay.root.join("conflict_dir");
+        fs::create_dir_all(&src_dir).unwrap();
+        let target = td.path().join("conflict_dir");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("existing.txt"), "data").unwrap();
+
+        let action = EnsureDirLink::new(c.clone(), src_dir.clone(), target.clone());
+        action.execute(c.clone()).await.unwrap();
+        assert!(target.is_symlink());
+        assert_eq!(fs::read_link(&target).unwrap(), src_dir);
+    }
+
+    // ── EnsureDirLink idempotent ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn ensure_dir_link_idempotent_same_target() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_didem");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_didem").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let src_dir = overlay.root.join("idem_dir");
+        fs::create_dir_all(&src_dir).unwrap();
+        let target = td.path().join("idem_dir");
+
+        let action = EnsureDirLink::new(c.clone(), src_dir.clone(), target.clone());
+        action.execute(c.clone()).await.unwrap();
+        assert!(target.is_symlink());
+
+        // Second call should be idempotent
+        let action2 = EnsureDirLink::new(c.clone(), src_dir.clone(), target.clone());
+        action2.execute(c.clone()).await.unwrap();
+        assert!(target.is_symlink());
+        assert_eq!(fs::read_link(&target).unwrap(), src_dir);
+    }
+
     #[tokio::test]
     async fn ensure_dir_link_creates_dir_symlink() {
         let (td, repo) = repo_and_root();
