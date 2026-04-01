@@ -124,7 +124,7 @@ fn add_nonexistent_file_fails() -> TestResult {
     cmd.arg("--home").arg(repo.path());
     cmd.args([
         "add",
-        "/tmp/nonexistent_file_xyz.txt",
+        "nonexistent_file_xyz.txt",
         "-o",
         "dev",
         "--root",
@@ -237,10 +237,13 @@ fn show_overlay_with_target() -> TestResult {
     let tmp = TempDir::new()?;
     let ov = tmp.path().join("myoverlay");
     fs::create_dir_all(&ov)?;
-    fs::write(
-        ov.join("over.toml"),
-        b"target = \"/home/user\"\ndescription = \"My test overlay\"",
-    )?;
+    let target_path = tmp.path().join("target_user");
+    let target_str = target_path.to_string_lossy().to_string();
+    let toml_content = format!(
+        "target = \"{}\"\ndescription = \"My test overlay\"",
+        target_str
+    );
+    fs::write(ov.join("over.toml"), toml_content.as_bytes())?;
 
     Command::cargo_bin("over")?
         .arg("--home")
@@ -249,7 +252,7 @@ fn show_overlay_with_target() -> TestResult {
         .assert()
         .success()
         .stdout(contains("myoverlay"))
-        .stdout(contains("/home/user"))
+        .stdout(contains(&target_str))
         .stdout(contains("My test overlay"));
     Ok(())
 }

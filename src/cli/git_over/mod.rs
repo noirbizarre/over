@@ -355,7 +355,7 @@ mod tests {
         let over_repo = Repository::new(td.path().to_path_buf());
         let overlay = over_repo.get("overlay").unwrap();
 
-        let repo_dir = PathBuf::from("/tmp/elsewhere");
+        let repo_dir = PathBuf::from("elsewhere");
         let result = repo_relative_path(&overlay, td.path(), &repo_dir);
         assert!(result.is_err());
     }

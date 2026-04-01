@@ -1116,7 +1116,7 @@ mod tests {
     #[test]
     fn test_short_name() {
         let action = EnsureGitRepository::new(
-            PathBuf::from("/tmp/test"),
+            PathBuf::from("test"),
             GitRepoConfig {
                 url: "https://github.com/user/my-repo.git".to_string(),
                 branch: None,
@@ -1138,7 +1138,7 @@ mod tests {
     #[test]
     fn test_short_name_no_git_suffix() {
         let action = EnsureGitRepository::new(
-            PathBuf::from("/tmp/test"),
+            PathBuf::from("test"),
             GitRepoConfig {
                 url: "https://github.com/user/my-repo".to_string(),
                 branch: None,

@@ -365,9 +365,14 @@ mod tests {
 
     #[test]
     fn test_resolve_target_path_absolute() {
+        #[cfg(unix)]
+        let abs_path = "/tmp/overlay-test";
+        #[cfg(windows)]
+        let abs_path = "C:\\overlay-test";
+
         assert_eq!(
-            resolve_target_path("/tmp/overlay-test").unwrap(),
-            PathBuf::from("/tmp/overlay-test")
+            resolve_target_path(abs_path).unwrap(),
+            PathBuf::from(abs_path)
         );
     }
 
