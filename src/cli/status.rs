@@ -40,7 +40,6 @@ pub async fn execute(cli: &CLI) -> Result<()> {
 mod tests {
     use super::*;
     use assert_fs::TempDir;
-    use assert_fs::prelude::*;
     use clap::Parser;
     use std::fs;
     use std::path::PathBuf;

@@ -563,7 +563,7 @@ fn add_symlink_to_overlay_dry_run() -> TestResult {
     ]);
     // add with symlinks prompts for target input which will fail in non-interactive test
     // so we just verify the command starts and then fails on input
-    cmd.assert();
+    let _ = cmd.assert();
     Ok(())
 }
 
@@ -722,11 +722,12 @@ apt = ["curl"]
 #[test]
 fn git_over_add_dry_run() -> TestResult {
     let tmp = TempDir::new()?;
-    let ov = tmp.path().join("gitov");
+    let canonical_tmp = tmp.path().canonicalize()?;
+    let ov = canonical_tmp.join("gitov");
     fs::create_dir_all(&ov)?;
-    let target_str = tmp.path().to_string_lossy();
+    let target_str = canonical_tmp.to_string_lossy();
     fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
-    let repo_dir = tmp.path().join("repo");
+    let repo_dir = canonical_tmp.join("repo");
     fs::create_dir_all(&repo_dir)?;
     let test_file = repo_dir.join("test.txt");
     fs::write(&test_file, b"content")?;
@@ -737,7 +738,7 @@ fn git_over_add_dry_run() -> TestResult {
 
     Command::cargo_bin("git-over")?
         .arg("--home")
-        .arg(tmp.path())
+        .arg(&canonical_tmp)
         .arg("add")
         .arg(test_file.to_str().unwrap())
         .arg("-o")
@@ -805,11 +806,12 @@ fn git_over_status_with_overlay_configured() -> TestResult {
 #[test]
 fn git_over_add_multiple_files_dry_run() -> TestResult {
     let tmp = TempDir::new()?;
-    let ov = tmp.path().join("gitov_multi");
+    let canonical_tmp = tmp.path().canonicalize()?;
+    let ov = canonical_tmp.join("gitov_multi");
     fs::create_dir_all(&ov)?;
-    let target_str = tmp.path().to_string_lossy();
+    let target_str = canonical_tmp.to_string_lossy();
     fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
-    let repo_dir = tmp.path().join("repo");
+    let repo_dir = canonical_tmp.join("repo");
     fs::create_dir_all(&repo_dir)?;
     let file_a = repo_dir.join("a.txt");
     let file_b = repo_dir.join("b.txt");
@@ -822,7 +824,7 @@ fn git_over_add_multiple_files_dry_run() -> TestResult {
 
     Command::cargo_bin("git-over")?
         .arg("--home")
-        .arg(tmp.path())
+        .arg(&canonical_tmp)
         .arg("add")
         .arg(file_a.to_str().unwrap())
         .arg(file_b.to_str().unwrap())
@@ -838,11 +840,12 @@ fn git_over_add_multiple_files_dry_run() -> TestResult {
 #[test]
 fn git_over_add_directory_dry_run() -> TestResult {
     let tmp = TempDir::new()?;
-    let ov = tmp.path().join("gitov_dir");
+    let canonical_tmp = tmp.path().canonicalize()?;
+    let ov = canonical_tmp.join("gitov_dir");
     fs::create_dir_all(&ov)?;
-    let target_str = tmp.path().to_string_lossy();
+    let target_str = canonical_tmp.to_string_lossy();
     fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
-    let repo_dir = tmp.path().join("repo");
+    let repo_dir = canonical_tmp.join("repo");
     fs::create_dir_all(&repo_dir)?;
     let dir = repo_dir.join("mydir");
     fs::create_dir_all(&dir)?;
@@ -854,7 +857,7 @@ fn git_over_add_directory_dry_run() -> TestResult {
 
     Command::cargo_bin("git-over")?
         .arg("--home")
-        .arg(tmp.path())
+        .arg(&canonical_tmp)
         .arg("add")
         .arg(dir.to_str().unwrap())
         .arg("-o")
@@ -869,11 +872,12 @@ fn git_over_add_directory_dry_run() -> TestResult {
 #[test]
 fn git_over_add_nonexistent_file_fails() -> TestResult {
     let tmp = TempDir::new()?;
-    let ov = tmp.path().join("gitov_err");
+    let canonical_tmp = tmp.path().canonicalize()?;
+    let ov = canonical_tmp.join("gitov_err");
     fs::create_dir_all(&ov)?;
-    let target_str = tmp.path().to_string_lossy();
+    let target_str = canonical_tmp.to_string_lossy();
     fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
-    let repo_dir = tmp.path().join("repo");
+    let repo_dir = canonical_tmp.join("repo");
     fs::create_dir_all(&repo_dir)?;
     std::process::Command::new("git")
         .args(["init"])
@@ -882,7 +886,7 @@ fn git_over_add_nonexistent_file_fails() -> TestResult {
 
     Command::cargo_bin("git-over")?
         .arg("--home")
-        .arg(tmp.path())
+        .arg(&canonical_tmp)
         .arg("add")
         .arg("nonexistent_file.txt")
         .arg("-o")

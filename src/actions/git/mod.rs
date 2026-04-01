@@ -1430,7 +1430,7 @@ mod tests {
 
     #[test]
     fn test_checkout_ref_lightweight_tag() {
-        let (source_td, source_repo) = create_source_repo();
+        let (source_td, _source_repo) = create_source_repo();
         // Create destination by cloning
         let dest_td = TempDir::new().unwrap();
         let dest_path = dest_td.path().join("repo");
