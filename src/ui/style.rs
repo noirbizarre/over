@@ -1,7 +1,7 @@
 use std::fmt;
 
 use clap::builder::styling;
-use console::{Style, StyledObject, style};
+use console::{style, Style, StyledObject};
 use dialoguer::theme::Theme;
 use std::sync::LazyLock;
 
@@ -319,4 +319,303 @@ pub fn clap_styles() -> styling::Styles {
         .usage(styling::AnsiColor::Green.on_default() | styling::Effects::BOLD)
         .literal(styling::AnsiColor::Blue.on_default() | styling::Effects::BOLD)
         .placeholder(styling::AnsiColor::Cyan.on_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fmt::Write;
+
+    #[test]
+    fn test_white_styles_text() {
+        let styled = white("hello");
+        let mut buf = String::new();
+        write!(&mut buf, "{}", styled).unwrap();
+        assert!(buf.contains("hello"));
+    }
+
+    #[test]
+    fn test_white_bold_styles_text() {
+        let styled = white_b("hello");
+        let mut buf = String::new();
+        write!(&mut buf, "{}", styled).unwrap();
+        assert!(buf.contains("hello"));
+    }
+
+    #[test]
+    fn test_white_bold_italic_styles_text() {
+        let styled = white_bi("hello");
+        let mut buf = String::new();
+        write!(&mut buf, "{}", styled).unwrap();
+        assert!(buf.contains("hello"));
+    }
+
+    #[test]
+    fn test_cyan_styles_text() {
+        let styled = cyan("hello");
+        let mut buf = String::new();
+        write!(&mut buf, "{}", styled).unwrap();
+        assert!(buf.contains("hello"));
+    }
+
+    #[test]
+    fn test_yellow_styles_text() {
+        let styled = yellow("hello");
+        let mut buf = String::new();
+        write!(&mut buf, "{}", styled).unwrap();
+        assert!(buf.contains("hello"));
+    }
+
+    #[test]
+    fn test_dialog_theme_default() {
+        let theme = DialogTheme::default();
+        assert_eq!(format!("{}", theme.prompt_prefix), "?");
+        assert_eq!(format!("{}", theme.prompt_suffix), "›");
+        assert_eq!(format!("{}", theme.success_prefix), "✔");
+        assert_eq!(format!("{}", theme.success_suffix), "·");
+        assert_eq!(format!("{}", theme.error_prefix), "✘");
+        assert_eq!(format!("{}", theme.active_item_prefix), "❯");
+    }
+
+    #[test]
+    fn test_dialog_theme_format_confirm_prompt_no_default() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_confirm_prompt(&mut buf, "Are you sure?", None)
+            .unwrap();
+        assert!(buf.contains("Are you sure?"));
+        assert!(buf.contains("(y/n)"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_confirm_prompt_default_true() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_confirm_prompt(&mut buf, "Continue?", Some(true))
+            .unwrap();
+        assert!(buf.contains("Continue?"));
+        assert!(buf.contains("yes"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_confirm_prompt_default_false() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_confirm_prompt(&mut buf, "Continue?", Some(false))
+            .unwrap();
+        assert!(buf.contains("Continue?"));
+        assert!(buf.contains("no"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_confirm_prompt_empty_prompt() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme.format_confirm_prompt(&mut buf, "", None).unwrap();
+        assert!(buf.contains("(y/n)"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_confirm_selection_yes() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_confirm_prompt_selection(&mut buf, "Are you sure?", Some(true))
+            .unwrap();
+        assert!(buf.contains("yes"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_confirm_selection_no() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_confirm_prompt_selection(&mut buf, "Are you sure?", Some(false))
+            .unwrap();
+        assert!(!buf.contains("yes"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_confirm_selection_none() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_confirm_prompt_selection(&mut buf, "Are you sure?", None)
+            .unwrap();
+        assert!(buf.contains("·"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_confirm_selection_empty_prompt() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_confirm_prompt_selection(&mut buf, "", Some(true))
+            .unwrap();
+        assert!(buf.contains("yes"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_select_prompt() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme.format_select_prompt(&mut buf, "Choose:").unwrap();
+        assert!(buf.contains("Choose:"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_select_prompt_empty() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme.format_select_prompt(&mut buf, "").unwrap();
+        assert!(buf.contains("›"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_select_prompt_selection() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_select_prompt_selection(&mut buf, "Choose:", "option1")
+            .unwrap();
+        assert!(buf.contains("option1"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_select_prompt_selection_empty_prompt() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_select_prompt_selection(&mut buf, "", "option1")
+            .unwrap();
+        assert!(buf.contains("option1"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_input_prompt_with_default() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_input_prompt(&mut buf, "Enter value:", Some("default"))
+            .unwrap();
+        assert!(buf.contains("(default)"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_input_prompt_no_default() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_input_prompt(&mut buf, "Enter value:", None)
+            .unwrap();
+        assert!(buf.contains("Enter value:"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_input_prompt_empty_prompt() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_input_prompt(&mut buf, "", Some("default"))
+            .unwrap();
+        assert!(buf.contains("(default)"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_input_prompt_selection() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_input_prompt_selection(&mut buf, "Enter value:", "chosen")
+            .unwrap();
+        assert!(buf.contains("chosen"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_input_prompt_selection_empty_prompt() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_input_prompt_selection(&mut buf, "", "chosen")
+            .unwrap();
+        assert!(buf.contains("chosen"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_multi_select_prompt() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_multi_select_prompt(&mut buf, "Select:")
+            .unwrap();
+        assert!(buf.contains("Select:"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_multi_select_prompt_empty() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme.format_multi_select_prompt(&mut buf, "").unwrap();
+        assert!(buf.contains("›"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_multi_select_prompt_selection() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_multi_select_prompt_selection(&mut buf, "Select:", &["a", "b"])
+            .unwrap();
+        assert!(buf.contains("a, b"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_multi_select_prompt_selection_empty_prompt() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_multi_select_prompt_selection(&mut buf, "", &["x"])
+            .unwrap();
+        assert!(buf.contains("x"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_select_prompt_item_active() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_select_prompt_item(&mut buf, "item1", true)
+            .unwrap();
+        assert!(buf.contains("item1"));
+        assert!(buf.contains("❯"));
+    }
+
+    #[test]
+    fn test_dialog_theme_format_select_prompt_item_inactive() {
+        let theme = DialogTheme::default();
+        let mut buf = String::new();
+        theme
+            .format_select_prompt_item(&mut buf, "item2", false)
+            .unwrap();
+        assert!(buf.contains("item2"));
+    }
+
+    #[test]
+    fn test_clap_styles_returns_styles() {
+        let styles = clap_styles();
+        assert!(std::mem::size_of_val(&styles) > 0);
+    }
+
+    #[test]
+    fn test_spinner_chars_constants() {
+        assert!(!TICK_CHARS_BRAILLE_4_6_DOWN.is_empty());
+        assert!(!TICK_CHARS_BRAILLE_4_6_UP.is_empty());
+        assert!(!BRAILLE_6.is_empty());
+        assert!(!THIN_PROGRESS.is_empty());
+        assert!(!THIN_DUAL_PROGRESS.is_empty());
+        assert!(!DOTS_4.is_empty());
+    }
 }

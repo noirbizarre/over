@@ -26,6 +26,87 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_fs::TempDir;
+    use assert_fs::prelude::*;
+    use clap::Parser;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn make_cli(home: PathBuf) -> CLI {
+        CLI::parse_from(vec!["over", "--home", home.to_str().unwrap()])
+    }
+
+    #[tokio::test]
+    async fn list_empty_repository() {
+        let tmp = TempDir::new().unwrap();
+        let cli = make_cli(tmp.path().to_path_buf());
+        let params = Params { tree: false };
+        let result = execute(&cli, &params).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_single_overlay() {
+        let tmp = TempDir::new().unwrap();
+        let ov = tmp.path().join("myoverlay");
+        fs::create_dir_all(&ov).unwrap();
+        fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
+
+        let cli = make_cli(tmp.path().to_path_buf());
+        let params = Params { tree: false };
+        let result = execute(&cli, &params).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_multiple_overlays() {
+        let tmp = TempDir::new().unwrap();
+        for name in ["alpha", "beta", "gamma"] {
+            let ov = tmp.path().join(name);
+            fs::create_dir_all(&ov).unwrap();
+            fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
+        }
+
+        let cli = make_cli(tmp.path().to_path_buf());
+        let params = Params { tree: false };
+        let result = execute(&cli, &params).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_with_tree_flag() {
+        let tmp = TempDir::new().unwrap();
+        let ov = tmp.path().join("treeov");
+        fs::create_dir_all(&ov).unwrap();
+        fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
+
+        let cli = make_cli(tmp.path().to_path_buf());
+        let params = Params { tree: true };
+        let result = execute(&cli, &params).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_skips_badly_formatted_overlay() {
+        let tmp = TempDir::new().unwrap();
+        let good = tmp.path().join("good");
+        fs::create_dir_all(&good).unwrap();
+        fs::write(good.join("over.toml"), "target = \"~\"").unwrap();
+
+        let bad = tmp.path().join("bad");
+        fs::create_dir_all(&bad).unwrap();
+        fs::write(bad.join("over.toml"), "{{invalid}}").unwrap();
+
+        let cli = make_cli(tmp.path().to_path_buf());
+        let params = Params { tree: false };
+        let result = execute(&cli, &params).await;
+        assert!(result.is_ok());
+    }
+}
+
 // use termtree::Tree;
 
 // use std::path::Path;

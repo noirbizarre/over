@@ -235,8 +235,8 @@ pub type Ctx = Arc<Context>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assert_fs::TempDir;
     use assert_fs::prelude::*;
+    use assert_fs::TempDir;
     use indicatif::{MultiProgress, ProgressBar};
 
     fn dummy_repo() -> Repository {
@@ -380,5 +380,128 @@ mod tests {
         let new_ctx = ctx.with_multiprogress(mp.clone());
         assert!(ctx.try_multiprogress().is_none());
         assert!(new_ctx.try_multiprogress().is_some());
+    }
+
+    #[test]
+    fn with_resolved_overlay_adds_entry() {
+        #[cfg(unix)]
+        let root_path = PathBuf::from("/tmp");
+        #[cfg(windows)]
+        let root_path = PathBuf::from("C:\\tmp");
+
+        let ctx = Context::builder()
+            .root(root_path)
+            .repository(dummy_repo())
+            .build();
+
+        let new_ctx = ctx.with_resolved_overlay("myoverlay".to_string(), "/target".to_string());
+        assert_eq!(
+            new_ctx.resolved_overlays.get("myoverlay"),
+            Some(&"/target".to_string())
+        );
+        assert!(ctx.resolved_overlays.is_empty());
+    }
+
+    #[test]
+    fn with_resolved_overlay_preserves_other_fields() {
+        #[cfg(unix)]
+        let root_path = PathBuf::from("/tmp");
+        #[cfg(windows)]
+        let root_path = PathBuf::from("C:\\tmp");
+
+        let ctx = Context::builder()
+            .dry_run(true)
+            .debug(true)
+            .verbose(true)
+            .force(true)
+            .no_prompt(true)
+            .root(root_path.clone())
+            .repository(dummy_repo())
+            .build();
+
+        let new_ctx = ctx.with_resolved_overlay("ov".to_string(), "/t".to_string());
+        assert!(new_ctx.dry_run);
+        assert!(new_ctx.debug);
+        assert!(new_ctx.verbose);
+        assert!(new_ctx.force);
+        assert!(new_ctx.no_prompt);
+        assert_eq!(new_ctx.root, root_path);
+    }
+
+    #[test]
+    fn progress_try_progress_returns_some() {
+        let pb = ProgressBar::hidden();
+        let progress = Progress::Progress(pb.clone());
+        assert!(progress.try_progress().is_some());
+        assert!(progress.try_multiprogress().is_none());
+    }
+
+    #[test]
+    fn progress_try_multiprogress_returns_some() {
+        let mp = MultiProgress::new();
+        let progress = Progress::MultiProgress(mp.clone());
+        assert!(progress.try_multiprogress().is_some());
+        assert!(progress.try_progress().is_none());
+    }
+
+    #[test]
+    fn try_progress_without_progress_returns_none() {
+        let ctx = Context::builder().build();
+        assert!(ctx.try_progress().is_none());
+        assert!(ctx.try_multiprogress().is_none());
+    }
+
+    #[test]
+    fn builder_with_overlay() {
+        let (_td, overlay) = make_overlay();
+        let ctx = Context::builder()
+            .repository(dummy_repo())
+            .overlay(overlay.clone())
+            .build();
+        assert!(ctx.overlay.is_some());
+        assert_eq!(ctx.overlay.as_ref().unwrap().name, overlay.name);
+    }
+
+    #[test]
+    fn builder_with_progress() {
+        let pb = ProgressBar::hidden();
+        let ctx = Context::builder()
+            .repository(dummy_repo())
+            .progress(Progress::Progress(pb))
+            .build();
+        assert!(ctx.progress.is_some());
+    }
+
+    #[test]
+    fn builder_with_resolved_overlays() {
+        let mut map = HashMap::new();
+        map.insert("ov".to_string(), "/target".to_string());
+        let map = Arc::new(map);
+        let ctx = Context::builder()
+            .repository(dummy_repo())
+            .resolved_overlays(map.clone())
+            .build();
+        assert_eq!(
+            ctx.resolved_overlays.get("ov"),
+            Some(&"/target".to_string())
+        );
+    }
+
+    #[test]
+    fn context_clone_for_overlay_update() {
+        #[cfg(unix)]
+        let root_path = PathBuf::from("/tmp");
+        #[cfg(windows)]
+        let root_path = PathBuf::from("C:\\tmp");
+
+        let ctx = Context::builder()
+            .dry_run(true)
+            .root(root_path.clone())
+            .repository(dummy_repo())
+            .build();
+
+        let cloned = ctx.clone_for_overlay_update();
+        assert!(cloned.dry_run);
+        assert_eq!(cloned.root, root_path);
     }
 }
