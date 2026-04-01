@@ -8,7 +8,8 @@ use walkdir::WalkDir;
 use anyhow::{Context as AnyhowContext, Result};
 
 use super::overlay::Overlay;
-use super::{BASENAME, Format, GLOB_PATTERN};
+use super::{Format, BASENAME, GLOB_PATTERN};
+use crate::ui::style;
 
 /// Manage all overlays
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
@@ -28,7 +29,8 @@ impl Repository {
         Self { root }
     }
 
-    /// Returns a list of all overlays in the repository
+    /// Returns a list of all overlays in the repository.
+    /// Badly formatted overlay files are skipped with a warning.
     pub fn overlays(&self) -> Result<Vec<Overlay>> {
         let glob = GlobBuilder::new(&GLOB_PATTERN)
             .literal_separator(true)
@@ -49,14 +51,26 @@ impl Repository {
 
         dirs.sort();
 
-        dirs.iter()
-            .enumerate()
-            .filter(|(idx, dir)| !matches!(dirs.get(idx + 1), Some(next) if next.starts_with(dir)))
-            .map(|(_, dir)| {
-                Overlay::new(self, dir)
-                    .with_context(|| format!("failed to load overlay at {}", dir.display()))
-            })
-            .collect::<Result<Vec<_>>>()
+        let mut overlays = Vec::new();
+        for (idx, dir) in dirs.iter().enumerate() {
+            // Skip if this dir is a parent of another dir (more specific overlay wins)
+            if matches!(dirs.get(idx + 1), Some(next) if next.starts_with(dir)) {
+                continue;
+            }
+            match Overlay::new(self, dir)
+                .with_context(|| format!("failed to load overlay at {}", dir.display()))
+            {
+                Ok(overlay) => overlays.push(overlay),
+                Err(_e) => eprintln!(
+                    "{} {} {}",
+                    style::yellow("Warning:"),
+                    style::white_b("skipping badly formatted overlay"),
+                    style::cyan(&dir.display().to_string()),
+                ),
+            }
+        }
+
+        Ok(overlays)
     }
 
     /// Get a repository by its name/relative path
@@ -150,5 +164,41 @@ mod tests {
         .unwrap();
         let repo = Repository::new(tmp.path().to_path_buf());
         assert_eq!(repo.preferred_format(), Some(Format::Yaml));
+    }
+
+    #[test]
+    fn overlays_skips_badly_formatted_file() {
+        let tmp = TempDir::new().unwrap();
+        // Valid overlay
+        let valid = tmp.path().join("valid");
+        fs::create_dir_all(&valid).unwrap();
+        fs::write(valid.join("over.toml"), "target = \"~\"").unwrap();
+        // Badly formatted overlay (invalid TOML)
+        let bad = tmp.path().join("bad");
+        fs::create_dir_all(&bad).unwrap();
+        fs::write(bad.join("over.toml"), "{{{{invalid toml}}}}").unwrap();
+
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let overlays = repo.overlays().unwrap();
+        assert_eq!(overlays.len(), 1);
+        assert_eq!(overlays[0].name, "valid");
+    }
+
+    #[test]
+    fn overlays_skips_parent_when_child_exists() {
+        let tmp = TempDir::new().unwrap();
+        // Parent overlay
+        let parent = tmp.path().join("parent");
+        fs::create_dir_all(&parent).unwrap();
+        fs::write(parent.join("over.toml"), "target = \"~\"").unwrap();
+        // Child overlay (more specific, should win)
+        let child = parent.join("child");
+        fs::create_dir_all(&child).unwrap();
+        fs::write(child.join("over.toml"), "target = \"~\"").unwrap();
+
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let overlays = repo.overlays().unwrap();
+        assert_eq!(overlays.len(), 1);
+        assert_eq!(overlays[0].name, "parent/child");
     }
 }
