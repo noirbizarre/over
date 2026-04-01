@@ -12,11 +12,21 @@ use minijinja::Environment;
 
 use crate::actions::git::config::{GitRepoConfig, deserialize_git_field};
 use crate::actions::install::InstallConfig;
-use crate::actions::{self, EnsureDir};
+use crate::actions::{self, EnsureDir, EnsureSymlink};
 use crate::exec::{self, Action, Ctx};
+use crate::ui;
 use crate::ui::{emojis, style};
+use indicatif::ProgressBar;
+use indicatif::ProgressStyle;
+use std::sync::LazyLock;
 
 use super::{DEFAULT_TARGET, Repository};
+
+static SYMLINK_SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
+    ProgressStyle::with_template("{spinner:.cyan} {wide_msg}")
+        .unwrap()
+        .tick_chars(style::TICK_CHARS_BRAILLE_4_6_DOWN.as_str())
+});
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Overlay {
@@ -181,6 +191,11 @@ impl Overlay {
             actions::git::clone_repositories(ctx.clone(), self, &target).await?;
             actions::fs::link(ctx.clone(), self, &target).await?;
 
+            let ctx_with_target =
+                ctx.with_resolved_overlay(self.name.clone(), target.to_string_lossy().to_string());
+            self.apply_symlinks(ctx_with_target.clone(), &target)
+                .await?;
+
             stack.pop();
             visited.insert(self.name.clone());
 
@@ -196,6 +211,43 @@ impl Overlay {
 
             Ok(())
         })
+    }
+
+    pub async fn apply_symlinks(&self, ctx: Ctx, target: &Path) -> Result<()> {
+        let symlinks = actions::symlink::discover_symlinks(&self.root)?;
+        if symlinks.is_empty() {
+            return Ok(());
+        }
+
+        ui::info(format!(
+            "{} {}",
+            emojis::LINK,
+            style::white("Linking symlinks"),
+        ))?;
+
+        let progress = ProgressBar::new_spinner()
+            .with_style(SYMLINK_SPINNER_STYLE.clone())
+            .with_message("");
+
+        for (name, config) in &symlinks {
+            let resolved_target =
+                actions::symlink::render_symlink_target(&config.target, &ctx.resolved_overlays)?;
+            let target_path = PathBuf::from(&resolved_target);
+            let is_dir = target_path.is_dir()
+                || resolved_target.ends_with(std::path::MAIN_SEPARATOR_STR)
+                || resolved_target.ends_with('/');
+            let link_path = target.join(name);
+
+            let action = EnsureSymlink::new(target_path, link_path, config.r#type.clone(), is_dir);
+            if ctx.verbose || ctx.dry_run {
+                progress.println(format!("{}", action));
+            }
+            progress.set_message(format!("{}", action));
+            action.execute(ctx.clone()).await?;
+        }
+
+        progress.finish_and_clear();
+        Ok(())
     }
 
     pub async fn add_file(&self, ctx: &Ctx, file: &PathBuf) -> Result<()> {
@@ -595,5 +647,73 @@ branch = "main"
             .unwrap();
         let overlay = repo.get("ov_no_git").unwrap();
         assert!(overlay.git.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_apply_creates_symlinks() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_symlink");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        overlay_dir
+            .child("test.link.toml")
+            .write_str("target = \"/tmp/test_symlink_target\"")
+            .unwrap();
+
+        let overlay = repo.get("ov_symlink").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let result = overlay.apply(&c).await;
+        assert!(
+            result.is_ok(),
+            "apply with symlinks should succeed: {:?}",
+            result.err()
+        );
+
+        let target_path = td.path().join("test");
+        assert!(
+            target_path.is_symlink(),
+            "symlink should be created at target"
+        );
+        assert_eq!(
+            fs::read_link(&target_path).unwrap(),
+            PathBuf::from("/tmp/test_symlink_target")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_symlinks_with_env_template() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_sympl");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        overlay_dir
+            .child("templated.link.toml")
+            .write_str("target = \"/tmp/test_symlink_src\"")
+            .unwrap();
+
+        let overlay = repo.get("ov_sympl").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let result = overlay.apply(&c).await;
+        assert!(
+            result.is_ok(),
+            "apply with templated symlink should succeed: {:?}",
+            result.err()
+        );
+
+        let target_path = td.path().join("templated");
+        assert!(
+            target_path.is_symlink(),
+            "symlink should be created at overlay target"
+        );
+        assert_eq!(
+            fs::read_link(&target_path).unwrap(),
+            PathBuf::from("/tmp/test_symlink_src")
+        );
     }
 }

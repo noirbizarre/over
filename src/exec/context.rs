@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::{path::PathBuf, sync::Arc};
 
 use indicatif::{MultiProgress, ProgressBar};
@@ -31,6 +32,9 @@ pub struct Context {
 
     #[serde(skip)]
     pub progress: Option<Progress>,
+
+    #[serde(skip)]
+    pub resolved_overlays: Arc<HashMap<String, String>>,
 }
 
 // Store the current progress bar
@@ -72,6 +76,7 @@ pub struct ContextBuilder {
     repository: Repository,
     overlay: Option<Overlay>,
     progress: Option<Progress>,
+    resolved_overlays: Arc<HashMap<String, String>>,
 }
 
 impl ContextBuilder {
@@ -115,6 +120,16 @@ impl ContextBuilder {
         self
     }
 
+    pub fn progress(mut self, progress: Progress) -> Self {
+        self.progress = Some(progress);
+        self
+    }
+
+    pub fn resolved_overlays(mut self, v: Arc<HashMap<String, String>>) -> Self {
+        self.resolved_overlays = v;
+        self
+    }
+
     pub fn build(self) -> Arc<Context> {
         Arc::new(Context {
             dry_run: self.dry_run,
@@ -126,6 +141,7 @@ impl ContextBuilder {
             repository: self.repository,
             overlay: self.overlay,
             progress: self.progress,
+            resolved_overlays: self.resolved_overlays,
         })
     }
 }
@@ -147,6 +163,7 @@ impl Context {
             repository: self.repository.clone(),
             overlay: Some(overlay),
             progress: self.progress.clone(),
+            resolved_overlays: self.resolved_overlays.clone(),
         })
     }
 
@@ -161,6 +178,7 @@ impl Context {
             repository: self.repository.clone(),
             overlay: self.overlay.clone(),
             progress: Some(Progress::Progress(progress)),
+            resolved_overlays: self.resolved_overlays.clone(),
         })
     }
 
@@ -175,6 +193,7 @@ impl Context {
             repository: self.repository.clone(),
             overlay: self.overlay.clone(),
             progress: Some(Progress::MultiProgress(progress)),
+            resolved_overlays: self.resolved_overlays.clone(),
         })
     }
 
@@ -184,6 +203,30 @@ impl Context {
 
     pub fn try_multiprogress(&self) -> Option<&MultiProgress> {
         self.progress.as_ref().and_then(|p| p.try_multiprogress())
+    }
+
+    pub fn with_resolved_overlay(&self, name: String, target: String) -> Arc<Self> {
+        let mut map = (*self.resolved_overlays).clone();
+        map.insert(name, target);
+        Arc::new(Self {
+            resolved_overlays: Arc::new(map),
+            ..self.clone_for_overlay_update()
+        })
+    }
+
+    fn clone_for_overlay_update(&self) -> Self {
+        Self {
+            dry_run: self.dry_run,
+            debug: self.debug,
+            verbose: self.verbose,
+            force: self.force,
+            no_prompt: self.no_prompt,
+            root: self.root.clone(),
+            repository: self.repository.clone(),
+            overlay: self.overlay.clone(),
+            progress: self.progress.clone(),
+            resolved_overlays: self.resolved_overlays.clone(),
+        }
     }
 }
 

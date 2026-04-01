@@ -239,6 +239,10 @@ pub async fn link(ctx: Ctx, overlay: &Overlay, to: &Path) -> Result<()> {
         .literal_separator(true)
         .build()?
         .compile_matcher();
+    let symlink_config = GlobBuilder::new("**/*.link.{toml,yaml,yml}")
+        .literal_separator(true)
+        .build()?
+        .compile_matcher();
     let files = WalkDir::new(&overlay.root)
         .min_depth(1)
         .into_iter()
@@ -249,7 +253,7 @@ pub async fn link(ctx: Ctx, overlay: &Overlay, to: &Path) -> Result<()> {
                 None
             }
         })
-        .filter(|e| !exclude.is_match(e.path()));
+        .filter(|e| !exclude.is_match(e.path()) && !symlink_config.is_match(e.path()));
 
     for file in files {
         // progress.tick();

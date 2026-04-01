@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
 use globset::GlobBuilder;
+use minijinja::Environment;
 
+use crate::actions::symlink::{LinkType, discover_symlinks};
 use crate::overlays::Overlay;
 
 use super::Diagnostic;
@@ -15,6 +17,7 @@ pub fn check_overlay(overlay: &Overlay) -> Vec<Diagnostic> {
     diagnostics.extend(check_empty_link_dirs(overlay));
     diagnostics.extend(check_invalid_link_dirs_globs(overlay));
     diagnostics.extend(check_git(overlay));
+    diagnostics.extend(check_symlinks(overlay));
 
     diagnostics
 }
@@ -198,6 +201,53 @@ fn check_git(overlay: &Overlay) -> Vec<Diagnostic> {
                     format!("{ctx}: path contains `..` traversal"),
                 )
                 .with_hint("use a path within the overlay target directory"),
+            );
+        }
+    }
+
+    diagnostics
+}
+
+// ── symlink checks ───────────────────────────────────────────────────────
+
+fn check_symlinks(overlay: &Overlay) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    let symlinks = match discover_symlinks(&overlay.root) {
+        Ok(s) => s,
+        Err(e) => {
+            diagnostics.push(Diagnostic::error(
+                &overlay.name,
+                format!("failed to discover symlink configs: {e}"),
+            ));
+            return diagnostics;
+        }
+    };
+
+    for (name, config) in &symlinks {
+        if config.target.is_empty() {
+            diagnostics.push(Diagnostic::error(
+                &overlay.name,
+                format!("symlink `{name}`: `target` is empty"),
+            ));
+        } else {
+            let env = Environment::new();
+            let test_state = std::collections::HashMap::<String, String>::new();
+            if let Err(e) = env.render_str(&config.target, &test_state) {
+                diagnostics.push(Diagnostic::error(
+                    &overlay.name,
+                    format!("symlink `{name}`: invalid template in `target`: {e}"),
+                ));
+            }
+        }
+
+        if config.r#type == LinkType::Hard {
+            diagnostics.push(
+                Diagnostic::warning(
+                    &overlay.name,
+                    format!("symlink `{name}`: `type = \"hard\"` will fall back to soft link for directories"),
+                )
+                .with_hint("hard links are not supported for directories on most filesystems"),
             );
         }
     }
@@ -435,5 +485,40 @@ worktree = true
         // empty uses + empty exclude + empty link_dirs = 3 warnings
         assert_eq!(diags.len(), 3);
         assert!(diags.iter().all(|d| d.severity == Severity::Warning));
+    }
+
+    #[rstest]
+    fn test_check_symlinks_hard_type_warning() {
+        let overlay = setup_overlay("target = \"~\"");
+        let link_file = overlay.root.join("test.link.toml");
+        std::fs::write(&link_file, "target = \"/foo\"\ntype = \"hard\"").unwrap();
+        let diags = check_symlinks(&overlay);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.severity == Severity::Warning && d.message.contains("hard"))
+        );
+    }
+
+    #[rstest]
+    fn test_check_symlinks_valid_no_diagnostics() {
+        let overlay = setup_overlay("target = \"~\"");
+        let link_file = overlay.root.join("test.link.toml");
+        std::fs::write(&link_file, "target = \"/foo\"").unwrap();
+        let diags = check_symlinks(&overlay);
+        assert!(diags.is_empty());
+    }
+
+    #[rstest]
+    fn test_check_symlinks_invalid_template() {
+        let overlay = setup_overlay("target = \"~\"");
+        let link_file = overlay.root.join("test.link.toml");
+        std::fs::write(&link_file, "target = \"{{ invalid\"").unwrap();
+        let diags = check_symlinks(&overlay);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.severity == Severity::Error && d.message.contains("invalid template"))
+        );
     }
 }
