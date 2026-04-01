@@ -121,3 +121,119 @@ pub async fn main() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn resolve_home_with_flag() {
+        let args = CLI::parse_from(["over", "--home", "/tmp/test-home"]);
+        let home = args.resolve_home().unwrap();
+        assert_eq!(home, PathBuf::from("/tmp/test-home"));
+    }
+
+    #[test]
+    fn resolve_home_with_short_flag() {
+        let args = CLI::parse_from(["over", "-H", "/tmp/short-home"]);
+        let home = args.resolve_home().unwrap();
+        assert_eq!(home, PathBuf::from("/tmp/short-home"));
+    }
+
+    #[test]
+    fn resolve_home_default_uses_home_dir() {
+        // Note: if OVER_HOME env var is set, it will be used instead of default
+        let args = CLI::parse_from(["over"]);
+        let home = args.resolve_home().unwrap();
+        assert!(home.is_absolute());
+        assert!(home.ends_with(".over") || home.ends_with(".dotfiles"));
+    }
+
+    #[test]
+    fn cli_debug_flag() {
+        let args = CLI::parse_from(["over", "--debug"]);
+        assert!(args.debug);
+    }
+
+    #[test]
+    fn cli_short_debug_flag() {
+        let args = CLI::parse_from(["over", "-d"]);
+        assert!(args.debug);
+    }
+
+    #[test]
+    fn cli_verbose_flag() {
+        let args = CLI::parse_from(["over", "--verbose"]);
+        assert!(args.verbose);
+    }
+
+    #[test]
+    fn cli_short_verbose_flag() {
+        let args = CLI::parse_from(["over", "-v"]);
+        assert!(args.verbose);
+    }
+
+    #[test]
+    fn cli_no_subcommand() {
+        let args = CLI::parse_from(["over"]);
+        assert!(args.cmd.is_none());
+    }
+
+    #[test]
+    fn cli_add_subcommand() {
+        let args = CLI::parse_from(["over", "add", "file.txt", "-o", "myoverlay"]);
+        assert!(matches!(args.cmd, Some(Commands::Add(_))));
+    }
+
+    #[test]
+    fn cli_new_subcommand() {
+        let args = CLI::parse_from(["over", "new", "myoverlay", "~"]);
+        assert!(matches!(args.cmd, Some(Commands::New(_))));
+    }
+
+    #[test]
+    fn cli_list_subcommand() {
+        let args = CLI::parse_from(["over", "list"]);
+        assert!(matches!(args.cmd, Some(Commands::List(_))));
+    }
+
+    #[test]
+    fn cli_list_alias_ls() {
+        let args = CLI::parse_from(["over", "ls"]);
+        assert!(matches!(args.cmd, Some(Commands::List(_))));
+    }
+
+    #[test]
+    fn cli_show_subcommand() {
+        let args = CLI::parse_from(["over", "show", "myoverlay"]);
+        assert!(matches!(args.cmd, Some(Commands::Show(_))));
+    }
+
+    #[test]
+    fn cli_apply_subcommand() {
+        let args = CLI::parse_from(["over", "apply", "myoverlay"]);
+        assert!(matches!(args.cmd, Some(Commands::Apply(_))));
+    }
+
+    #[test]
+    fn cli_lint_subcommand() {
+        let args = CLI::parse_from(["over", "lint"]);
+        assert!(matches!(args.cmd, Some(Commands::Lint(_))));
+    }
+
+    #[test]
+    fn cli_status_subcommand() {
+        let args = CLI::parse_from(["over", "status"]);
+        assert!(matches!(args.cmd, Some(Commands::Status)));
+    }
+
+    #[test]
+    fn cli_global_flags_with_subcommand() {
+        let args = CLI::parse_from(["over", "--home", "/tmp/test", "--debug", "--verbose", "list"]);
+        assert_eq!(args.home, Some(PathBuf::from("/tmp/test")));
+        assert!(args.debug);
+        assert!(args.verbose);
+        assert!(matches!(args.cmd, Some(Commands::List(_))));
+    }
+}

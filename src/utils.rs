@@ -71,4 +71,32 @@ mod tests {
     fn test_longuest_common_suffix(#[case] a: &str, #[case] b: &str, #[case] expected: &str) {
         assert_eq!(longuest_common_suffix(a, b), expected);
     }
+
+    #[test]
+    fn test_expect_type_alias() {
+        let ok_result: Expect<String> = Ok("hello".to_string());
+        assert!(ok_result.is_ok());
+
+        let err_result: Expect<String> = Err("error".into());
+        assert!(err_result.is_err());
+    }
+
+    #[test]
+    fn test_short_path_deeply_nested() {
+        let h = home();
+        let path = format!("{}/a/b/c/d/e/f.txt", h);
+        let result = short_path(&path);
+        assert_eq!(result, "~/a/b/c/d/e/f.txt");
+    }
+
+    #[test]
+    fn test_short_path_empty_string() {
+        let result = short_path("");
+        let h = home();
+        if h.is_empty() {
+            assert_eq!(result, "");
+        } else {
+            assert_eq!(result, "");
+        }
+    }
 }
