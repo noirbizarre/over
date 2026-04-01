@@ -197,7 +197,12 @@ mod tests {
     use indicatif::{MultiProgress, ProgressBar};
 
     fn dummy_repo() -> Repository {
-        Repository::new(PathBuf::from("/tmp/over-test-repo"))
+        #[cfg(unix)]
+        let repo_path = PathBuf::from("/tmp/over-test-repo");
+        #[cfg(windows)]
+        let repo_path = PathBuf::from("C:\\over-test-repo");
+
+        Repository::new(repo_path)
     }
 
     fn make_overlay() -> (TempDir, Overlay) {
@@ -228,13 +233,18 @@ mod tests {
 
     #[test]
     fn builder_sets_flags() {
+        #[cfg(unix)]
+        let root_path = PathBuf::from("/home/test");
+        #[cfg(windows)]
+        let root_path = PathBuf::from("C:\\home\\test");
+
         let ctx = Context::builder()
             .dry_run(true)
             .debug(true)
             .verbose(true)
             .force(true)
             .no_prompt(true)
-            .root(PathBuf::from("/home/test"))
+            .root(root_path.clone())
             .repository(dummy_repo())
             .build();
 
@@ -243,16 +253,21 @@ mod tests {
         assert!(ctx.verbose);
         assert!(ctx.force);
         assert!(ctx.no_prompt);
-        assert_eq!(ctx.root, PathBuf::from("/home/test"));
-        assert_eq!(ctx.repository.root, PathBuf::from("/tmp/over-test-repo"));
+        assert_eq!(ctx.root, root_path);
+        assert_eq!(ctx.repository.root, dummy_repo().root);
     }
 
     #[test]
     fn builder_partial_flags() {
+        #[cfg(unix)]
+        let root_path = PathBuf::from("/tmp");
+        #[cfg(windows)]
+        let root_path = PathBuf::from("C:\\tmp");
+
         let ctx = Context::builder()
             .dry_run(true)
             .verbose(true)
-            .root(PathBuf::from("/tmp"))
+            .root(root_path)
             .build();
 
         assert!(ctx.dry_run);
@@ -264,10 +279,15 @@ mod tests {
 
     #[test]
     fn with_overlay_preserves_other_fields() {
+        #[cfg(unix)]
+        let root_path = PathBuf::from("/home/test");
+        #[cfg(windows)]
+        let root_path = PathBuf::from("C:\\home\\test");
+
         let ctx = Context::builder()
             .dry_run(true)
             .verbose(true)
-            .root(PathBuf::from("/home/test"))
+            .root(root_path.clone())
             .repository(dummy_repo())
             .build();
 
@@ -276,7 +296,7 @@ mod tests {
 
         assert!(new_ctx.dry_run);
         assert!(new_ctx.verbose);
-        assert_eq!(new_ctx.root, PathBuf::from("/home/test"));
+        assert_eq!(new_ctx.root, root_path);
         assert!(new_ctx.overlay.is_some());
         // Original should be unchanged
         assert!(ctx.overlay.is_none());
@@ -284,8 +304,13 @@ mod tests {
 
     #[test]
     fn with_progress_sets_progress_bar() {
+        #[cfg(unix)]
+        let root_path = PathBuf::from("/tmp");
+        #[cfg(windows)]
+        let root_path = PathBuf::from("C:\\tmp");
+
         let ctx = Context::builder()
-            .root(PathBuf::from("/tmp"))
+            .root(root_path)
             .repository(dummy_repo())
             .build();
         let pb = ProgressBar::hidden();
@@ -299,8 +324,13 @@ mod tests {
 
     #[test]
     fn with_multiprogress_sets_multi() {
+        #[cfg(unix)]
+        let root_path = PathBuf::from("/tmp");
+        #[cfg(windows)]
+        let root_path = PathBuf::from("C:\\tmp");
+
         let ctx = Context::builder()
-            .root(PathBuf::from("/tmp"))
+            .root(root_path)
             .repository(dummy_repo())
             .build();
         let mp = MultiProgress::new();

@@ -225,6 +225,9 @@ mod tests {
     use rstest::rstest;
     use std::path::PathBuf;
 
+    #[allow(unused_imports)]
+    use symlink::symlink_file;
+
     // ── is_overlay_descriptor ────────────────────────────────────────────
 
     #[rstest]
@@ -291,7 +294,7 @@ mod tests {
         worktree_dir.create_dir_all().unwrap();
         let link_path = worktree_dir.path().join("config.txt");
 
-        std::os::unix::fs::symlink(overlay_file.path(), &link_path).unwrap();
+        symlink::symlink_file(overlay_file.path(), &link_path).unwrap();
 
         let overlay_root_canonical = overlay_dir.path().canonicalize().unwrap();
         assert!(is_symlink_to(
@@ -319,7 +322,7 @@ mod tests {
         let link_path = worktree_dir.path().join("config.txt");
 
         // Symlink to a file NOT in the overlay
-        std::os::unix::fs::symlink(other_file.path(), &link_path).unwrap();
+        symlink::symlink_file(other_file.path(), &link_path).unwrap();
 
         let overlay_root_canonical = overlay_dir.path().canonicalize().unwrap();
         assert!(!is_symlink_to(
@@ -343,7 +346,7 @@ mod tests {
         worktree_dir.create_dir_all().unwrap();
         let link_path = worktree_dir.path().join("dotfile");
 
-        std::os::unix::fs::symlink(overlay_file.path(), &link_path).unwrap();
+        symlink::symlink_file(overlay_file.path(), &link_path).unwrap();
 
         let overlay_root_canonical = overlay_dir.path().canonicalize().unwrap();
         // overlay_file is under overlay_root, so relative path matching should work
