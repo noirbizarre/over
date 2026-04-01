@@ -1,6 +1,25 @@
-# over-rs
+<p align="center">
+  <img src="./docs/images/logo-text.svg" alt="Over" />
+</p>
 
-Git-based file overlays.
+<p align="center">
+  Git-based file overlays.
+</p>
+
+<p align="center">
+  <a href="https://github.com/noirbizarre/over/actions/workflows/ci.yml">
+    <img src="https://github.com/noirbizarre/over/actions/workflows/ci.yml/badge.svg" alt="👮 CI"/>
+  </a>
+  <a href="https://codecov.io/gh/noirbizarre/over" > 
+    <img src="https://codecov.io/gh/noirbizarre/over/graph/badge.svg?token=XkB3PcbQer"/> 
+  </a>
+</p>
+
+---
+
+Over is a dotfiles manager allowing you to define file overlays in Git repositories, with support for nested references and installation requirements.
+It is inspired by tools like GNU Stow and Chezmoi but focuses on a Git-centric workflow with flexible configuration and installation capabilities.
+
 
 ## Root Configuration
 
