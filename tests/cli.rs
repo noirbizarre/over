@@ -777,11 +777,12 @@ fn git_over_status_no_overlay_configured() -> TestResult {
 #[test]
 fn git_over_status_with_overlay_configured() -> TestResult {
     let tmp = TempDir::new()?;
-    let ov = tmp.path().join("statusov2");
+    let canonical_tmp = tmp.path().canonicalize()?;
+    let ov = canonical_tmp.join("statusov2");
     fs::create_dir_all(&ov)?;
-    let target_str = tmp.path().to_string_lossy();
+    let target_str = canonical_tmp.to_string_lossy();
     fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
-    let repo_dir = tmp.path().join("repo");
+    let repo_dir = canonical_tmp.join("repo");
     fs::create_dir_all(&repo_dir)?;
     std::process::Command::new("git")
         .args(["init"])
@@ -794,7 +795,7 @@ fn git_over_status_with_overlay_configured() -> TestResult {
 
     Command::cargo_bin("git-over")?
         .arg("--home")
-        .arg(tmp.path())
+        .arg(&canonical_tmp)
         .arg("status")
         .current_dir(&repo_dir)
         .assert()
