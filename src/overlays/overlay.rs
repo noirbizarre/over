@@ -22,6 +22,48 @@ use std::sync::LazyLock;
 
 use super::{DEFAULT_TARGET, Repository};
 
+fn default_none() -> Option<Vec<String>> {
+    None
+}
+
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct StringOrVecVisitor;
+
+    impl<'de> Visitor<'de> for StringOrVecVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or a list of strings")
+        }
+
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(vec![value.to_owned()])
+        }
+
+        fn visit_seq<S>(self, mut seq: S) -> std::result::Result<Self::Value, S::Error>
+        where
+            S: de::SeqAccess<'de>,
+        {
+            let mut vec = Vec::new();
+            while let Some(elem) = seq.next_element()? {
+                vec.push(elem);
+            }
+            Ok(vec)
+        }
+    }
+
+    let value = deserializer.deserialize_any(StringOrVecVisitor)?;
+    Ok(Some(value))
+}
+
 static SYMLINK_SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
     ProgressStyle::with_template("{spinner:.cyan} {wide_msg}")
         .unwrap()
@@ -40,6 +82,10 @@ pub struct Overlay {
 
     pub uses: Option<Vec<String>>,
 
+    #[serde(
+        default = "default_none",
+        deserialize_with = "deserialize_string_or_vec"
+    )]
     pub exclude: Option<Vec<String>>,
 
     #[serde(default, deserialize_with = "deserialize_git_field")]
@@ -129,6 +175,44 @@ impl Overlay {
                 return true;
             }
         }
+        false
+    }
+
+    /// Check if a relative path matches any `exclude` glob pattern.
+    /// Returns `false` if no exclude patterns are configured.
+    /// Checks the full path, each leading prefix, and each trailing suffix
+    /// so that directory patterns (e.g. `.git`) match both the directory itself
+    /// and any nested contents (e.g. `.git/config`, `src/__pycache__/mod.pyc`).
+    pub fn is_excluded(&self, rel_path: &Path) -> bool {
+        let patterns = match &self.exclude {
+            Some(p) if !p.is_empty() => p,
+            _ => return false,
+        };
+
+        // Collect all path variants to check: full path, prefixes, and suffixes
+        let components: Vec<_> = rel_path.components().collect();
+        let mut paths_to_check: Vec<PathBuf> = vec![rel_path.to_path_buf()];
+
+        // Prefixes: `.git`, `src/__pycache__`
+        for i in 1..components.len() {
+            paths_to_check.push(components[..i].iter().collect());
+        }
+
+        // Suffixes: `config`, `__pycache__/mod.pyc`
+        for i in 1..components.len() {
+            paths_to_check.push(components[i..].iter().collect());
+        }
+
+        for path in &paths_to_check {
+            for pattern in patterns {
+                if let Ok(glob) = GlobBuilder::new(pattern).literal_separator(true).build()
+                    && glob.compile_matcher().is_match(path)
+                {
+                    return true;
+                }
+            }
+        }
+
         false
     }
 
@@ -714,6 +798,287 @@ branch = "main"
         assert_eq!(
             fs::read_link(&target_path).unwrap(),
             PathBuf::from("/tmp/test_symlink_src")
+        );
+    }
+
+    // ── exclude: string or list deserialization ──────────────────────────
+
+    #[rstest]
+    fn test_exclude_as_single_string() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_exc_str");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nexclude = \"*.bak\"")
+            .unwrap();
+        let overlay = repo.get("ov_exc_str").unwrap();
+        let exclude = overlay.exclude.as_ref().expect("exclude should be Some");
+        assert_eq!(exclude.len(), 1);
+        assert_eq!(exclude[0], "*.bak");
+    }
+
+    #[rstest]
+    fn test_exclude_as_list() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_exc_list");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nexclude = [\"*.bak\", \".git\", \"*.tmp\"]")
+            .unwrap();
+        let overlay = repo.get("ov_exc_list").unwrap();
+        let exclude = overlay.exclude.as_ref().expect("exclude should be Some");
+        assert_eq!(exclude.len(), 3);
+        assert_eq!(exclude[0], "*.bak");
+        assert_eq!(exclude[1], ".git");
+        assert_eq!(exclude[2], "*.tmp");
+    }
+
+    #[rstest]
+    fn test_exclude_absent_is_none() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_no_exc");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_no_exc").unwrap();
+        assert!(overlay.exclude.is_none());
+    }
+
+    #[rstest]
+    fn test_exclude_empty_list_is_some_empty_vec() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_empty_exc");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nexclude = []")
+            .unwrap();
+        let overlay = repo.get("ov_empty_exc").unwrap();
+        let exclude = overlay.exclude.as_ref().expect("exclude should be Some");
+        assert!(exclude.is_empty());
+    }
+
+    // ── is_excluded method ───────────────────────────────────────────────
+
+    #[rstest]
+    fn test_is_excluded_matches_single_pattern() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_is_exc");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nexclude = \"*.bak\"")
+            .unwrap();
+        let overlay = repo.get("ov_is_exc").unwrap();
+
+        assert!(overlay.is_excluded(Path::new("file.bak")));
+        assert!(!overlay.is_excluded(Path::new("file.txt")));
+    }
+
+    #[rstest]
+    fn test_is_excluded_matches_nested_pattern() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_is_exc_nested");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nexclude = \"**/*.bak\"")
+            .unwrap();
+        let overlay = repo.get("ov_is_exc_nested").unwrap();
+
+        assert!(overlay.is_excluded(Path::new("file.bak")));
+        assert!(overlay.is_excluded(Path::new("subdir/file.bak")));
+        assert!(!overlay.is_excluded(Path::new("file.txt")));
+    }
+
+    #[rstest]
+    fn test_is_excluded_matches_multiple_patterns() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_is_exc_multi");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nexclude = [\"*.bak\", \".git\", \"*.tmp\"]")
+            .unwrap();
+        let overlay = repo.get("ov_is_exc_multi").unwrap();
+
+        assert!(overlay.is_excluded(Path::new("file.bak")));
+        assert!(overlay.is_excluded(Path::new(".git")));
+        assert!(overlay.is_excluded(Path::new(".git/config")));
+        assert!(overlay.is_excluded(Path::new("file.tmp")));
+        assert!(!overlay.is_excluded(Path::new("file.txt")));
+        assert!(!overlay.is_excluded(Path::new("normal/file.conf")));
+    }
+
+    #[rstest]
+    fn test_is_excluded_none_returns_false() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_no_exc_is");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov_no_exc_is").unwrap();
+
+        assert!(!overlay.is_excluded(Path::new("anything")));
+        assert!(!overlay.is_excluded(Path::new("file.bak")));
+    }
+
+    #[rstest]
+    fn test_is_excluded_directory_pattern() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_dir_exc");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nexclude = [\"__pycache__\", \"*.pyc\"]")
+            .unwrap();
+        let overlay = repo.get("ov_dir_exc").unwrap();
+
+        assert!(overlay.is_excluded(Path::new("__pycache__")));
+        assert!(overlay.is_excluded(Path::new("__pycache__/module.cpython.pyc")));
+        assert!(overlay.is_excluded(Path::new("src/__pycache__")));
+        assert!(overlay.is_excluded(Path::new("module.pyc")));
+        assert!(!overlay.is_excluded(Path::new("module.py")));
+    }
+
+    // ── apply with exclude ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_apply_excludes_files() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_apply_exc");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nexclude = \"*.bak\"")
+            .unwrap();
+        overlay_dir.child("file.txt").write_str("keep").unwrap();
+        overlay_dir.child("file.bak").write_str("skip").unwrap();
+
+        let overlay = repo.get("ov_apply_exc").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let result = overlay.apply(&c).await;
+        assert!(result.is_ok(), "apply should succeed: {:?}", result.err());
+
+        let target = td.path().to_path_buf();
+        assert!(
+            target.join("file.txt").is_symlink(),
+            "file.txt should be linked"
+        );
+        assert!(
+            !target.join("file.bak").exists(),
+            "file.bak should not exist at target"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_excludes_multiple_patterns() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_apply_exc_multi");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nexclude = [\"*.bak\", \".git\", \"*.tmp\"]")
+            .unwrap();
+        overlay_dir.child("config.yml").write_str("keep").unwrap();
+        overlay_dir.child("file.bak").write_str("skip").unwrap();
+        overlay_dir.child("file.tmp").write_str("skip").unwrap();
+        overlay_dir.child(".git").create_dir_all().unwrap();
+        overlay_dir.child(".git/config").write_str("skip").unwrap();
+
+        let overlay = repo.get("ov_apply_exc_multi").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let result = overlay.apply(&c).await;
+        assert!(result.is_ok(), "apply should succeed: {:?}", result.err());
+
+        let target = td.path().to_path_buf();
+        assert!(
+            target.join("config.yml").is_symlink(),
+            "config.yml should be linked"
+        );
+        assert!(
+            !target.join("file.bak").exists(),
+            "file.bak should not exist"
+        );
+        assert!(
+            !target.join("file.tmp").exists(),
+            "file.tmp should not exist"
+        );
+        assert!(!target.join(".git").exists(), ".git should not exist");
+    }
+
+    // ── add_dir with exclude ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_add_dir_excludes_files() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_add_exc");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nexclude = \"*.bak\"")
+            .unwrap();
+
+        let overlay = repo.get("ov_add_exc").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let src_dir = td.path().join("srcdir");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("file.txt"), "keep").unwrap();
+        fs::write(src_dir.join("file.bak"), "skip").unwrap();
+
+        let res = crate::actions::fs::add_dir(c.clone(), &overlay, &src_dir).await;
+        assert!(res.is_ok(), "add_dir should succeed: {:?}", res.err());
+
+        assert!(
+            overlay.root.join("srcdir/file.txt").exists(),
+            "srcdir/file.txt should be in overlay"
+        );
+        assert!(
+            !overlay.root.join("srcdir/file.bak").exists(),
+            "srcdir/file.bak should not be in overlay"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_add_dir_excludes_nested_files() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_add_exc_nested");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nexclude = [\"**/*.pyc\", \"__pycache__\"]")
+            .unwrap();
+
+        let overlay = repo.get("ov_add_exc_nested").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        let src_dir = td.path().join("srcdir");
+        fs::create_dir_all(src_dir.join("__pycache__")).unwrap();
+        fs::write(src_dir.join("module.py"), "keep").unwrap();
+        fs::write(src_dir.join("module.pyc"), "skip").unwrap();
+        fs::write(src_dir.join("__pycache__/module.cpython.pyc"), "skip").unwrap();
+
+        let res = crate::actions::fs::add_dir(c.clone(), &overlay, &src_dir).await;
+        assert!(res.is_ok(), "add_dir should succeed: {:?}", res.err());
+
+        assert!(
+            overlay.root.join("srcdir/module.py").exists(),
+            "srcdir/module.py should be in overlay"
+        );
+        assert!(
+            !overlay.root.join("srcdir/module.pyc").exists(),
+            "srcdir/module.pyc should not be in overlay"
+        );
+        assert!(
+            !overlay.root.join("srcdir/__pycache__").exists(),
+            "srcdir/__pycache__ should not be in overlay"
         );
     }
 }

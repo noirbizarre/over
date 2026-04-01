@@ -14,6 +14,7 @@ pub fn check_overlay(overlay: &Overlay) -> Vec<Diagnostic> {
 
     diagnostics.extend(check_uses(overlay));
     diagnostics.extend(check_empty_exclude(overlay));
+    diagnostics.extend(check_invalid_exclude_globs(overlay));
     diagnostics.extend(check_empty_link_dirs(overlay));
     diagnostics.extend(check_invalid_link_dirs_globs(overlay));
     diagnostics.extend(check_git(overlay));
@@ -76,6 +77,26 @@ fn check_empty_exclude(overlay: &Overlay) -> Vec<Diagnostic> {
     } else {
         Vec::new()
     }
+}
+
+fn check_invalid_exclude_globs(overlay: &Overlay) -> Vec<Diagnostic> {
+    let Some(exclude) = &overlay.exclude else {
+        return Vec::new();
+    };
+
+    let mut diagnostics = Vec::new();
+    for pattern in exclude {
+        if let Err(err) = GlobBuilder::new(pattern).literal_separator(true).build() {
+            diagnostics.push(
+                Diagnostic::error(
+                    &overlay.name,
+                    format!("invalid glob pattern in `exclude`: \"{pattern}\""),
+                )
+                .with_hint(format!("{err}")),
+            );
+        }
+    }
+    diagnostics
 }
 
 // ── link_dirs checks ─────────────────────────────────────────────────────
@@ -332,6 +353,29 @@ mod tests {
     fn test_nonempty_exclude_no_diagnostic() {
         let overlay = setup_overlay("target = \"~\"\nexclude = [\"*.bak\"]");
         let diags = check_empty_exclude(&overlay);
+        assert!(diags.is_empty());
+    }
+
+    #[rstest]
+    fn test_invalid_glob_in_exclude() {
+        let overlay = setup_overlay("target = \"~\"\nexclude = [\"[invalid\"]");
+        let diags = check_invalid_exclude_globs(&overlay);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(diags[0].message.contains("invalid glob"));
+    }
+
+    #[rstest]
+    fn test_valid_glob_in_exclude() {
+        let overlay = setup_overlay("target = \"~\"\nexclude = [\"*.bak\", \".git\"]");
+        let diags = check_invalid_exclude_globs(&overlay);
+        assert!(diags.is_empty());
+    }
+
+    #[rstest]
+    fn test_exclude_as_single_string_no_diagnostic() {
+        let overlay = setup_overlay("target = \"~\"\nexclude = \"*.bak\"");
+        let diags = check_invalid_exclude_globs(&overlay);
         assert!(diags.is_empty());
     }
 
