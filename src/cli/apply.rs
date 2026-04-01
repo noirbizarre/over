@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::Args;
+use dialoguer::FuzzySelect;
+use dialoguer::theme::ColorfulTheme;
 use dirs::home_dir;
 
 use crate::actions;
@@ -12,7 +14,7 @@ use crate::ui::{emojis, style};
 #[derive(Args, Debug)]
 pub struct Params {
     #[clap(help = "Name of the overlay to apply")]
-    name: String,
+    name: Option<String>,
 
     #[clap(short, long, help = "The target root directory (~)")]
     root: Option<PathBuf>,
@@ -43,7 +45,22 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if cli.debug {
         println!("{:#?}", repo);
     }
-    let overlay = repo.get(&args.name)?;
+    let overlay = match &args.name {
+        Some(name) => repo.get(name)?,
+        None => {
+            let overlays = repo.overlays()?;
+            if overlays.is_empty() {
+                return Err(anyhow!("no overlays found in repository"));
+            }
+            let selection = FuzzySelect::with_theme(&ColorfulTheme::default())
+                .with_prompt("Choose the overlay to apply")
+                .default(0)
+                .items(&overlays[..])
+                .interact()
+                .map_err(|e| anyhow!("overlay selection cancelled: {}", e))?;
+            overlays[selection].clone()
+        }
+    };
     if cli.debug {
         println!("{:#?}", overlay);
     }

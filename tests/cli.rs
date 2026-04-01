@@ -53,6 +53,18 @@ fn apply_overlay_dry_run() -> TestResult {
 }
 
 #[test]
+fn apply_without_name_empty_repo_fails() -> TestResult {
+    let tmp = TempDir::new()?;
+    let mut cmd = Command::cargo_bin("over")?;
+    cmd.arg("--home").arg(tmp.path());
+    cmd.args(["apply", "--dry-run"]);
+    cmd.assert()
+        .failure()
+        .stderr(contains("no overlays found in repository"));
+    Ok(())
+}
+
+#[test]
 fn add_file_to_overlay_dry_run() -> TestResult {
     let repo = setup_overlay_repo();
     // create a dummy target file that would be added
