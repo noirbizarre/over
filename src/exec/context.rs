@@ -235,8 +235,8 @@ pub type Ctx = Arc<Context>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assert_fs::prelude::*;
     use assert_fs::TempDir;
+    use assert_fs::prelude::*;
     use indicatif::{MultiProgress, ProgressBar};
 
     fn dummy_repo() -> Repository {

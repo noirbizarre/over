@@ -1674,8 +1674,7 @@ mod tests {
             config: None,
             worktree_config: None,
         };
-        let result =
-            update_descriptor_toml(&td.path().join("over.toml"), "my/path", &config);
+        let result = update_descriptor_toml(&td.path().join("over.toml"), "my/path", &config);
         assert!(result.is_err());
     }
 
@@ -1698,8 +1697,7 @@ mod tests {
             config: None,
             worktree_config: None,
         };
-        let result =
-            update_descriptor_yaml(&td.path().join("over.yaml"), "my/path", &config);
+        let result = update_descriptor_yaml(&td.path().join("over.yaml"), "my/path", &config);
         assert!(result.is_err());
     }
 

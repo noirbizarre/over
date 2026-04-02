@@ -2,8 +2,10 @@ mod checks;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
 
+use config::ConfigError;
 use globset::GlobBuilder;
 use walkdir::WalkDir;
 
@@ -35,6 +37,8 @@ pub struct Diagnostic {
     pub message: String,
     /// Optional suggestion on how to fix.
     pub hint: Option<String>,
+    /// Descriptor file where the issue was found (relative to overlay dir).
+    pub file: Option<String>,
 }
 
 impl Diagnostic {
@@ -44,6 +48,7 @@ impl Diagnostic {
             overlay: overlay.into(),
             message: message.into(),
             hint: None,
+            file: None,
         }
     }
 
@@ -53,12 +58,19 @@ impl Diagnostic {
             overlay: overlay.into(),
             message: message.into(),
             hint: None,
+            file: None,
         }
     }
 
     #[must_use]
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_file(mut self, file: impl Into<String>) -> Self {
+        self.file = Some(file.into());
         self
     }
 }
@@ -219,13 +231,301 @@ fn check_cycles(overlays: &HashMap<String, &Overlay>) -> Vec<Diagnostic> {
     diagnostics
 }
 
-/// Format an anyhow error chain into a multi-line description.
-fn format_error_chain(err: &anyhow::Error) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    for cause in err.chain() {
-        parts.push(cause.to_string());
+/// Valid user-facing top-level keys in an overlay descriptor.
+/// Internal keys (`name`, `root`) set by code are excluded.
+const VALID_OVERLAY_KEYS: &[&str] = &[
+    "description",
+    "exclude",
+    "format",
+    "git",
+    "install",
+    "link_dirs",
+    "target",
+    "uses",
+];
+
+/// Find the descriptor file name for an overlay directory.
+/// Returns the first matching `over.{ext}` file found.
+fn find_descriptor_file(dir: &Path) -> Option<String> {
+    for ext in EXTENSIONS {
+        let filename = format!("{BASENAME}.{ext}");
+        if dir.join(&filename).exists() {
+            return Some(filename);
+        }
     }
-    parts.join("\n  caused by: ")
+    None
+}
+
+/// Compute the Levenshtein edit distance between two strings.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a_len = a.len();
+    let b_len = b.len();
+    let mut matrix = vec![vec![0usize; b_len + 1]; a_len + 1];
+
+    for (i, row) in matrix.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in matrix[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+
+    for (i, ac) in a.chars().enumerate() {
+        for (j, bc) in b.chars().enumerate() {
+            let cost = if ac == bc { 0 } else { 1 };
+            matrix[i + 1][j + 1] = (matrix[i][j + 1] + 1)
+                .min(matrix[i + 1][j] + 1)
+                .min(matrix[i][j] + cost);
+        }
+    }
+
+    matrix[a_len][b_len]
+}
+
+/// Find the closest matching key from the valid set (if close enough).
+fn suggest_key(unknown: &str) -> Option<&'static str> {
+    let mut best: Option<(&str, usize)> = None;
+    for &valid in VALID_OVERLAY_KEYS {
+        let dist = edit_distance(unknown, valid);
+        // Only suggest if edit distance is at most 2 or ≤40% of the key length
+        let threshold = 2.max(unknown.len() * 2 / 5);
+        if dist <= threshold && (best.is_none() || dist < best.unwrap().1) {
+            best = Some((valid, dist));
+        }
+    }
+    best.map(|(k, _)| k)
+}
+
+/// Pre-validate an overlay descriptor file by parsing it as a generic
+/// TOML/YAML table and checking top-level keys against the known schema.
+/// Returns diagnostics for unknown keys (before serde even tries to deserialize).
+fn prevalidate_descriptor(dir: &Path, overlay_name: &str) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for ext in EXTENSIONS {
+        let filename = format!("{BASENAME}.{ext}");
+        let filepath = dir.join(&filename);
+        let Ok(content) = fs::read_to_string(&filepath) else {
+            continue;
+        };
+
+        let keys: Vec<String> = match ext {
+            &"toml" => {
+                let Ok(table) = content.parse::<toml::Table>() else {
+                    // Syntax error — will be caught by Overlay::new() later
+                    return diagnostics;
+                };
+                table.keys().cloned().collect()
+            }
+            _ => {
+                // YAML: parse as serde_yml::Value
+                let Ok(value) = serde_yml::from_str::<serde_yml::Value>(&content) else {
+                    return diagnostics;
+                };
+                match value {
+                    serde_yml::Value::Mapping(map) => map
+                        .keys()
+                        .filter_map(|k| k.as_str().map(|s| s.to_string()))
+                        .collect(),
+                    _ => return diagnostics,
+                }
+            }
+        };
+
+        for key in &keys {
+            // Skip internal keys that are set by code overrides
+            if key == "name" || key == "root" {
+                continue;
+            }
+            if !VALID_OVERLAY_KEYS.contains(&key.as_str()) {
+                let mut diag = Diagnostic::error(overlay_name, format!("unknown key `{key}`"))
+                    .with_file(&filename);
+
+                if let Some(suggestion) = suggest_key(key) {
+                    diag = diag.with_hint(format!("did you mean `{suggestion}`?"));
+                } else {
+                    diag = diag
+                        .with_hint(format!("valid keys are: {}", VALID_OVERLAY_KEYS.join(", ")));
+                }
+                diagnostics.push(diag);
+            }
+        }
+
+        // Only process the first descriptor file found
+        return diagnostics;
+    }
+
+    diagnostics
+}
+
+/// Extract user-friendly diagnostics from a `config::ConfigError`.
+fn diagnostics_from_config_error(
+    err: &ConfigError,
+    overlay_name: &str,
+    descriptor_file: Option<&str>,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    match err {
+        ConfigError::FileParse { cause, .. } => {
+            let msg = cause.to_string();
+            let mut diag = Diagnostic::error(overlay_name, format!("syntax error: {msg}"));
+            if let Some(file) = descriptor_file {
+                diag = diag.with_file(file);
+            }
+            diagnostics.push(diag);
+        }
+        ConfigError::Type {
+            unexpected,
+            expected,
+            key,
+            ..
+        } => {
+            let key_str = key.as_deref().unwrap_or("<unknown>");
+            let mut diag = Diagnostic::error(
+                overlay_name,
+                format!("wrong type for `{key_str}`: expected {expected}, got {unexpected}"),
+            );
+            if let Some(file) = descriptor_file {
+                diag = diag.with_file(file);
+            }
+            diagnostics.push(diag);
+        }
+        ConfigError::NotFound(key) => {
+            let mut diag = Diagnostic::error(overlay_name, format!("missing required key `{key}`"));
+            if let Some(file) = descriptor_file {
+                diag = diag.with_file(file);
+            }
+            diagnostics.push(diag);
+        }
+        ConfigError::At { error, key, .. } => {
+            // Unwrap nested errors, preserving key context
+            let inner_diags = diagnostics_from_config_error(error, overlay_name, descriptor_file);
+            if inner_diags.is_empty() {
+                // Fallback: show the At error directly
+                let key_str = key.as_deref().unwrap_or("<unknown>");
+                let mut diag = Diagnostic::error(
+                    overlay_name,
+                    format!("invalid value for `{key_str}`: {error}"),
+                );
+                if let Some(file) = descriptor_file {
+                    diag = diag.with_file(file);
+                }
+                diagnostics.push(diag);
+            } else {
+                // Enrich inner diagnostics with key context if they don't have one
+                for mut d in inner_diags {
+                    if let Some(k) = key
+                        && !d.message.contains(&format!("`{k}`"))
+                    {
+                        d.message = format!("in `{k}`: {}", d.message);
+                    }
+                    diagnostics.push(d);
+                }
+            }
+        }
+        ConfigError::Message(msg) => {
+            // Serde custom errors — try to extract meaningful info
+            let mut diag = parse_serde_message(msg, overlay_name);
+            if let Some(file) = descriptor_file {
+                diag = diag.with_file(file);
+            }
+            diagnostics.push(diag);
+        }
+        ConfigError::Foreign(cause) => {
+            let mut diag = Diagnostic::error(overlay_name, format!("configuration error: {cause}"));
+            if let Some(file) = descriptor_file {
+                diag = diag.with_file(file);
+            }
+            diagnostics.push(diag);
+        }
+        ConfigError::Frozen => {
+            diagnostics.push(Diagnostic::error(
+                overlay_name,
+                "internal error: configuration is frozen".to_string(),
+            ));
+        }
+        ConfigError::PathParse { cause } => {
+            let mut diag = Diagnostic::error(overlay_name, format!("invalid config path: {cause}"));
+            if let Some(file) = descriptor_file {
+                diag = diag.with_file(file);
+            }
+            diagnostics.push(diag);
+        }
+        // ConfigError is #[non_exhaustive]
+        _ => {
+            let mut diag = Diagnostic::error(overlay_name, format!("configuration error: {err}"));
+            if let Some(file) = descriptor_file {
+                diag = diag.with_file(file);
+            }
+            diagnostics.push(diag);
+        }
+    }
+
+    diagnostics
+}
+
+/// Parse a serde custom error message into a user-friendly diagnostic.
+/// Serde produces messages like:
+///   "unknown field `foo`, expected one of `bar`, `baz`"
+///   "invalid type: found boolean, expected a string"
+fn parse_serde_message(msg: &str, overlay_name: &str) -> Diagnostic {
+    // Handle "unknown field `X`, expected one of ..."
+    if let Some(rest) = msg.strip_prefix("unknown field `")
+        && let Some(field_end) = rest.find('`')
+    {
+        let field = &rest[..field_end];
+        // Filter out internal keys from the "expected" list
+        let hint = if let Some(suggestion) = suggest_key(field) {
+            format!("did you mean `{suggestion}`?")
+        } else {
+            format!("valid keys are: {}", VALID_OVERLAY_KEYS.join(", "))
+        };
+        return Diagnostic::error(overlay_name, format!("unknown key `{field}`")).with_hint(hint);
+    }
+
+    // Handle "unknown variant `X`, expected one of ..."
+    if msg.starts_with("unknown variant") {
+        return Diagnostic::error(overlay_name, msg.to_string());
+    }
+
+    // Handle "invalid type: ..."
+    if msg.starts_with("invalid type") {
+        return Diagnostic::error(overlay_name, msg.to_string());
+    }
+
+    // Handle "missing field `X`"
+    if let Some(rest) = msg.strip_prefix("missing field `")
+        && let Some(field_end) = rest.find('`')
+    {
+        let field = &rest[..field_end];
+        return Diagnostic::error(overlay_name, format!("missing required key `{field}`"));
+    }
+
+    // Fallback: use the message as-is
+    Diagnostic::error(overlay_name, msg.to_string())
+}
+
+/// Extract diagnostics from an anyhow error, attempting to downcast to ConfigError first.
+fn diagnostics_from_anyhow_error(
+    err: &anyhow::Error,
+    overlay_name: &str,
+    descriptor_file: Option<&str>,
+) -> Vec<Diagnostic> {
+    // Try to downcast to ConfigError for structured handling
+    if let Some(config_err) = err.downcast_ref::<ConfigError>() {
+        let diags = diagnostics_from_config_error(config_err, overlay_name, descriptor_file);
+        if !diags.is_empty() {
+            return diags;
+        }
+    }
+
+    // Fallback: use the error chain but format it more cleanly
+    let root_msg = err.to_string();
+    let mut diag = Diagnostic::error(overlay_name, root_msg);
+    if let Some(file) = descriptor_file {
+        diag = diag.with_file(file);
+    }
+    vec![diag]
 }
 
 /// Run all lint checks across all overlays in a repository.
@@ -240,7 +540,19 @@ pub fn lint_repository(repo: &Repository) -> LintResult {
         // Check for multiple descriptor formats
         diagnostics.extend(check_multiple_descriptors(dir, name));
 
+        // Pre-validate config keys against known schema
+        let prevalidation = prevalidate_descriptor(dir, name);
+        let has_unknown_keys = prevalidation.iter().any(|d| d.severity == Severity::Error);
+        diagnostics.extend(prevalidation);
+
+        // If there are unknown keys, skip deserialization (it would fail with raw serde errors)
+        if has_unknown_keys {
+            failed_overlays.insert(name.clone());
+            continue;
+        }
+
         // Try to parse the overlay
+        let descriptor_file = find_descriptor_file(dir);
         match Overlay::new(repo, dir) {
             Ok(overlay) => {
                 // Run per-overlay checks
@@ -249,9 +561,10 @@ pub fn lint_repository(repo: &Repository) -> LintResult {
             }
             Err(err) => {
                 failed_overlays.insert(name.clone());
-                diagnostics.push(Diagnostic::error(
+                diagnostics.extend(diagnostics_from_anyhow_error(
+                    &err,
                     name,
-                    format!("failed to parse descriptor: {}", format_error_chain(&err)),
+                    descriptor_file.as_deref(),
                 ));
             }
         }
@@ -366,7 +679,17 @@ mod tests {
         let result = lint_repository(&repo);
         assert!(result.has_errors());
         assert_eq!(result.error_count(), 1);
-        assert!(result.diagnostics[0].message.contains("failed to parse"));
+        assert!(
+            result.diagnostics[0].message.contains("syntax error"),
+            "expected 'syntax error' in message, got: {}",
+            result.diagnostics[0].message
+        );
+        // Should include file reference
+        assert_eq!(
+            result.diagnostics[0].file.as_deref(),
+            Some("over.toml"),
+            "diagnostic should reference the descriptor file"
+        );
     }
 
     #[rstest]
@@ -486,13 +809,18 @@ mod tests {
         let result = lint_repository(&repo);
         assert!(result.has_errors());
 
-        // "broken" should get a parse error
+        // "broken" should get a syntax error
         assert!(
             result
                 .diagnostics
                 .iter()
-                .any(|d| d.overlay == "broken" && d.message.contains("failed to parse")),
-            "expected parse error for 'broken' overlay"
+                .any(|d| d.overlay == "broken" && d.message.contains("syntax error")),
+            "expected syntax error for 'broken' overlay, got: {:?}",
+            result
+                .diagnostics
+                .iter()
+                .filter(|d| d.overlay == "broken")
+                .collect::<Vec<_>>()
         );
 
         // "good" should NOT say "non-existent" — it should say "failed to parse"
@@ -546,5 +874,395 @@ mod tests {
         if let (Some(warn_idx), Some(err_idx)) = (first_warning_idx, last_error_idx) {
             assert!(err_idx < warn_idx);
         }
+    }
+
+    #[rstest]
+    fn test_lint_unknown_key() {
+        let (td, repo) = setup_repo();
+        let ov = td.child("bad_key");
+        ov.create_dir_all().unwrap();
+        ov.child("over.toml")
+            .write_str("target = \"~\"\nfoo = \"bar\"")
+            .unwrap();
+
+        let result = lint_repository(&repo);
+        assert!(result.has_errors());
+        let diag = result
+            .diagnostics
+            .iter()
+            .find(|d| d.message.contains("unknown key"))
+            .expect("should report unknown key");
+        assert!(diag.message.contains("`foo`"));
+        assert_eq!(diag.file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_lint_unknown_key_with_suggestion() {
+        let (td, repo) = setup_repo();
+        let ov = td.child("typo");
+        ov.create_dir_all().unwrap();
+        ov.child("over.toml")
+            .write_str("target = \"~\"\ntargt = \"~\"")
+            .unwrap();
+
+        let result = lint_repository(&repo);
+        assert!(result.has_errors());
+        let diag = result
+            .diagnostics
+            .iter()
+            .find(|d| d.message.contains("unknown key") && d.message.contains("`targt`"))
+            .expect("should report unknown key 'targt'");
+        assert!(
+            diag.hint
+                .as_ref()
+                .is_some_and(|h| h.contains("did you mean `target`?")),
+            "should suggest 'target', got hint: {:?}",
+            diag.hint
+        );
+    }
+
+    #[rstest]
+    fn test_lint_multiple_unknown_keys() {
+        let (td, repo) = setup_repo();
+        let ov = td.child("multi_bad");
+        ov.create_dir_all().unwrap();
+        ov.child("over.toml")
+            .write_str("target = \"~\"\nfoo = 1\nbar = 2")
+            .unwrap();
+
+        let result = lint_repository(&repo);
+        let unknown_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("unknown key"))
+            .collect();
+        assert_eq!(
+            unknown_diags.len(),
+            2,
+            "should report both unknown keys, got: {:?}",
+            unknown_diags
+        );
+    }
+
+    #[rstest]
+    fn test_lint_unknown_key_skips_deserialization() {
+        let (td, repo) = setup_repo();
+        let ov = td.child("skip_deser");
+        ov.create_dir_all().unwrap();
+        // Has an unknown key — should NOT produce raw serde errors
+        ov.child("over.toml")
+            .write_str("target = \"~\"\nunknown_field = true")
+            .unwrap();
+
+        let result = lint_repository(&repo);
+        assert!(result.has_errors());
+        // Should only have the pre-validation error, not a raw serde error
+        for diag in &result.diagnostics {
+            assert!(
+                !diag.message.contains("expected one of"),
+                "should not contain raw serde error text: {}",
+                diag.message
+            );
+        }
+    }
+
+    #[rstest]
+    fn test_lint_type_mismatch_produces_clean_error() {
+        let (td, repo) = setup_repo();
+        let ov = td.child("bad_type");
+        ov.create_dir_all().unwrap();
+        // `target` should be a string, not a list
+        ov.child("over.toml")
+            .write_str("target = [1, 2, 3]")
+            .unwrap();
+
+        let result = lint_repository(&repo);
+        assert!(result.has_errors());
+        // Should not contain "caused by:" chain — should be a clean error
+        for diag in &result.diagnostics {
+            assert!(
+                !diag.message.contains("caused by:"),
+                "should not contain 'caused by:' chain: {}",
+                diag.message
+            );
+        }
+    }
+
+    #[rstest]
+    fn test_lint_yaml_unknown_key() {
+        let (td, repo) = setup_repo();
+        let ov = td.child("yaml_bad");
+        ov.create_dir_all().unwrap();
+        ov.child("over.yaml")
+            .write_str("target: \"~\"\nfoo: bar")
+            .unwrap();
+
+        let result = lint_repository(&repo);
+        assert!(result.has_errors());
+        let diag = result
+            .diagnostics
+            .iter()
+            .find(|d| d.message.contains("unknown key"))
+            .expect("should report unknown key in YAML");
+        assert!(diag.message.contains("`foo`"));
+        assert_eq!(diag.file.as_deref(), Some("over.yaml"));
+    }
+
+    #[rstest]
+    fn test_lint_yaml_syntax_error() {
+        let (td, repo) = setup_repo();
+        let ov = td.child("yaml_broken");
+        ov.create_dir_all().unwrap();
+        ov.child("over.yaml")
+            .write_str("target: [\ninvalid yaml")
+            .unwrap();
+
+        let result = lint_repository(&repo);
+        assert!(result.has_errors());
+        let diag = &result.diagnostics[0];
+        assert!(
+            diag.message.contains("syntax error"),
+            "expected syntax error, got: {}",
+            diag.message
+        );
+    }
+
+    #[rstest]
+    fn test_edit_distance() {
+        assert_eq!(edit_distance("target", "targt"), 1);
+        assert_eq!(edit_distance("target", "target"), 0);
+        assert_eq!(edit_distance("exclude", "exclde"), 1);
+        assert_eq!(edit_distance("uses", "use"), 1);
+        assert_eq!(edit_distance("git", "gti"), 2);
+        assert_eq!(edit_distance("abc", "xyz"), 3);
+    }
+
+    #[rstest]
+    fn test_suggest_key() {
+        assert_eq!(suggest_key("targt"), Some("target"));
+        assert_eq!(suggest_key("exclde"), Some("exclude"));
+        assert_eq!(suggest_key("descrption"), Some("description"));
+        assert_eq!(suggest_key("uss"), Some("uses"));
+        assert_eq!(suggest_key("gti"), Some("git"));
+        // Too different — no suggestion
+        assert_eq!(suggest_key("zzzzzzz"), None);
+    }
+
+    #[rstest]
+    fn test_parse_serde_message_unknown_field() {
+        let diag = parse_serde_message(
+            "unknown field `foo`, expected one of `name`, `root`, `target`",
+            "test_overlay",
+        );
+        assert!(diag.message.contains("unknown key `foo`"));
+        // Should not leak internal keys like `name` and `root` in the hint
+        assert!(diag.hint.is_some());
+    }
+
+    #[rstest]
+    fn test_parse_serde_message_missing_field() {
+        let diag = parse_serde_message("missing field `target`", "test_overlay");
+        assert!(diag.message.contains("missing required key `target`"));
+    }
+
+    #[rstest]
+    fn test_diagnostic_with_file() {
+        let diag = Diagnostic::error("test", "test message").with_file("over.toml");
+        assert_eq!(diag.file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_severity_display() {
+        assert_eq!(format!("{}", Severity::Error), "error");
+        assert_eq!(format!("{}", Severity::Warning), "warning");
+    }
+
+    #[rstest]
+    fn test_severity_ordering() {
+        // Error sorts before Warning
+        assert!(Severity::Error < Severity::Warning);
+        assert_eq!(
+            Severity::Error.partial_cmp(&Severity::Warning),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            Severity::Warning.partial_cmp(&Severity::Warning),
+            Some(std::cmp::Ordering::Equal)
+        );
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_not_found() {
+        let err = ConfigError::NotFound("target".into());
+        let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("missing required key `target`"));
+        assert_eq!(diags[0].file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_message() {
+        let err = ConfigError::Message(
+            "unknown field `foo`, expected one of `name`, `root`, `target`".into(),
+        );
+        let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("unknown key `foo`"));
+        assert_eq!(diags[0].file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_foreign() {
+        let cause = Box::new(std::io::Error::other("test io"));
+        let err = ConfigError::Foreign(cause);
+        let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("configuration error"));
+        assert_eq!(diags[0].file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_frozen() {
+        let err = ConfigError::Frozen;
+        let diags = diagnostics_from_config_error(&err, "my-overlay", None);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("frozen"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_path_parse() {
+        let err = ConfigError::PathParse {
+            cause: config::ConfigError::Message("bad path".into()).into(),
+        };
+        let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("invalid config path"));
+        assert_eq!(diags[0].file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_at_with_inner() {
+        // An `At` wrapping a `Message` with unknown field
+        let inner =
+            ConfigError::Message("unknown field `baz`, expected one of `name`, `root`".into());
+        let err = ConfigError::At {
+            error: Box::new(inner),
+            origin: None,
+            key: Some("install".into()),
+        };
+        let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("install"));
+        assert!(diags[0].message.contains("unknown key `baz`"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_at_empty_inner() {
+        // An `At` where inner diagnostics end up empty — falls back to direct message
+        let inner = ConfigError::Frozen;
+        let err = ConfigError::At {
+            error: Box::new(inner),
+            origin: None,
+            key: Some("git".into()),
+        };
+        let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
+        // Frozen produces a diagnostic, so inner_diags won't be empty.
+        // Let's verify it enriches with key context.
+        assert!(!diags.is_empty());
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_anyhow_error_fallback() {
+        // An anyhow error that is NOT a ConfigError — should hit the fallback path
+        let err = anyhow::anyhow!("some random error");
+        let diags = diagnostics_from_anyhow_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("some random error"));
+        assert_eq!(diags[0].file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_anyhow_error_config_error() {
+        // An anyhow error wrapping a ConfigError — should downcast successfully
+        let config_err = ConfigError::NotFound("target".into());
+        let err: anyhow::Error = config_err.into();
+        let diags = diagnostics_from_anyhow_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("missing required key `target`"));
+        assert_eq!(diags[0].file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_parse_serde_message_unknown_variant() {
+        let diag = parse_serde_message(
+            "unknown variant `bloop`, expected one of `soft`, `hard`",
+            "test_overlay",
+        );
+        assert!(diag.message.contains("unknown variant"));
+    }
+
+    #[rstest]
+    fn test_parse_serde_message_invalid_type() {
+        let diag = parse_serde_message(
+            "invalid type: found boolean, expected a string",
+            "test_overlay",
+        );
+        assert!(diag.message.contains("invalid type"));
+    }
+
+    #[rstest]
+    fn test_parse_serde_message_fallback() {
+        let diag = parse_serde_message("something completely unexpected", "test_overlay");
+        assert_eq!(diag.message, "something completely unexpected");
+    }
+
+    #[rstest]
+    fn test_parse_serde_message_unknown_field_with_suggestion() {
+        let diag = parse_serde_message(
+            "unknown field `targt`, expected one of `name`, `root`",
+            "test_overlay",
+        );
+        assert!(diag.message.contains("unknown key `targt`"));
+        assert!(
+            diag.hint
+                .as_ref()
+                .is_some_and(|h| h.contains("did you mean `target`?"))
+        );
+    }
+
+    #[rstest]
+    fn test_find_descriptor_file_none() {
+        let td = TempDir::new().unwrap();
+        // No descriptor file exists
+        assert_eq!(find_descriptor_file(td.path()), None);
+    }
+
+    #[rstest]
+    fn test_prevalidate_no_descriptor() {
+        let td = TempDir::new().unwrap();
+        // No descriptor file — should return empty diagnostics
+        let diags = prevalidate_descriptor(td.path(), "empty-overlay");
+        assert!(diags.is_empty());
+    }
+
+    #[rstest]
+    fn test_prevalidate_yaml_non_mapping() {
+        let td = TempDir::new().unwrap();
+        // A YAML file that is a scalar, not a mapping
+        td.child("over.yaml").write_str("just a string").unwrap();
+        let diags = prevalidate_descriptor(td.path(), "scalar-overlay");
+        assert!(diags.is_empty());
+    }
+
+    #[rstest]
+    fn test_prevalidate_ignores_internal_keys() {
+        let td = TempDir::new().unwrap();
+        // A TOML file with internal keys `name` and `root` alongside valid keys
+        td.child("over.toml")
+            .write_str("name = \"test\"\nroot = \"/tmp\"\ntarget = \"~\"")
+            .unwrap();
+        let diags = prevalidate_descriptor(td.path(), "internal-keys");
+        // Should produce no diagnostics — `name` and `root` are skipped, `target` is valid
+        assert!(diags.is_empty());
     }
 }

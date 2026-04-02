@@ -3487,9 +3487,7 @@ archlinux = ["base-devel"]
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
-        a.child("over.toml")
-            .write_str("target = \"~\"")
-            .unwrap();
+        a.child("over.toml").write_str("target = \"~\"").unwrap();
 
         let overlay = repo.get("a").unwrap();
         let ctx = Context::builder()
@@ -3538,9 +3536,7 @@ post = ["echo mac-post"]
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
-        a.child("over.toml")
-            .write_str("target = \"~\"")
-            .unwrap();
+        a.child("over.toml").write_str("target = \"~\"").unwrap();
 
         let overlay = repo.get("a").unwrap();
         let ctx = Context::builder()

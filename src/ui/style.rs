@@ -1,7 +1,7 @@
 use std::fmt;
 
 use clap::builder::styling;
-use console::{style, Style, StyledObject};
+use console::{Style, StyledObject, style};
 use dialoguer::theme::Theme;
 use std::sync::LazyLock;
 
