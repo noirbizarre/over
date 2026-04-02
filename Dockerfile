@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# ── Stage 1: Build ───────────────────────────────────────────────────────────
-FROM rust:bookworm AS builder
+# ── Stage 1: Chef base ──────────────────────────────────────────────────────
+FROM lukemathwalker/cargo-chef:latest-rust-bookworm AS chef
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
@@ -10,19 +10,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Cache dependencies by building them first
+# ── Stage 2: Planner ────────────────────────────────────────────────────────
+FROM chef AS planner
+
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src && echo 'fn main() {}' > src/main.rs \
-    && mkdir -p src/bin && echo 'fn main() {}' > src/bin/git-over.rs \
-    && cargo build --release --features vendored \
-    && rm -rf src
+COPY src ./src
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Build the actual application
+# ── Stage 3: Builder ────────────────────────────────────────────────────────
+FROM chef AS builder
+
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo chef cook --release --features vendored --recipe-path recipe.json
+
 COPY . .
-RUN touch src/main.rs src/bin/git-over.rs \
-    && cargo build --release --features vendored
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo build --release --features vendored
 
-# ── Stage 2: Runtime ─────────────────────────────────────────────────────────
+# ── Stage 4: Runtime ────────────────────────────────────────────────────────
 FROM gcr.io/distroless/cc-debian12
 
 COPY --from=builder /app/target/release/over /usr/local/bin/over
