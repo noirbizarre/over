@@ -28,6 +28,11 @@ pub async fn execute(cli: &CLI, _args: &Params) -> Result<()> {
 
         println!("{severity_label}{overlay_label}: {}", diag.message);
 
+        if let Some(file) = &diag.file {
+            let location = format!("{}/{file}", diag.overlay);
+            println!("  {} {}", style("-->").dim(), style(location).dim());
+        }
+
         if let Some(hint) = &diag.hint {
             println!("  {} {hint}", style("=").dim());
         }

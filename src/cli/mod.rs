@@ -230,7 +230,14 @@ mod tests {
 
     #[test]
     fn cli_global_flags_with_subcommand() {
-        let args = CLI::parse_from(["over", "--home", "/tmp/test", "--debug", "--verbose", "list"]);
+        let args = CLI::parse_from([
+            "over",
+            "--home",
+            "/tmp/test",
+            "--debug",
+            "--verbose",
+            "list",
+        ]);
         assert_eq!(args.home, Some(PathBuf::from("/tmp/test")));
         assert!(args.debug);
         assert!(args.verbose);

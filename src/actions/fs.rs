@@ -1156,11 +1156,7 @@ mod tests {
     fn resolve_file_conflict_force_removes_target() {
         let td = TempDir::new().unwrap();
         let (_, repo) = repo_and_root();
-        let c = ctx(
-            td.path().to_path_buf(),
-            repo,
-            None,
-        );
+        let c = ctx(td.path().to_path_buf(), repo, None);
         // c has force=true
 
         let source = td.path().join("source.txt");
@@ -1177,11 +1173,7 @@ mod tests {
     fn resolve_dir_conflict_force_removes_target() {
         let td = TempDir::new().unwrap();
         let (_, repo) = repo_and_root();
-        let c = ctx(
-            td.path().to_path_buf(),
-            repo,
-            None,
-        );
+        let c = ctx(td.path().to_path_buf(), repo, None);
 
         let source = td.path().join("source_dir");
         fs::create_dir_all(&source).unwrap();
@@ -1464,7 +1456,10 @@ mod tests {
         let action = MoveFile::new(c.clone(), src.clone(), dst.clone());
         action.execute(c.clone()).await.unwrap();
         assert!(src.exists(), "source should still exist in dry_run");
-        assert!(!dst.exists(), "destination should not be created in dry_run");
+        assert!(
+            !dst.exists(),
+            "destination should not be created in dry_run"
+        );
     }
 
     // ── EnsureLink conflict with force ──────────────────────────────────

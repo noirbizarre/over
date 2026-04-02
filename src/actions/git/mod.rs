@@ -1640,10 +1640,7 @@ mod tests {
         ensure_remotes(&repo, &remotes, false).unwrap();
 
         let git_cfg = repo.config().unwrap();
-        assert_eq!(
-            git_cfg.get_string("remote.upstream.prune").unwrap(),
-            "true"
-        );
+        assert_eq!(git_cfg.get_string("remote.upstream.prune").unwrap(), "true");
         assert_eq!(
             git_cfg
                 .get_string("remote.upstream.skipDefaultUpdate")
@@ -1708,13 +1705,7 @@ mod tests {
             .unwrap();
 
         let wt_path = dest_td.path().join("nonexistent-branch-wt");
-        let result = create_worktree(
-            &bare_repo,
-            "my-wt",
-            "nonexistent-branch",
-            &wt_path,
-            false,
-        );
+        let result = create_worktree(&bare_repo, "my-wt", "nonexistent-branch", &wt_path, false);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -1868,10 +1859,9 @@ mod tests {
 
         let url = format!("file://{}", source_td.path().display());
         let dst = dest_path.clone();
-        let result =
-            tokio::task::spawn_blocking(move || clone(&url, &dst, None, true, false, &tx))
-                .await
-                .unwrap();
+        let result = tokio::task::spawn_blocking(move || clone(&url, &dst, None, true, false, &tx))
+            .await
+            .unwrap();
 
         assert!(result.is_ok());
         // Bare repos have HEAD directly, not in .git/
