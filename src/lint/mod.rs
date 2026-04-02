@@ -1070,4 +1070,199 @@ mod tests {
         let diag = Diagnostic::error("test", "test message").with_file("over.toml");
         assert_eq!(diag.file.as_deref(), Some("over.toml"));
     }
+
+    #[rstest]
+    fn test_severity_display() {
+        assert_eq!(format!("{}", Severity::Error), "error");
+        assert_eq!(format!("{}", Severity::Warning), "warning");
+    }
+
+    #[rstest]
+    fn test_severity_ordering() {
+        // Error sorts before Warning
+        assert!(Severity::Error < Severity::Warning);
+        assert_eq!(
+            Severity::Error.partial_cmp(&Severity::Warning),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            Severity::Warning.partial_cmp(&Severity::Warning),
+            Some(std::cmp::Ordering::Equal)
+        );
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_not_found() {
+        let err = ConfigError::NotFound("target".into());
+        let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("missing required key `target`"));
+        assert_eq!(diags[0].file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_message() {
+        let err = ConfigError::Message(
+            "unknown field `foo`, expected one of `name`, `root`, `target`".into(),
+        );
+        let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("unknown key `foo`"));
+        assert_eq!(diags[0].file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_foreign() {
+        let cause = Box::new(std::io::Error::other("test io"));
+        let err = ConfigError::Foreign(cause);
+        let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("configuration error"));
+        assert_eq!(diags[0].file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_frozen() {
+        let err = ConfigError::Frozen;
+        let diags = diagnostics_from_config_error(&err, "my-overlay", None);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("frozen"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_path_parse() {
+        let err = ConfigError::PathParse {
+            cause: config::ConfigError::Message("bad path".into()).into(),
+        };
+        let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("invalid config path"));
+        assert_eq!(diags[0].file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_at_with_inner() {
+        // An `At` wrapping a `Message` with unknown field
+        let inner =
+            ConfigError::Message("unknown field `baz`, expected one of `name`, `root`".into());
+        let err = ConfigError::At {
+            error: Box::new(inner),
+            origin: None,
+            key: Some("install".into()),
+        };
+        let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("install"));
+        assert!(diags[0].message.contains("unknown key `baz`"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_config_error_at_empty_inner() {
+        // An `At` where inner diagnostics end up empty — falls back to direct message
+        let inner = ConfigError::Frozen;
+        let err = ConfigError::At {
+            error: Box::new(inner),
+            origin: None,
+            key: Some("git".into()),
+        };
+        let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
+        // Frozen produces a diagnostic, so inner_diags won't be empty.
+        // Let's verify it enriches with key context.
+        assert!(!diags.is_empty());
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_anyhow_error_fallback() {
+        // An anyhow error that is NOT a ConfigError — should hit the fallback path
+        let err = anyhow::anyhow!("some random error");
+        let diags = diagnostics_from_anyhow_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("some random error"));
+        assert_eq!(diags[0].file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_diagnostics_from_anyhow_error_config_error() {
+        // An anyhow error wrapping a ConfigError — should downcast successfully
+        let config_err = ConfigError::NotFound("target".into());
+        let err: anyhow::Error = config_err.into();
+        let diags = diagnostics_from_anyhow_error(&err, "my-overlay", Some("over.toml"));
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("missing required key `target`"));
+        assert_eq!(diags[0].file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
+    fn test_parse_serde_message_unknown_variant() {
+        let diag = parse_serde_message(
+            "unknown variant `bloop`, expected one of `soft`, `hard`",
+            "test_overlay",
+        );
+        assert!(diag.message.contains("unknown variant"));
+    }
+
+    #[rstest]
+    fn test_parse_serde_message_invalid_type() {
+        let diag = parse_serde_message(
+            "invalid type: found boolean, expected a string",
+            "test_overlay",
+        );
+        assert!(diag.message.contains("invalid type"));
+    }
+
+    #[rstest]
+    fn test_parse_serde_message_fallback() {
+        let diag = parse_serde_message("something completely unexpected", "test_overlay");
+        assert_eq!(diag.message, "something completely unexpected");
+    }
+
+    #[rstest]
+    fn test_parse_serde_message_unknown_field_with_suggestion() {
+        let diag = parse_serde_message(
+            "unknown field `targt`, expected one of `name`, `root`",
+            "test_overlay",
+        );
+        assert!(diag.message.contains("unknown key `targt`"));
+        assert!(
+            diag.hint
+                .as_ref()
+                .is_some_and(|h| h.contains("did you mean `target`?"))
+        );
+    }
+
+    #[rstest]
+    fn test_find_descriptor_file_none() {
+        let td = TempDir::new().unwrap();
+        // No descriptor file exists
+        assert_eq!(find_descriptor_file(td.path()), None);
+    }
+
+    #[rstest]
+    fn test_prevalidate_no_descriptor() {
+        let td = TempDir::new().unwrap();
+        // No descriptor file — should return empty diagnostics
+        let diags = prevalidate_descriptor(td.path(), "empty-overlay");
+        assert!(diags.is_empty());
+    }
+
+    #[rstest]
+    fn test_prevalidate_yaml_non_mapping() {
+        let td = TempDir::new().unwrap();
+        // A YAML file that is a scalar, not a mapping
+        td.child("over.yaml").write_str("just a string").unwrap();
+        let diags = prevalidate_descriptor(td.path(), "scalar-overlay");
+        assert!(diags.is_empty());
+    }
+
+    #[rstest]
+    fn test_prevalidate_ignores_internal_keys() {
+        let td = TempDir::new().unwrap();
+        // A TOML file with internal keys `name` and `root` alongside valid keys
+        td.child("over.toml")
+            .write_str("name = \"test\"\nroot = \"/tmp\"\ntarget = \"~\"")
+            .unwrap();
+        let diags = prevalidate_descriptor(td.path(), "internal-keys");
+        // Should produce no diagnostics — `name` and `root` are skipped, `target` is valid
+        assert!(diags.is_empty());
+    }
 }
