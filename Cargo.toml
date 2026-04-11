@@ -23,7 +23,7 @@ globset = "0.4"
 symlink = "0.1"
 minijinja = "2.19"
 walkdir = "2"
-tokio = { version = "1.50", features = [
+tokio = { version = "1.51", features = [
   "rt",
   "rt-multi-thread",
   "macros",
