@@ -61,7 +61,7 @@ pretty_assertions = { version = "1.4", features = ["unstable"] }
 assert_cmd = { version = "2.2", features = ["color", "color-auto"] }
 assert_fs = { version = "1.1", features = ["color", "color-auto"] }
 predicates = { version = "3.1", features = ["color"] }
-rstest = "0.25"
+rstest = "0.26"
 tempfile = "3.27"
 
 [features]
