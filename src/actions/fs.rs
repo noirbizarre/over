@@ -25,7 +25,7 @@ use crate::utils::short_path;
 
 static SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
     ProgressStyle::with_template("{spinner:.cyan} {wide_msg}")
-        .unwrap()
+        .expect("static progress template must be valid")
         .tick_chars(style::TICK_CHARS_BRAILLE_4_6_DOWN.as_str())
 });
 
@@ -163,7 +163,7 @@ fn resolve_file_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool
     }
     if ctx.no_prompt {
         return Err(anyhow::anyhow!(
-            "Conflict: {} already exists",
+            "file conflict: '{}' already exists (use --force to overwrite or run interactively to choose)",
             target.display()
         ));
     }
@@ -199,7 +199,7 @@ fn resolve_dir_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool>
     }
     if ctx.no_prompt {
         return Err(anyhow::anyhow!(
-            "Conflict: {} already exists",
+            "directory conflict: '{}' already exists (use --force to overwrite or run interactively to choose)",
             target.display()
         ));
     }
@@ -249,7 +249,7 @@ pub async fn link(ctx: Ctx, overlay: &Overlay, to: &Path) -> Result<()> {
         .filter_map(|entry| match entry {
             Ok(e) => Some(e),
             Err(e) => {
-                eprintln!("Warning: skipping entry due to error: {}", e);
+                tracing::warn!("skipping entry due to error: {}", e);
                 None
             }
         })
@@ -353,8 +353,15 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
     }
     if let Err(e) = link_action.execute(ctx.clone()).await {
         // Rollback: move file back to original location
-        if !ctx.dry_run {
-            let _ = rename(&target, src).await;
+        if !ctx.dry_run
+            && let Err(rollback_err) = rename(&target, src).await
+        {
+            tracing::warn!(
+                source = %src.display(),
+                target = %target.display(),
+                error = %rollback_err,
+                "rollback failed: could not restore file to original location",
+            );
         }
         return Err(e);
     }
@@ -417,7 +424,7 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
             .filter_map(|entry| match entry {
                 Ok(e) => Some(e),
                 Err(e) => {
-                    eprintln!("Warning: skipping entry due to error: {}", e);
+                    tracing::warn!("skipping entry due to error: {}", e);
                     None
                 }
             })
@@ -729,6 +736,14 @@ mod tests {
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use std::fs;
+
+    /// Install a tracing subscriber so `tracing::warn!` etc. bodies are executed during tests.
+    fn init_test_tracing() {
+        let _ = tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_max_level(tracing::Level::TRACE)
+            .try_init();
+    }
 
     fn repo_and_root() -> (TempDir, Repository) {
         let td = TempDir::new().unwrap();
@@ -1568,6 +1583,94 @@ mod tests {
         assert!(
             target.join("file.txt").exists(),
             "should be able to access files through symlink"
+        );
+    }
+
+    // ── link() with unreadable entries ──────────────────────────────────
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn link_skips_unreadable_entries_with_warning() {
+        use std::os::unix::fs::PermissionsExt;
+
+        init_test_tracing();
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_unreadable");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str(&format!("target = \"{}\"", td.path().display()))
+            .unwrap();
+        let overlay = repo.get("ov_unreadable").unwrap();
+        let c = Context::builder()
+            .dry_run(true)
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay.clone())
+            .build();
+
+        // Create a normal file in the overlay
+        fs::write(overlay.root.join("good.txt"), "ok").unwrap();
+
+        // Create a subdirectory with no read permission to trigger WalkDir error
+        let bad_dir = overlay.root.join("bad_dir");
+        fs::create_dir_all(&bad_dir).unwrap();
+        fs::write(bad_dir.join("hidden.txt"), "secret").unwrap();
+        fs::set_permissions(&bad_dir, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // link() should succeed, skipping the unreadable entry with a warning
+        let target = td.path().join("link_target");
+        fs::create_dir_all(&target).unwrap();
+        let result = link(c.clone(), &overlay, &target).await;
+
+        // Restore permissions for cleanup
+        fs::set_permissions(&bad_dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            result.is_ok(),
+            "link should succeed despite unreadable entries: {:?}",
+            result.err()
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn add_dir_skips_unreadable_entries_with_warning() {
+        use std::os::unix::fs::PermissionsExt;
+
+        init_test_tracing();
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov_add_unreadable");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str(&format!("target = \"{}\"", td.path().display()))
+            .unwrap();
+        let overlay = repo.get("ov_add_unreadable").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+
+        // Create a directory with a readable file and an unreadable subdirectory
+        let dir = td.path().join("adddir_unreadable");
+        fs::create_dir_all(dir.join("bad_sub")).unwrap();
+        fs::write(dir.join("good.txt"), "ok").unwrap();
+        fs::write(dir.join("bad_sub").join("hidden.txt"), "secret").unwrap();
+        fs::set_permissions(dir.join("bad_sub"), fs::Permissions::from_mode(0o000)).unwrap();
+
+        // add_dir should succeed, skipping the unreadable entry with a warning
+        let result = add_dir(c.clone(), &overlay, &dir).await;
+
+        // Restore permissions for cleanup
+        fs::set_permissions(dir.join("bad_sub"), fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            result.is_ok(),
+            "add_dir should succeed despite unreadable entries: {:?}",
+            result.err()
+        );
+        // The readable file should have been processed
+        assert!(
+            overlay.root.join("adddir_unreadable/good.txt").exists(),
+            "good.txt should be in overlay"
         );
     }
 }

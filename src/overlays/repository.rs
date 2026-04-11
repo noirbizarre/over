@@ -9,7 +9,6 @@ use anyhow::{Context as AnyhowContext, Result};
 
 use super::overlay::Overlay;
 use super::{BASENAME, Format, GLOB_PATTERN};
-use crate::ui::style;
 
 /// Manage all overlays
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
@@ -61,12 +60,9 @@ impl Repository {
                 .with_context(|| format!("failed to load overlay at {}", dir.display()))
             {
                 Ok(overlay) => overlays.push(overlay),
-                Err(_e) => eprintln!(
-                    "{} {} {}",
-                    style::yellow("Warning:"),
-                    style::white_b("skipping badly formatted overlay"),
-                    style::cyan(&dir.display().to_string()),
-                ),
+                Err(e) => {
+                    tracing::warn!("skipping badly formatted overlay {}: {}", dir.display(), e,);
+                }
             }
         }
 
@@ -76,7 +72,15 @@ impl Repository {
     /// Get a repository by its name/relative path
     pub fn get(&self, name: &str) -> Result<Overlay> {
         let root = self.root.join(name);
-        let overlay = Overlay::new(self, &root)?;
+        if !root.exists() {
+            anyhow::bail!(
+                "overlay '{}' not found (no such directory: {})",
+                name,
+                root.display()
+            );
+        }
+        let overlay = Overlay::new(self, &root)
+            .with_context(|| format!("failed to load overlay '{}'", name))?;
         Ok(overlay)
     }
 

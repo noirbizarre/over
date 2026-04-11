@@ -3,4 +3,4 @@ pub mod style;
 
 pub mod log;
 
-pub use log::info;
+pub use log::{display_error, info, init_tracing};

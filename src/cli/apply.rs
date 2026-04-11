@@ -85,12 +85,13 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         actions::install::install(&ctx, &overlay).await?;
     }
 
-    overlay.apply(&ctx).await.inspect_err(|_| {
+    overlay.apply(&ctx).await.inspect_err(|e| {
         eprintln!(
-            "{} {} {}",
+            "{} {} {}: {}",
             emojis::CROSSMARK,
             style::white_b("Failed to apply overlay"),
-            style::white_bi(&overlay.name),
+            style::cyan(&overlay.name),
+            e,
         );
     })?;
 

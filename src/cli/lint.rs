@@ -71,7 +71,11 @@ pub async fn execute(cli: &CLI, _args: &Params) -> Result<()> {
     println!("{} found", parts.join(", "));
 
     if result.has_errors() {
-        std::process::exit(1);
+        anyhow::bail!(
+            "lint found {} error{}",
+            errors,
+            if errors == 1 { "" } else { "s" },
+        );
     }
 
     Ok(())

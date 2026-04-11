@@ -5,6 +5,4 @@ pub mod lint;
 pub mod overlays;
 pub mod ui;
 
-mod utils;
-
-pub use utils::Expect;
+pub mod utils;
