@@ -10,8 +10,8 @@
   <a href="https://github.com/noirbizarre/over/actions/workflows/ci.yml">
     <img src="https://github.com/noirbizarre/over/actions/workflows/ci.yml/badge.svg" alt="👮 CI"/>
   </a>
-  <a href="https://codecov.io/gh/noirbizarre/over" > 
-    <img src="https://codecov.io/gh/noirbizarre/over/graph/badge.svg?token=XkB3PcbQer"/> 
+  <a href="https://codecov.io/gh/noirbizarre/over" >
+    <img src="https://codecov.io/gh/noirbizarre/over/graph/badge.svg?token=XkB3PcbQer"/>
   </a>
 </p>
 
