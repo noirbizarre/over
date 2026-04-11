@@ -139,7 +139,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             .repository(repo)
             .overlay(overlay.clone())
             .build();
-        let ctx = std::sync::Arc::new(ctx);
 
         overlay.add_files(&ctx, &files_to_absorb).await?;
     }

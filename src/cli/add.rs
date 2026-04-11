@@ -8,10 +8,10 @@ use crate::cli::CLI;
 use crate::cli::common::resolve_inputs;
 use crate::exec::Context;
 use crate::overlays::Repository;
-use crate::ui::{emojis, style};
+use crate::ui::emojis;
+use crate::ui::style::{self, DialogTheme};
 use anyhow::{Result, anyhow};
 use dialoguer::FuzzySelect;
-use dialoguer::theme::ColorfulTheme;
 use dirs::home_dir;
 
 #[derive(Args, Debug)]
@@ -51,7 +51,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             if overlays.is_empty() {
                 return Err(anyhow!("no overlays found in repository"));
             }
-            let selection = FuzzySelect::with_theme(&ColorfulTheme::default())
+            let selection = FuzzySelect::with_theme(&DialogTheme::default())
                 .with_prompt("Choose the target overlay")
                 .default(0)
                 .items(&overlays[..])
@@ -116,7 +116,7 @@ fn add_symlink(
 
     let default_target = compute_default_target(&link_target, &overlay.root, home);
 
-    let target: String = Input::with_theme(&ColorfulTheme::default())
+    let target: String = Input::with_theme(&DialogTheme::default())
         .with_prompt(format!(
             "Target for {}",
             style::cyan(symlink_path.display())

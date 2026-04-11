@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
 use clap::Args;
-use dialoguer::theme::ColorfulTheme;
 use dialoguer::{FuzzySelect, MultiSelect};
 use dirs::home_dir;
 
 use crate::actions::git::config::{GitConfig, GitRepoConfig, RemoteConfig, WorktreeEntry};
 use crate::overlays::{self, Format, Repository};
+use crate::ui::style::DialogTheme;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
@@ -78,7 +78,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         if overlays.is_empty() {
             return Err(anyhow!("no overlays found in repository"));
         }
-        let selection = FuzzySelect::with_theme(&ColorfulTheme::default())
+        let selection = FuzzySelect::with_theme(&DialogTheme::default())
             .with_prompt("Choose the target overlay")
             .default(0)
             .items(&overlays[..])
@@ -307,7 +307,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             })
             .collect();
 
-        let selections = MultiSelect::with_theme(&ColorfulTheme::default())
+        let selections = MultiSelect::with_theme(&DialogTheme::default())
             .with_prompt("Select properties to export to overlay config")
             .items(&labels)
             .defaults(&defaults)

@@ -1,5 +1,5 @@
 use crate::cli::CLI;
-use crate::overlays::repository::Repository;
+use crate::overlays::Repository;
 use crate::ui::style;
 use crate::utils::short_path;
 use anyhow::Result;

@@ -5,7 +5,7 @@ Repository Purpose: Rust CLI (bin `over`) managing git-based file overlays. Keep
 Build/Test:
 - Full build: `cargo build` (or `mise run build`)
 - Format: `cargo fmt --all` (or `mise run fmt`)
-- Lint: `cargo clippy --all-targets --all-features -- -Dclippy:all` (or `mise run lint`)
+- Lint: `cargo clippy --all-targets --all-features -- -Dclippy::all` (or `mise run lint`)
 - Test all: `cargo nextest run` (or `mise run test`)
 - Single test: `cargo nextest run --test <file> -- <name::path>` or fallback `cargo test <name>`
 - Coverage: `cargo llvm-cov nextest` (or `mise run cover`)
