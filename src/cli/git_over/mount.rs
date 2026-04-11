@@ -834,7 +834,7 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         assert_eq!(
-            entry.get(&serde_yml::Value::String("url".into())),
+            entry.get(serde_yml::Value::String("url".into())),
             Some(&serde_yml::Value::String(
                 "https://github.com/user/repo.git".into()
             )),
@@ -859,7 +859,7 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         assert_eq!(
-            entry.get(&serde_yml::Value::String("branch".into())),
+            entry.get(serde_yml::Value::String("branch".into())),
             Some(&serde_yml::Value::String("main".into())),
         );
     }
@@ -881,7 +881,7 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         assert_eq!(
-            entry.get(&serde_yml::Value::String("tag".into())),
+            entry.get(serde_yml::Value::String("tag".into())),
             Some(&serde_yml::Value::String("v1.0.0".into())),
         );
     }
@@ -903,7 +903,7 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         assert_eq!(
-            entry.get(&serde_yml::Value::String("rev".into())),
+            entry.get(serde_yml::Value::String("rev".into())),
             Some(&serde_yml::Value::String("abc123".into())),
         );
     }
@@ -925,7 +925,7 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         assert_eq!(
-            entry.get(&serde_yml::Value::String("recurse_submodules".into())),
+            entry.get(serde_yml::Value::String("recurse_submodules".into())),
             Some(&serde_yml::Value::Bool(true)),
         );
     }
@@ -947,7 +947,7 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         assert_eq!(
-            entry.get(&serde_yml::Value::String("worktree".into())),
+            entry.get(serde_yml::Value::String("worktree".into())),
             Some(&serde_yml::Value::Bool(true)),
         );
     }
@@ -977,12 +977,12 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         let wt = entry
-            .get(&serde_yml::Value::String("worktrees".into()))
+            .get(serde_yml::Value::String("worktrees".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         assert_eq!(
-            wt.get(&serde_yml::Value::String("feature".into())),
+            wt.get(serde_yml::Value::String("feature".into())),
             Some(&serde_yml::Value::String("feature-branch".into())),
         );
     }
@@ -1015,23 +1015,23 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         let remotes_map = entry
-            .get(&serde_yml::Value::String("remotes".into()))
+            .get(serde_yml::Value::String("remotes".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         let upstream = remotes_map
-            .get(&serde_yml::Value::String("upstream".into()))
+            .get(serde_yml::Value::String("upstream".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         assert_eq!(
-            upstream.get(&serde_yml::Value::String("url".into())),
+            upstream.get(serde_yml::Value::String("url".into())),
             Some(&serde_yml::Value::String(
                 "https://github.com/upstream/repo.git".into()
             )),
         );
         assert_eq!(
-            upstream.get(&serde_yml::Value::String("fetch".into())),
+            upstream.get(serde_yml::Value::String("fetch".into())),
             Some(&serde_yml::Value::String(
                 "+refs/heads/*:refs/remotes/upstream/*".into()
             )),
@@ -1058,16 +1058,16 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         let config_map = entry
-            .get(&serde_yml::Value::String("config".into()))
+            .get(serde_yml::Value::String("config".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         assert_eq!(
-            config_map.get(&serde_yml::Value::String("user.name".into())),
+            config_map.get(serde_yml::Value::String("user.name".into())),
             Some(&serde_yml::Value::String("Test User".into())),
         );
         assert_eq!(
-            config_map.get(&serde_yml::Value::String("user.email".into())),
+            config_map.get(serde_yml::Value::String("user.email".into())),
             Some(&serde_yml::Value::String("test@example.com".into())),
         );
     }
@@ -1097,10 +1097,10 @@ mod tests {
 
     #[test]
     fn test_yaml_value_to_toml_float() {
-        let v = serde_yml::Value::Number(serde_yml::Number::from(3.14));
+        let v = serde_yml::Value::Number(serde_yml::Number::from(2.72));
         let result = yaml_value_to_toml(&v).unwrap();
         match result {
-            toml::Value::Float(f) => assert!((f - 3.14).abs() < f64::EPSILON),
+            toml::Value::Float(f) => assert!((f - 2.72).abs() < f64::EPSILON),
             _ => panic!("expected float"),
         }
     }
@@ -1400,7 +1400,7 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         assert_eq!(
-            entry.get(&serde_yml::Value::String("per_worktree_config".into())),
+            entry.get(serde_yml::Value::String("per_worktree_config".into())),
             Some(&serde_yml::Value::Bool(false)),
         );
     }
@@ -1423,7 +1423,7 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         assert_eq!(
-            entry.get(&serde_yml::Value::String("per_worktree_config".into())),
+            entry.get(serde_yml::Value::String("per_worktree_config".into())),
             None,
         );
     }
@@ -1459,26 +1459,26 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         let wt = entry
-            .get(&serde_yml::Value::String("worktrees".into()))
+            .get(serde_yml::Value::String("worktrees".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         let feat = wt
-            .get(&serde_yml::Value::String("feat".into()))
+            .get(serde_yml::Value::String("feat".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         assert_eq!(
-            feat.get(&serde_yml::Value::String("branch".into())),
+            feat.get(serde_yml::Value::String("branch".into())),
             Some(&serde_yml::Value::String("feature".into())),
         );
         let cfg = feat
-            .get(&serde_yml::Value::String("config".into()))
+            .get(serde_yml::Value::String("config".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         assert_eq!(
-            cfg.get(&serde_yml::Value::String("user.email".into())),
+            cfg.get(serde_yml::Value::String("user.email".into())),
             Some(&serde_yml::Value::String("dev@test.com".into())),
         );
     }
@@ -1513,17 +1513,17 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         let remotes_map = entry
-            .get(&serde_yml::Value::String("remotes".into()))
+            .get(serde_yml::Value::String("remotes".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         let upstream = remotes_map
-            .get(&serde_yml::Value::String("upstream".into()))
+            .get(serde_yml::Value::String("upstream".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         assert_eq!(
-            upstream.get(&serde_yml::Value::String("push".into())),
+            upstream.get(serde_yml::Value::String("push".into())),
             Some(&serde_yml::Value::String(
                 "+refs/heads/*:refs/heads/*".into()
             )),
@@ -1560,17 +1560,17 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         let remotes_map = entry
-            .get(&serde_yml::Value::String("remotes".into()))
+            .get(serde_yml::Value::String("remotes".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         let upstream = remotes_map
-            .get(&serde_yml::Value::String("upstream".into()))
+            .get(serde_yml::Value::String("upstream".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         assert_eq!(
-            upstream.get(&serde_yml::Value::String("tagopt".into())),
+            upstream.get(serde_yml::Value::String("tagopt".into())),
             Some(&serde_yml::Value::String("--no-tags".into())),
         );
     }
@@ -1607,17 +1607,17 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         let remotes_map = entry
-            .get(&serde_yml::Value::String("remotes".into()))
+            .get(serde_yml::Value::String("remotes".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         let upstream = remotes_map
-            .get(&serde_yml::Value::String("upstream".into()))
+            .get(serde_yml::Value::String("upstream".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         assert_eq!(
-            upstream.get(&serde_yml::Value::String("prune".into())),
+            upstream.get(serde_yml::Value::String("prune".into())),
             Some(&serde_yml::Value::String("true".into())),
         );
     }
@@ -1643,12 +1643,12 @@ mod tests {
         };
         let entry = build_git_entry(&config);
         let wt_cfg = entry
-            .get(&serde_yml::Value::String("worktree_config".into()))
+            .get(serde_yml::Value::String("worktree_config".into()))
             .unwrap()
             .as_mapping()
             .unwrap();
         assert_eq!(
-            wt_cfg.get(&serde_yml::Value::String("core.sparseCheckout".into())),
+            wt_cfg.get(serde_yml::Value::String("core.sparseCheckout".into())),
             Some(&serde_yml::Value::String("true".into())),
         );
     }

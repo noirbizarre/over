@@ -92,11 +92,6 @@ mod tests {
     #[test]
     fn test_short_path_empty_string() {
         let result = short_path("");
-        let h = home();
-        if h.is_empty() {
-            assert_eq!(result, "");
-        } else {
-            assert_eq!(result, "");
-        }
+        assert_eq!(result, "");
     }
 }

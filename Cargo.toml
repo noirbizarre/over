@@ -23,7 +23,14 @@ globset = "0.4"
 symlink = "0.1"
 minijinja = "2.18"
 walkdir = "2"
-tokio = { version = "1.50", features = ["rt", "rt-multi-thread", "macros", "fs", "process", "sync"] }
+tokio = { version = "1.50", features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "fs",
+  "process",
+  "sync",
+] }
 indicatif = "0.18"
 toml = { version = "1.0", features = ["parse", "display"] }
 git2 = "0.20"
