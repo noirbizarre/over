@@ -128,7 +128,7 @@ async fn run_cmd(ctx: &Ctx, program: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-async fn run_scripts(ctx: &Ctx, scripts: &Vec<String>) -> Result<()> {
+async fn run_scripts(ctx: &Ctx, scripts: &[String]) -> Result<()> {
     for script in scripts {
         run_cmd(ctx, "sh", &["-c", script.as_str()]).await?;
     }

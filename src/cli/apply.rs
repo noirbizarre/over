@@ -3,13 +3,13 @@ use std::path::PathBuf;
 use anyhow::{Result, anyhow};
 use clap::Args;
 use dialoguer::FuzzySelect;
-use dialoguer::theme::ColorfulTheme;
 use dirs::home_dir;
 
 use crate::actions;
 use crate::cli::CLI;
 use crate::exec::Context;
 use crate::overlays::Repository;
+use crate::ui::style::DialogTheme;
 use crate::ui::{emojis, style};
 #[derive(Args, Debug)]
 pub struct Params {
@@ -52,7 +52,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             if overlays.is_empty() {
                 return Err(anyhow!("no overlays found in repository"));
             }
-            let selection = FuzzySelect::with_theme(&ColorfulTheme::default())
+            let selection = FuzzySelect::with_theme(&DialogTheme::default())
                 .with_prompt("Choose the overlay to apply")
                 .default(0)
                 .items(&overlays[..])

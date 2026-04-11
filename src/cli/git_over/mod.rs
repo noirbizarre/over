@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use dirs::home_dir;
 
 use crate::overlays::{Overlay, Repository};
-use crate::ui::style::clap_styles;
+use crate::ui::style::{DialogTheme, clap_styles};
 
 mod add;
 mod mount;
@@ -215,7 +215,7 @@ pub fn resolve_overlay(
         return Err(anyhow!("no overlays found in repository"));
     }
 
-    let selection = dialoguer::FuzzySelect::with_theme(&dialoguer::theme::ColorfulTheme::default())
+    let selection = dialoguer::FuzzySelect::with_theme(&DialogTheme::default())
         .with_prompt("Choose the target overlay")
         .default(0)
         .items(&overlays[..])

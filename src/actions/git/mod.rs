@@ -5,7 +5,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use async_trait::async_trait;
 use config::{GitRepoConfig, ROOT_PATH};
 use futures::future::join_all;
@@ -225,8 +225,6 @@ impl Action for EnsureGitRepository {
         Ok(())
     }
 }
-
-use anyhow::Context as AnyhowContext;
 
 /// Checkout a specific tag or rev on a non-bare repo.
 fn checkout_ref(repo: &Repository, config: &GitRepoConfig) -> Result<()> {
@@ -621,7 +619,7 @@ struct CloneStats {
     received_bytes: usize,
 }
 
-impl CloneStats {
+impl From<Progress<'_>> for CloneStats {
     fn from(stats: Progress) -> Self {
         Self {
             total_objects: stats.total_objects(),
