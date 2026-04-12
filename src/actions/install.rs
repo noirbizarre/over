@@ -216,7 +216,7 @@ async fn install_arch_pkgs(ctx: &Ctx, pkgs: BTreeSet<String>) -> Result<()> {
             run_cmd(ctx, bin, ref_args.as_slice()).await?;
         }
     } else if ctx.verbose {
-        eprintln!("No arch package manager found for archlinux packages");
+        tracing::info!("no arch package manager found, skipping archlinux packages");
     }
     Ok(())
 }
@@ -243,7 +243,7 @@ async fn install_brew_pkgs(
         return Ok(());
     }
     if which("brew").is_err() {
-        eprintln!("brew not found");
+        tracing::warn!("brew not found, skipping brew packages");
         return Ok(());
     }
     for tap in taps.iter() {
@@ -275,7 +275,7 @@ async fn install_winget_pkgs(ctx: &Ctx, pkgs: BTreeSet<WingetPackage>) -> Result
     }
     if which("winget").is_err() {
         if ctx.verbose {
-            eprintln!("winget not found");
+            tracing::info!("winget not found, skipping winget packages");
         }
         return Ok(());
     }
@@ -309,7 +309,7 @@ async fn install_cargo_crates(ctx: &Ctx, crates: BTreeSet<CargoPackage>) -> Resu
     }
     if which("cargo").is_err() {
         if ctx.verbose {
-            eprintln!("cargo not found");
+            tracing::info!("cargo not found, skipping cargo crates");
         }
         return Ok(());
     }
@@ -430,7 +430,7 @@ async fn install_node_packages(ctx: &Ctx, packages: BTreeSet<NodePackage>) -> Re
     }
     if which("npm").is_err() {
         if ctx.verbose {
-            eprintln!("npm not found");
+            tracing::info!("npm not found, skipping node packages");
         }
         return Ok(());
     }
@@ -452,7 +452,7 @@ pub async fn install(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
         "linux" => install_linux(ctx, overlay).await?,
         "macos" => install_macos(ctx, overlay).await?,
         "windows" => install_windows(ctx, overlay).await?,
-        _ => eprintln!("Unsupported OS: {}", OS),
+        _ => tracing::warn!("unsupported OS '{}', skipping install", OS),
     }
     Ok(())
 }

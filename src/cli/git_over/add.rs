@@ -81,15 +81,14 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let resolved = resolve_inputs(&args.files)?;
 
-    overlay.add_files(&ctx, &resolved).await.map_err(|e| {
-        println!(
-            "{} {} {} {}",
+    overlay.add_files(&ctx, &resolved).await.inspect_err(|e| {
+        eprintln!(
+            "{} {} {}: {}",
             emojis::CROSSMARK,
             style::white_b("Failed to add to overlay"),
             style::cyan(&overlay.name),
-            style::white_b(&format!(": {}", e)),
+            e,
         );
-        e
     })?;
 
     // Compute relative paths from the repo root for .git/info/exclude

@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
-use dirs::home_dir;
 
 use crate::overlays::{Overlay, Repository};
 use crate::ui::style::{DialogTheme, clap_styles};
@@ -57,19 +56,15 @@ pub enum Commands {
 impl CLI {
     /// Resolve the over home directory: flag/env > default (~/.over)
     pub fn resolve_home(&self) -> Result<PathBuf> {
-        if let Some(ref home) = self.home {
-            Ok(home.clone())
-        } else {
-            let default = home_dir()
-                .ok_or_else(|| anyhow!("could not determine home directory"))?
-                .join(".over");
-            Ok(default)
-        }
+        crate::utils::resolve_home(self.home.as_ref())
     }
 }
 
 pub async fn main() -> Result<()> {
     let args = CLI::parse();
+
+    crate::ui::init_tracing(args.verbose, args.debug);
+
     match &args.cmd {
         Commands::Mount(opt) => mount::execute(&args, opt).await?,
         Commands::Add(opt) => add::execute(&args, opt).await?,

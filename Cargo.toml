@@ -38,6 +38,8 @@ git2_credentials = "0.15"
 async-trait = "0.1"
 console = "0.16"
 anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 futures = "0.3"
 serde_yml = "0.0.12"
 which = "8.0"

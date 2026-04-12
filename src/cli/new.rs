@@ -80,11 +80,14 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let resolved_target = resolve_target_path(&target_str)?;
 
     if cli.debug {
-        eprintln!("overlay root: {}", overlay_root.display());
-        eprintln!("descriptor:   {}", descriptor.display());
-        eprintln!("target:       {}", target_str);
-        eprintln!("resolved:     {}", resolved_target.display());
-        eprintln!("format:       {}", format);
+        tracing::debug!(
+            overlay_root = %overlay_root.display(),
+            descriptor = %descriptor.display(),
+            target = %target_str,
+            resolved = %resolved_target.display(),
+            format = %format,
+            "creating new overlay",
+        );
     }
 
     // Collect git entries and files to absorb before writing anything

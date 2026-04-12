@@ -533,9 +533,9 @@ fn new_overlay_debug_output() -> TestResult {
         .args(["new", "debugoverlay", target.to_str().unwrap()])
         .assert()
         .success()
-        .stderr(contains("overlay root:"))
-        .stderr(contains("descriptor:"))
-        .stderr(contains("format:"));
+        .stderr(contains("overlay_root"))
+        .stderr(contains("descriptor"))
+        .stderr(contains("format"));
     Ok(())
 }
 
@@ -615,6 +615,20 @@ fn apply_overlay_with_root_dry_run() -> TestResult {
         target_root.to_str().unwrap(),
     ]);
     cmd.assert().success();
+    Ok(())
+}
+
+#[test]
+fn apply_nonexistent_overlay_fails() -> TestResult {
+    let tmp = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["apply", "does_not_exist", "--no-prompt"])
+        .assert()
+        .failure()
+        .stderr(contains("error:"));
     Ok(())
 }
 
@@ -896,5 +910,67 @@ fn git_over_add_nonexistent_file_fails() -> TestResult {
         .current_dir(&repo_dir)
         .assert()
         .failure();
+    Ok(())
+}
+
+#[test]
+fn apply_conflict_no_prompt_fails() -> TestResult {
+    let repo = setup_overlay_repo();
+    let canonical = repo.path().canonicalize()?;
+    // Create a file in the overlay
+    let overlay_dir = canonical.join("dev");
+    fs::write(overlay_dir.join("conflict.txt"), "from overlay")?;
+
+    // Create the same file at the target location to provoke a conflict
+    let target_root = canonical.join("target_root");
+    fs::create_dir_all(&target_root)?;
+    fs::write(target_root.join("conflict.txt"), "existing")?;
+
+    // Apply with --no-prompt should fail on the conflict
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical)
+        .args([
+            "apply",
+            "dev",
+            "--root",
+            target_root.to_str().unwrap(),
+            "--no-prompt",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("conflict"));
+    Ok(())
+}
+
+#[test]
+fn add_file_outside_root_fails() -> TestResult {
+    let repo = setup_overlay_repo();
+    let canonical = repo.path().canonicalize()?;
+
+    // Create a file outside the --root directory
+    let outside = TempDir::new()?;
+    let outside_canonical = outside.path().canonicalize()?;
+    let outside_file = outside_canonical.join("outside.txt");
+    fs::write(&outside_file, "I am outside")?;
+
+    // The --root is set to a subdirectory so the file is not under it
+    let narrow_root = canonical.join("narrow");
+    fs::create_dir_all(&narrow_root)?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical)
+        .args([
+            "add",
+            outside_file.to_str().unwrap(),
+            "-o",
+            "dev",
+            "--root",
+            narrow_root.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("not included in"));
     Ok(())
 }

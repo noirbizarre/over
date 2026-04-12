@@ -120,22 +120,21 @@ impl Action for EnsureSymlink {
                 }
                 LinkType::Hard => {
                     if is_dir {
-                        eprintln!(
-                            "{} {} {} (falling back to soft link)",
-                            emojis::WARNING,
-                            style::yellow("Warning:"),
-                            style::yellow("hard links are not supported for directories"),
+                        tracing::warn!(
+                            source = %source.display(),
+                            target = %target.display(),
+                            "hard links are not supported for directories, falling back to soft link",
                         );
                         symlink_dir(&source, &target)?;
                     } else {
                         match fs::hard_link(&source, &target) {
                             Ok(()) => {}
-                            Err(_) => {
-                                eprintln!(
-                                    "{} {} {} (falling back to soft link)",
-                                    emojis::WARNING,
-                                    style::yellow("Warning:"),
-                                    style::yellow("hard link failed, falling back to soft link"),
+                            Err(e) => {
+                                tracing::warn!(
+                                    source = %source.display(),
+                                    target = %target.display(),
+                                    error = %e,
+                                    "hard link failed, falling back to soft link",
                                 );
                                 symlink_file(&source, &target)?;
                             }
@@ -193,13 +192,10 @@ pub fn discover_symlinks(overlay_root: &Path) -> Result<Vec<(String, SymlinkConf
         };
 
         if config.target.is_empty() {
-            eprintln!(
-                "{} {} {} {} {}",
-                emojis::WARNING,
-                style::yellow("Warning:"),
-                style::yellow("empty target in"),
-                style::cyan(&stem),
-                style::yellow(", skipping"),
+            tracing::warn!(
+                name = %stem,
+                path = %rel.display(),
+                "empty target in symlink config, skipping",
             );
             continue;
         }
@@ -210,15 +206,11 @@ pub fn discover_symlinks(overlay_root: &Path) -> Result<Vec<(String, SymlinkConf
             } else {
                 (existing_path.clone(), rel.to_path_buf())
             };
-            eprintln!(
-                "{} {} {} {} {} {} {}",
-                emojis::WARNING,
-                style::yellow("Warning:"),
-                style::yellow("both"),
-                style::cyan(toml_path.display().to_string()),
-                style::yellow("and"),
-                style::cyan(yaml_path.display().to_string()),
-                style::yellow("exist; TOML takes precedence"),
+            tracing::warn!(
+                name = %stem,
+                toml = %toml_path.display(),
+                yaml = %yaml_path.display(),
+                "both TOML and YAML symlink configs exist; TOML takes precedence",
             );
             if rel.to_string_lossy().ends_with(".toml") {
                 results.retain(|(name, _)| name != &stem);
@@ -253,6 +245,14 @@ mod tests {
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use rstest::rstest;
+
+    /// Install a tracing subscriber so `tracing::warn!` etc. bodies are executed during tests.
+    fn init_test_tracing() {
+        let _ = tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_max_level(tracing::Level::TRACE)
+            .try_init();
+    }
 
     #[test]
     fn link_type_default_is_soft() {
@@ -375,6 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_symlink_hard_link_dir_falls_back() {
+        init_test_tracing();
         let td = TempDir::new().unwrap();
         let source = td.path().join("source_dir");
         let target = td.path().join("target_dir");
@@ -434,6 +435,7 @@ mod tests {
 
     #[test]
     fn discover_symlinks_toml_takes_precedence_over_yaml() {
+        init_test_tracing();
         let td = TempDir::new().unwrap();
         td.child("app.link.toml")
             .write_str("target = \"/from-toml\"")
@@ -450,6 +452,7 @@ mod tests {
 
     #[test]
     fn discover_symlinks_skips_empty_target() {
+        init_test_tracing();
         let td = TempDir::new().unwrap();
         td.child("bad.link.toml")
             .write_str("target = \"\"")
@@ -461,6 +464,7 @@ mod tests {
 
     #[test]
     fn discover_symlinks_yaml_first_toml_second_toml_wins() {
+        init_test_tracing();
         let td = TempDir::new().unwrap();
         td.child("app.link.yaml")
             .write_str("target: /from-yaml")
@@ -611,17 +615,24 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_symlink_hard_link_fallback_cross_device() {
+        init_test_tracing();
+        // Use a file from /proc (different filesystem) as source to force hard_link to fail.
+        // hard_link across filesystems returns EXDEV, triggering the fallback to soft link.
+        let source = PathBuf::from("/proc/self/exe");
+        if !source.exists() {
+            // Skip on systems without /proc
+            return;
+        }
         let td = TempDir::new().unwrap();
-        let source = td.path().join("source.txt");
-        let target = td.path().join("target.txt");
-        fs::write(&source, "hello").unwrap();
+        let target = td.path().join("target_link");
 
         let ctx = crate::exec::Context::builder().build();
         let action = EnsureSymlink::new(source.clone(), target.clone(), LinkType::Hard, false);
         action.execute(ctx).await.unwrap();
 
-        assert!(target.exists());
-        assert_eq!(fs::read_to_string(&target).unwrap(), "hello");
+        // Should have fallen back to a soft link
+        assert!(target.is_symlink(), "should fall back to soft link");
+        assert_eq!(fs::read_link(&target).unwrap(), source);
     }
 
     #[test]

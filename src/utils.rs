@@ -1,9 +1,21 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use anyhow::Result;
 use dirs::home_dir;
 
-// Change the alias to `Box<error::Error>`.
-pub type Expect<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+/// Resolve the over home directory.
+///
+/// Uses `explicit` if provided, otherwise falls back to `~/.over`.
+pub fn resolve_home(explicit: Option<&PathBuf>) -> Result<PathBuf> {
+    if let Some(home) = explicit {
+        Ok(home.clone())
+    } else {
+        let default = home_dir()
+            .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?
+            .join(".over");
+        Ok(default)
+    }
+}
 
 // Shorten a path by replacing the home directory with ~
 pub fn short_path(path: &str) -> String {
@@ -73,15 +85,6 @@ mod tests {
     }
 
     #[test]
-    fn test_expect_type_alias() {
-        let ok_result: Expect<String> = Ok("hello".to_string());
-        assert!(ok_result.is_ok());
-
-        let err_result: Expect<String> = Err("error".into());
-        assert!(err_result.is_err());
-    }
-
-    #[test]
     fn test_short_path_deeply_nested() {
         let h = home();
         let path = format!("{}/a/b/c/d/e/f.txt", h);
@@ -93,5 +96,19 @@ mod tests {
     fn test_short_path_empty_string() {
         let result = short_path("");
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn resolve_home_with_explicit_path() {
+        let explicit = PathBuf::from("/custom/over");
+        let result = resolve_home(Some(&explicit)).unwrap();
+        assert_eq!(result, PathBuf::from("/custom/over"));
+    }
+
+    #[test]
+    fn resolve_home_defaults_to_dot_over() {
+        let result = resolve_home(None).unwrap();
+        let expected = home_dir().unwrap().join(".over");
+        assert_eq!(result, expected);
     }
 }

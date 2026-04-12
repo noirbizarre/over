@@ -66,7 +66,7 @@ where
 
 static SYMLINK_SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
     ProgressStyle::with_template("{spinner:.cyan} {wide_msg}")
-        .unwrap()
+        .expect("static progress template must be valid")
         .tick_chars(style::TICK_CHARS_BRAILLE_4_6_DOWN.as_str())
 });
 
@@ -139,9 +139,15 @@ impl Overlay {
             .set_override("name", name)?
             .set_override("root", root.to_str())?
             .set_default("target", DEFAULT_TARGET)?
-            .build()?;
+            .build()
+            .with_context(|| format!("invalid overlay descriptor in '{}'", root.display(),))?;
 
-        Ok(s.try_deserialize()?)
+        s.try_deserialize().with_context(|| {
+            format!(
+                "invalid overlay descriptor for '{}': check required fields (target)",
+                name,
+            )
+        })
     }
 
     pub fn resolve_target(&self, ctx: &exec::Context) -> Result<PathBuf> {

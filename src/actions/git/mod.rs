@@ -534,13 +534,15 @@ fn apply_per_worktree_config(
 
 static CLONE_PROGRESS_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
     ProgressStyle::with_template("{spinner:.cyan} {prefix} [{bar:.green/yellow}] {msg}")
-        .unwrap()
+        .expect("static progress template must be valid")
         .tick_chars(style::TICK_CHARS_BRAILLE_4_6_DOWN.as_str())
         .progress_chars(style::THIN_PROGRESS.as_str())
 });
 
-static DONE_PROGRESS_STYLE: LazyLock<ProgressStyle> =
-    LazyLock::new(|| ProgressStyle::with_template("✅ {prefix}: {msg}").unwrap());
+static DONE_PROGRESS_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
+    ProgressStyle::with_template("✅ {prefix}: {msg}")
+        .expect("static progress template must be valid")
+});
 
 fn clone(
     url: &str,
