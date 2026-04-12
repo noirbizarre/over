@@ -49,6 +49,9 @@ libz-sys = { version = "1.1", optional = true }
 features = ["derive", "env", "unicode", "cargo", "color"]
 version = "4.6"
 
+[dependencies.clap_complete]
+version = "4.6"
+
 [dependencies.config]
 default-features = false
 features = ["yaml", "toml"]
