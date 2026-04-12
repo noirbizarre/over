@@ -254,11 +254,12 @@ Fields: `name` (display name), `id` (winget package identifier), optional `optio
 
 ### Precedence & Execution Order
 Order:
-1. Global/Platform `pre` scripts
-2. System managers (Linux precedence determined by distro; macOS: brew)
-3. Language managers (`cargo`, `python`, `node`)
-4. Platform `post` scripts
-5. Global `post` scripts
+1. Global `pre` scripts
+2. Platform `pre` scripts
+3. System managers (Linux precedence determined by distro; macOS: brew; Windows: winget)
+4. Language managers (`cargo`, `python`, `node`)
+5. Platform `post` scripts
+6. Global `post` scripts
 
 Linux system manager precedence:
 - Arch: archlinux, brew
