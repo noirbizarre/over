@@ -109,7 +109,7 @@ Format resolution priority (highest to lowest):
 Define installation requirements per overlay under an `install` key in the overlay config (TOML/YAML). Supports system package managers and language-specific installers with optional pre/post script hooks.
 
 Supported managers:
-- System: `archlinux`, `apt`, `brew`
+- System: `archlinux`, `apt`, `brew`, `winget`
 - Language: `cargo`, `python` (uv, pipx, pip), `node` (npm)
 
 ### Forms
@@ -131,6 +131,8 @@ install:
     - requests
   node:
     - typescript
+  winget:
+    - Git.Git
 ```
 
 Flat (TOML):
@@ -142,6 +144,7 @@ brew = ["jq"]
 cargo = ["ripgrep"]
 python = ["requests"]
 node = ["typescript"]
+winget = ["Git.Git"]
 ```
 
 Full (YAML):
@@ -176,6 +179,10 @@ install:
     packages:
       - name: typescript
         options: "--force"
+  winget:
+    packages:
+      - name: Git.Git
+      - id: Microsoft.VisualStudioCode
   post:
     - echo "done"
 ```
@@ -202,6 +209,10 @@ python.packages = [
 node.packages = [
   { name = "typescript", options = "--force" }
 ]
+winget.packages = [
+  { name = "Git.Git" },
+  { id = "Microsoft.VisualStudioCode" }
+]
 post = ['echo "done"']
 ```
 
@@ -216,6 +227,9 @@ Fields: `name`, `tool` (one of `uv`, `pipx`, `pip` or omit for auto), `extras` (
 
 ### Node Packages
 Installed globally via `npm install -g`. Field: `name`, optional `options` appended to the command before the package name.
+
+### Winget Packages
+Fields: `name` (display name), `id` (winget package identifier), optional `options` (extra flags). Provide either `name` or `id` to identify the package.
 
 ### Precedence & Execution Order
 Order:
