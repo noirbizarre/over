@@ -33,12 +33,17 @@ jobs:
 
       - name: Run tests (with coverage)
         run: |
-          cargo llvm-cov nextest
+          cargo llvm-cov nextest --profile ci
           cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload coverage data to Codecov
         uses: codecov/codecov-action@v5
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
           files: lcov.info
+
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v5
+        if: ${{ !cancelled() }}
+        with:
+          directory: target/nextest/ci
+          report_type: test_results
