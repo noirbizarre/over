@@ -13,7 +13,7 @@ Build/Test:
 Code Style:
 - Edition 2024; use `anyhow::Result` for fallible public fns; prefer `?` and propagate errors; avoid `.unwrap()` outside tests unless guaranteed.
 - Imports: group std / external / crate; avoid wildcard; keep ordering lexical; re-export only intentional items (see `lib.rs`).
-- Types: use explicit `PathBuf`, `Arc<Context>`; alias errors with `Result<T, anyhow::Error>` unless using boxed dynamic (`Expect`); prefer enums over strings for state.
+- Types: use explicit `PathBuf`, `Arc<Context>`; alias errors with `Result<T, anyhow::Error>`; prefer enums over strings for state.
 - Naming: snake_case for functions/vars, PascalCase for types/traits; modules concise (`fs`, `git`); constants UPPER_SNAKE; avoid abbreviations except well-known (`ctx`).
 - Async: traits with `#[async_trait]`; pass cloned `Arc` rather than &mut; avoid blocking in async (wrap with `spawn_blocking`).
 - Error handling: never silence errors; use context via `anyhow!(...)` or `.with_context(...)`; return early on invalid state.
