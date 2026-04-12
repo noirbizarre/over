@@ -23,6 +23,27 @@ It is inspired by tools like GNU Stow and Chezmoi but focuses on a Git-centric w
 
 ## Usage
 
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `over add` | Add files or directories to an overlay |
+| `over new` | Create a new overlay |
+| `over list` (`ls`) | List known overlays |
+| `over show` | Display details about an overlay |
+| `over apply` | Apply a given overlay |
+| `over lint` | Check overlays for configuration issues |
+| `over completion` | Generate shell completion scripts |
+| `over status` | Get the current repository/directory overlays status |
+
+A companion binary `git-over` integrates with git workflows:
+
+| Command | Description |
+|---------|-------------|
+| `git over mount` | Mount the current git repository to an overlay |
+| `git over add` | Add files from the current git repository to an overlay |
+| `git over status` | Show overlay status for the current git repository |
+
 ### Listing Overlays
 
 List all overlays in the repository:
