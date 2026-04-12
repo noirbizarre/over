@@ -238,7 +238,7 @@ Add distro/OS-specific overrides using keys inside `install` (e.g. `ubuntu`, `ar
 Each manager can define its own `pre` / `post` arrays executed immediately before/after that manager's install step.
 
 ### Windows
-Windows installation logic is currently a placeholder and will be implemented later.
+Windows is supported via `winget` as the system package manager. Language managers (`cargo`, `python`, `node`) work the same as on other platforms. Platform-specific overrides use the `windows` key inside `install`.
 
 ### Composition via Uses
 Packages from overlays referenced in `uses` are merged (set union) to avoid duplicates across overlays.
