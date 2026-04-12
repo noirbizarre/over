@@ -17,7 +17,7 @@
 
 ---
 
-Over is a dotfiles manager allowing you to define file overlays in Git repositories, with support for nested references and installation requirements.
+Over is a git-based file overlay manager that lets you define file overlays in Git repositories, with support for nested references and installation requirements. It is particularly well-suited for managing dotfiles.
 It is inspired by tools like GNU Stow and Chezmoi but focuses on a Git-centric workflow with flexible configuration and installation capabilities.
 
 
