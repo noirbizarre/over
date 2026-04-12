@@ -280,4 +280,3 @@ Windows is supported via `winget` as the system package manager. Language manage
 Packages from overlays referenced in `uses` are merged (set union) to avoid duplicates across overlays.
 
 ---
-This file documents installation configuration. Other functionality TBD.
