@@ -21,24 +21,25 @@ pub async fn execute(_cli: &CLI, args: &Params) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
-    use clap_complete::{Shell, generate};
+    use clap::Parser;
+    use clap_complete::Shell;
     use rstest::rstest;
 
     use crate::cli::CLI;
 
     #[rstest]
-    #[case::bash(Shell::Bash)]
-    #[case::zsh(Shell::Zsh)]
-    #[case::fish(Shell::Fish)]
-    #[case::powershell(Shell::PowerShell)]
-    #[case::elvish(Shell::Elvish)]
-    fn generate_completions(#[case] shell: Shell) {
-        let mut cmd = CLI::command();
-        let mut buf = Vec::new();
-        generate(shell, &mut cmd, "over", &mut buf);
-        let output = String::from_utf8(buf).unwrap();
-        assert!(!output.is_empty());
-        assert!(output.contains("over"));
+    #[case::bash("bash", Shell::Bash)]
+    #[case::zsh("zsh", Shell::Zsh)]
+    #[case::fish("fish", Shell::Fish)]
+    #[case::powershell("powershell", Shell::PowerShell)]
+    #[case::elvish("elvish", Shell::Elvish)]
+    fn parse_shell_argument(#[case] input: &str, #[case] expected: Shell) {
+        let args = CLI::parse_from(["over", "completion", input]);
+        match args.cmd {
+            Some(crate::cli::Commands::Completion(params)) => {
+                assert_eq!(params.shell, expected);
+            }
+            other => panic!("expected Completion variant, got {other:?}"),
+        }
     }
 }
