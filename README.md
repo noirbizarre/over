@@ -23,6 +23,37 @@ It is inspired by tools like GNU Stow and Chezmoi but focuses on a Git-centric w
 
 ## Usage
 
+### Listing Overlays
+
+List all overlays in the repository:
+
+```sh
+over list
+```
+
+Display overlays as a tree, grouped by their directory hierarchy:
+
+```sh
+over list --tree
+```
+
+Example output:
+
+```
+.over
+├── git
+├── shell
+│   ├── bash
+│   └── zsh
+└── vim
+```
+
+The `list` command also has a short alias `ls`, and the tree flag can be shortened to `-t`:
+
+```sh
+over ls -t
+```
+
 ### Shell Completions
 
 Generate shell completion scripts with:
