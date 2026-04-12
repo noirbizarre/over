@@ -36,11 +36,11 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .unwrap_or_else(|| repo_root.clone());
 
     if cli.debug {
-        println!("Repository: {}", repo_root.display());
+        tracing::debug!(repo = %repo_root.display(), "repository");
         if git_repo.is_worktree() {
-            println!("Worktree: {}", workdir.display());
+            tracing::debug!(worktree = %workdir.display(), "worktree");
         } else if git_repo.is_bare() {
-            println!("Worktree workspace (bare repo)");
+            tracing::debug!("worktree workspace (bare repo)");
         }
     }
 
@@ -51,7 +51,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let overlay = resolve_overlay(&over_repo, &git_repo, args.overlay.as_deref())?;
 
     if cli.debug {
-        println!("{:#?}", overlay);
+        tracing::debug!(?overlay, "resolved overlay");
     }
 
     // Validate that the repo root is under the overlay target.

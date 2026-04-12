@@ -272,7 +272,7 @@ impl Overlay {
                         .get(name)
                         .with_context(|| format!("used overlay '{}' not found", name))?;
                     if ctx.debug {
-                        println!("{:#?}", overlay);
+                        tracing::debug!(?overlay, "used overlay");
                     }
                     overlay
                         .apply_inner(&ctx.with_overlay(overlay.clone()), visited, stack)

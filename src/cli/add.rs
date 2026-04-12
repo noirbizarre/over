@@ -34,14 +34,13 @@ pub struct Params {
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if cli.debug {
-        println!("{:#?}", cli);
-        println!("{:#?}", args);
+        tracing::debug!(?cli, ?args, "add command");
     }
 
     let home = cli.resolve_home()?;
     let repo = Repository::new(home.clone());
     if cli.debug {
-        println!("{:#?}", repo);
+        tracing::debug!(?repo, "repository");
     }
 
     let overlay = match &args.overlay {
@@ -62,7 +61,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     };
 
     if cli.debug {
-        println!("{:#?}", overlay);
+        tracing::debug!(?overlay, "resolved overlay");
     }
 
     let ctx = Context::builder()

@@ -16,8 +16,7 @@ pub struct Params {
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if cli.debug {
-        println!("{:#?}", cli);
-        println!("{:#?}", args);
+        tracing::debug!(?cli, ?args, "list command");
     }
 
     let home = cli.resolve_home()?;
