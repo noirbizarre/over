@@ -230,4 +230,16 @@ mod tests {
 ";
         assert_eq!(output, expected);
     }
+
+    #[test]
+    fn root_label_uses_directory_name() {
+        let label = root_label(Path::new("/home/user/.over"));
+        assert_eq!(label, ".over");
+    }
+
+    #[test]
+    fn root_label_falls_back_to_full_path() {
+        let label = root_label(Path::new("/"));
+        assert_eq!(label, "/");
+    }
 }
