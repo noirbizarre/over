@@ -21,6 +21,35 @@ Over is a dotfiles manager allowing you to define file overlays in Git repositor
 It is inspired by tools like GNU Stow and Chezmoi but focuses on a Git-centric workflow with flexible configuration and installation capabilities.
 
 
+## Usage
+
+### Shell Completions
+
+Generate shell completion scripts with:
+
+```sh
+over completion <shell>
+```
+
+Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`.
+
+#### Examples
+
+```sh
+# Bash (add to ~/.bashrc)
+over completion bash >> ~/.bashrc
+
+# Zsh (add to ~/.zshrc)
+over completion zsh >> ~/.zshrc
+
+# Fish
+over completion fish > ~/.config/fish/completions/over.fish
+
+# PowerShell (add to profile)
+over completion powershell >> $PROFILE
+```
+
+
 ## Root Configuration
 
 `over` supports a root configuration file at `~/.over/over.toml` (or `over.yaml`/`over.yml`). This file controls global preferences that apply across all overlays.

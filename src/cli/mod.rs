@@ -8,6 +8,7 @@ use crate::ui::style::clap_styles;
 mod add;
 mod apply;
 pub(crate) mod common;
+mod completion;
 pub mod git_over;
 mod lint;
 mod list;
@@ -66,6 +67,9 @@ pub enum Commands {
     #[clap(name = "lint", about = "Check overlays for configuration issues")]
     Lint(lint::Params),
 
+    #[clap(name = "completion", about = "Generate shell completion scripts")]
+    Completion(completion::Params),
+
     #[clap(
         name = "status",
         about = "Get the current repository/directory overlays status"
@@ -102,6 +106,9 @@ pub async fn main() -> Result<()> {
         }
         Some(Commands::Lint(ref opt)) => {
             lint::execute(&args, opt).await?;
+        }
+        Some(Commands::Completion(ref opt)) => {
+            completion::execute(&args, opt).await?;
         }
         Some(Commands::Show(ref opt)) => {
             show::execute(&args, opt).await?;
@@ -221,6 +228,12 @@ mod tests {
     fn cli_status_subcommand() {
         let args = CLI::parse_from(["over", "status"]);
         assert!(matches!(args.cmd, Some(Commands::Status)));
+    }
+
+    #[test]
+    fn cli_completion_subcommand() {
+        let args = CLI::parse_from(["over", "completion", "bash"]);
+        assert!(matches!(args.cmd, Some(Commands::Completion(_))));
     }
 
     #[test]

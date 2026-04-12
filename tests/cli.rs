@@ -974,3 +974,54 @@ fn add_file_outside_root_fails() -> TestResult {
         .stderr(contains("not included in"));
     Ok(())
 }
+
+#[test]
+fn completion_bash() -> TestResult {
+    let mut cmd = Command::cargo_bin("over")?;
+    cmd.args(["completion", "bash"]);
+    cmd.assert()
+        .success()
+        .stdout(contains("_over"))
+        .stdout(contains("COMPREPLY"));
+    Ok(())
+}
+
+#[test]
+fn completion_zsh() -> TestResult {
+    let mut cmd = Command::cargo_bin("over")?;
+    cmd.args(["completion", "zsh"]);
+    cmd.assert().success().stdout(contains("#compdef over"));
+    Ok(())
+}
+
+#[test]
+fn completion_fish() -> TestResult {
+    let mut cmd = Command::cargo_bin("over")?;
+    cmd.args(["completion", "fish"]);
+    cmd.assert().success().stdout(contains("complete -c over"));
+    Ok(())
+}
+
+#[test]
+fn completion_powershell() -> TestResult {
+    let mut cmd = Command::cargo_bin("over")?;
+    cmd.args(["completion", "powershell"]);
+    cmd.assert().success().stdout(contains("over"));
+    Ok(())
+}
+
+#[test]
+fn completion_elvish() -> TestResult {
+    let mut cmd = Command::cargo_bin("over")?;
+    cmd.args(["completion", "elvish"]);
+    cmd.assert().success().stdout(contains("over"));
+    Ok(())
+}
+
+#[test]
+fn completion_invalid_shell() -> TestResult {
+    let mut cmd = Command::cargo_bin("over")?;
+    cmd.args(["completion", "invalid"]);
+    cmd.assert().failure();
+    Ok(())
+}
