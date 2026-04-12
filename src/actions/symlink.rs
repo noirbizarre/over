@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as AnyhowContext, Result};
 use async_trait::async_trait;
-use minijinja::Environment;
+
 use serde::{Deserialize, Serialize};
 use symlink::{remove_symlink_dir, remove_symlink_file, symlink_dir, symlink_file};
 
@@ -229,13 +229,12 @@ pub fn discover_symlinks(overlay_root: &Path) -> Result<Vec<(String, SymlinkConf
 }
 
 pub fn render_symlink_target(template: &str, overlays: &HashMap<String, String>) -> Result<String> {
-    let env = Environment::new();
     let env_vars: HashMap<String, String> = std::env::vars().collect();
     let mut state = HashMap::new();
     state.insert("env", env_vars);
     state.insert("overlays", overlays.clone());
 
-    env.render_str(template, &state)
+    crate::exec::templates::render_string(template, &state)
         .with_context(|| format!("failed to render symlink target template '{}'", template))
 }
 

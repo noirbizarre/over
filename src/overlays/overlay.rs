@@ -8,8 +8,6 @@ use config::{Config, File, FileFormat, FileSourceFile};
 use globset::GlobBuilder;
 use serde::{Deserialize, Serialize};
 
-use minijinja::Environment;
-
 use crate::actions::git::config::{GitRepoConfig, deserialize_git_field};
 use crate::actions::install::InstallConfig;
 use crate::actions::{self, EnsureDir, EnsureSymlink};
@@ -151,13 +149,14 @@ impl Overlay {
     }
 
     pub fn resolve_target(&self, ctx: &exec::Context) -> Result<PathBuf> {
-        let env = Environment::new();
-        let path = PathBuf::from(env.render_str(self.target.as_str(), ctx).with_context(|| {
-            format!(
-                "failed to render target template '{}' for overlay '{}'",
-                self.target, self.name
-            )
-        })?);
+        let path = PathBuf::from(
+            exec::templates::render_string(self.target.as_str(), ctx).with_context(|| {
+                format!(
+                    "failed to render target template '{}' for overlay '{}'",
+                    self.target, self.name
+                )
+            })?,
+        );
 
         let path_str = path.to_string_lossy();
         Ok(match path_str.as_ref() {

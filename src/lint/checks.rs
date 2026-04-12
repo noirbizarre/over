@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
 use globset::GlobBuilder;
-use minijinja::Environment;
 
 use crate::actions::symlink::{LinkType, discover_symlinks};
 use crate::overlays::Overlay;
@@ -252,9 +251,8 @@ fn check_symlinks(overlay: &Overlay) -> Vec<Diagnostic> {
                 format!("symlink `{name}`: `target` is empty"),
             ));
         } else {
-            let env = Environment::new();
             let test_state = std::collections::HashMap::<String, String>::new();
-            if let Err(e) = env.render_str(&config.target, &test_state) {
+            if let Err(e) = crate::exec::templates::render_string(&config.target, &test_state) {
                 diagnostics.push(Diagnostic::error(
                     &overlay.name,
                     format!("symlink `{name}`: invalid template in `target`: {e}"),
