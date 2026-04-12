@@ -1,4 +1,8 @@
+use std::collections::BTreeMap;
+use std::path::Path;
+
 use clap::Args;
+use termtree::Tree;
 
 use crate::cli::CLI;
 use crate::overlays::Repository;
@@ -17,13 +21,67 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
 
     let home = cli.resolve_home()?;
-    let repo = Repository::new(home);
+    let repo = Repository::new(home.clone());
+    let overlays = repo.overlays()?;
 
-    for overlay in repo.overlays()? {
-        println!("{}", overlay.name);
+    if args.tree {
+        let root_label = root_label(&home);
+        let tree = build_tree(&root_label, overlays.iter().map(|o| o.name.as_str()));
+        print!("{tree}");
+    } else {
+        for overlay in &overlays {
+            println!("{}", overlay.name);
+        }
     }
 
     Ok(())
+}
+
+/// Derive the root node label from the home path (its directory name).
+fn root_label(home: &Path) -> String {
+    home.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| home.display().to_string())
+}
+
+/// A node in the intermediate tree structure used to group overlay name segments.
+#[derive(Default)]
+struct TreeNode {
+    children: BTreeMap<String, TreeNode>,
+}
+
+impl TreeNode {
+    /// Insert path segments into the tree, creating intermediate nodes as needed.
+    fn insert(&mut self, segments: &[&str]) {
+        if segments.is_empty() {
+            return;
+        }
+        let child = self.children.entry(segments[0].to_owned()).or_default();
+        if segments.len() > 1 {
+            child.insert(&segments[1..]);
+        }
+    }
+
+    /// Convert this node into a `termtree::Tree` with the given label.
+    fn into_tree(self, label: String) -> Tree<String> {
+        let mut tree = Tree::new(label);
+        for (name, child) in self.children {
+            tree.push(child.into_tree(name));
+        }
+        tree
+    }
+}
+
+/// Build a `termtree::Tree` from overlay names split on `/`.
+///
+/// Intermediate segments that are not themselves overlays become branch nodes.
+/// Overlay names are inserted in sorted order because `BTreeMap` keeps keys sorted.
+fn build_tree<'a>(root_label: &str, names: impl Iterator<Item = &'a str>) -> Tree<String> {
+    let mut root = TreeNode::default();
+    for name in names {
+        root.insert(&name.split('/').collect::<Vec<_>>());
+    }
+    root.into_tree(root_label.to_owned())
 }
 
 #[cfg(test)]
@@ -31,6 +89,7 @@ mod tests {
     use super::*;
     use assert_fs::TempDir;
     use clap::Parser;
+    use pretty_assertions::assert_eq;
     use std::fs;
     use std::path::PathBuf;
 
@@ -104,29 +163,71 @@ mod tests {
         let result = execute(&cli, &params).await;
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn build_tree_flat_overlays() {
+        let tree = build_tree(".over", ["git", "shell", "vim"].into_iter());
+        let output = tree.to_string();
+        let expected = "\
+.over
+├── git
+├── shell
+└── vim
+";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn build_tree_nested_overlays() {
+        let tree = build_tree(
+            ".over",
+            ["git", "shell/bash", "shell/zsh", "vim"].into_iter(),
+        );
+        let output = tree.to_string();
+        let expected = "\
+.over
+├── git
+├── shell
+│   ├── bash
+│   └── zsh
+└── vim
+";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn build_tree_deeply_nested() {
+        let tree = build_tree(
+            ".over",
+            ["apps/dev/editor", "apps/dev/terminal", "apps/browser"].into_iter(),
+        );
+        let output = tree.to_string();
+        let expected = "\
+.over
+└── apps
+    ├── browser
+    └── dev
+        ├── editor
+        └── terminal
+";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn build_tree_empty() {
+        let tree = build_tree(".over", std::iter::empty());
+        let output = tree.to_string();
+        assert_eq!(output, ".over\n");
+    }
+
+    #[test]
+    fn build_tree_single_overlay() {
+        let tree = build_tree(".over", ["solo"].into_iter());
+        let output = tree.to_string();
+        let expected = "\
+.over
+└── solo
+";
+        assert_eq!(output, expected);
+    }
 }
-
-// use termtree::Tree;
-
-// use std::path::Path;
-// use std::{env, fs, io};
-
-// fn label<P: AsRef<Path>>(p: P) -> String {
-//     p.as_ref().file_name().unwrap().to_str().unwrap().to_owned()
-// }
-
-// fn tree<P: AsRef<Path>>(p: P) -> io::Result<Tree<String>> {
-//     let result = fs::read_dir(&p)?.filter_map(|e| e.ok()).fold(
-//         Tree::root(label(p.as_ref().canonicalize()?)),
-//         |mut root, entry| {
-//             let dir = entry.metadata().unwrap();
-//             if dir.is_dir() {
-//                 root.push(tree(entry.path()).unwrap());
-//             } else {
-//                 root.push(Tree::root(label(entry.path())));
-//             }
-//             root
-//         },
-//     );
-//     Ok(result)
-// }
