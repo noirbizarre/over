@@ -266,17 +266,21 @@ impl Overlay {
                 style::cyan(&target.to_string_lossy()),
             );
             if let Some(uses) = &self.uses {
-                for name in uses {
-                    let overlay = ctx
-                        .repository
-                        .get(name)
-                        .with_context(|| format!("used overlay '{}' not found", name))?;
-                    if ctx.debug {
-                        tracing::debug!(?overlay, "used overlay");
+                if ctx.no_uses {
+                    tracing::debug!(overlay = %self.name, "skipping uses (--no-uses)");
+                } else {
+                    for name in uses {
+                        let overlay = ctx
+                            .repository
+                            .get(name)
+                            .with_context(|| format!("used overlay '{}' not found", name))?;
+                        if ctx.debug {
+                            tracing::debug!(?overlay, "used overlay");
+                        }
+                        overlay
+                            .apply_inner(&ctx.with_overlay(overlay.clone()), visited, stack)
+                            .await?;
                     }
-                    overlay
-                        .apply_inner(&ctx.with_overlay(overlay.clone()), visited, stack)
-                        .await?;
                 }
             }
 

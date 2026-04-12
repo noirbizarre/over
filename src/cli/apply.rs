@@ -71,6 +71,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .verbose(cli.verbose)
         .force(args.force)
         .no_prompt(args.no_prompt)
+        .no_uses(args.no_uses)
         .root(
             args.root
                 .clone()
