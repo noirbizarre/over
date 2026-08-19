@@ -17,13 +17,16 @@ jobs:
         os:
           - name: Linux
             runner: ubuntu-latest
+            flag: linux
           - name: Windows
             runner: windows-latest
+            flag: windows
           - name: macOS
             runner: macos-latest
+            flag: macos
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
@@ -37,12 +40,15 @@ jobs:
           cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload coverage data to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: lcov.info
+          # Flagging each leg keeps the three reports distinguishable, so a
+          # partial upload is visible rather than looking like a coverage drop.
+          flags: ${{ matrix.os.flag }}
 
       - name: Upload test results to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         if: ${{ !cancelled() }}
         with:
           directory: target/nextest/ci
