@@ -42,7 +42,7 @@ anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 futures = "0.3"
-serde_yml = "0.0.12"
+serde_yml = "0.0.13"
 which = "8.0"
 libz-sys = { version = "1.1", optional = true }
 
