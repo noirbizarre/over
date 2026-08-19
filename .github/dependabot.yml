@@ -12,3 +12,12 @@ updates:
         - dependency-name: "semver"
         - dependency-name: "crates-io"
     rebase-strategy: "disabled"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    rebase-strategy: disabled
+    groups:
+      actions:
+        patterns: ["*"]
