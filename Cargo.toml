@@ -21,7 +21,7 @@ dirs = "6.0"
 glob = "0.3"
 globset = "0.4"
 symlink = "0.1"
-minijinja = "2.19"
+minijinja = "2.20"
 walkdir = "2"
 termtree = "1.0"
 tokio = { version = "1.52", features = [
