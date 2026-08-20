@@ -23,6 +23,9 @@ pub struct Context {
     /// Disable interactive prompts (fail on conflict)
     pub no_prompt: bool,
 
+    /// Do not process uses (skip overlay composition)
+    pub no_uses: bool,
+
     /// Target root (~)
     pub root: PathBuf,
 
@@ -72,6 +75,7 @@ pub struct ContextBuilder {
     verbose: bool,
     force: bool,
     no_prompt: bool,
+    no_uses: bool,
     root: PathBuf,
     repository: Repository,
     overlay: Option<Overlay>,
@@ -102,6 +106,11 @@ impl ContextBuilder {
 
     pub fn no_prompt(mut self, v: bool) -> Self {
         self.no_prompt = v;
+        self
+    }
+
+    pub fn no_uses(mut self, v: bool) -> Self {
+        self.no_uses = v;
         self
     }
 
@@ -137,6 +146,7 @@ impl ContextBuilder {
             verbose: self.verbose,
             force: self.force,
             no_prompt: self.no_prompt,
+            no_uses: self.no_uses,
             root: self.root,
             repository: self.repository,
             overlay: self.overlay,
@@ -159,6 +169,7 @@ impl Context {
             verbose: self.verbose,
             force: self.force,
             no_prompt: self.no_prompt,
+            no_uses: self.no_uses,
             root: self.root.clone(),
             repository: self.repository.clone(),
             overlay: Some(overlay),
@@ -174,6 +185,7 @@ impl Context {
             verbose: self.verbose,
             force: self.force,
             no_prompt: self.no_prompt,
+            no_uses: self.no_uses,
             root: self.root.clone(),
             repository: self.repository.clone(),
             overlay: self.overlay.clone(),
@@ -189,6 +201,7 @@ impl Context {
             verbose: self.verbose,
             force: self.force,
             no_prompt: self.no_prompt,
+            no_uses: self.no_uses,
             root: self.root.clone(),
             repository: self.repository.clone(),
             overlay: self.overlay.clone(),
@@ -221,6 +234,7 @@ impl Context {
             verbose: self.verbose,
             force: self.force,
             no_prompt: self.no_prompt,
+            no_uses: self.no_uses,
             root: self.root.clone(),
             repository: self.repository.clone(),
             overlay: self.overlay.clone(),

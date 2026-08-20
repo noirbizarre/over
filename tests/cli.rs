@@ -49,12 +49,40 @@ fn list_overlays() -> TestResult {
 }
 
 #[test]
+fn list_overlays_debug_output() -> TestResult {
+    let repo = setup_overlay_repo();
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .arg("--debug")
+        .arg("list")
+        .assert()
+        .success()
+        .stderr(contains("list command"));
+    Ok(())
+}
+
+#[test]
 fn show_overlay() -> TestResult {
     let repo = setup_overlay_repo();
     let mut cmd = Command::cargo_bin("over")?;
     cmd.arg("--home").arg(repo.path());
     cmd.args(["show", "dev"]);
     cmd.assert().success().stdout(contains("dev"));
+    Ok(())
+}
+
+#[test]
+fn show_overlay_debug_output() -> TestResult {
+    let repo = setup_overlay_repo();
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .arg("--debug")
+        .args(["show", "dev"])
+        .assert()
+        .success()
+        .stderr(contains("show command"));
     Ok(())
 }
 
@@ -98,6 +126,32 @@ fn add_file_to_overlay_dry_run() -> TestResult {
         "--dry-run",
     ]);
     cmd.assert().success();
+    Ok(())
+}
+
+#[test]
+fn add_file_debug_output() -> TestResult {
+    let repo = setup_overlay_repo();
+    let target_file = repo.path().join("sample.txt");
+    fs::write(&target_file, b"hello")?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .arg("--debug")
+        .args([
+            "add",
+            target_file.to_str().unwrap(),
+            "-o",
+            "dev",
+            "--root",
+            repo.path().to_str().unwrap(),
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stderr(contains("add command"))
+        .stderr(contains("repository"))
+        .stderr(contains("resolved overlay"));
     Ok(())
 }
 
@@ -601,6 +655,68 @@ fn apply_overlay_no_uses_dry_run() -> TestResult {
 }
 
 #[test]
+fn apply_overlay_no_uses_skips_composed_overlay() -> TestResult {
+    let tmp = TempDir::new()?;
+    let child = tmp.path().join("child");
+    fs::create_dir_all(&child)?;
+    fs::write(child.join("over.toml"), b"target = \"~\"")?;
+    let parent = tmp.path().join("parent");
+    fs::create_dir_all(&parent)?;
+    fs::write(
+        parent.join("over.toml"),
+        b"target = \"~\"\nuses = [\"child\"]",
+    )?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["apply", "parent", "--dry-run", "--no-uses"])
+        .assert()
+        .success();
+    Ok(())
+}
+
+#[test]
+fn apply_overlay_debug_output() -> TestResult {
+    let repo = setup_overlay_repo();
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .arg("--debug")
+        .args(["apply", "dev", "--dry-run"])
+        .assert()
+        .success()
+        .stderr(contains("CLI args"))
+        .stderr(contains("repository"))
+        .stderr(contains("resolved overlay"));
+    Ok(())
+}
+
+#[test]
+fn apply_overlay_with_uses_debug_output() -> TestResult {
+    let tmp = TempDir::new()?;
+    let child = tmp.path().join("child");
+    fs::create_dir_all(&child)?;
+    fs::write(child.join("over.toml"), b"target = \"~\"")?;
+    let parent = tmp.path().join("parent");
+    fs::create_dir_all(&parent)?;
+    fs::write(
+        parent.join("over.toml"),
+        b"target = \"~\"\nuses = [\"child\"]",
+    )?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .arg("--debug")
+        .args(["apply", "parent", "--dry-run"])
+        .assert()
+        .success()
+        .stderr(contains("used overlay"));
+    Ok(())
+}
+
+#[test]
 fn apply_overlay_no_prompt_dry_run() -> TestResult {
     let repo = setup_overlay_repo();
     let mut cmd = Command::cargo_bin("over")?;
@@ -784,6 +900,160 @@ fn git_over_add_dry_run() -> TestResult {
         .current_dir(&repo_dir)
         .assert()
         .success();
+    Ok(())
+}
+
+#[test]
+fn git_over_add_debug_output() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let ov = canonical_tmp.join("gitov_debug");
+    fs::create_dir_all(&ov)?;
+    let target_str = canonical_tmp.to_string_lossy().replace('\\', "\\\\");
+    fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
+    let repo_dir = canonical_tmp.join("repo");
+    fs::create_dir_all(&repo_dir)?;
+    let test_file = repo_dir.join("test.txt");
+    fs::write(&test_file, b"content")?;
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&repo_dir)
+        .output()?;
+
+    Command::cargo_bin("git-over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .arg("--debug")
+        .arg("add")
+        .arg(test_file.to_str().unwrap())
+        .arg("-o")
+        .arg("gitov_debug")
+        .arg("--dry-run")
+        .current_dir(&repo_dir)
+        .assert()
+        .success()
+        .stderr(contains("repository"))
+        .stderr(contains("resolved overlay"));
+    Ok(())
+}
+
+#[test]
+fn git_over_add_debug_output_bare_repo() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let repo_dir = canonical_tmp.join("repo");
+    fs::create_dir_all(&repo_dir)?;
+    let target_str = repo_dir.to_string_lossy().replace('\\', "\\\\");
+    let ov = canonical_tmp.join("gitov_bare");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
+    let test_file = repo_dir.join("test.txt");
+    fs::write(&test_file, b"content")?;
+    // Bare repo living at <repo_dir>/.git, mirroring `over`'s worktree-workspace convention.
+    git2::Repository::init_bare(repo_dir.join(".git"))?;
+
+    Command::cargo_bin("git-over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .arg("--debug")
+        .arg("add")
+        .arg(test_file.to_str().unwrap())
+        .arg("-o")
+        .arg("gitov_bare")
+        .arg("--dry-run")
+        .current_dir(&repo_dir)
+        .assert()
+        .success()
+        .stderr(contains("worktree workspace (bare repo)"));
+    Ok(())
+}
+
+#[test]
+fn git_over_add_debug_output_linked_worktree() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let main_repo = canonical_tmp.join("main");
+    fs::create_dir_all(&main_repo)?;
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&main_repo)
+        .output()?;
+    std::process::Command::new("git")
+        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(&main_repo)
+        .output()?;
+
+    let worktree_dir = canonical_tmp.join("worktree");
+    std::process::Command::new("git")
+        .args(["worktree", "add", "-b", "feature"])
+        .arg(&worktree_dir)
+        .current_dir(&main_repo)
+        .output()?;
+
+    // The overlay target must match the *main* repo root, not the worktree
+    // path: `main_repo_root()` resolves worktrees back to the main repo
+    // since overlay configs are keyed by the main repo path (see its doc
+    // comment in `src/cli/git_over/mod.rs`).
+    let target_str = main_repo.to_string_lossy().replace('\\', "\\\\");
+    let ov = canonical_tmp.join("gitov_worktree");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
+    // File must live under the resolved overlay target (the main repo),
+    // even though the command runs from the linked worktree's directory.
+    let test_file = main_repo.join("test.txt");
+    fs::write(&test_file, b"content")?;
+
+    Command::cargo_bin("git-over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .arg("--debug")
+        .arg("add")
+        .arg(test_file.to_str().unwrap())
+        .arg("-o")
+        .arg("gitov_worktree")
+        .arg("--dry-run")
+        .current_dir(&worktree_dir)
+        .assert()
+        .success()
+        .stderr(contains("worktree"));
+    Ok(())
+}
+
+#[test]
+fn git_over_mount_debug_output() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let ov = canonical_tmp.join("gitov_mount");
+    fs::create_dir_all(&ov)?;
+    let target_str = canonical_tmp.to_string_lossy().replace('\\', "\\\\");
+    fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
+    let repo_dir = canonical_tmp.join("repo");
+    fs::create_dir_all(&repo_dir)?;
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&repo_dir)
+        .output()?;
+
+    // Debug output is printed before any interactive prompt, so it is
+    // exercised regardless of whether the platform's terminal detection
+    // causes the (unrelated) property-export prompt to succeed or fail
+    // when run with non-interactive stdin in CI.
+    Command::cargo_bin("git-over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .arg("--debug")
+        .arg("mount")
+        .arg("-o")
+        .arg("gitov_mount")
+        .current_dir(&repo_dir)
+        .env("HOME", tmp.path())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .assert()
+        .stderr(contains("repository"))
+        .stderr(contains("resolved overlay"));
     Ok(())
 }
 

@@ -37,13 +37,13 @@ pub struct Params {
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if cli.debug {
-        println!("{:#?}", cli);
+        tracing::debug!(?cli, "CLI args");
     }
 
     let home = cli.resolve_home()?;
     let repo = Repository::new(home.clone());
     if cli.debug {
-        println!("{:#?}", repo);
+        tracing::debug!(?repo, "repository");
     }
     let overlay = match &args.name {
         Some(name) => repo.get(name)?,
@@ -62,7 +62,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         }
     };
     if cli.debug {
-        println!("{:#?}", overlay);
+        tracing::debug!(?overlay, "resolved overlay");
     }
 
     let ctx = Context::builder()
@@ -71,6 +71,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .verbose(cli.verbose)
         .force(args.force)
         .no_prompt(args.no_prompt)
+        .no_uses(args.no_uses)
         .root(
             args.root
                 .clone()

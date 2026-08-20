@@ -17,11 +17,32 @@
 
 ---
 
-Over is a dotfiles manager allowing you to define file overlays in Git repositories, with support for nested references and installation requirements.
+Over is a git-based file overlay manager that lets you define file overlays in Git repositories, with support for nested references and installation requirements. It is particularly well-suited for managing dotfiles.
 It is inspired by tools like GNU Stow and Chezmoi but focuses on a Git-centric workflow with flexible configuration and installation capabilities.
 
 
 ## Usage
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `over add` | Add files or directories to an overlay |
+| `over new` | Create a new overlay |
+| `over list` (`ls`) | List known overlays |
+| `over show` | Display details about an overlay |
+| `over apply` | Apply a given overlay |
+| `over lint` | Check overlays for configuration issues |
+| `over completion` | Generate shell completion scripts |
+| `over status` | Get the current repository/directory overlays status |
+
+A companion binary `git-over` integrates with git workflows:
+
+| Command | Description |
+|---------|-------------|
+| `git over mount` | Mount the current git repository to an overlay |
+| `git over add` | Add files from the current git repository to an overlay |
+| `git over status` | Show overlay status for the current git repository |
 
 ### Listing Overlays
 
@@ -109,7 +130,7 @@ Format resolution priority (highest to lowest):
 Define installation requirements per overlay under an `install` key in the overlay config (TOML/YAML). Supports system package managers and language-specific installers with optional pre/post script hooks.
 
 Supported managers:
-- System: `archlinux`, `apt`, `brew`
+- System: `archlinux`, `apt`, `brew`, `winget`
 - Language: `cargo`, `python` (uv, pipx, pip), `node` (npm)
 
 ### Forms
@@ -131,6 +152,8 @@ install:
     - requests
   node:
     - typescript
+  winget:
+    - Git.Git
 ```
 
 Flat (TOML):
@@ -142,6 +165,7 @@ brew = ["jq"]
 cargo = ["ripgrep"]
 python = ["requests"]
 node = ["typescript"]
+winget = ["Git.Git"]
 ```
 
 Full (YAML):
@@ -176,6 +200,10 @@ install:
     packages:
       - name: typescript
         options: "--force"
+  winget:
+    packages:
+      - name: Git.Git
+      - id: Microsoft.VisualStudioCode
   post:
     - echo "done"
 ```
@@ -202,6 +230,10 @@ python.packages = [
 node.packages = [
   { name = "typescript", options = "--force" }
 ]
+winget.packages = [
+  { name = "Git.Git" },
+  { id = "Microsoft.VisualStudioCode" }
+]
 post = ['echo "done"']
 ```
 
@@ -217,13 +249,17 @@ Fields: `name`, `tool` (one of `uv`, `pipx`, `pip` or omit for auto), `extras` (
 ### Node Packages
 Installed globally via `npm install -g`. Field: `name`, optional `options` appended to the command before the package name.
 
+### Winget Packages
+Fields: `name` (display name), `id` (winget package identifier), optional `options` (extra flags). Provide either `name` or `id` to identify the package.
+
 ### Precedence & Execution Order
 Order:
-1. Global/Platform `pre` scripts
-2. System managers (Linux precedence determined by distro; macOS: brew)
-3. Language managers (`cargo`, `python`, `node`)
-4. Platform `post` scripts
-5. Global `post` scripts
+1. Global `pre` scripts
+2. Platform `pre` scripts
+3. System managers (Linux precedence determined by distro; macOS: brew; Windows: winget)
+4. Language managers (`cargo`, `python`, `node`)
+5. Platform `post` scripts
+6. Global `post` scripts
 
 Linux system manager precedence:
 - Arch: archlinux, brew
@@ -238,10 +274,9 @@ Add distro/OS-specific overrides using keys inside `install` (e.g. `ubuntu`, `ar
 Each manager can define its own `pre` / `post` arrays executed immediately before/after that manager's install step.
 
 ### Windows
-Windows installation logic is currently a placeholder and will be implemented later.
+Windows is supported via `winget` as the system package manager. Language managers (`cargo`, `python`, `node`) work the same as on other platforms. Platform-specific overrides use the `windows` key inside `install`.
 
 ### Composition via Uses
 Packages from overlays referenced in `uses` are merged (set union) to avoid duplicates across overlays.
 
 ---
-This file documents installation configuration. Other functionality TBD.
