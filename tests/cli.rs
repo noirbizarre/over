@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::{error::Error, fs};
 
 use assert_cmd::Command;
@@ -5,6 +6,21 @@ use predicates::str::contains;
 use tempfile::TempDir;
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+/// Canonicalize a path for comparison against paths reported by libgit2
+/// (e.g. via `git2::Repository::workdir()`), stripping Windows' `\\?\`
+/// verbatim-path prefix that `Path::canonicalize()` adds but that libgit2
+/// never produces. Symlinks are still resolved (needed on macOS, where
+/// `/tmp` is a symlink to `/private/tmp`), only the verbatim prefix differs.
+fn canonical_for_matching(path: &Path) -> std::io::Result<PathBuf> {
+    let canonical = path.canonicalize()?;
+    if cfg!(windows) {
+        let s = canonical.to_string_lossy();
+        Ok(PathBuf::from(s.strip_prefix(r"\\?\").unwrap_or(&s)))
+    } else {
+        Ok(canonical)
+    }
+}
 
 fn setup_overlay_repo() -> TempDir {
     let tmp = TempDir::new().unwrap();
@@ -251,9 +267,13 @@ fn show_overlay_with_target() -> TestResult {
     fs::create_dir_all(&ov)?;
     let target_path = tmp.path().join("target_user");
     let target_str = target_path.to_string_lossy().to_string();
+    // Escape backslashes so Windows paths don't get misparsed as TOML
+    // unicode escape sequences; `target_str` (unescaped) is still what the
+    // CLI should echo back verbatim once round-tripped through TOML.
+    let target_toml = target_str.replace('\\', "\\\\");
     let toml_content = format!(
         "target = \"{}\"\ndescription = \"My test overlay\"",
-        target_str
+        target_toml
     );
     fs::write(ov.join("over.toml"), toml_content.as_bytes())?;
 
@@ -737,10 +757,12 @@ apt = ["curl"]
 #[test]
 fn git_over_add_dry_run() -> TestResult {
     let tmp = TempDir::new()?;
-    let canonical_tmp = tmp.path().canonicalize()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("gitov");
     fs::create_dir_all(&ov)?;
-    let target_str = canonical_tmp.to_string_lossy();
+    // Escape backslashes so Windows paths don't get misparsed as TOML
+    // unicode escape sequences.
+    let target_str = canonical_tmp.to_string_lossy().replace('\\', "\\\\");
     fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
     let repo_dir = canonical_tmp.join("repo");
     fs::create_dir_all(&repo_dir)?;
@@ -792,10 +814,12 @@ fn git_over_status_no_overlay_configured() -> TestResult {
 #[test]
 fn git_over_status_with_overlay_configured() -> TestResult {
     let tmp = TempDir::new()?;
-    let canonical_tmp = tmp.path().canonicalize()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("statusov2");
     fs::create_dir_all(&ov)?;
-    let target_str = canonical_tmp.to_string_lossy();
+    // Escape backslashes so Windows paths don't get misparsed as TOML
+    // unicode escape sequences.
+    let target_str = canonical_tmp.to_string_lossy().replace('\\', "\\\\");
     fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
     let repo_dir = canonical_tmp.join("repo");
     fs::create_dir_all(&repo_dir)?;
@@ -822,10 +846,12 @@ fn git_over_status_with_overlay_configured() -> TestResult {
 #[test]
 fn git_over_add_multiple_files_dry_run() -> TestResult {
     let tmp = TempDir::new()?;
-    let canonical_tmp = tmp.path().canonicalize()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("gitov_multi");
     fs::create_dir_all(&ov)?;
-    let target_str = canonical_tmp.to_string_lossy();
+    // Escape backslashes so Windows paths don't get misparsed as TOML
+    // unicode escape sequences.
+    let target_str = canonical_tmp.to_string_lossy().replace('\\', "\\\\");
     fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
     let repo_dir = canonical_tmp.join("repo");
     fs::create_dir_all(&repo_dir)?;
@@ -856,10 +882,12 @@ fn git_over_add_multiple_files_dry_run() -> TestResult {
 #[test]
 fn git_over_add_directory_dry_run() -> TestResult {
     let tmp = TempDir::new()?;
-    let canonical_tmp = tmp.path().canonicalize()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("gitov_dir");
     fs::create_dir_all(&ov)?;
-    let target_str = canonical_tmp.to_string_lossy();
+    // Escape backslashes so Windows paths don't get misparsed as TOML
+    // unicode escape sequences.
+    let target_str = canonical_tmp.to_string_lossy().replace('\\', "\\\\");
     fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
     let repo_dir = canonical_tmp.join("repo");
     fs::create_dir_all(&repo_dir)?;
@@ -888,10 +916,12 @@ fn git_over_add_directory_dry_run() -> TestResult {
 #[test]
 fn git_over_add_nonexistent_file_fails() -> TestResult {
     let tmp = TempDir::new()?;
-    let canonical_tmp = tmp.path().canonicalize()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("gitov_err");
     fs::create_dir_all(&ov)?;
-    let target_str = canonical_tmp.to_string_lossy();
+    // Escape backslashes so Windows paths don't get misparsed as TOML
+    // unicode escape sequences.
+    let target_str = canonical_tmp.to_string_lossy().replace('\\', "\\\\");
     fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
     let repo_dir = canonical_tmp.join("repo");
     fs::create_dir_all(&repo_dir)?;

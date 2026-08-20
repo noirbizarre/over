@@ -104,10 +104,13 @@ impl fmt::Display for Overlay {
 
 impl Overlay {
     pub fn new(repository: &Repository, root: &Path) -> Result<Self> {
+        // Normalize to `/` so overlay names are portable identifiers that
+        // don't leak the platform's native path separator (`\` on Windows).
         let name = root
             .strip_prefix(repository.root.as_path())?
             .to_str()
-            .ok_or_else(|| anyhow::anyhow!("overlay path is not valid UTF-8"))?;
+            .ok_or_else(|| anyhow::anyhow!("overlay path is not valid UTF-8"))?
+            .replace('\\', "/");
         let mut sources: Vec<File<FileSourceFile, FileFormat>> = Vec::new();
         let mut dir = root;
         loop {
@@ -134,7 +137,7 @@ impl Overlay {
 
         let s = Config::builder()
             .add_source(sources)
-            .set_override("name", name)?
+            .set_override("name", name.clone())?
             .set_override("root", root.to_str())?
             .set_default("target", DEFAULT_TARGET)?
             .build()
@@ -404,9 +407,12 @@ mod tests {
         let overlay_dir = td.child("abs");
         overlay_dir.create_dir_all().unwrap();
         let target_str = abs.to_str().unwrap();
+        // Escape backslashes so Windows paths don't get misparsed as TOML
+        // unicode escape sequences.
+        let target_toml = target_str.replace('\\', "\\\\");
         overlay_dir
             .child("over.toml")
-            .write_str(&format!("target = \"{}\"", target_str))
+            .write_str(&format!("target = \"{}\"", target_toml))
             .unwrap();
         let overlay = repo.get("abs").unwrap();
         let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));

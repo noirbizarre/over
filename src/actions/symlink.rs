@@ -173,7 +173,9 @@ pub fn discover_symlinks(overlay_root: &Path) -> Result<Vec<(String, SymlinkConf
             continue;
         }
 
-        let rel_str = rel.to_string_lossy();
+        // Normalize to `/` so symlink names are portable identifiers that
+        // don't leak the platform's native path separator (`\` on Windows).
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
         let stem = rel_str
             .strip_suffix(".link.toml")
             .or_else(|| rel_str.strip_suffix(".link.yaml"))

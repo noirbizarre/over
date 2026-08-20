@@ -243,7 +243,15 @@ mod tests {
     fn test_main_repo_root_regular() {
         let (td, repo) = temp_git_repo();
         let root = main_repo_root(&repo).unwrap();
-        assert_eq!(root, td.path().canonicalize().unwrap());
+        // Canonicalize both sides: on Windows, libgit2's `workdir()` returns
+        // a forward-slash path without the `\\?\` verbatim prefix, while
+        // `Path::canonicalize()` adds that prefix, so comparing a raw
+        // `root` against a canonicalized expectation would never match even
+        // though both name the same directory.
+        assert_eq!(
+            root.canonicalize().unwrap(),
+            td.path().canonicalize().unwrap()
+        );
     }
 
     #[test]
@@ -252,7 +260,10 @@ mod tests {
         let bare_path = td.path().join(".git");
         let repo = git2::Repository::init_bare(&bare_path).unwrap();
         let root = main_repo_root(&repo).unwrap();
-        assert_eq!(root, td.path().canonicalize().unwrap());
+        assert_eq!(
+            root.canonicalize().unwrap(),
+            td.path().canonicalize().unwrap()
+        );
     }
 
     #[test]
@@ -320,7 +331,9 @@ mod tests {
         // Create a minimal overlay with target = td path
         let overlay_dir = td.child("overlay");
         overlay_dir.create_dir_all().unwrap();
-        let target_str = td.path().to_string_lossy().to_string();
+        // Escape backslashes so Windows paths don't get misparsed as TOML
+        // unicode escape sequences.
+        let target_str = td.path().to_string_lossy().replace('\\', "\\\\");
         overlay_dir
             .child("over.toml")
             .write_str(&format!("target = \"{}\"", target_str))
@@ -341,7 +354,11 @@ mod tests {
         let td = TempDir::new().unwrap();
         let overlay_dir = td.child("overlay");
         overlay_dir.create_dir_all().unwrap();
-        let target_str = td.path().join("subdir").to_string_lossy().to_string();
+        let target_str = td
+            .path()
+            .join("subdir")
+            .to_string_lossy()
+            .replace('\\', "\\\\");
         overlay_dir
             .child("over.toml")
             .write_str(&format!("target = \"{}\"", target_str))

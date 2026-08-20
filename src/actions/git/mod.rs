@@ -1829,7 +1829,11 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<CloneMessage>(32);
 
-        let url = format!("file://{}", source_td.path().display());
+        // Pass the local path directly rather than synthesizing a `file://`
+        // URL: naively prepending `file://` to a Windows path (backslashes,
+        // drive letter, no leading slash) produces an invalid URI that
+        // libgit2 rejects. A plain local path is accepted on every platform.
+        let url = source_td.path().to_string_lossy().to_string();
         let dst = dest_path.clone();
         let result =
             tokio::task::spawn_blocking(move || clone(&url, &dst, None, false, false, &tx))
@@ -1855,7 +1859,7 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<CloneMessage>(32);
 
-        let url = format!("file://{}", source_td.path().display());
+        let url = source_td.path().to_string_lossy().to_string();
         let dst = dest_path.clone();
         let result = tokio::task::spawn_blocking(move || clone(&url, &dst, None, true, false, &tx))
             .await
@@ -1874,7 +1878,7 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<CloneMessage>(32);
 
-        let url = format!("file://{}", source_td.path().display());
+        let url = source_td.path().to_string_lossy().to_string();
         let dst = dest_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             clone(&url, &dst, Some("develop"), false, false, &tx)
