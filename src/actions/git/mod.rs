@@ -661,11 +661,9 @@ impl CloneState {
         }
         let network_pct = (100 * stats.received_objects) / stats.total_objects;
         let index_pct = (100 * stats.indexed_objects) / stats.total_objects;
-        let co_pct = if self.progress.total > 0 {
-            (100 * self.progress.current) / self.progress.total
-        } else {
-            0
-        };
+        let co_pct = (100 * self.progress.current)
+            .checked_div(self.progress.total)
+            .unwrap_or(0);
         bar.set_length(u64::try_from(stats.total_objects)?);
         bar.set_position(u64::try_from(stats.indexed_objects)?);
         let kbytes = stats.received_bytes / 1024;

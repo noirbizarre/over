@@ -22,12 +22,12 @@ pub async fn execute(cli: &CLI) -> Result<()> {
         for overlay in &overlays {
             let desc = overlay.description.as_deref().unwrap_or("");
             if desc.is_empty() {
-                println!("    {} -> {}", style::cyan(&overlay.name), &overlay.target);
+                println!("    {} -> {}", style::cyan(&overlay.name), overlay.target);
             } else {
                 println!(
                     "    {} -> {} ({})",
                     style::cyan(&overlay.name),
-                    &overlay.target,
+                    overlay.target,
                     desc,
                 );
             }
