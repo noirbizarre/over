@@ -24,7 +24,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     println!("{}", style::white_b(&overlay.name));
     println!("  root:   {}", short_path(&overlay.root.to_string_lossy()));
-    println!("  target: {}", &overlay.target);
+    println!("  target: {}", overlay.target);
     if let Some(desc) = &overlay.description {
         println!("  desc:   {}", desc);
     }
