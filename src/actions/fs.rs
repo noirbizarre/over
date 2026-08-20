@@ -1342,9 +1342,12 @@ mod tests {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_display3");
         overlay_dir.create_dir_all().unwrap();
+        // Escape backslashes so Windows paths (`C:\Users\...`) don't get
+        // misparsed as TOML unicode escape sequences (`\U`, `\A`, ...).
+        let target_str = td.path().to_string_lossy().replace('\\', "\\\\");
         overlay_dir
             .child("over.toml")
-            .write_str(&format!("target = \"{}\"", td.path().display()))
+            .write_str(&format!("target = \"{}\"", target_str))
             .unwrap();
         let overlay = repo.get("ov_display3").unwrap();
         let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
