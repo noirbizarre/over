@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as AnyhowContext, Result};
 use async_trait::async_trait;
 
+use noyalib::compat::serde_yaml as serde_yml;
 use serde::{Deserialize, Serialize};
 use symlink::{remove_symlink_dir, remove_symlink_file, symlink_dir, symlink_file};
 

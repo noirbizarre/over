@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use config::ConfigError;
 use globset::GlobBuilder;
+use noyalib::compat::serde_yaml as serde_yml;
 use walkdir::WalkDir;
 
 use crate::overlays::{BASENAME, EXTENSIONS, GLOB_PATTERN, Overlay, Repository};
@@ -322,10 +323,7 @@ fn prevalidate_descriptor(dir: &Path, overlay_name: &str) -> Vec<Diagnostic> {
                     return diagnostics;
                 };
                 match value {
-                    serde_yml::Value::Mapping(map) => map
-                        .keys()
-                        .filter_map(|k| k.as_str().map(|s| s.to_string()))
-                        .collect(),
+                    serde_yml::Value::Mapping(map) => map.keys().cloned().collect(),
                     _ => return diagnostics,
                 }
             }

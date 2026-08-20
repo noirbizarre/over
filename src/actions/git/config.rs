@@ -337,9 +337,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use noyalib::compat::serde_yaml as serde_yml;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
+
+    use super::*;
 
     // ── Simple form ──────────────────────────────────────────────────────
 
