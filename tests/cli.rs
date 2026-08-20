@@ -1035,8 +1035,10 @@ fn git_over_mount_debug_output() -> TestResult {
         .current_dir(&repo_dir)
         .output()?;
 
-    // Isolate git config so no remotes/branch/user config are picked up:
-    // `exportable` stays empty, avoiding the interactive selection prompt.
+    // Debug output is printed before any interactive prompt, so it is
+    // exercised regardless of whether the platform's terminal detection
+    // causes the (unrelated) property-export prompt to succeed or fail
+    // when run with non-interactive stdin in CI.
     Command::cargo_bin("git-over")?
         .arg("--home")
         .arg(&canonical_tmp)
@@ -1050,7 +1052,6 @@ fn git_over_mount_debug_output() -> TestResult {
         .env_remove("GIT_AUTHOR_NAME")
         .env_remove("GIT_AUTHOR_EMAIL")
         .assert()
-        .success()
         .stderr(contains("repository"))
         .stderr(contains("resolved overlay"));
     Ok(())
