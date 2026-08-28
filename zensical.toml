@@ -21,6 +21,22 @@ Copyright &copy; 2026 Axel H. — MIT licensed
 # meaningfully conflict with additions here.
 nav = [
   { "Home" = "index.md" },
+  { "Usage" = [
+    { "Overview" = "usage/index.md" },
+    { "over add" = "usage/add.md" },
+    { "over new" = "usage/new.md" },
+    { "over list" = "usage/list.md" },
+    { "over show" = "usage/show.md" },
+    { "over apply" = "usage/apply.md" },
+    { "over lint" = "usage/lint.md" },
+    { "over completion" = "usage/completion.md" },
+    { "over status" = "usage/status.md" },
+    { "git over mount" = "usage/git-over-mount.md" },
+    { "git over add" = "usage/git-over-add.md" },
+    { "git over status" = "usage/git-over-status.md" },
+  ] },
+  { "Configuration" = "configuration.md" },
+  { "Install Configuration" = "install-config.md" },
   { "About" = [
     { "Architecture Decisions" = "adr/README.md" },
   ] },
