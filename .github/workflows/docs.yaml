@@ -7,6 +7,14 @@ on:
       - docs/**
       - zensical.toml
       - .github/workflows/docs.yaml
+  # Same paths as the push trigger: this is a check that the docs still
+  # build, not a deploy, so it only needs to run when doc-affecting files
+  # change — not on every unrelated PR.
+  pull_request:
+    paths:
+      - docs/**
+      - zensical.toml
+      - .github/workflows/docs.yaml
   workflow_dispatch:
 
 permissions:
@@ -14,15 +22,16 @@ permissions:
   pages: write
   id-token: write
 
-# Only one deployment at a time; never cancel one midway.
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
 jobs:
   build:
     name: 🏗️ Build
     runs-on: ubuntu-latest
+    # Redundant pushes to the same PR/branch should cancel their predecessor's
+    # build — this is a fast check, not a deploy, so nothing needs the strict
+    # serialization the `pages` group below requires.
+    concurrency:
+      group: docs-build-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v7
 
@@ -44,7 +53,15 @@ jobs:
   deploy:
     name: 🚀 Deploy
     needs: build
+    # Never deploy from a pull_request event — including from forks, which
+    # get no `pages`/`id-token` write access from GitHub regardless of what's
+    # declared above. `workflow_dispatch` keeps deploying, as today.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # Only one deployment at a time; never cancel one midway.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
