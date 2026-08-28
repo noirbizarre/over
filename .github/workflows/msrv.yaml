@@ -1,0 +1,51 @@
+name: 🧓 MSRV
+
+# `rust-version` in Cargo.toml is a promise. Without a job that keeps it, it
+# drifts the first time anyone uses a newer language feature — and the breakage
+# surfaces in a user's build, not here.
+#
+# Its own workflow rather than a job in ci.yaml because it is optional: a
+# project that declares no MSRV simply does not render this file.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: msrv-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  msrv:
+    name: 🧓 Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the MSRV from Cargo.toml
+        id: msrv
+        run: |
+          version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+
+      # `check`, not `test`: dev-dependencies routinely require a newer
+      # toolchain than the crate itself, and the MSRV is a promise about
+      # consuming the library, not about developing it.
+      - name: Check
+        run: cargo check --all-targets

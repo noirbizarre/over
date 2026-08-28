@@ -1,0 +1,127 @@
+# git-cliff configuration.
+#
+# Two jobs, and the second is the one that matters: it renders CHANGELOG.md,
+# and `git cliff --bumped-version` is how .github/workflows/prepare-release.yaml
+# derives the next version from the unreleased commits. gh-ship never parses a
+# version or derives a tag — this file is the whole versioning policy.
+
+[remote.github]
+owner = "noirbizarre"
+repo = "over"
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+"""
+body = """
+{%- macro remote_url() -%}
+  https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}
+{%- endmacro -%}
+
+{% macro print_commit(commit) -%}
+    - {% if commit.scope %}**{{ commit.scope }}** {% endif %}\
+        {% if commit.breaking %} 🚨 **breaking** {% endif %}\
+        {{ commit.message | upper_first }} - \
+        ([{{ commit.id | truncate(length=7, end="") }}]({{ self::remote_url() }}/commit/{{ commit.id }}))\
+{% endmacro -%}
+
+{{ "\n" }}\
+{% if version %}\
+    {% if previous.version %}\
+        ## [{{ version }}]\
+          ({{ self::remote_url() }}/compare/{{ previous.version }}..{{ version }}) - {{ timestamp | date(format="%Y-%m-%d") }}
+    {% else %}\
+        ## {{ version }} - {{ timestamp | date(format="%Y-%m-%d") }}
+    {% endif %}\
+{% else %}\
+    ## [unreleased]
+{% endif %}\
+
+{% for group, commits in commits | group_by(attribute="group") %}
+    ### {{ group | striptags | trim | upper_first }}
+    {% for commit in commits
+    | filter(attribute="scope")
+    | sort(attribute="scope") %}
+        {{ self::print_commit(commit=commit) }}
+    {%- endfor %}
+    {% for commit in commits %}
+        {%- if not commit.scope -%}
+            {{ self::print_commit(commit=commit) }}
+        {% endif -%}
+    {% endfor -%}
+{% endfor -%}
+{%- if github -%}
+{% if github.contributors | filter(attribute="is_first_time", value=true) | length != 0 %}
+  ## ❤️ New Contributors
+{% endif %}\
+{% for contributor in github.contributors | filter(attribute="is_first_time", value=true) %}
+  * @{{ contributor.username }} made their first contribution
+    {%- if contributor.pr_number %} in \
+      [#{{ contributor.pr_number }}]({{ self::remote_url() }}/pull/{{ contributor.pr_number }}) \
+    {%- endif %}
+{%- endfor -%}
+{%- endif %}
+"""
+trim = true
+footer = ""
+postprocessors = [
+  { pattern = '\n+\z', replace = "\n" },
+  { pattern = "<REPO>", replace = "https://github.com/noirbizarre/over" },
+]
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+protect_breaking_commits = false
+filter_commits = false
+topo_order = false
+sort_commits = "newest"
+# No `v` prefix: the tag and the version are the same string. They still travel
+# as two fields in the release artifact, because the tag convention is a
+# project's own choice and gh-ship never derives one from the other.
+#
+# Anchored deliberately. A bare `[0-9]*` is a regex that also matches the empty
+# string, so it matches every tag in the repository, not just versions.
+tag_pattern = "^[0-9]+\\.[0-9]+\\.[0-9]+"
+
+commit_preprocessors = [
+  { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](<REPO>/issues/${2}))" },
+  { pattern = ".*", replace_command = "typos --write-changes -" },
+  # gh-ship embeds the release artifact in the Release PR body as an HTML
+  # comment. A commit subject containing a literal `-->` would close that
+  # comment early and spill JSON into the rendered description.
+  { pattern = '<!--', replace = "&lt;!--" },
+  { pattern = '-->', replace = "--&gt;" },
+]
+
+commit_parsers = [
+  { message = "^feat", group = "<!-- 0 -->💫 Features" },
+  { message = "^fix", group = "<!-- 1 -->🐛 Bug Fixes" },
+  { message = "^perf", group = "<!-- 2 -->⚡ Performance" },
+  { message = "^refactor", group = "<!-- 3 -->🔨 Refactor" },
+  { message = "^doc", group = "<!-- 4 -->📚 Documentation" },
+  { message = "^test", group = "<!-- 5 -->🧪 Tests" },
+  { message = "^style", group = "<!-- 6 -->🎨 Style" },
+  { message = "^build", group = "<!-- 7 -->🏗️ Build" },
+  { message = "^ci", group = "<!-- 8 -->🔧 CI" },
+  # Load-bearing. The release commit is itself a conventional commit on main,
+  # so without this skip every release would find one releasable commit — its
+  # own predecessor — and bump forever.
+  { message = "^chore\\(release\\):", skip = true },
+  { message = "^chore\\(deps\\)", skip = true },
+  { message = "^chore", group = "<!-- 9 -->🧹 Chores" },
+  { message = "^revert", group = "<!-- 10 -->⏪ Reverts" },
+]
+
+[bump]
+initial_tag = "0.1.0"
+features_always_bump_minor = true
+# Below 1.0, a breaking change bumps the minor version. SemVer allows it, and
+# `0.x` already tells users the surface is unstable. Flip this to `true` on the
+# way to 1.0.
+breaking_always_bump_major = false
