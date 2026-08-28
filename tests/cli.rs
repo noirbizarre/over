@@ -1058,6 +1058,69 @@ fn git_over_mount_debug_output() -> TestResult {
 }
 
 #[test]
+fn git_over_mount_debug_output_with_git_properties() -> TestResult {
+    // Exercise the local-repo property inspection (origin remote, current
+    // branch, non-origin remotes, and linked-worktree detection) so it is
+    // actually run instead of short-circuiting on an empty repo. The
+    // subsequent interactive export-selection prompt still runs with a
+    // piped (immediately-closed) stdin, so it fails fast without hanging;
+    // we only assert on the debug output printed before that prompt.
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let main_repo = canonical_tmp.join("main");
+    fs::create_dir_all(&main_repo)?;
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&main_repo)
+        .output()?;
+    std::process::Command::new("git")
+        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(&main_repo)
+        .output()?;
+    std::process::Command::new("git")
+        .args(["remote", "add", "origin", "https://example.com/origin.git"])
+        .current_dir(&main_repo)
+        .output()?;
+    std::process::Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "upstream",
+            "https://example.com/upstream.git",
+        ])
+        .current_dir(&main_repo)
+        .output()?;
+
+    let worktree_dir = canonical_tmp.join("worktree");
+    std::process::Command::new("git")
+        .args(["worktree", "add", "-b", "feature"])
+        .arg(&worktree_dir)
+        .current_dir(&main_repo)
+        .output()?;
+
+    let target_str = main_repo.to_string_lossy().replace('\\', "\\\\");
+    let ov = canonical_tmp.join("gitov_mount_props");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
+
+    // Run from the linked worktree so `is_worktree()` is true and the
+    // named-worktree detection/resolution path also runs.
+    Command::cargo_bin("git-over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .arg("--debug")
+        .arg("mount")
+        .arg("-o")
+        .arg("gitov_mount_props")
+        .current_dir(&worktree_dir)
+        .assert()
+        .stderr(contains("repository"))
+        .stderr(contains("resolved overlay"));
+    Ok(())
+}
+
+#[test]
 fn git_over_status_no_overlay_configured() -> TestResult {
     let tmp = TempDir::new()?;
     let ov = tmp.path().join("statusov");
