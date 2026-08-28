@@ -114,7 +114,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     // Origin URL
     if let Ok(remote) = git_repo.find_remote("origin")
-        && let Some(url) = remote.url()
+        && let Ok(url) = remote.url()
     {
         exportable.push(ExportableProperty {
             label: format!("origin url: {}", url),
@@ -124,7 +124,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     // Current branch
     if let Ok(head) = git_repo.head()
-        && let Some(branch) = head.shorthand()
+        && let Ok(branch) = head.shorthand()
     {
         exportable.push(ExportableProperty {
             label: format!("branch: {}", branch),
@@ -134,16 +134,16 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     // Other remotes (not origin)
     if let Ok(remotes) = git_repo.remotes() {
-        for remote_name in remotes.iter().flatten() {
+        for remote_name in remotes.iter().filter_map(|r| r.ok().flatten()) {
             if remote_name == "origin" {
                 continue;
             }
             if let Ok(remote) = git_repo.find_remote(remote_name)
-                && let Some(url) = remote.url()
+                && let Ok(url) = remote.url()
             {
                 let fetch = remote
                     .get_refspec(0)
-                    .and_then(|r| r.str().map(|s| s.to_string()));
+                    .and_then(|r| r.str().ok().map(|s| s.to_string()));
                 exportable.push(ExportableProperty {
                     label: format!("remote {}: {}", remote_name, url),
                     key: ExportKey::Remote {
@@ -188,7 +188,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         // Detect existing named worktrees
         if let Ok(wt_names) = git_repo.worktrees() {
             let mut wt_map: HashMap<String, WorktreeEntry> = HashMap::new();
-            for name in wt_names.iter().flatten() {
+            for name in wt_names.iter().filter_map(|r| r.ok().flatten()) {
                 // Resolve each worktree to its checked-out branch
                 let branch =
                     resolve_worktree_branch(&git_repo, name).unwrap_or_else(|| name.to_string());
@@ -725,7 +725,7 @@ fn resolve_worktree_branch(repo: &git2::Repository, name: &str) -> Option<String
     let wt = repo.find_worktree(name).ok()?;
     let wt_repo = git2::Repository::open_from_worktree(&wt).ok()?;
     let head = wt_repo.head().ok()?;
-    head.shorthand().map(|s| s.to_string())
+    head.shorthand().ok().map(|s| s.to_string())
 }
 
 #[cfg(test)]

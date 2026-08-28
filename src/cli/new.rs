@@ -242,7 +242,7 @@ fn discover_and_prompt_absorb(
 fn extract_git_remote(path: &Path) -> Option<(String, String)> {
     let repo = git2::Repository::open(path).ok()?;
     let remote = repo.find_remote("origin").ok()?;
-    let url = remote.url()?.to_string();
+    let url = remote.url().ok()?.to_string();
     let name = path.file_name()?.to_str()?.to_string();
     Some((name, url))
 }

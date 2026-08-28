@@ -236,7 +236,7 @@ fn checkout_ref(repo: &Repository, config: &GitRepoConfig) -> Result<()> {
             repo.set_head(
                 reference
                     .name()
-                    .ok_or_else(|| anyhow!("invalid reference name for tag {}", tag))?,
+                    .with_context(|| format!("invalid reference name for tag {}", tag))?,
             )?;
         } else {
             repo.set_head_detached(obj.id())?;
@@ -256,13 +256,16 @@ fn ensure_remotes(
     verbose: bool,
 ) -> Result<()> {
     let existing_remotes = repo.remotes()?;
-    let existing_names: Vec<&str> = existing_remotes.iter().flatten().collect();
+    let existing_names: Vec<&str> = existing_remotes
+        .iter()
+        .filter_map(|r| r.ok().flatten())
+        .collect();
 
     for (name, remote_config) in remotes {
         if existing_names.contains(&name.as_str()) {
             // Remote exists — update URL if different
             let existing = repo.find_remote(name.as_str())?;
-            if existing.url() != Some(&remote_config.url) {
+            if existing.url().ok() != Some(remote_config.url.as_str()) {
                 repo.remote_set_url(name, &remote_config.url)?;
                 if verbose {
                     println!("  Updated remote {name} URL to {}", remote_config.url);
@@ -287,7 +290,7 @@ fn ensure_remotes(
             let already_has = existing
                 .push_refspecs()?
                 .into_iter()
-                .flatten()
+                .filter_map(|r| r.ok().flatten())
                 .any(|r| r == push.as_str());
             drop(existing);
             if !already_has {
@@ -327,7 +330,10 @@ fn ensure_worktrees(
     verbose: bool,
 ) -> Result<()> {
     let existing_worktrees = repo.worktrees()?;
-    let existing_names: Vec<&str> = existing_worktrees.iter().flatten().collect();
+    let existing_names: Vec<&str> = existing_worktrees
+        .iter()
+        .filter_map(|r| r.ok().flatten())
+        .collect();
 
     // Auto-create default branch worktree when worktree=true
     if config.worktree {
@@ -368,14 +374,14 @@ fn ensure_worktrees(
 fn detect_default_branch(repo: &Repository) -> Result<String> {
     // Try HEAD reference first
     if let Ok(head) = repo.head()
-        && let Some(name) = head.shorthand()
+        && let Ok(name) = head.shorthand()
     {
         return Ok(name.to_string());
     }
 
     // For bare repos, try to read the symbolic ref from origin/HEAD
     if let Ok(reference) = repo.find_reference("refs/remotes/origin/HEAD")
-        && let Some(target) = reference.symbolic_target()
+        && let Ok(Some(target)) = reference.symbolic_target()
         && let Some(branch) = target.strip_prefix("refs/remotes/origin/")
     {
         return Ok(branch.to_string());
@@ -848,7 +854,10 @@ mod tests {
         ensure_remotes(&repo, &remotes, false).unwrap();
 
         let all_remotes = repo.remotes().unwrap();
-        let remote_names: Vec<&str> = all_remotes.iter().flatten().collect();
+        let remote_names: Vec<&str> = all_remotes
+            .iter()
+            .filter_map(|r| r.ok().flatten())
+            .collect();
         assert_eq!(remote_names.iter().filter(|n| **n == "upstream").count(), 1);
     }
 
@@ -1549,7 +1558,7 @@ mod tests {
             .push_refspecs()
             .unwrap()
             .into_iter()
-            .flatten()
+            .filter_map(|r| r.ok().flatten())
             .map(|s| s.to_string())
             .collect();
         assert!(push_refspecs.contains(&"+refs/heads/*:refs/heads/*".to_string()));
@@ -1578,7 +1587,7 @@ mod tests {
             .push_refspecs()
             .unwrap()
             .into_iter()
-            .flatten()
+            .filter_map(|r| r.ok().flatten())
             .map(|s| s.to_string())
             .collect();
         // Should only have one push refspec, not duplicated
