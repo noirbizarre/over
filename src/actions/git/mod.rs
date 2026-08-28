@@ -1753,6 +1753,26 @@ mod tests {
         assert_eq!(branch, "main");
     }
 
+    #[test]
+    fn test_detect_default_branch_from_origin_head_symbolic_ref() {
+        // Bare repo with no commits (HEAD is unborn) but with a symbolic
+        // `refs/remotes/origin/HEAD` ref, as set up by `git clone --bare` or
+        // `git remote set-head`.
+        let td = TempDir::new().unwrap();
+        let bare_path = td.path().join("empty.git");
+        let repo = git2::Repository::init_bare(&bare_path).unwrap();
+        repo.reference_symbolic(
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/develop",
+            false,
+            "test",
+        )
+        .unwrap();
+
+        let branch = detect_default_branch(&repo).unwrap();
+        assert_eq!(branch, "develop");
+    }
+
     // ── ensure_worktrees: idempotent (worktree already exists) ──────────
 
     #[test]
