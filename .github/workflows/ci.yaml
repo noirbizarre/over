@@ -26,7 +26,14 @@ env:
   # Owned by the template: bump it there and `git tpl update` propagates it.
   # The docs and prepare-release workflows repeat the literal — keep them in
   # sync, as `env:` does not cross workflow files.
-  PINNED_MISE_VERSION: 2026.7.18
+  #
+  # Bumped off 2026.7.18 as a local exception: that release resolves the
+  # `uv` aqua package by downloading the glibc asset while checking for its
+  # binaries under the musl asset's directory name, so it silently installs
+  # with zero shims (no `uv`, no `uvx`) whenever both linux-x64 variants are
+  # in mise.lock — exactly our case. Fixed by 2026.8.14. This should also be
+  # bumped upstream in rust.tpl so other projects don't hit it.
+  PINNED_MISE_VERSION: 2026.8.14
 
 concurrency:
   group: ci-${{ github.ref }}
