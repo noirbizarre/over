@@ -1,0 +1,80 @@
+default_install_hook_types = ["pre-commit", "commit-msg"]
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "check-added-large-files" },
+  { id = "check-merge-conflict" },
+  { id = "check-toml" },
+  { id = "check-yaml" },
+  { id = "check-json" },
+  # Rust files are excluded because `cargo fmt` below already owns their final
+  # newline, and two hooks rewriting the same bytes is how a pre-commit run
+  # ends up needing a second pre-commit run.
+  { id = "end-of-file-fixer", exclude_types = ["rust"] },
+  { id = "mixed-line-ending" },
+  # Snapshots and fixtures record output verbatim, trailing whitespace
+  # included. Trimming it here would fail the tests that assert it.
+  { id = "trailing-whitespace", exclude = "^tests/(snapshots/.*\\.snap|fixtures/.*)$" },
+]
+
+[[repos]]
+repo = "https://github.com/alessandrojcm/commitlint-pre-commit-hook"
+rev = "v9.21.0"
+
+[[repos.hooks]]
+id = "commitlint"
+stages = ["commit-msg"]
+additional_dependencies = ["@commitlint/config-conventional"]
+
+[[repos]]
+repo = "local"
+
+# Suppressions are configured in .github/actionlint.yml, not here: the same
+# file serves `mise run lint:actions`, so the two cannot disagree.
+[[repos.hooks]]
+id = "actionlint"
+name = "actionlint"
+language = "system"
+entry = "actionlint"
+files = "^\\.github/workflows/.*\\.ya?ml$"
+
+[[repos.hooks]]
+id = "typos"
+name = "typos"
+language = "system"
+entry = "typos"
+pass_filenames = false
+
+[[repos.hooks]]
+id = "fmt"
+name = "cargo fmt"
+language = "system"
+entry = "cargo fmt --all -- --check"
+files = "\\.rs$"
+pass_filenames = false
+
+[[repos.hooks]]
+id = "clippy"
+name = "cargo clippy"
+language = "system"
+entry = "cargo clippy --all-targets --all-features -- -D warnings"
+files = "\\.rs$"
+pass_filenames = false
+
+# --- project-specific hooks --------------------------------------------------
+#
+# Add architecture guards and other project-only hooks below this line. The
+# template owns everything above it and will keep updating it; everything here
+# is yours, and Git's 3-way merge preserves it across `git tpl update`.
+#
+# The pattern these projects use is a grep that fails the commit when a
+# dependency escapes the module that is supposed to contain it:
+#
+#   [[repos.hooks]]
+#   id = "http-isolation"
+#   name = "the HTTP client is confined to the data layer"
+#   language = "system"
+#   entry = "bash -c '! grep -rnP --include=*.rs \"(?<![A-Za-z0-9_])ureq::\" src | grep -v \"^src/data/\"'"
+#   files = "\\.rs$"
+#   pass_filenames = false

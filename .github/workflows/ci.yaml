@@ -1,0 +1,127 @@
+name: ♻️ CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# GitHub defaults Windows steps to pwsh, which neither stops at the first
+# failing command nor reports anything but the last one's exit status — a
+# multi-command step there fails silently and the job goes green. bash is
+# present on all three runners and is invoked with `-e -o pipefail`.
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  # NOT `MISE_ACTION_VERSION`, however obvious that name looks: mise reads
+  # `MISE_<TOOL>_VERSION` from the environment, so that name would be
+  # interpreted as a request to install a tool called `action`.
+  #
+  # Owned by the template: bump it there and `git tpl update` propagates it.
+  # The docs and prepare-release workflows repeat the literal — keep them in
+  # sync, as `env:` does not cross workflow files.
+  PINNED_MISE_VERSION: 2026.7.18
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: 🕵️ Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The channel comes from the action ref, not rust-toolchain.toml,
+      # and each job installs the components it needs.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # Tool versions come from mise.toml + mise.lock, so CI runs exactly
+      # what `mise run default` runs locally.
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.PINNED_MISE_VERSION }}
+          cache: true
+
+      # The hooks, not the mise tasks: this is the same command a developer's
+      # `git commit` runs, so a green CI means the hooks are actually passing
+      # rather than a parallel set of checks that happens to agree.
+      - name: Run hooks
+        run: prek run --all-files --show-diff-on-failure
+
+  test:
+    name: 🧪 Tests (${{ matrix.os.name }})
+    runs-on: ${{ matrix.os.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - name: Linux
+            runner: ubuntu-latest
+            flag: linux
+          - name: Windows
+            runner: windows-latest
+            flag: windows
+          - name: macOS
+            runner: macos-latest
+            flag: macos
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+
+      # nextest and llvm-cov are pinned by mise.lock rather than resolved
+      # per-run, so a tool release cannot change CI behaviour on its own.
+      - uses: jdx/mise-action@v4
+        with:
+          version: ${{ env.PINNED_MISE_VERSION }}
+          cache: true
+
+      - name: Run tests (with coverage)
+        run: |
+          cargo llvm-cov nextest --profile ci
+          cargo llvm-cov report --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          files: lcov.info
+          # Flagging each leg keeps the three reports distinguishable, so a
+          # partial upload is visible rather than looking like a coverage drop.
+          flags: ${{ matrix.os.flag }}
+
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v7
+        if: ${{ !cancelled() }}
+        with:
+          directory: target/nextest/ci
+          report_type: test_results
+
+  # gh-ship runs the release. Its configuration and the workflows it names must
+  # satisfy the contract it enforces, and finding out otherwise mid-release is
+  # the worst possible moment — so it is checked on every pull request instead.
+  ship:
+    name: 🚢 Ship setup
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install gh-ship
+        run: gh extension install noirbizarre/gh-ship
+
+      - name: Validate the release setup
+        run: gh ship validate
