@@ -35,10 +35,10 @@ pub fn short_path(path: &str) -> String {
     }
 }
 
-// Find the longuest common suffix between two strings
+// Find the longest common suffix between two strings
 // Returns an empty string if no common suffix is found
 #[allow(dead_code)]
-pub fn longuest_common_suffix<'a>(a: &'a str, b: &'a str) -> String {
+pub fn longest_common_suffix<'a>(a: &'a str, b: &'a str) -> String {
     let reversed = a
         .chars()
         .rev()
@@ -80,8 +80,8 @@ mod tests {
         "sömewhere/päth/tö/ovërlay",
         "/päth/tö/ovërlay"
     )]
-    fn test_longuest_common_suffix(#[case] a: &str, #[case] b: &str, #[case] expected: &str) {
-        assert_eq!(longuest_common_suffix(a, b), expected);
+    fn test_longest_common_suffix(#[case] a: &str, #[case] b: &str, #[case] expected: &str) {
+        assert_eq!(longest_common_suffix(a, b), expected);
     }
 
     #[test]

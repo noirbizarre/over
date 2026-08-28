@@ -1,0 +1,223 @@
+
+name: 📦 Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The tag being released
+        required: true
+        type: string
+
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+# The upload authenticates as a GitHub App and carries its own permissions.
+# These cover `actions/checkout` alone, which only reads.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: 🏗️ ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # `ext` is emitted on every leg, empty where it does not apply. Omitting
+        # it on the non-Windows ones would make `${{ matrix.ext }}` reference a
+        # property that is not in the matrix type whenever no Windows target is
+        # selected — an actionlint error, not a runtime one, so it would only
+        # surface in the consuming project's CI.
+        include:
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-latest, asset: linux-amd64, cross: true, ext: "" }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-latest, asset: linux-arm64, cross: true, ext: "" }
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-latest, asset: linux-amd64-musl, cross: true, ext: "" }
+          - { target: x86_64-apple-darwin, runner: macos-latest, asset: darwin-amd64, cross: false, ext: "" }
+          - { target: aarch64-apple-darwin, runner: macos-latest, asset: darwin-arm64, cross: false, ext: "" }
+          - { target: x86_64-pc-windows-msvc, runner: windows-latest, asset: windows-amd64, cross: false, ext: ".exe" }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Build exactly what is being released, not a branch tip that
+          # may have moved since.
+          ref: ${{ inputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      # `cross` is only needed on the Linux legs, so it is installed
+      # conditionally here rather than added to mise.toml, which would pull it
+      # onto every runner in the matrix. It also supplies the cross C toolchain
+      # that any vendored C dependency needs.
+      - uses: taiki-e/install-action@cross
+        if: matrix.cross
+
+      # `vendored` builds libgit2 and OpenSSL from source rather than linking
+      # whatever the cross-compilation image happens to ship, so every target
+      # gets identical Git semantics and a statically-linked TLS stack — the
+      # same reason Dockerfile builds with it.
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }} --features vendored
+          else
+            cargo build --release --locked --target ${{ matrix.target }} --features vendored
+          fi
+
+      # Both binaries land in every archive: `git-over` is a companion to
+      # `over`, not an alternative, and Homebrew/AUR install both from one
+      # package. The base template ships a single bare binary as the asset —
+      # that only works for a one-binary project, so this project archives
+      # instead, the same way git-tpl's own customisation does.
+      - name: Stage the asset
+        shell: bash
+        run: |
+          mkdir -p dist staging
+          cp "target/${{ matrix.target }}/release/over${{ matrix.ext }}" staging/
+          cp "target/${{ matrix.target }}/release/git-over${{ matrix.ext }}" staging/
+          name="over_${{ inputs.tag }}_${{ matrix.asset }}"
+          if [ -n "${{ matrix.ext }}" ]; then
+            # `zip` is absent from the Windows runners; 7-Zip is preinstalled.
+            # `-tzip` because the default format would be .7z despite the name.
+            (cd staging && 7z a -tzip "../dist/$name.zip" .)
+          else
+            # `-C staging .` so the archive holds the binaries at its root
+            # rather than `staging/over`, which extractors would recreate.
+            tar -C staging -czf "dist/$name.tar.gz" .
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: asset-${{ matrix.asset }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: 🚀 Publish
+    needs: build
+    runs-on: ubuntu-latest
+
+    # This is the deployment. Declaring a `url:` registers it in the
+    # repository's deployment list and links straight to what shipped.
+    # The environment is `release` because that is where the release
+    # secrets live.
+    environment:
+      name: release
+      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
+
+    steps:
+      # An installation token, revoked when this job ends. It cannot live in
+      # the job's `env:` — a step output is not resolvable there — so the one
+      # `gh` step below sets it itself.
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: asset-*
+          merge-multiple: true
+          path: dist
+
+      - name: Checksums
+        working-directory: dist
+        # `--` so an asset whose name begins with a dash is treated as a
+        # file rather than an option (shellcheck SC2035).
+        run: sha256sum -- * > SHA256SUMS
+
+      # The release already exists as a DRAFT: gh-ship created it before
+      # dispatching this workflow, and will undraft it once we succeed.
+      # That ordering is what lets assets land before anyone is notified.
+      - name: Upload assets to the draft release
+        run: gh release upload "${{ inputs.tag }}" dist/* --clobber
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+
+  # Last, deliberately. Publishing to crates.io cannot be undone — `cargo yank`
+  # hides a version from resolution but never removes it, and the version number
+  # is spent forever. So it happens only once every target has proven the code
+  # compiles and the assets are on the release: if this job then fails,
+  # re-running it costs nothing, whereas the reverse ordering could leave a
+  # permanent crates.io release with no binaries behind it.
+  crates:
+    name: 📦 crates.io
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+
+    # Must match the Environment configured under
+    # crates.io -> dot-over -> Settings -> Trusted Publishing. crates.io
+    # checks the OIDC claim against it, and a mismatch is a 403 at publish time
+    # rather than anything visible earlier. The package is `dot-over`, not
+    # `over` — a different, unrelated crate already owns that name.
+    environment:
+      name: release
+
+    permissions:
+      # The only permission Trusted Publishing needs: it mints the OIDC token
+      # that is exchanged for a short-lived crates.io token. No API key is
+      # stored anywhere, and nothing here writes to the repository.
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The tag, not the branch tip. `cargo publish` packages the working
+          # tree, so this is what decides which code reaches crates.io.
+          ref: ${{ inputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # `cargo publish` fails outright on a version that already exists, which
+      # turns an ordinary "re-run failed jobs" into a stuck release: gh-ship
+      # waits on this workflow and only undrafts the release when it succeeds.
+      # A version can be uploaded and the job still fail afterwards, so this
+      # makes the re-run a no-op rather than an error.
+      #
+      # `inputs.tag` is the version: this project tags without a `v` prefix, and
+      # prepare-release derives both from one string.
+      - name: Check whether this version is already published
+        id: existing
+        run: |
+          set -euo pipefail
+          url="https://crates.io/api/v1/crates/dot-over/${{ inputs.tag }}"
+          if curl -sfL --retry 3 -H "User-Agent: over-release" "$url" > /dev/null; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::dot-over ${{ inputs.tag }} is already on crates.io; skipping."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Exchanges the workflow's OIDC identity for a crates.io token that
+      # lives 30 minutes, and revokes it in a post step when the job ends.
+      # Skipped when there is nothing to publish, so no token is minted for a
+      # job that will do nothing with it.
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+        if: steps.existing.outputs.published == 'false'
+
+      # `--locked` so the published build resolves exactly the dependencies
+      # Cargo.lock records. Without it a yanked or newly-broken transitive
+      # dependency could change what is verified here versus what was tested.
+      - name: Publish to crates.io
+        if: steps.existing.outputs.published == 'false'
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

@@ -3,7 +3,10 @@ name: 🐳 Docker
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    # Release tags carry no `v` prefix (the tag is the version, matching
+    # cliff.toml's `tag_pattern`) — only `gh-ship` pushes tags here, so a
+    # broad glob is safe.
+    tags: ["*"]
   pull_request:
 
 env:
@@ -114,6 +117,9 @@ jobs:
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
         run: |
+          # shellcheck disable=SC2046 # both substitutions deliberately split
+          # into multiple `imagetools create` arguments (one `-t <tag>` per
+          # tag, one digest reference per downloaded file).
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)

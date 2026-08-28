@@ -1,18 +1,24 @@
 <p align="center">
-  <img src="./docs/images/logo-text.svg" alt="Over" />
+  <img src="docs/images/logo-text.svg" alt="over" width="240">
 </p>
 
-<p align="center">
-  Git-based file overlays.
-</p>
+<p align="center"><strong>A git-based file overlay manager (dotfiles as overlays)</strong></p>
 
 <p align="center">
-  <a href="https://github.com/noirbizarre/over/actions/workflows/ci.yml">
-    <img src="https://github.com/noirbizarre/over/actions/workflows/ci.yml/badge.svg" alt="👮 CI"/>
+  <a href="https://github.com/noirbizarre/over/actions/workflows/ci.yaml">
+    <img src="https://github.com/noirbizarre/over/actions/workflows/ci.yaml/badge.svg" alt="CI">
   </a>
-  <a href="https://codecov.io/gh/noirbizarre/over" >
-    <img src="https://codecov.io/gh/noirbizarre/over/graph/badge.svg?token=XkB3PcbQer"/>
+  <a href="https://codecov.io/gh/noirbizarre/over">
+    <img src="https://codecov.io/gh/noirbizarre/over/graph/badge.svg" alt="Codecov">
   </a>
+  <a href="https://crates.io/crates/dot-over">
+    <img src="https://img.shields.io/crates/v/dot-over" alt="crates.io">
+  </a>
+  <img src="https://img.shields.io/github/v/release/noirbizarre/over" alt="Release">
+  <a href="https://noirbizarre.github.io/over/">
+    <img src="https://img.shields.io/badge/docs-noirbizarre.github.io-blue" alt="Documentation">
+  </a>
+  <img src="https://img.shields.io/github/license/noirbizarre/over" alt="License">
 </p>
 
 ---
@@ -20,8 +26,20 @@
 Over is a git-based file overlay manager that lets you define file overlays in Git repositories, with support for nested references and installation requirements. It is particularly well-suited for managing dotfiles.
 It is inspired by tools like GNU Stow and Chezmoi but focuses on a Git-centric workflow with flexible configuration and installation capabilities.
 
+## Installation
+
+```bash
+cargo install dot-over
+```
+
+Or download a binary for your platform from the
+[latest release](https://github.com/noirbizarre/over/releases/latest).
 
 ## Usage
+
+```bash
+over --help
+```
 
 ### Commands
 
@@ -44,239 +62,18 @@ A companion binary `git-over` integrates with git workflows:
 | `git over add` | Add files from the current git repository to an overlay |
 | `git over status` | Show overlay status for the current git repository |
 
-### Listing Overlays
+See the [documentation](https://noirbizarre.github.io/over/) for the full
+command reference, configuration format, and install-manager reference
+(package managers, precedence rules, platform sections).
 
-List all overlays in the repository:
+## Documentation
 
-```sh
-over list
-```
+<https://noirbizarre.github.io/over/>
 
-Display overlays as a tree, grouped by their directory hierarchy:
+## Contributing
 
-```sh
-over list --tree
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Example output:
+## License
 
-```
-.over
-├── git
-├── shell
-│   ├── bash
-│   └── zsh
-└── vim
-```
-
-The `list` command also has a short alias `ls`, and the tree flag can be shortened to `-t`:
-
-```sh
-over ls -t
-```
-
-### Shell Completions
-
-Generate shell completion scripts with:
-
-```sh
-over completion <shell>
-```
-
-Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`.
-
-#### Examples
-
-```sh
-# Bash (add to ~/.bashrc)
-over completion bash >> ~/.bashrc
-
-# Zsh (add to ~/.zshrc)
-over completion zsh >> ~/.zshrc
-
-# Fish
-over completion fish > ~/.config/fish/completions/over.fish
-
-# PowerShell (add to profile)
-over completion powershell >> $PROFILE
-```
-
-
-## Root Configuration
-
-`over` supports a root configuration file at `~/.over/over.toml` (or `over.yaml`/`over.yml`). This file controls global preferences that apply across all overlays.
-
-### Format Preference
-
-The `format` field sets the default descriptor format used by `over new` when creating new overlays. Accepted values are `toml` (default) and `yaml`.
-
-TOML (`~/.over/over.toml`):
-```toml
-format = "yaml"
-```
-
-YAML (`~/.over/over.yaml`):
-```yaml
-format: yaml
-```
-
-Format resolution priority (highest to lowest):
-1. `--format` / `-f` CLI flag
-2. Root config `format` field
-3. Default (`toml`)
-
-## Install Configuration
-
-Define installation requirements per overlay under an `install` key in the overlay config (TOML/YAML). Supports system package managers and language-specific installers with optional pre/post script hooks.
-
-Supported managers:
-- System: `archlinux`, `apt`, `brew`, `winget`
-- Language: `cargo`, `python` (uv, pipx, pip), `node` (npm)
-
-### Forms
-Each manager accepts either a flat list (shorthand) or a full object with `packages`, `pre`, `post` (and manager-specific fields):
-
-Flat (YAML):
-```yaml
-install:
-  archlinux:
-    - pkg1
-    - pkg2
-  apt:
-    - curl
-  brew:
-    - jq
-  cargo:
-    - ripgrep
-  python:
-    - requests
-  node:
-    - typescript
-  winget:
-    - Git.Git
-```
-
-Flat (TOML):
-```toml
-[install]
-archlinux = ["pkg1", "pkg2"]
-apt = ["curl"]
-brew = ["jq"]
-cargo = ["ripgrep"]
-python = ["requests"]
-node = ["typescript"]
-winget = ["Git.Git"]
-```
-
-Full (YAML):
-```yaml
-install:
-  pre:
-    - echo "setup"
-  archlinux:
-    packages: [pkg1, pkg2]
-  apt:
-    packages: [curl]
-  brew:
-    taps: [my/tap]
-    packages:
-      - name: jq
-      - name: firefox
-        cask: true
-  cargo:
-    packages:
-      - name: ripgrep
-        locked: true
-      - git: https://github.com/sharkdp/fd
-        tag: v9.0.0
-  python:
-    packages:
-      - name: requests
-        tool: uv
-        extras: [security]
-      - name: black
-        tool: pipx
-  node:
-    packages:
-      - name: typescript
-        options: "--force"
-  winget:
-    packages:
-      - name: Git.Git
-      - id: Microsoft.VisualStudioCode
-  post:
-    - echo "done"
-```
-
-Full (TOML):
-```toml
-[install]
-pre = ['echo "setup"']
-archlinux.packages = ["pkg1", "pkg2"]
-apt.packages = ["curl"]
-brew.taps = ["my/tap"]
-brew.packages = [
-  { name = "jq" },
-  { name = "firefox", cask = true }
-]
-cargo.packages = [
-  { name = "ripgrep", locked = true },
-  { git = "https://github.com/sharkdp/fd", tag = "v9.0.0" }
-]
-python.packages = [
-  { name = "requests", tool = "uv", extras = ["security"] },
-  { name = "black", tool = "pipx" }
-]
-node.packages = [
-  { name = "typescript", options = "--force" }
-]
-winget.packages = [
-  { name = "Git.Git" },
-  { id = "Microsoft.VisualStudioCode" }
-]
-post = ['echo "done"']
-```
-
-### Brew Package Options
-Brew packages can specify `options` (string split by whitespace) and `cask: true` to install via the cask tap. The `--cask` flag is automatically added when `cask: true` and de-duplicated if already present in `options`.
-
-### Cargo Packages
-Fields: `name`, `version`, `git`, `tag`, `branch`, `rev`, `path`, `features` (array), `locked` (bool), `options` (extra flags). Provide one of: name only, git + optional tag/branch/rev + optional name, or path.
-
-### Python Packages
-Fields: `name`, `tool` (one of `uv`, `pipx`, `pip` or omit for auto), `extras` (array), `options` (additional flags). Auto selection prefers `uv`, then `pipx`, then `pip` based on availability.
-
-### Node Packages
-Installed globally via `npm install -g`. Field: `name`, optional `options` appended to the command before the package name.
-
-### Winget Packages
-Fields: `name` (display name), `id` (winget package identifier), optional `options` (extra flags). Provide either `name` or `id` to identify the package.
-
-### Precedence & Execution Order
-Order:
-1. Global `pre` scripts
-2. Platform `pre` scripts
-3. System managers (Linux precedence determined by distro; macOS: brew; Windows: winget)
-4. Language managers (`cargo`, `python`, `node`)
-5. Platform `post` scripts
-6. Global `post` scripts
-
-Linux system manager precedence:
-- Arch: archlinux, brew
-- Debian/Ubuntu: apt, brew
-- Other: archlinux, apt, brew (attempt those present)
-If a platform section matching the distro exists, all listed managers in precedence order run; otherwise the first available top-level manager only.
-
-### Platform Sections
-Add distro/OS-specific overrides using keys inside `install` (e.g. `ubuntu`, `archlinux`, `macos`). These mirror top-level structure but apply only on that platform.
-
-### Scripts
-Each manager can define its own `pre` / `post` arrays executed immediately before/after that manager's install step.
-
-### Windows
-Windows is supported via `winget` as the system package manager. Language managers (`cargo`, `python`, `node`) work the same as on other platforms. Platform-specific overrides use the `windows` key inside `install`.
-
-### Composition via Uses
-Packages from overlays referenced in `uses` are merged (set union) to avoid duplicates across overlays.
-
----
+MIT — see [LICENSE](LICENSE).

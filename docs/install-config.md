@@ -1,0 +1,195 @@
+# Install Configuration
+
+Define installation requirements per overlay under an `install` key in the
+overlay config (TOML/YAML). Supports system package managers and
+language-specific installers with optional pre/post script hooks. See
+[ADR-004](adr/004-install-config-is-declarative-with-a-shell-escape-hatch.md)
+for the design behind this.
+
+Supported managers:
+
+- System: `archlinux`, `apt`, `brew`, `winget`
+- Language: `cargo`, `python` (uv, pipx, pip), `node` (npm)
+
+## Forms
+
+Each manager accepts either a flat list (shorthand) or a full object with
+`packages`, `pre`, `post` (and manager-specific fields):
+
+Flat (YAML):
+
+```yaml
+install:
+  archlinux:
+    - pkg1
+    - pkg2
+  apt:
+    - curl
+  brew:
+    - jq
+  cargo:
+    - ripgrep
+  python:
+    - requests
+  node:
+    - typescript
+  winget:
+    - Git.Git
+```
+
+Flat (TOML):
+
+```toml
+[install]
+archlinux = ["pkg1", "pkg2"]
+apt = ["curl"]
+brew = ["jq"]
+cargo = ["ripgrep"]
+python = ["requests"]
+node = ["typescript"]
+winget = ["Git.Git"]
+```
+
+Full (YAML):
+
+```yaml
+install:
+  pre:
+    - echo "setup"
+  archlinux:
+    packages: [pkg1, pkg2]
+  apt:
+    packages: [curl]
+  brew:
+    taps: [my/tap]
+    packages:
+      - name: jq
+      - name: firefox
+        cask: true
+  cargo:
+    packages:
+      - name: ripgrep
+        locked: true
+      - git: https://github.com/sharkdp/fd
+        tag: v9.0.0
+  python:
+    packages:
+      - name: requests
+        tool: uv
+        extras: [security]
+      - name: black
+        tool: pipx
+  node:
+    packages:
+      - name: typescript
+        options: "--force"
+  winget:
+    packages:
+      - name: Git.Git
+      - id: Microsoft.VisualStudioCode
+  post:
+    - echo "done"
+```
+
+Full (TOML):
+
+```toml
+[install]
+pre = ['echo "setup"']
+archlinux.packages = ["pkg1", "pkg2"]
+apt.packages = ["curl"]
+brew.taps = ["my/tap"]
+brew.packages = [
+  { name = "jq" },
+  { name = "firefox", cask = true }
+]
+cargo.packages = [
+  { name = "ripgrep", locked = true },
+  { git = "https://github.com/sharkdp/fd", tag = "v9.0.0" }
+]
+python.packages = [
+  { name = "requests", tool = "uv", extras = ["security"] },
+  { name = "black", tool = "pipx" }
+]
+node.packages = [
+  { name = "typescript", options = "--force" }
+]
+winget.packages = [
+  { name = "Git.Git" },
+  { id = "Microsoft.VisualStudioCode" }
+]
+post = ['echo "done"']
+```
+
+## Brew Package Options
+
+Brew packages can specify `options` (string split by whitespace) and
+`cask: true` to install via the cask tap. The `--cask` flag is automatically
+added when `cask: true` and de-duplicated if already present in `options`.
+
+## Cargo Packages
+
+Fields: `name`, `version`, `git`, `tag`, `branch`, `rev`, `path`, `features`
+(array), `locked` (bool), `options` (extra flags). Provide one of: name
+only, git + optional tag/branch/rev + optional name, or path.
+
+## Python Packages
+
+Fields: `name`, `tool` (one of `uv`, `pipx`, `pip` or omit for auto),
+`extras` (array), `options` (additional flags). Auto selection prefers `uv`,
+then `pipx`, then `pip` based on availability.
+
+## Node Packages
+
+Installed globally via `npm install -g`. Field: `name`, optional `options`
+appended to the command before the package name.
+
+## Winget Packages
+
+Fields: `name` (display name), `id` (winget package identifier), optional
+`options` (extra flags). Provide either `name` or `id` to identify the
+package.
+
+## Precedence & Execution Order
+
+Order:
+
+1. Global `pre` scripts
+2. Platform `pre` scripts
+3. System managers (Linux precedence determined by distro; macOS: brew;
+   Windows: winget)
+4. Language managers (`cargo`, `python`, `node`)
+5. Platform `post` scripts
+6. Global `post` scripts
+
+Linux system manager precedence:
+
+- Arch: archlinux, brew
+- Debian/Ubuntu: apt, brew
+- Other: archlinux, apt, brew (attempt those present)
+
+If a platform section matching the distro exists, all listed managers in
+precedence order run; otherwise the first available top-level manager only.
+
+## Platform Sections
+
+Add distro/OS-specific overrides using keys inside `install` (e.g. `ubuntu`,
+`archlinux`, `macos`). These mirror top-level structure but apply only on
+that platform.
+
+## Scripts
+
+Each manager can define its own `pre` / `post` arrays executed immediately
+before/after that manager's install step.
+
+## Windows
+
+Windows is supported via `winget` as the system package manager. Language
+managers (`cargo`, `python`, `node`) work the same as on other platforms.
+Platform-specific overrides use the `windows` key inside `install`.
+
+## Composition via Uses
+
+Packages from overlays referenced in `uses` are merged (set union) to avoid
+duplicates across overlays. See
+[ADR-008](adr/008-uses-composition-is-a-flat-union.md).

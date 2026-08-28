@@ -1,11 +1,27 @@
+# over — A git-based file overlay manager (dotfiles as overlays)
+#
+# Two binaries, one crate: `over` is the standalone CLI, `git-over` is a git
+# subcommand (resolved by Git through an executable named exactly `git-over`
+# on PATH). Both share the library's domain types (`Overlay`, `Repository`)
+# and `utils::resolve_home`. See docs/adr/001-two-binaries-one-crate.md.
+
 [package]
 name = "dot-over"
 edition = "2024"
 version = "0.0.1"
-description = "A git-based file overlay manager (dotfiles as overlays)"
-readme = "README.md"
-repository = "https://github.com/noirbizarre/over/"
+# The MSRV. Checked by a dedicated CI job, which greps this very line — keep it
+# a plain literal. `rust-toolchain.toml` separately pins the channel to develop
+# against; the two answer different questions.
+rust-version = "1.98"
 license = "MIT"
+authors = ["Axel H. <noirbizarre@gmail.com>"]
+description = "A git-based file overlay manager (dotfiles as overlays)"
+repository = "https://github.com/noirbizarre/over"
+homepage = "https://noirbizarre.github.io/over/"
+documentation = "https://noirbizarre.github.io/over/"
+readme = "README.md"
+keywords = ["dotfiles", "overlay", "git", "symlink", "cli"]
+categories = ["command-line-utilities", "filesystem", "development-tools"]
 
 [[bin]]
 name = "over"
@@ -14,6 +30,28 @@ path = "src/main.rs"
 [[bin]]
 name = "git-over"
 path = "src/bin/git-over.rs"
+
+# No explicit [lib] table: Cargo infers the library target's name from the
+# package name (`dot_over`), which is what `use dot_over::...` in both binaries
+# already expects (src/main.rs, src/bin/git-over.rs). An explicit `name = "over"`
+# here would rename the lib crate and break both of them.
+
+[profile.release]
+# Release binaries are cross-compiled once per tag and downloaded many times, so
+# the build cost is paid once and the size saving is paid forward.
+lto = true
+codegen-units = 1
+strip = true
+
+# --- project-specific --------------------------------------------------------
+#
+# Everything above this line is owned by the template and will keep updating.
+# Everything below is yours.
+#
+# The template seeds these two sections once, at `git tpl init`, and then leaves
+# them alone: Dependabot bumps versions here weekly, and a template that
+# propagated its own would open a conflict against every one of those PRs.
+# Resolve in favour of the project if `git tpl update` ever touches them.
 
 [dependencies]
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }
