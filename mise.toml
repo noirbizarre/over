@@ -55,7 +55,11 @@ cargo-binstall = "latest"
 # An explicit version, never `latest`: mise applies a `minimum_release_age`, so
 # `latest` resolves to whatever is old enough rather than to the newest release.
 "cargo:git-tpl" = "0.5.0"
-# Zensical runs through `uvx`, so uv is the only thing the docs build needs.
+# Zensical runs through `uv tool run`, so uv is the only thing the docs build
+# needs. Not the `uvx` shorthand: whether the aqua-installed `uv` package also
+# gets a `uvx` shim depends on registry metadata mise doesn't control, and a
+# stale `mise-action` cache can carry that gap forward silently. `uv tool run`
+# only ever needs the `uv` binary mise itself resolves and always shims.
 uv = "latest"
 # cargo-insta is declared on the task that uses it instead of here — see the
 # note in the header.
@@ -142,11 +146,11 @@ run = "cargo install --path . --force"
 
 [tasks.docs]
 description = "Serve the documentation locally"
-run = "uvx zensical serve"
+run = "uv tool run zensical serve"
 
 [tasks."docs:build"]
 description = "Build the documentation"
-run = "uvx zensical build"
+run = "uv tool run zensical build"
 
 # --- Release ----------------------------------------------------------------
 
