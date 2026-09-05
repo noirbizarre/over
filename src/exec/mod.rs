@@ -3,4 +3,4 @@ mod context;
 pub mod templates;
 
 pub use action::Action;
-pub use context::{Context, Ctx};
+pub use context::{Context, Ctx, MachineInfo};

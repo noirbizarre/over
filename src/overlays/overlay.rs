@@ -326,8 +326,7 @@ impl Overlay {
             .with_message("");
 
         for (name, config) in &symlinks {
-            let resolved_target =
-                actions::symlink::render_symlink_target(&config.target, &ctx.resolved_overlays)?;
+            let resolved_target = actions::symlink::render_symlink_target(&config.target, &ctx)?;
             let target_path = PathBuf::from(&resolved_target);
             let is_dir = target_path.is_dir()
                 || resolved_target.ends_with(std::path::MAIN_SEPARATOR_STR)
@@ -422,6 +421,22 @@ mod tests {
         let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
         let resolved = overlay.resolve_target(&c).unwrap();
         assert_eq!(resolved, PathBuf::from(target_str));
+    }
+
+    #[test]
+    fn test_resolve_target_with_machine_os() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~/{{ machine.os }}\"")
+            .unwrap();
+        let overlay = repo.get("ov").unwrap();
+        let root = td.path().to_path_buf();
+        let c = ctx(root.clone(), repo.clone(), Some(overlay.clone()));
+        let resolved = overlay.resolve_target(&c).unwrap();
+        assert_eq!(resolved, root.join(std::env::consts::OS));
     }
 
     #[tokio::test]

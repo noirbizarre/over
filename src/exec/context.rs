@@ -1,10 +1,57 @@
 use std::collections::HashMap;
+use std::env::consts::{ARCH, OS};
 use std::{path::PathBuf, sync::Arc};
 
+use gethostname::gethostname;
 use indicatif::{MultiProgress, ProgressBar};
 use serde::Serialize;
 
 use crate::overlays::{Overlay, Repository};
+use crate::utils;
+
+/// Machine facts exposed to templates as `{{ machine.* }}` (OS, arch,
+/// hostname, username, Linux distro), enabling conditional overlay behavior
+/// per machine.
+#[derive(Debug, Clone, Serialize)]
+pub struct MachineInfo {
+    pub os: String,
+    pub arch: String,
+    pub hostname: String,
+    pub username: String,
+    pub distro: Option<String>,
+    pub distro_id: Option<String>,
+}
+
+impl MachineInfo {
+    /// Detect facts about the machine `over` is currently running on.
+    pub fn detect() -> Self {
+        Self {
+            os: OS.to_string(),
+            arch: ARCH.to_string(),
+            hostname: gethostname().to_string_lossy().to_string(),
+            username: detect_username(),
+            distro: utils::detect_linux_distro_name(),
+            distro_id: utils::detect_linux_distro_id(),
+        }
+    }
+}
+
+impl Default for MachineInfo {
+    // `Context`/`ContextBuilder` derive `Default`, which requires every field
+    // to implement it; there's no meaningful "empty" machine, so default
+    // means "the real, detected machine".
+    fn default() -> Self {
+        Self::detect()
+    }
+}
+
+/// Resolve current username from `USER` (Unix) / `USERNAME` (Windows),
+/// falling back to "unknown" in sandboxes/containers where neither is set.
+fn detect_username() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
 
 #[derive(Debug, Default, Serialize)]
 pub struct Context {
@@ -32,6 +79,9 @@ pub struct Context {
     pub repository: Repository,
 
     pub overlay: Option<Overlay>,
+
+    /// Facts about the current machine, available to all templates.
+    pub machine: MachineInfo,
 
     #[serde(skip)]
     pub progress: Option<Progress>,
@@ -79,6 +129,7 @@ pub struct ContextBuilder {
     root: PathBuf,
     repository: Repository,
     overlay: Option<Overlay>,
+    machine: MachineInfo,
     progress: Option<Progress>,
     resolved_overlays: Arc<HashMap<String, String>>,
 }
@@ -129,6 +180,11 @@ impl ContextBuilder {
         self
     }
 
+    pub fn machine(mut self, machine: MachineInfo) -> Self {
+        self.machine = machine;
+        self
+    }
+
     pub fn progress(mut self, progress: Progress) -> Self {
         self.progress = Some(progress);
         self
@@ -150,6 +206,7 @@ impl ContextBuilder {
             root: self.root,
             repository: self.repository,
             overlay: self.overlay,
+            machine: self.machine,
             progress: self.progress,
             resolved_overlays: self.resolved_overlays,
         })
@@ -173,6 +230,7 @@ impl Context {
             root: self.root.clone(),
             repository: self.repository.clone(),
             overlay: Some(overlay),
+            machine: self.machine.clone(),
             progress: self.progress.clone(),
             resolved_overlays: self.resolved_overlays.clone(),
         })
@@ -189,6 +247,7 @@ impl Context {
             root: self.root.clone(),
             repository: self.repository.clone(),
             overlay: self.overlay.clone(),
+            machine: self.machine.clone(),
             progress: Some(Progress::Progress(progress)),
             resolved_overlays: self.resolved_overlays.clone(),
         })
@@ -205,6 +264,7 @@ impl Context {
             root: self.root.clone(),
             repository: self.repository.clone(),
             overlay: self.overlay.clone(),
+            machine: self.machine.clone(),
             progress: Some(Progress::MultiProgress(progress)),
             resolved_overlays: self.resolved_overlays.clone(),
         })
@@ -238,6 +298,7 @@ impl Context {
             root: self.root.clone(),
             repository: self.repository.clone(),
             overlay: self.overlay.clone(),
+            machine: self.machine.clone(),
             progress: self.progress.clone(),
             resolved_overlays: self.resolved_overlays.clone(),
         }
@@ -286,6 +347,9 @@ mod tests {
         assert_eq!(ctx.root, PathBuf::default());
         assert!(ctx.overlay.is_none());
         assert!(ctx.progress.is_none());
+        // Default `machine` is the real detected machine, not an empty value.
+        assert_eq!(ctx.machine.os, std::env::consts::OS);
+        assert_eq!(ctx.machine.arch, std::env::consts::ARCH);
     }
 
     #[test]
@@ -355,6 +419,7 @@ mod tests {
         assert!(new_ctx.verbose);
         assert_eq!(new_ctx.root, root_path);
         assert!(new_ctx.overlay.is_some());
+        assert_eq!(new_ctx.machine.os, ctx.machine.os);
         // Original should be unchanged
         assert!(ctx.overlay.is_none());
     }
@@ -517,5 +582,30 @@ mod tests {
         let cloned = ctx.clone_for_overlay_update();
         assert!(cloned.dry_run);
         assert_eq!(cloned.root, root_path);
+    }
+
+    #[test]
+    fn machine_info_detect_populates_os_and_arch() {
+        let machine = MachineInfo::detect();
+        assert_eq!(machine.os, std::env::consts::OS);
+        assert_eq!(machine.arch, std::env::consts::ARCH);
+    }
+
+    #[test]
+    fn builder_with_machine_override() {
+        let machine = MachineInfo {
+            os: "macos".to_string(),
+            arch: "aarch64".to_string(),
+            hostname: "test-host".to_string(),
+            username: "tester".to_string(),
+            distro: None,
+            distro_id: None,
+        };
+        let ctx = Context::builder()
+            .repository(dummy_repo())
+            .machine(machine)
+            .build();
+        assert_eq!(ctx.machine.os, "macos");
+        assert_eq!(ctx.machine.hostname, "test-host");
     }
 }

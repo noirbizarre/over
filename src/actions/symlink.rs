@@ -10,7 +10,7 @@ use noyalib::compat::serde_yaml as serde_yml;
 use serde::{Deserialize, Serialize};
 use symlink::{remove_symlink_dir, remove_symlink_file, symlink_dir, symlink_file};
 
-use crate::exec::{Action, Ctx};
+use crate::exec::{Action, Context, Ctx, MachineInfo};
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
@@ -231,11 +231,22 @@ pub fn discover_symlinks(overlay_root: &Path) -> Result<Vec<(String, SymlinkConf
     Ok(results)
 }
 
-pub fn render_symlink_target(template: &str, overlays: &HashMap<String, String>) -> Result<String> {
-    let env_vars: HashMap<String, String> = std::env::vars().collect();
-    let mut state = HashMap::new();
-    state.insert("env", env_vars);
-    state.insert("overlays", overlays.clone());
+/// Ephemeral render context for `.link.toml` symlink targets: environment
+/// variables, resolved overlay paths, and machine facts — mirroring what's
+/// available when rendering an overlay's own `target =` template.
+#[derive(Serialize)]
+struct SymlinkTemplateContext<'a> {
+    env: HashMap<String, String>,
+    overlays: &'a HashMap<String, String>,
+    machine: &'a MachineInfo,
+}
+
+pub fn render_symlink_target(template: &str, ctx: &Context) -> Result<String> {
+    let state = SymlinkTemplateContext {
+        env: std::env::vars().collect(),
+        overlays: ctx.resolved_overlays.as_ref(),
+        machine: &ctx.machine,
+    };
 
     crate::exec::templates::render_string(template, &state)
         .with_context(|| format!("failed to render symlink target template '{}'", template))
@@ -247,6 +258,7 @@ mod tests {
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use rstest::rstest;
+    use std::sync::Arc;
 
     /// Install a tracing subscriber so `tracing::warn!` etc. bodies are executed during tests.
     fn init_test_tracing() {
@@ -301,8 +313,8 @@ mod tests {
         unsafe {
             std::env::set_var("OVER_TEST_HOME", "/test/home");
         }
-        let overlays = HashMap::new();
-        let result = render_symlink_target("{{ env.OVER_TEST_HOME }}/config", &overlays).unwrap();
+        let ctx = crate::exec::Context::builder().build();
+        let result = render_symlink_target("{{ env.OVER_TEST_HOME }}/config", &ctx).unwrap();
         assert_eq!(result, "/test/home/config");
     }
 
@@ -310,9 +322,18 @@ mod tests {
     fn render_symlink_target_with_overlays() {
         let mut overlays = HashMap::new();
         overlays.insert("apps/nvim".to_string(), "/opt/nvim".to_string());
-        let result =
-            render_symlink_target("{{ overlays['apps/nvim'] }}/init.lua", &overlays).unwrap();
+        let ctx = crate::exec::Context::builder()
+            .resolved_overlays(Arc::new(overlays))
+            .build();
+        let result = render_symlink_target("{{ overlays['apps/nvim'] }}/init.lua", &ctx).unwrap();
         assert_eq!(result, "/opt/nvim/init.lua");
+    }
+
+    #[test]
+    fn render_symlink_target_with_machine_os() {
+        let ctx = crate::exec::Context::builder().build();
+        let result = render_symlink_target("{{ machine.os }}/config", &ctx).unwrap();
+        assert_eq!(result, format!("{}/config", std::env::consts::OS));
     }
 
     #[rstest]
@@ -639,15 +660,15 @@ mod tests {
 
     #[test]
     fn render_symlink_target_invalid_template() {
-        let overlays = HashMap::new();
-        let result = render_symlink_target("{{ invalid.template", &overlays);
+        let ctx = crate::exec::Context::builder().build();
+        let result = render_symlink_target("{{ invalid.template", &ctx);
         assert!(result.is_err());
     }
 
     #[test]
     fn render_symlink_target_plain() {
-        let overlays = HashMap::new();
-        let result = render_symlink_target("/plain/path", &overlays).unwrap();
+        let ctx = crate::exec::Context::builder().build();
+        let result = render_symlink_target("/plain/path", &ctx).unwrap();
         assert_eq!(result, "/plain/path");
     }
 
@@ -659,11 +680,12 @@ mod tests {
         }
         let mut overlays = HashMap::new();
         overlays.insert("apps/tool".to_string(), "/opt/tool".to_string());
-        let result = render_symlink_target(
-            "{{ env.OVER_TEST_USER }}/{{ overlays['apps/tool'] }}",
-            &overlays,
-        )
-        .unwrap();
+        let ctx = crate::exec::Context::builder()
+            .resolved_overlays(Arc::new(overlays))
+            .build();
+        let result =
+            render_symlink_target("{{ env.OVER_TEST_USER }}/{{ overlays['apps/tool'] }}", &ctx)
+                .unwrap();
         assert_eq!(result, "testuser//opt/tool");
     }
 }

@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashSet};
-use std::{env::consts::OS, fs, sync::OnceLock};
+use std::env::consts::OS;
 
-use crate::{exec::Ctx, overlays::Overlay};
+use crate::{exec::Ctx, overlays::Overlay, utils::detect_linux_distro_id};
 use anyhow::{Context as AnyhowContext, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 use which::which;
@@ -42,28 +42,12 @@ const PRECEDENCE_GENERIC_LINUX: &[SystemManager] = &[
     SystemManager::Brew,
 ]; // attempt all known managers
 
-fn detect_linux_distro() -> Option<String> {
-    static DISTRO: OnceLock<Option<String>> = OnceLock::new();
-    DISTRO
-        .get_or_init(|| {
-            let content = fs::read_to_string("/etc/os-release").ok()?;
-            for line in content.lines() {
-                if let Some(rest) = line.strip_prefix("ID=") {
-                    let id = rest.trim_matches('"').to_string();
-                    return Some(id);
-                }
-            }
-            None
-        })
-        .clone()
-}
-
 /// Resolve the platform-specific config override for the current OS.
 fn resolve_platform_override(install: &InstallConfig) -> Option<&PlatformInstallConfig> {
     if OS == "macos" {
         install.platforms.get("macos")
     } else if OS == "linux" {
-        detect_linux_distro().and_then(|distro| install.platforms.get(&distro))
+        detect_linux_distro_id().and_then(|distro| install.platforms.get(&distro))
     } else if OS == "windows" {
         install.platforms.get("windows")
     } else {
@@ -546,7 +530,7 @@ fn decide_linux_managers(distro: &str, install_cfg: &InstallConfig) -> Vec<Syste
 }
 
 async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
-    let distro = detect_linux_distro().unwrap_or_else(|| "linux".to_string());
+    let distro = detect_linux_distro_id().unwrap_or_else(|| "linux".to_string());
     let Some(install_cfg) = overlay.install.as_ref() else {
         return Ok(());
     };
@@ -693,7 +677,7 @@ async fn get_archlinux_packages(
     collect_packages(ctx, overlay, visited, |install, _platform| {
         // Archlinux has special platform resolution: "arch" / "archlinux" aliases
         let platform_override = if OS == "linux" {
-            detect_linux_distro().and_then(|distro| {
+            detect_linux_distro_id().and_then(|distro| {
                 let key = if install.platforms.contains_key("arch") {
                     Some("arch")
                 } else if install.platforms.contains_key("archlinux") {
@@ -3614,7 +3598,7 @@ post = ["echo win-post"]
 
     #[tokio::test]
     async fn test_install_linux_with_platform_pre_post_dry_run() {
-        let distro = detect_linux_distro().unwrap_or_else(|| "linux".to_string());
+        let distro = detect_linux_distro_id().unwrap_or_else(|| "linux".to_string());
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
