@@ -1,0 +1,248 @@
+use std::fmt;
+
+use crate::desired::{DesiredEntry, MaterializationIntent};
+use crate::ui::{emojis, style};
+use crate::utils::short_path;
+
+use super::actual::ActualState;
+
+/// What a single [`PlanStep`] needs to do to reconcile actual state with
+/// [`DesiredEntry`] intent.
+///
+/// Deliberately a small, closed set today. Two extension points this issue
+/// is asked to leave open, without implementing either yet:
+///
+/// - #113 will add rule-change transitions (symlink ↔ checkout, file-level
+///   ↔ directory-level symlink) as new variants here (e.g. a future
+///   `Migrate`) rather than requiring a different `Plan`/[`PlanStep`] shape.
+/// - #108 will replace [`super::Plan::execute`]'s direct dispatch on
+///   [`MaterializationIntent`] (the only place that knows about concrete
+///   `actions::fs`/`actions::symlink` types) with a lookup into a
+///   registered `Materializer` per intent. `Operation` itself doesn't need
+///   to change for that.
+#[derive(Debug, Clone)]
+pub enum Operation {
+    /// Target is missing; safe to materialize.
+    Create,
+    /// Target already matches the desired intent — nothing to do.
+    Noop,
+    /// Target exists and does not match the desired intent.
+    Conflict { current: ActualState },
+    /// Not yet materializable ([`MaterializationIntent::Checkout`] —
+    /// #108/#110 own turning this into a real checkout/worktree). Carried
+    /// so a plan preview can still report on it; [`super::Plan::execute`]
+    /// never acts on it.
+    Deferred,
+}
+
+/// One [`DesiredEntry`] paired with the [`Operation`] needed to reconcile it
+/// against actual filesystem state.
+#[derive(Debug, Clone)]
+pub struct PlanStep {
+    pub entry: DesiredEntry,
+    pub operation: Operation,
+}
+
+/// Human-readable description of what currently occupies a path, for
+/// conflict diagnostics.
+fn describe_actual(actual: &ActualState) -> String {
+    match actual {
+        ActualState::Missing => "nothing".to_string(),
+        ActualState::Directory => "a directory".to_string(),
+        ActualState::File => "a file".to_string(),
+        ActualState::Symlink { points_to } => {
+            format!("a symlink to {}", short_path(&points_to.to_string_lossy()))
+        }
+    }
+}
+
+impl fmt::Display for PlanStep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let target = short_path(&self.entry.target.to_string_lossy());
+
+        match (&self.entry.intent, &self.operation) {
+            (MaterializationIntent::Directory, Operation::Create) => write!(
+                f,
+                "{} {} {}",
+                emojis::DIRECTORY,
+                style::white("create directory:"),
+                target,
+            ),
+            (MaterializationIntent::Directory, Operation::Noop) => write!(
+                f,
+                "{} {} {} ({})",
+                emojis::CHECKMARK,
+                style::white("directory:"),
+                target,
+                style::white("already exists"),
+            ),
+            (MaterializationIntent::Directory, Operation::Conflict { current }) => write!(
+                f,
+                "{} {} expected directory at {}, found {}",
+                emojis::WARNING,
+                style::yellow("conflict:"),
+                target,
+                describe_actual(current),
+            ),
+            (
+                MaterializationIntent::SymlinkFile { source, .. }
+                | MaterializationIntent::SymlinkDirectory { source, .. },
+                Operation::Create,
+            ) => write!(
+                f,
+                "{} {} {} -> {}",
+                emojis::LINK,
+                style::white("link:"),
+                short_path(&source.to_string_lossy()),
+                target,
+            ),
+            (
+                MaterializationIntent::SymlinkFile { source, .. }
+                | MaterializationIntent::SymlinkDirectory { source, .. },
+                Operation::Noop,
+            ) => write!(
+                f,
+                "{} {} {} ({} {})",
+                emojis::CHECKMARK,
+                style::white("link:"),
+                target,
+                style::white("already linked to"),
+                short_path(&source.to_string_lossy()),
+            ),
+            (
+                MaterializationIntent::SymlinkFile { source, .. }
+                | MaterializationIntent::SymlinkDirectory { source, .. },
+                Operation::Conflict { current },
+            ) => write!(
+                f,
+                "{} {} {} already exists ({}), overlay expects a link to {}",
+                emojis::WARNING,
+                style::yellow("conflict:"),
+                target,
+                describe_actual(current),
+                short_path(&source.to_string_lossy()),
+            ),
+            (MaterializationIntent::Checkout, _) => write!(
+                f,
+                "{} {} {} ({})",
+                emojis::THREAD,
+                style::white("checkout:"),
+                target,
+                style::white("git materialization not yet supported, see #108/#110"),
+            ),
+            // `Directory`/`SymlinkFile`/`SymlinkDirectory` never produce
+            // `Deferred` (only `Checkout` does, handled above) — unreachable
+            // in practice, but a clear fallback beats a silently wrong line.
+            (_, Operation::Deferred) => write!(f, "{} deferred: {}", emojis::WARNING, target),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::symlink::LinkType;
+    use crate::desired::Provenance;
+    use std::path::PathBuf;
+
+    fn entry(intent: MaterializationIntent) -> DesiredEntry {
+        DesiredEntry {
+            target: PathBuf::from("/home/user/.config/app"),
+            provenance: Provenance::Overlay {
+                overlay: "ov".to_string(),
+                source: PathBuf::from("/repo/ov/app"),
+            },
+            intent,
+        }
+    }
+
+    #[test]
+    fn create_directory_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::Directory),
+            operation: Operation::Create,
+        };
+        let s = format!("{step}");
+        assert!(s.contains("create directory:"));
+        assert!(s.contains(".config/app"));
+    }
+
+    #[test]
+    fn noop_directory_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::Directory),
+            operation: Operation::Noop,
+        };
+        let s = format!("{step}");
+        assert!(s.contains("already exists"));
+    }
+
+    #[test]
+    fn conflict_directory_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::Directory),
+            operation: Operation::Conflict {
+                current: ActualState::File,
+            },
+        };
+        let s = format!("{step}");
+        assert!(s.contains("conflict:"));
+        assert!(s.contains("a file"));
+    }
+
+    #[test]
+    fn create_symlink_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::SymlinkFile {
+                source: PathBuf::from("/repo/ov/app/file.txt"),
+                link_type: LinkType::Soft,
+            }),
+            operation: Operation::Create,
+        };
+        let s = format!("{step}");
+        assert!(s.contains("link:"));
+        assert!(s.contains("file.txt"));
+    }
+
+    #[test]
+    fn noop_symlink_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::SymlinkDirectory {
+                source: PathBuf::from("/repo/ov/app/dir"),
+                link_type: LinkType::Soft,
+            }),
+            operation: Operation::Noop,
+        };
+        let s = format!("{step}");
+        assert!(s.contains("already linked to"));
+    }
+
+    #[test]
+    fn conflict_symlink_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::SymlinkFile {
+                source: PathBuf::from("/repo/ov/app/file.txt"),
+                link_type: LinkType::Soft,
+            }),
+            operation: Operation::Conflict {
+                current: ActualState::Symlink {
+                    points_to: PathBuf::from("/somewhere/else"),
+                },
+            },
+        };
+        let s = format!("{step}");
+        assert!(s.contains("conflict:"));
+        assert!(s.contains("a symlink to"));
+    }
+
+    #[test]
+    fn deferred_checkout_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::Checkout),
+            operation: Operation::Deferred,
+        };
+        let s = format!("{step}");
+        assert!(s.contains("checkout:"));
+        assert!(s.contains("#108/#110"));
+    }
+}
