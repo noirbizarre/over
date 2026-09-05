@@ -142,8 +142,9 @@ fn collect_own_entries(
         intent: MaterializationIntent::Directory,
     });
 
-    // Git-managed paths: not yet materializable (#108/#110 own turning these
-    // into a real checkout/worktree), but carried so a future Plan/diff/status
+    // Git-managed paths: not yet materializable (no registered Materializer
+    // claims this intent yet; #110 owns turning these into a real
+    // checkout/worktree backend), but carried so a future Plan/diff/status
     // (#13/#109/#12) can at least see and report on them.
     if let Some(git_repos) = &overlay.git {
         for (repo_key, config) in git_repos {

@@ -40,10 +40,11 @@ pub enum MaterializationIntent {
         source: PathBuf,
         link_type: LinkType,
     },
-    /// A Git-managed path (`overlay.git`). Not yet materializable — #108/#110
-    /// own turning this into a real checkout/worktree. Carried here so a
-    /// future `Plan`/diff/status (#13/#109/#12) can at least see and report
-    /// on it.
+    /// A Git-managed path (`overlay.git`). Not yet materializable — no
+    /// [`crate::materialize::Materializer`] claims this intent yet, #110
+    /// owns turning this into a real checkout/worktree backend. Carried
+    /// here so a future `Plan`/diff/status (#13/#109/#12) can at least see
+    /// and report on it.
     Checkout,
 }
 

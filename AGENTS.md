@@ -18,9 +18,12 @@ src/
 ├── bin/git-over.rs  the `git-over` binary
 ├── actions/      filesystem, symlink, install and git side effects
 ├── cli/          argument types for both binaries
+├── desired/      the DesiredTree/DesiredEntry desired-state model
 ├── exec/         execution context and templating
 ├── lint/         `over lint` diagnostics
+├── materialize/  Materializer backends (registry, symlink)
 ├── overlays/     the Overlay/Repository domain model
+├── plan/         the Plan/PlanStep reconciliation model
 └── ui/           logging, styling, emojis
 ```
 
