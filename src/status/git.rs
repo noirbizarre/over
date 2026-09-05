@@ -405,41 +405,172 @@ mod tests {
         assert_eq!(inspect(&e).unwrap(), Status::Missing);
     }
 
+    /// Bare-clone `source` into `<dest>/.git` and add a `main` worktree at
+    /// `<dest>/main`, returning the bare `Repository` handle for further
+    /// setup. Shared by every bare+worktree test below.
+    fn clone_bare_with_main_worktree(
+        source: &std::path::Path,
+        dest: &std::path::Path,
+    ) -> Repository {
+        let bare_path = dest.join(".git");
+        let bare_repo = git2::build::RepoBuilder::new()
+            .bare(true)
+            .clone(source.to_str().unwrap(), &bare_path)
+            .unwrap();
+
+        let main_wt = dest.join("main");
+        {
+            // A bare clone already mirrors `refs/heads/*` from the source,
+            // so `main` typically exists as a local branch already — only
+            // create it from the remote-tracking ref as a fallback (mirrors
+            // `actions::git::create_worktree`'s own local-then-remote
+            // lookup). Scoped so `branch_ref`/`opts` (both borrow
+            // `bare_repo`) are dropped before it's returned below.
+            let branch_ref = match bare_repo.find_branch("main", git2::BranchType::Local) {
+                Ok(branch) => branch.into_reference(),
+                Err(_) => {
+                    let reference = bare_repo
+                        .find_reference("refs/remotes/origin/main")
+                        .unwrap();
+                    let commit = reference.peel_to_commit().unwrap();
+                    bare_repo
+                        .branch("main", &commit, false)
+                        .unwrap()
+                        .into_reference()
+                }
+            };
+            let mut opts = git2::WorktreeAddOptions::new();
+            opts.reference(Some(&branch_ref));
+            bare_repo.worktree("main", &main_wt, Some(&opts)).unwrap();
+        }
+        bare_repo
+    }
+
     #[test]
     fn bare_worktree_with_one_clean_worktree_is_applied() {
         let source_td = TempDir::new().unwrap();
         init_committed_repo(source_td.path());
-
         let dest_td = TempDir::new().unwrap();
-        let bare_path = dest_td.path().join(".git");
-        let bare_repo = git2::build::RepoBuilder::new()
-            .bare(true)
-            .clone(source_td.path().to_str().unwrap(), &bare_path)
-            .unwrap();
-
-        let main_wt = dest_td.path().join("main");
-        // A bare clone already mirrors `refs/heads/*` from the source, so
-        // `main` typically exists as a local branch already — only
-        // create it from the remote-tracking ref as a fallback (mirrors
-        // `actions::git::create_worktree`'s own local-then-remote lookup).
-        let branch_ref = match bare_repo.find_branch("main", git2::BranchType::Local) {
-            Ok(branch) => branch.into_reference(),
-            Err(_) => {
-                let reference = bare_repo
-                    .find_reference("refs/remotes/origin/main")
-                    .unwrap();
-                let commit = reference.peel_to_commit().unwrap();
-                bare_repo
-                    .branch("main", &commit, false)
-                    .unwrap()
-                    .into_reference()
-            }
-        };
-        let mut opts = git2::WorktreeAddOptions::new();
-        opts.reference(Some(&branch_ref));
-        bare_repo.worktree("main", &main_wt, Some(&opts)).unwrap();
+        clone_bare_with_main_worktree(source_td.path(), dest_td.path());
 
         let e = entry(dest_td.path().to_path_buf(), git_config(true, None));
         assert_eq!(inspect(&e).unwrap(), Status::Applied);
+    }
+
+    #[test]
+    fn bare_worktree_aggregates_across_multiple_worktrees() {
+        // Two worktrees, one clean and one dirty: the aggregation loop's
+        // second iteration must hit the `Some(current) => merge(...)`
+        // branch (the first only ever hits `None => status`), and the
+        // dirty one's higher severity should win regardless of iteration
+        // order.
+        let source_td = TempDir::new().unwrap();
+        init_committed_repo(source_td.path());
+        let dest_td = TempDir::new().unwrap();
+        let bare_repo = clone_bare_with_main_worktree(source_td.path(), dest_td.path());
+
+        let second_wt = dest_td.path().join("second");
+        {
+            let head_commit = bare_repo
+                .find_reference("refs/heads/main")
+                .unwrap()
+                .peel_to_commit()
+                .unwrap();
+            bare_repo.branch("second", &head_commit, false).unwrap();
+            let branch_ref = bare_repo
+                .find_branch("second", git2::BranchType::Local)
+                .unwrap()
+                .into_reference();
+            let mut opts = git2::WorktreeAddOptions::new();
+            opts.reference(Some(&branch_ref));
+            bare_repo
+                .worktree("second", &second_wt, Some(&opts))
+                .unwrap();
+        }
+        fs::write(second_wt.join("README.md"), "uncommitted change").unwrap();
+
+        let e = entry(dest_td.path().to_path_buf(), git_config(true, None));
+        assert_eq!(inspect(&e).unwrap(), Status::Modified);
+    }
+
+    #[test]
+    fn bare_worktree_metadata_without_directory_is_missing() {
+        // The bare repo still lists "main" as a worktree (its
+        // `.git/worktrees/main` metadata is untouched), but the actual
+        // checkout directory is gone — e.g. deleted by hand outside
+        // `over`. Every configured worktree is then skipped via
+        // `continue`, so nothing contributes to `worst` and the entry
+        // falls back to `Missing`, same as a never-cloned checkout.
+        let source_td = TempDir::new().unwrap();
+        init_committed_repo(source_td.path());
+        let dest_td = TempDir::new().unwrap();
+        clone_bare_with_main_worktree(source_td.path(), dest_td.path());
+        fs::remove_dir_all(dest_td.path().join("main")).unwrap();
+
+        let e = entry(dest_td.path().to_path_buf(), git_config(true, None));
+        assert_eq!(inspect(&e).unwrap(), Status::Missing);
+    }
+
+    #[test]
+    fn bare_path_that_is_not_a_valid_repo_is_broken() {
+        // `<target>/.git` exists but is a plain file, not a bare
+        // repository — `Repository::open_bare` fails, which must not
+        // bubble up as an error but report `Broken` instead.
+        let td = TempDir::new().unwrap();
+        fs::write(td.path().join(".git"), "not a git repo").unwrap();
+
+        let e = entry(td.path().to_path_buf(), git_config(true, None));
+        assert_eq!(inspect(&e).unwrap(), Status::Broken);
+    }
+
+    #[test]
+    fn detached_head_checkout_is_applied() {
+        // No branch to compare against an upstream — `ahead_behind`
+        // returns `None`, which is not an error, just "nothing to
+        // report", same as a clean checkout in sync with its upstream.
+        let td = TempDir::new().unwrap();
+        let repo = init_committed_repo(td.path());
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.set_head_detached(head_commit.id()).unwrap();
+
+        let e = entry(td.path().to_path_buf(), git_config(false, None));
+        assert_eq!(inspect(&e).unwrap(), Status::Applied);
+    }
+
+    #[test]
+    fn severity_orders_by_urgency() {
+        // Matches `severity`'s own ranking: Applied < Ahead < Behind <
+        // Diverged < Modified < Missing < Broken < Conflict.
+        let ordered = [
+            Status::Applied,
+            Status::Ahead(1),
+            Status::Behind(1),
+            Status::Diverged {
+                ahead: 1,
+                behind: 1,
+            },
+            Status::Modified,
+            Status::Missing,
+            Status::Broken,
+            Status::Conflict,
+        ];
+        for window in ordered.windows(2) {
+            assert!(
+                severity(&window[1]) > severity(&window[0]),
+                "{:?} should be more severe than {:?}",
+                window[1],
+                window[0],
+            );
+        }
+    }
+
+    #[test]
+    fn merge_keeps_the_more_severe_status() {
+        assert_eq!(merge(Status::Applied, Status::Modified), Status::Modified);
+        assert_eq!(merge(Status::Conflict, Status::Applied), Status::Conflict);
+        assert_eq!(
+            merge(Status::Ahead(1), Status::Behind(1)),
+            Status::Behind(1)
+        );
     }
 }

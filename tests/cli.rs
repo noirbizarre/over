@@ -374,6 +374,22 @@ fn status_reports_conflict_for_existing_file() -> TestResult {
 }
 
 #[test]
+fn status_debug_output() -> TestResult {
+    let repo = setup_overlay_repo();
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .arg("--debug")
+        .args(["status", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr(contains("CLI args"));
+    Ok(())
+}
+
+#[test]
 fn status_unknown_overlay_fails() -> TestResult {
     let tmp = TempDir::new()?;
     Command::cargo_bin("over")?

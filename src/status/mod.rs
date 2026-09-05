@@ -398,6 +398,148 @@ mod tests {
         );
     }
 
+    /// Exercise every `EntryStatus` `Display` arm directly — most of them
+    /// (`Applied`, `Modified`, `Broken`, `Ahead`, `Behind`, `Diverged`)
+    /// never print by default (`cli::status` only prints entries that
+    /// `needs_attention()`, and `Applied` never does), so a report built
+    /// through `Report::build` alone wouldn't reach them.
+    #[test]
+    fn entry_status_display_covers_every_status_variant() {
+        fn entry_status(status: Status) -> EntryStatus {
+            EntryStatus {
+                entry: DesiredEntry {
+                    target: std::path::PathBuf::from("/tmp/target"),
+                    provenance: crate::desired::Provenance::Overlay {
+                        overlay: "ov".to_string(),
+                        source: std::path::PathBuf::from("/repo/ov"),
+                    },
+                    intent: MaterializationIntent::Directory,
+                },
+                status,
+            }
+        }
+
+        assert!(format!("{}", entry_status(Status::Applied)).contains("applied:"));
+        assert!(format!("{}", entry_status(Status::Missing)).contains("missing:"));
+        assert!(format!("{}", entry_status(Status::Modified)).contains("modified:"));
+        assert!(format!("{}", entry_status(Status::Broken)).contains("broken:"));
+        assert!(format!("{}", entry_status(Status::Conflict)).contains("conflict:"));
+        let ahead = format!("{}", entry_status(Status::Ahead(1)));
+        assert!(ahead.contains("ahead:") && ahead.contains("1 commit ahead"));
+        let ahead_plural = format!("{}", entry_status(Status::Ahead(2)));
+        assert!(ahead_plural.contains("2 commits ahead"));
+        let behind = format!("{}", entry_status(Status::Behind(1)));
+        assert!(behind.contains("behind:") && behind.contains("1 commit behind"));
+        let behind_plural = format!("{}", entry_status(Status::Behind(3)));
+        assert!(behind_plural.contains("3 commits behind"));
+        let diverged = format!(
+            "{}",
+            entry_status(Status::Diverged {
+                ahead: 2,
+                behind: 3
+            })
+        );
+        assert!(diverged.contains("diverged:"));
+        assert!(diverged.contains("2 ahead, 3 behind"));
+    }
+
+    /// `Report::counts()` only increments a bucket when a matching status
+    /// is present — build a synthetic `Report` (private field, but tests
+    /// are a child module) covering every variant, since `Report::build`
+    /// alone never produces `Modified`/`Broken`/`Ahead`/`Behind`/`Diverged`
+    /// without a real git checkout on disk.
+    #[test]
+    fn counts_tallies_every_status_variant() {
+        fn entry_status(status: Status) -> EntryStatus {
+            EntryStatus {
+                entry: DesiredEntry {
+                    target: std::path::PathBuf::from("/tmp/target"),
+                    provenance: crate::desired::Provenance::Overlay {
+                        overlay: "ov".to_string(),
+                        source: std::path::PathBuf::from("/repo/ov"),
+                    },
+                    intent: MaterializationIntent::Directory,
+                },
+                status,
+            }
+        }
+
+        let report = Report {
+            entries: vec![
+                entry_status(Status::Applied),
+                entry_status(Status::Missing),
+                entry_status(Status::Modified),
+                entry_status(Status::Broken),
+                entry_status(Status::Conflict),
+                entry_status(Status::Ahead(1)),
+                entry_status(Status::Behind(1)),
+                entry_status(Status::Diverged {
+                    ahead: 1,
+                    behind: 1,
+                }),
+            ],
+        };
+        let counts = report.counts();
+        assert_eq!(
+            counts,
+            Counts {
+                applied: 1,
+                missing: 1,
+                modified: 1,
+                broken: 1,
+                conflict: 1,
+                ahead: 1,
+                behind: 1,
+                diverged: 1,
+            }
+        );
+        assert!(report.has_issues());
+    }
+
+    #[test]
+    fn dangling_soft_symlink_directory_noop_is_broken() {
+        // Same as `dangling_soft_symlink_noop_is_broken` but for the
+        // `SymlinkDirectory` alternative of `classify_noop`'s pattern.
+        let intent = MaterializationIntent::SymlinkDirectory {
+            source: std::path::PathBuf::from("/does/not/exist/anymore"),
+            link_type: LinkType::Soft,
+        };
+        assert_eq!(classify_noop(&intent), Status::Broken);
+    }
+
+    #[rstest]
+    fn git_checkout_entry_dispatches_to_git_inspect() {
+        // Not yet cloned: `DesiredTree` only ever describes the checkout
+        // (`Overlay::apply` clones it separately, outside `Plan`), so
+        // `Report::build` should route it through `git::inspect` and get
+        // `Missing` back, exercising the `Checkout` arm of its match.
+        // Uses a subpath (not the overlay's own target root, which the
+        // fresh `TempDir` already exists as — that would report `Broken`
+        // instead, a real directory occupying a git-managed path).
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\n[git]\n\".config/nvim\" = \"https://example.com/nvim.git\"")
+            .unwrap();
+        let overlay = repo.get("ov").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay.clone())
+            .build();
+
+        let desired = DesiredTree::build(&ctx, &overlay).unwrap();
+        let report = Report::build(&desired).unwrap();
+        let checkout_status = report
+            .entries()
+            .iter()
+            .find(|e| matches!(e.entry.intent, MaterializationIntent::Checkout))
+            .unwrap();
+        assert_eq!(checkout_status.status, Status::Missing);
+    }
+
     #[test]
     fn counts_display_lists_every_status() {
         let counts = Counts {
