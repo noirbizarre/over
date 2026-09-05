@@ -8,9 +8,6 @@ use dialoguer::Select;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use globset::GlobBuilder;
-use indicatif::{ProgressBar, ProgressStyle};
-use std::sync::LazyLock;
 use symlink::{remove_symlink_dir, remove_symlink_file, symlink_dir, symlink_file};
 
 use tokio::fs::rename;
@@ -18,16 +15,10 @@ use tokio::task::spawn_blocking;
 use walkdir::WalkDir;
 
 use crate::exec::{Action, Ctx};
-use crate::overlays::{self, Overlay};
+use crate::overlays::Overlay;
 use crate::ui::style::DialogTheme;
-use crate::ui::{self, emojis, style};
+use crate::ui::{emojis, style};
 use crate::utils::short_path;
-
-static SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
-    ProgressStyle::with_template("{spinner:.cyan} {wide_msg}")
-        .expect("static progress template must be valid")
-        .tick_chars(style::TICK_CHARS_BRAILLE_4_6_DOWN.as_str())
-});
 
 /// Choices presented to the user when a conflict is detected during apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,86 +213,6 @@ fn resolve_dir_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool>
             }
         }
     }
-}
-
-pub async fn link(ctx: Ctx, overlay: &Overlay, to: &Path) -> Result<()> {
-    ui::info(format!(
-        "{} {}",
-        emojis::LINK,
-        style::white("Linking files"),
-    ))?;
-
-    let progress = ProgressBar::new_spinner()
-        .with_style(SPINNER_STYLE.clone())
-        .with_message("");
-
-    let exclude = GlobBuilder::new(&overlays::GLOB_PATTERN)
-        .literal_separator(true)
-        .build()?
-        .compile_matcher();
-    let symlink_config = GlobBuilder::new("**/*.link.{toml,yaml,yml}")
-        .literal_separator(true)
-        .build()?
-        .compile_matcher();
-    let files = WalkDir::new(&overlay.root)
-        .min_depth(1)
-        .into_iter()
-        .filter_map(|entry| match entry {
-            Ok(e) => Some(e),
-            Err(e) => {
-                tracing::warn!("skipping entry due to error: {}", e);
-                None
-            }
-        })
-        .filter(|e| !exclude.is_match(e.path()) && !symlink_config.is_match(e.path()))
-        .filter(|e| {
-            let rel = match e.path().strip_prefix(&overlay.root) {
-                Ok(r) => r,
-                Err(_) => return false,
-            };
-            !overlay.is_excluded(rel)
-        });
-
-    for file in files {
-        // progress.tick();
-        let rel_path = file.path().strip_prefix(&overlay.root)?;
-        let target = to.join(rel_path);
-        let path = file.path();
-
-        // If this directory matches a link_dirs pattern, symlink it as a unit
-        // and skip its children (WalkDir will still yield them but we handle the dir)
-        if path.is_dir() && overlay.is_link_dir(rel_path) {
-            let action = EnsureDirLink::new(ctx.clone(), path.to_path_buf(), target);
-            if ctx.verbose || ctx.dry_run {
-                progress.println(format!("{}", action));
-            }
-            progress.set_message(format!("{}", action));
-            action.execute(ctx.clone()).await?;
-            continue;
-        }
-
-        let action: Box<dyn Action> = match () {
-            _ if path.is_dir() => Box::new(EnsureDir::new(target)),
-            _ if path.is_file() => Box::new(EnsureLink::new(
-                ctx.clone(),
-                file.clone().into_path(),
-                target,
-            )),
-            _ => Box::new(EnsureLink::new(
-                ctx.clone(),
-                file.clone().into_path(),
-                target,
-            )),
-        };
-        if ctx.verbose || ctx.dry_run {
-            progress.println(format!("{}", action));
-        }
-        progress.set_message(format!("{}", action));
-        action.execute(ctx.clone()).await?;
-    }
-    // progress.finish_with_message("DOne");
-    progress.finish_and_clear();
-    Ok(())
 }
 
 pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()> {
@@ -1586,53 +1497,6 @@ mod tests {
         assert!(
             target.join("file.txt").exists(),
             "should be able to access files through symlink"
-        );
-    }
-
-    // ── link() with unreadable entries ──────────────────────────────────
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn link_skips_unreadable_entries_with_warning() {
-        use std::os::unix::fs::PermissionsExt;
-
-        init_test_tracing();
-        let (td, repo) = repo_and_root();
-        let overlay_dir = td.child("ov_unreadable");
-        overlay_dir.create_dir_all().unwrap();
-        overlay_dir
-            .child("over.toml")
-            .write_str(&format!("target = \"{}\"", td.path().display()))
-            .unwrap();
-        let overlay = repo.get("ov_unreadable").unwrap();
-        let c = Context::builder()
-            .dry_run(true)
-            .root(td.path().to_path_buf())
-            .repository(repo.clone())
-            .overlay(overlay.clone())
-            .build();
-
-        // Create a normal file in the overlay
-        fs::write(overlay.root.join("good.txt"), "ok").unwrap();
-
-        // Create a subdirectory with no read permission to trigger WalkDir error
-        let bad_dir = overlay.root.join("bad_dir");
-        fs::create_dir_all(&bad_dir).unwrap();
-        fs::write(bad_dir.join("hidden.txt"), "secret").unwrap();
-        fs::set_permissions(&bad_dir, fs::Permissions::from_mode(0o000)).unwrap();
-
-        // link() should succeed, skipping the unreadable entry with a warning
-        let target = td.path().join("link_target");
-        fs::create_dir_all(&target).unwrap();
-        let result = link(c.clone(), &overlay, &target).await;
-
-        // Restore permissions for cleanup
-        fs::set_permissions(&bad_dir, fs::Permissions::from_mode(0o755)).unwrap();
-
-        assert!(
-            result.is_ok(),
-            "link should succeed despite unreadable entries: {:?}",
-            result.err()
         );
     }
 

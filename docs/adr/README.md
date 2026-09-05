@@ -33,3 +33,4 @@ by editing the old one. The history is the value.
 | [008](008-uses-composition-is-a-flat-union.md) | `uses` composition is a flat union of independent trees, not a layered override |
 | [009](009-lint-is-a-separate-tolerant-pass.md) | `over lint` is a separate, tolerant, pre-deserialization static-analysis pass |
 | [010](010-templating-is-scoped-to-path-strings.md) | Templating is scoped to path-resolution strings, not file content |
+| [011](011-plan-then-execute-reconciliation.md) | Plan-then-execute reconciliation, amending ADR-005 and ADR-006 |

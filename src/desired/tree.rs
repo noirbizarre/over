@@ -36,6 +36,22 @@ impl DesiredTree {
         Ok(Self { entries })
     }
 
+    /// This overlay's own entries only — no `uses` recursion.
+    ///
+    /// `Overlay::apply` (#13) uses this so its per-overlay-node
+    /// orchestration (progress banners, cycle detection, git cloning) stays
+    /// untouched while the directory/symlink surface goes through a
+    /// [`crate::plan::Plan`]. [`Self::build`] (the full, recursive graph)
+    /// remains the entry point for whole-overlay status/diff (#12/#109),
+    /// which need every `uses` dependency's entries too.
+    pub fn build_own(ctx: &exec::Context, overlay: &Overlay) -> Result<Self> {
+        let target = overlay.resolve_target(ctx)?;
+        let mut entries = collect_own_entries(ctx, overlay, &target)?;
+        // Same deterministic ordering as `build()`.
+        entries.sort_by(|a, b| a.target.cmp(&b.target));
+        Ok(Self { entries })
+    }
+
     pub fn entries(&self) -> &[DesiredEntry] {
         &self.entries
     }
@@ -73,18 +89,6 @@ fn build_inner(
 
     let target = overlay.resolve_target(ctx)?;
 
-    // Every overlay needs a place to live, even one with no files of its own
-    // (a `uses`-only or git-only overlay) — mirrors the unconditional
-    // `EnsureDir` at the top of `Overlay::apply_inner`.
-    entries.push(DesiredEntry {
-        target: target.clone(),
-        provenance: Provenance::Overlay {
-            overlay: overlay.name.clone(),
-            source: overlay.root.clone(),
-        },
-        intent: MaterializationIntent::Directory,
-    });
-
     if let Some(uses) = &overlay.uses {
         if ctx.no_uses {
             tracing::debug!(overlay = %overlay.name, "skipping uses (--no-uses)");
@@ -100,13 +104,51 @@ fn build_inner(
         }
     }
 
+    // This overlay's own entries are collected after its `uses` so that,
+    // should any target path collide (e.g. both default to the same root),
+    // the overlay's own entry is the one a stable sort keeps last — the
+    // final sort by target is what actually gives us determinism, but
+    // keeping this order matches the intent that a dependent's own files
+    // are what's being layered on top of what it `uses`.
+    entries.extend(collect_own_entries(ctx, overlay, &target)?);
+
+    stack.pop();
+    visited.insert(overlay.name.clone());
+
+    Ok(())
+}
+
+/// This overlay's own entries: its root directory, its declared `git`
+/// checkouts, its own file tree, and its `.link.*` sidecars. Excludes
+/// `uses` — callers that need the full transitive graph recurse separately
+/// (see [`build_inner`]); [`DesiredTree::build_own`] calls this directly for
+/// a single node.
+fn collect_own_entries(
+    ctx: &exec::Context,
+    overlay: &Overlay,
+    target: &Path,
+) -> Result<Vec<DesiredEntry>> {
+    let mut entries = Vec::new();
+
+    // Every overlay needs a place to live, even one with no files of its own
+    // (a `uses`-only or git-only overlay) — mirrors the unconditional
+    // `EnsureDir` at the top of `Overlay::apply_inner`.
+    entries.push(DesiredEntry {
+        target: target.to_path_buf(),
+        provenance: Provenance::Overlay {
+            overlay: overlay.name.clone(),
+            source: overlay.root.clone(),
+        },
+        intent: MaterializationIntent::Directory,
+    });
+
     // Git-managed paths: not yet materializable (#108/#110 own turning these
     // into a real checkout/worktree), but carried so a future Plan/diff/status
     // (#13/#109/#12) can at least see and report on them.
     if let Some(git_repos) = &overlay.git {
         for (repo_key, config) in git_repos {
             let repo_target = if repo_key == ROOT_PATH {
-                target.clone()
+                target.to_path_buf()
             } else {
                 target.join(repo_key)
             };
@@ -122,24 +164,22 @@ fn build_inner(
         }
     }
 
-    walk_overlay_tree(overlay, &target, entries)?;
+    walk_overlay_tree(overlay, target, &mut entries)?;
 
-    // Mirrors `apply_symlinks`'s resolved-overlay bookkeeping so `.link.*`
-    // sidecar templates get the same (limited) `{{ overlays[...] }}` support
-    // as today's apply.
+    // Mirrors the same resolved-overlay bookkeeping `Overlay::apply` uses so
+    // `.link.*` sidecar templates get the same (limited) `{{ overlays[...] }}`
+    // support as before #13.
     let ctx_with_target =
         ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
-    build_symlink_sidecars(&ctx_with_target, overlay, &target, entries)?;
+    build_symlink_sidecars(&ctx_with_target, overlay, target, &mut entries)?;
 
-    stack.pop();
-    visited.insert(overlay.name.clone());
-
-    Ok(())
+    Ok(entries)
 }
 
 /// Walk the overlay's own tree, producing one entry per file/directory —
-/// same filters as `actions::fs::link` (overlay descriptor files, `.link.*`
-/// sidecars, and `exclude` globs are skipped).
+/// overlay descriptor files, `.link.*` sidecars, and `exclude` globs are
+/// skipped, mirroring what `Overlay::apply` used to filter for inline
+/// before #13 moved materialization behind a `Plan`.
 fn walk_overlay_tree(
     overlay: &Overlay,
     target: &Path,
@@ -181,8 +221,7 @@ fn walk_overlay_tree(
         let entry_target = target.join(rel_path);
 
         // A directory matching `link_dirs` is one materialization unit — its
-        // children are not separately enumerated (unlike `actions::fs::link`,
-        // which still walks and acts on them today; left untouched here).
+        // children are not separately enumerated.
         if path.is_dir() && overlay.is_link_dir(rel_path) {
             entries.push(DesiredEntry {
                 target: entry_target,
@@ -226,8 +265,8 @@ fn walk_overlay_tree(
     Ok(())
 }
 
-/// Resolve `.link.{toml,yaml,yml}` sidecars into entries, mirroring
-/// `Overlay::apply_symlinks`.
+/// Resolve `.link.{toml,yaml,yml}` sidecars into entries (`.link.*` config
+/// files declaring an arbitrary extra symlink, soft or hard).
 fn build_symlink_sidecars(
     ctx: &exec::Context,
     overlay: &Overlay,
@@ -834,5 +873,51 @@ mod tests {
         let tree = DesiredTree::default();
         assert!(tree.is_empty());
         assert_eq!(tree.len(), 0);
+    }
+
+    /// Install a tracing subscriber so `tracing::warn!` bodies (the
+    /// `WalkDir` error branch below) actually execute during the test.
+    fn init_test_tracing() {
+        let _ = tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_max_level(tracing::Level::TRACE)
+            .try_init();
+    }
+
+    #[rstest]
+    #[cfg(unix)]
+    fn unreadable_subdirectory_is_skipped_with_a_warning() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        init_test_tracing();
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        overlay_dir.child("good.txt").write_str("ok").unwrap();
+        let bad_dir = overlay_dir.child("bad_dir");
+        bad_dir.create_dir_all().unwrap();
+        bad_dir.child("hidden.txt").write_str("secret").unwrap();
+        fs::set_permissions(bad_dir.path(), fs::Permissions::from_mode(0o000)).unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let result = DesiredTree::build(&c, &overlay);
+
+        // Restore permissions for cleanup regardless of outcome.
+        fs::set_permissions(bad_dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+
+        let tree = result.expect("build should succeed despite unreadable entries");
+        let root = td.path().to_path_buf();
+        assert!(
+            tree.entries()
+                .iter()
+                .any(|e| e.target == root.join("good.txt")),
+            "good.txt should still be discovered"
+        );
     }
 }

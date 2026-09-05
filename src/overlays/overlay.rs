@@ -8,15 +8,13 @@ use config::{Config, File, FileFormat, FileSourceFile};
 use globset::GlobBuilder;
 use serde::{Deserialize, Serialize};
 
+use crate::actions;
 use crate::actions::git::config::{GitRepoConfig, deserialize_git_field};
 use crate::actions::install::InstallConfig;
-use crate::actions::{self, EnsureDir, EnsureSymlink};
-use crate::exec::{self, Action, Ctx};
-use crate::ui;
+use crate::desired::DesiredTree;
+use crate::exec::{self, Ctx};
+use crate::plan::Plan;
 use crate::ui::{emojis, style};
-use indicatif::ProgressBar;
-use indicatif::ProgressStyle;
-use std::sync::LazyLock;
 
 use super::{DEFAULT_TARGET, Repository};
 
@@ -61,12 +59,6 @@ where
     let value = deserializer.deserialize_any(StringOrVecVisitor)?;
     Ok(Some(value))
 }
-
-static SYMLINK_SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
-    ProgressStyle::with_template("{spinner:.cyan} {wide_msg}")
-        .expect("static progress template must be valid")
-        .tick_chars(style::TICK_CHARS_BRAILLE_4_6_DOWN.as_str())
-});
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Overlay {
@@ -253,10 +245,6 @@ impl Overlay {
             stack.push(self.name.clone());
 
             let target = self.resolve_target(ctx)?;
-            if !target.exists() {
-                let mkdir = EnsureDir::new(target.to_path_buf());
-                mkdir.execute(ctx.clone()).await?;
-            }
             println!(
                 "{} {} {} {} {}",
                 emojis::PACKAGE,
@@ -284,13 +272,22 @@ impl Overlay {
                 }
             }
 
+            // Git checkouts stay outside the plan (#108/#110 own real
+            // checkout materialization); everything else — the overlay's
+            // own directory, files, and `.link.*` sidecars — goes through a
+            // Plan built from this overlay's own DesiredTree (no `uses`
+            // recursion here: that's handled above, one overlay at a time,
+            // so each dependency keeps its own banner/cycle-check).
             actions::git::clone_repositories(ctx.clone(), self, &target).await?;
-            actions::fs::link(ctx.clone(), self, &target).await?;
 
             let ctx_with_target =
                 ctx.with_resolved_overlay(self.name.clone(), target.to_string_lossy().to_string());
-            self.apply_symlinks(ctx_with_target.clone(), &target)
-                .await?;
+            let desired = DesiredTree::build_own(&ctx_with_target, self)?;
+            let plan = Plan::build(&desired)?;
+            if ctx.verbose || ctx.dry_run {
+                println!("{plan}");
+            }
+            plan.execute(ctx_with_target).await?;
 
             stack.pop();
             visited.insert(self.name.clone());
@@ -307,42 +304,6 @@ impl Overlay {
 
             Ok(())
         })
-    }
-
-    pub async fn apply_symlinks(&self, ctx: Ctx, target: &Path) -> Result<()> {
-        let symlinks = actions::symlink::discover_symlinks(&self.root)?;
-        if symlinks.is_empty() {
-            return Ok(());
-        }
-
-        ui::info(format!(
-            "{} {}",
-            emojis::LINK,
-            style::white("Linking symlinks"),
-        ))?;
-
-        let progress = ProgressBar::new_spinner()
-            .with_style(SYMLINK_SPINNER_STYLE.clone())
-            .with_message("");
-
-        for (name, config) in &symlinks {
-            let resolved_target = actions::symlink::render_symlink_target(&config.target, &ctx)?;
-            let target_path = PathBuf::from(&resolved_target);
-            let is_dir = target_path.is_dir()
-                || resolved_target.ends_with(std::path::MAIN_SEPARATOR_STR)
-                || resolved_target.ends_with('/');
-            let link_path = target.join(name);
-
-            let action = EnsureSymlink::new(target_path, link_path, config.r#type.clone(), is_dir);
-            if ctx.verbose || ctx.dry_run {
-                progress.println(format!("{}", action));
-            }
-            progress.set_message(format!("{}", action));
-            action.execute(ctx.clone()).await?;
-        }
-
-        progress.finish_and_clear();
-        Ok(())
     }
 
     pub async fn add_file(&self, ctx: &Ctx, file: &PathBuf) -> Result<()> {

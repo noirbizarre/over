@@ -9,6 +9,7 @@ pub mod desired;
 pub mod exec;
 pub mod lint;
 pub mod overlays;
+pub mod plan;
 pub mod ui;
 pub mod xdg;
 

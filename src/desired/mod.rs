@@ -1,11 +1,12 @@
 //! The canonical desired filesystem state model (#107).
 //!
-//! `over` currently applies overlays directly, side effect by side effect
-//! (`Overlay::apply` → `actions::fs::link`/`actions::git::clone_repositories`
-//! → symlinks/directories/clones on disk). This module introduces
-//! [`DesiredTree`]/[`DesiredEntry`] as a separate, read-only representation
-//! of what `over` *wants* the filesystem to look like, independently from how
-//! that state gets materialized:
+//! This module introduces [`DesiredTree`]/[`DesiredEntry`] as a separate,
+//! read-only representation of what `over` *wants* the filesystem to look
+//! like, independently from how that state gets materialized. `Overlay::
+//! apply` (#13) builds a [`crate::plan::Plan`] from a `DesiredTree` and
+//! executes it — git repository checkouts remain a separate,
+//! `actions::git::clone_repositories` step, orthogonal to the plan, until
+//! #108/#110 make them a real materializer:
 //!
 //! ```text
 //! root configuration
@@ -36,9 +37,9 @@
 //!   #113, layered on top of this model later.
 //! - Rendered file content (`DesiredEntry` has no `content` field) — #61.
 //! - Permission metadata (`DesiredEntry` has no `permissions` field) — #65.
-//! - Comparing against actual filesystem state, building an execution
-//!   `Plan`, or materializing anything — #13 and #108. `DesiredTree` is
-//!   consumed by those, not a replacement for `Overlay::apply` yet.
+//! - Comparing against actual filesystem state and materializing anything —
+//!   that's [`crate::plan`] (#13) and #108. `DesiredTree` is consumed by
+//!   those, not a replacement for `Overlay::apply` itself.
 //! - `install` config (package managers): not filesystem materialization, so
 //!   it has no representation in `DesiredTree`.
 
