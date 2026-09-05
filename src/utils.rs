@@ -1,4 +1,6 @@
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::Result;
 use dirs::home_dir;
@@ -33,6 +35,41 @@ pub fn short_path(path: &str) -> String {
     } else {
         path.to_string()
     }
+}
+
+/// Parse a single `KEY=value` line from `/etc/os-release`-formatted content,
+/// stripping surrounding quotes (values are often quoted, e.g. `NAME="Ubuntu"`).
+fn parse_os_release_field(content: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    content
+        .lines()
+        .find_map(|line| line.strip_prefix(prefix.as_str()))
+        .map(|value| value.trim_matches('"').to_string())
+}
+
+/// Distro ID (e.g. `"ubuntu"`, `"arch"`) from `/etc/os-release`. Used both for
+/// package-manager resolution (`actions::install`) and the `machine.distro_id`
+/// template variable. Memoized: the file never changes mid-process.
+pub fn detect_linux_distro_id() -> Option<String> {
+    static DISTRO_ID: OnceLock<Option<String>> = OnceLock::new();
+    DISTRO_ID
+        .get_or_init(|| {
+            let content = fs::read_to_string("/etc/os-release").ok()?;
+            parse_os_release_field(&content, "ID")
+        })
+        .clone()
+}
+
+/// Human-readable distro name (e.g. `"Ubuntu"`, `"Arch Linux"`) from
+/// `/etc/os-release`, exposed to templates as `machine.distro`.
+pub fn detect_linux_distro_name() -> Option<String> {
+    static DISTRO_NAME: OnceLock<Option<String>> = OnceLock::new();
+    DISTRO_NAME
+        .get_or_init(|| {
+            let content = fs::read_to_string("/etc/os-release").ok()?;
+            parse_os_release_field(&content, "NAME")
+        })
+        .clone()
 }
 
 // Find the longest common suffix between two strings
@@ -110,5 +147,24 @@ mod tests {
         let result = resolve_home(None).unwrap();
         let expected = home_dir().unwrap().join(".over");
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn parse_os_release_field_extracts_quoted_and_unquoted_values() {
+        let content = "ID=ubuntu\nNAME=\"Ubuntu\"\nVERSION_ID=\"22.04\"\n";
+        assert_eq!(
+            parse_os_release_field(content, "ID"),
+            Some("ubuntu".to_string())
+        );
+        assert_eq!(
+            parse_os_release_field(content, "NAME"),
+            Some("Ubuntu".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_os_release_field_missing_key_returns_none() {
+        let content = "ID=arch\n";
+        assert_eq!(parse_os_release_field(content, "NAME"), None);
     }
 }
