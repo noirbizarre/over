@@ -9,6 +9,7 @@ mod add;
 mod apply;
 pub(crate) mod common;
 mod completion;
+mod diff;
 pub mod git_over;
 mod lint;
 mod list;
@@ -75,6 +76,12 @@ pub enum Commands {
         about = "Show the reconciliation status of overlays against actual state"
     )]
     Status(status::Params),
+
+    #[clap(
+        name = "diff",
+        about = "Show differences between desired and actual overlay state"
+    )]
+    Diff(diff::Params),
 }
 
 impl CLI {
@@ -115,6 +122,9 @@ pub async fn main() -> Result<()> {
         }
         Some(Commands::Status(ref opt)) => {
             status::execute(&args, opt).await?;
+        }
+        Some(Commands::Diff(ref opt)) => {
+            diff::execute(&args, opt).await?;
         }
         None => {
             use clap::CommandFactory;
@@ -228,6 +238,12 @@ mod tests {
     fn cli_status_subcommand() {
         let args = CLI::parse_from(["over", "status"]);
         assert!(matches!(args.cmd, Some(Commands::Status(_))));
+    }
+
+    #[test]
+    fn cli_diff_subcommand() {
+        let args = CLI::parse_from(["over", "diff"]);
+        assert!(matches!(args.cmd, Some(Commands::Diff(_))));
     }
 
     #[test]

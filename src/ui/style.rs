@@ -39,6 +39,14 @@ pub fn yellow<D>(value: D) -> StyledObject<D> {
     style(value).yellow()
 }
 
+pub fn green<D>(value: D) -> StyledObject<D> {
+    style(value).green()
+}
+
+pub fn red<D>(value: D) -> StyledObject<D> {
+    style(value).red()
+}
+
 pub struct DialogTheme {
     /// The style for default values
     pub defaults_style: Style,
@@ -361,6 +369,22 @@ mod tests {
     #[test]
     fn test_yellow_styles_text() {
         let styled = yellow("hello");
+        let mut buf = String::new();
+        write!(&mut buf, "{}", styled).unwrap();
+        assert!(buf.contains("hello"));
+    }
+
+    #[test]
+    fn test_green_styles_text() {
+        let styled = green("hello");
+        let mut buf = String::new();
+        write!(&mut buf, "{}", styled).unwrap();
+        assert!(buf.contains("hello"));
+    }
+
+    #[test]
+    fn test_red_styles_text() {
+        let styled = red("hello");
         let mut buf = String::new();
         write!(&mut buf, "{}", styled).unwrap();
         assert!(buf.contains("hello"));

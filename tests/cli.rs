@@ -414,6 +414,114 @@ fn status_empty_repository_reports_no_overlays() -> TestResult {
     Ok(())
 }
 
+// ── diff integration tests ───────────────────────────────────────────────
+
+#[test]
+fn diff_reports_missing_before_apply() -> TestResult {
+    let repo = setup_overlay_repo();
+    // A real file not yet linked anywhere — the overlay's own root
+    // directory already exists (it *is* `root`, the default target),
+    // so only this file entry should be reported missing.
+    fs::write(repo.path().join("dev").join("file.txt"), b"content")?;
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["diff", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("missing:"));
+    Ok(())
+}
+
+#[test]
+fn diff_reports_no_differences_after_apply() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("dev").join("file.txt"), b"content")?;
+    let root = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["apply", "dev", "--root"])
+        .arg(root.path())
+        .arg("--force")
+        .assert()
+        .success();
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["diff", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("no differences"));
+    Ok(())
+}
+
+#[test]
+fn diff_shows_content_diff_for_existing_file() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("dev").join("file.txt"), b"overlay content")?;
+    let root = TempDir::new()?;
+    fs::write(root.path().join("file.txt"), b"existing content")?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["diff", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("modified"))
+        .stdout(contains("existing content"))
+        .stdout(contains("overlay content"));
+    Ok(())
+}
+
+#[test]
+fn diff_debug_output() -> TestResult {
+    let repo = setup_overlay_repo();
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .arg("--debug")
+        .args(["diff", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr(contains("CLI args"));
+    Ok(())
+}
+
+#[test]
+fn diff_unknown_overlay_fails() -> TestResult {
+    let tmp = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["diff", "does-not-exist"])
+        .assert()
+        .failure();
+    Ok(())
+}
+
+#[test]
+fn diff_empty_repository_reports_no_overlays() -> TestResult {
+    let tmp = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .arg("diff")
+        .assert()
+        .success()
+        .stdout(contains("No overlays found"));
+    Ok(())
+}
+
 // ── show integration tests ──────────────────────────────────────────────
 
 #[test]
