@@ -312,6 +312,108 @@ fn lint_cycle_detection() -> TestResult {
     Ok(())
 }
 
+// ── status integration tests ─────────────────────────────────────────────
+
+#[test]
+fn status_reports_missing_before_apply() -> TestResult {
+    let repo = setup_overlay_repo();
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["status", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("missing"));
+    Ok(())
+}
+
+#[test]
+fn status_reports_applied_after_apply() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("dev").join("file.txt"), b"content")?;
+    let root = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["apply", "dev", "--root"])
+        .arg(root.path())
+        .arg("--force")
+        .assert()
+        .success();
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["status", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("applied"));
+    Ok(())
+}
+
+#[test]
+fn status_reports_conflict_for_existing_file() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("dev").join("file.txt"), b"overlay")?;
+    let root = TempDir::new()?;
+    fs::write(root.path().join("file.txt"), b"existing")?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["status", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("conflict"));
+    Ok(())
+}
+
+#[test]
+fn status_debug_output() -> TestResult {
+    let repo = setup_overlay_repo();
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .arg("--debug")
+        .args(["status", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr(contains("CLI args"));
+    Ok(())
+}
+
+#[test]
+fn status_unknown_overlay_fails() -> TestResult {
+    let tmp = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["status", "does-not-exist"])
+        .assert()
+        .failure();
+    Ok(())
+}
+
+#[test]
+fn status_empty_repository_reports_no_overlays() -> TestResult {
+    let tmp = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(contains("No overlays found"));
+    Ok(())
+}
+
 // ── show integration tests ──────────────────────────────────────────────
 
 #[test]

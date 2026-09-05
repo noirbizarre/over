@@ -72,9 +72,9 @@ pub enum Commands {
 
     #[clap(
         name = "status",
-        about = "Get the current repository/directory overlays status"
+        about = "Show the reconciliation status of overlays against actual state"
     )]
-    Status,
+    Status(status::Params),
 }
 
 impl CLI {
@@ -113,8 +113,8 @@ pub async fn main() -> Result<()> {
         Some(Commands::Show(ref opt)) => {
             show::execute(&args, opt).await?;
         }
-        Some(Commands::Status) => {
-            status::execute(&args).await?;
+        Some(Commands::Status(ref opt)) => {
+            status::execute(&args, opt).await?;
         }
         None => {
             use clap::CommandFactory;
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn cli_status_subcommand() {
         let args = CLI::parse_from(["over", "status"]);
-        assert!(matches!(args.cmd, Some(Commands::Status)));
+        assert!(matches!(args.cmd, Some(Commands::Status(_))));
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub mod lint;
 pub mod materialize;
 pub mod overlays;
 pub mod plan;
+pub mod status;
 pub mod ui;
 pub mod xdg;
 
