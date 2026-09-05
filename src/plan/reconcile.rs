@@ -471,12 +471,12 @@ mod tests {
             .unwrap();
         let hard_source = td.child("hard_source.txt");
         hard_source.write_str("hard").unwrap();
+        // Escape backslashes so Windows paths don't get misparsed as TOML
+        // unicode escape sequences (see `Overlay::resolve_target` tests).
+        let target_toml = hard_source.path().to_string_lossy().replace('\\', "\\\\");
         overlay_dir
             .child("hardlink.link.toml")
-            .write_str(&format!(
-                "target = \"{}\"\ntype = \"hard\"",
-                hard_source.path().display()
-            ))
+            .write_str(&format!("target = \"{}\"\ntype = \"hard\"", target_toml))
             .unwrap();
 
         let overlay = repo.get("ov").unwrap();
