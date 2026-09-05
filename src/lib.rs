@@ -6,6 +6,7 @@
 pub mod actions;
 pub mod cli;
 pub mod desired;
+pub mod diff;
 pub mod exec;
 pub mod lint;
 pub mod materialize;

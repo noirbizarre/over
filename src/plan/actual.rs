@@ -1,8 +1,11 @@
+use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+
+use crate::utils::short_path;
 
 /// What actually exists at a [`super::PlanStep`]'s target path right now,
 /// independent of what [`crate::desired::DesiredEntry`] says should be
@@ -20,6 +23,27 @@ pub enum ActualState {
     /// exist, or may not match what's desired — that's for the caller to
     /// compare).
     Symlink { points_to: PathBuf },
+}
+
+/// Human-readable description of what currently occupies a path — shared
+/// by [`super::step::PlanStep`]'s conflict diagnostics and `crate::diff`'s
+/// `Unexpected` reporting, so both describe the same [`ActualState`] the
+/// same way instead of each re-deriving the wording.
+impl fmt::Display for ActualState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ActualState::Missing => write!(f, "nothing"),
+            ActualState::Directory => write!(f, "a directory"),
+            ActualState::File => write!(f, "a file"),
+            ActualState::Symlink { points_to } => {
+                write!(
+                    f,
+                    "a symlink to {}",
+                    short_path(&points_to.to_string_lossy())
+                )
+            }
+        }
+    }
 }
 
 /// Inspect what currently exists at `path`, without mutating anything.

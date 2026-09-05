@@ -44,19 +44,6 @@ pub struct PlanStep {
     pub operation: Operation,
 }
 
-/// Human-readable description of what currently occupies a path, for
-/// conflict diagnostics.
-fn describe_actual(actual: &ActualState) -> String {
-    match actual {
-        ActualState::Missing => "nothing".to_string(),
-        ActualState::Directory => "a directory".to_string(),
-        ActualState::File => "a file".to_string(),
-        ActualState::Symlink { points_to } => {
-            format!("a symlink to {}", short_path(&points_to.to_string_lossy()))
-        }
-    }
-}
-
 impl fmt::Display for PlanStep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let target = short_path(&self.entry.target.to_string_lossy());
@@ -83,7 +70,7 @@ impl fmt::Display for PlanStep {
                 emojis::WARNING,
                 style::yellow("conflict:"),
                 target,
-                describe_actual(current),
+                current,
             ),
             (
                 MaterializationIntent::SymlinkFile { source, .. }
@@ -120,7 +107,7 @@ impl fmt::Display for PlanStep {
                 emojis::WARNING,
                 style::yellow("conflict:"),
                 target,
-                describe_actual(current),
+                current,
                 short_path(&source.to_string_lossy()),
             ),
             (MaterializationIntent::Checkout, _) => write!(

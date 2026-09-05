@@ -236,7 +236,10 @@ impl Report {
 /// data independently of the source (the link *is* a second name for the
 /// same inode), and `Directory` has no such concept, so both stay
 /// `Applied`.
-fn classify_noop(intent: &MaterializationIntent) -> Status {
+///
+/// `pub(crate)`: `crate::diff` reuses this exact check for the same
+/// `Noop` case instead of re-deriving it (#109).
+pub(crate) fn classify_noop(intent: &MaterializationIntent) -> Status {
     match intent {
         MaterializationIntent::SymlinkFile { source, link_type }
         | MaterializationIntent::SymlinkDirectory { source, link_type }
