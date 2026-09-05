@@ -20,8 +20,9 @@
 //!       ↓
 //! Plan                       (this module — one PlanStep per DesiredEntry)
 //!       ↓
-//! Plan::execute               (translates steps into the existing, tested
-//!                              actions::fs / actions::symlink Action impls)
+//! Plan::execute               (delegates each step to the registered
+//!                              crate::materialize::Materializer that owns
+//!                              its intent, #108)
 //! ```
 //!
 //! [`Plan::build`] is read-only, like `DesiredTree::build`; only
@@ -31,12 +32,18 @@
 //! uses today) or a full `uses`-graph — so the same type is reusable by
 //! `status`/`diff` (#12/#109) later.
 //!
+//! Neither `Plan::build` nor `Plan::execute` know about concrete
+//! `actions::fs`/`actions::symlink` types, or about Git: both ask a
+//! [`crate::materialize::MaterializerRegistry`] for the backend that owns
+//! each entry's `MaterializationIntent` (#108).
+//!
 //! ## What's deliberately *not* here
 //!
-//! - Git checkout materialization: [`MaterializationIntent::Checkout`]
-//!   entries are classified as [`Operation::Deferred`] and never executed
-//!   by [`Plan::execute`] — #108/#110 own turning them into real
-//!   checkouts/worktrees. `Overlay::apply` still clones git repositories
+//! - A real Git-checkout backend: [`MaterializationIntent::Checkout`]
+//!   entries have no registered [`crate::materialize::Materializer`] yet,
+//!   so they're classified as [`Operation::Deferred`] and never executed —
+//!   #110 registers a `CheckoutMaterializer` to change that, without this
+//!   module changing. `Overlay::apply` still clones git repositories
 //!   through the existing, separate `actions::git::clone_repositories`,
 //!   entirely orthogonal to this module.
 //! - Materialization-rule migrations (symlink ↔ checkout, file-level ↔
@@ -46,7 +53,7 @@
 //! - `status`/`diff`/`unapply` commands themselves — #12/#109/#64. This
 //!   module only makes `Plan` reusable for them.
 
-mod actual;
+pub(crate) mod actual;
 mod reconcile;
 mod step;
 

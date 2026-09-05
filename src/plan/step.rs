@@ -9,17 +9,17 @@ use super::actual::ActualState;
 /// What a single [`PlanStep`] needs to do to reconcile actual state with
 /// [`DesiredEntry`] intent.
 ///
-/// Deliberately a small, closed set today. Two extension points this issue
-/// is asked to leave open, without implementing either yet:
+/// Deliberately a small, closed set today. One extension point this issue
+/// is asked to leave open, without implementing it yet:
 ///
 /// - #113 will add rule-change transitions (symlink ↔ checkout, file-level
 ///   ↔ directory-level symlink) as new variants here (e.g. a future
 ///   `Migrate`) rather than requiring a different `Plan`/[`PlanStep`] shape.
-/// - #108 will replace [`super::Plan::execute`]'s direct dispatch on
-///   [`MaterializationIntent`] (the only place that knows about concrete
-///   `actions::fs`/`actions::symlink` types) with a lookup into a
-///   registered `Materializer` per intent. `Operation` itself doesn't need
-///   to change for that.
+///
+/// #108 already replaced [`super::Plan::execute`]'s direct dispatch on
+/// [`MaterializationIntent`] with a lookup into a registered
+/// [`crate::materialize::Materializer`] per intent — `Operation` itself
+/// didn't need to change for that.
 #[derive(Debug, Clone)]
 pub enum Operation {
     /// Target is missing; safe to materialize.
@@ -28,10 +28,11 @@ pub enum Operation {
     Noop,
     /// Target exists and does not match the desired intent.
     Conflict { current: ActualState },
-    /// Not yet materializable ([`MaterializationIntent::Checkout`] —
-    /// #108/#110 own turning this into a real checkout/worktree). Carried
-    /// so a plan preview can still report on it; [`super::Plan::execute`]
-    /// never acts on it.
+    /// No registered [`crate::materialize::Materializer`] claims this
+    /// entry's intent yet (today, only
+    /// [`MaterializationIntent::Checkout`] — #110 owns turning this into a
+    /// real checkout/worktree). Carried so a plan preview can still report
+    /// on it; [`super::Plan::execute`] never acts on it.
     Deferred,
 }
 
@@ -128,7 +129,7 @@ impl fmt::Display for PlanStep {
                 emojis::THREAD,
                 style::white("checkout:"),
                 target,
-                style::white("git materialization not yet supported, see #108/#110"),
+                style::white("git materialization not yet supported, see #110"),
             ),
             // `Directory`/`SymlinkFile`/`SymlinkDirectory` never produce
             // `Deferred` (only `Checkout` does, handled above) — unreachable
@@ -243,6 +244,6 @@ mod tests {
         };
         let s = format!("{step}");
         assert!(s.contains("checkout:"));
-        assert!(s.contains("#108/#110"));
+        assert!(s.contains("#110"));
     }
 }

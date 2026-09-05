@@ -4,9 +4,10 @@
 //! read-only representation of what `over` *wants* the filesystem to look
 //! like, independently from how that state gets materialized. `Overlay::
 //! apply` (#13) builds a [`crate::plan::Plan`] from a `DesiredTree` and
-//! executes it — git repository checkouts remain a separate,
+//! executes it via a registered [`crate::materialize::Materializer`]
+//! (#108) — git repository checkouts remain a separate,
 //! `actions::git::clone_repositories` step, orthogonal to the plan, until
-//! #108/#110 make them a real materializer:
+//! #110 gives them a real materializer backend:
 //!
 //! ```text
 //! root configuration
@@ -38,8 +39,9 @@
 //! - Rendered file content (`DesiredEntry` has no `content` field) — #61.
 //! - Permission metadata (`DesiredEntry` has no `permissions` field) — #65.
 //! - Comparing against actual filesystem state and materializing anything —
-//!   that's [`crate::plan`] (#13) and #108. `DesiredTree` is consumed by
-//!   those, not a replacement for `Overlay::apply` itself.
+//!   that's [`crate::plan`] (#13) and [`crate::materialize`] (#108).
+//!   `DesiredTree` is consumed by those, not a replacement for
+//!   `Overlay::apply` itself.
 //! - `install` config (package managers): not filesystem materialization, so
 //!   it has no representation in `DesiredTree`.
 

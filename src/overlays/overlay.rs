@@ -272,12 +272,14 @@ impl Overlay {
                 }
             }
 
-            // Git checkouts stay outside the plan (#108/#110 own real
-            // checkout materialization); everything else — the overlay's
-            // own directory, files, and `.link.*` sidecars — goes through a
-            // Plan built from this overlay's own DesiredTree (no `uses`
-            // recursion here: that's handled above, one overlay at a time,
-            // so each dependency keeps its own banner/cycle-check).
+            // Git checkouts stay outside the plan (no registered
+            // Materializer claims MaterializationIntent::Checkout yet;
+            // #110 owns adding a real checkout/worktree backend);
+            // everything else — the overlay's own directory, files, and
+            // `.link.*` sidecars — goes through a Plan built from this
+            // overlay's own DesiredTree (no `uses` recursion here: that's
+            // handled above, one overlay at a time, so each dependency
+            // keeps its own banner/cycle-check).
             actions::git::clone_repositories(ctx.clone(), self, &target).await?;
 
             let ctx_with_target =

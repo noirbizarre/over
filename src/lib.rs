@@ -8,6 +8,7 @@ pub mod cli;
 pub mod desired;
 pub mod exec;
 pub mod lint;
+pub mod materialize;
 pub mod overlays;
 pub mod plan;
 pub mod ui;
