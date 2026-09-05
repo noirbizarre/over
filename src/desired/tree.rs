@@ -1,0 +1,838 @@
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context as AnyhowContext, Result};
+use globset::GlobBuilder;
+use walkdir::WalkDir;
+
+use crate::actions::git::config::ROOT_PATH;
+use crate::actions::symlink;
+use crate::exec;
+use crate::overlays::{self, Overlay};
+
+use super::entry::{DesiredEntry, MaterializationIntent, Provenance};
+
+/// The canonical desired filesystem state for an overlay and everything it
+/// transitively `uses`. See the [module docs](super) for the overall model.
+#[derive(Debug, Clone, Default)]
+pub struct DesiredTree {
+    entries: Vec<DesiredEntry>,
+}
+
+impl DesiredTree {
+    /// Build the desired tree for `overlay` and everything it transitively
+    /// `uses` (flat union, ADR-008), honoring `ctx.no_uses`.
+    ///
+    /// Mirrors [`Overlay::apply`]'s traversal and cycle detection, but only
+    /// reads the filesystem (to resolve `.link.*` sidecar targets and detect
+    /// directory-vs-file symlink targets) and never writes anything.
+    pub fn build(ctx: &exec::Context, overlay: &Overlay) -> Result<Self> {
+        let mut entries = Vec::new();
+        let mut visited = HashSet::new();
+        let mut stack = Vec::new();
+        build_inner(ctx, overlay, &mut visited, &mut stack, &mut entries)?;
+        // Canonical, deterministic ordering — useful for #109 diff and tests.
+        entries.sort_by(|a, b| a.target.cmp(&b.target));
+        Ok(Self { entries })
+    }
+
+    pub fn entries(&self) -> &[DesiredEntry] {
+        &self.entries
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+fn build_inner(
+    ctx: &exec::Context,
+    overlay: &Overlay,
+    visited: &mut HashSet<String>,
+    stack: &mut Vec<String>,
+    entries: &mut Vec<DesiredEntry>,
+) -> Result<()> {
+    // Already fully processed via another dependency path — skip silently.
+    if visited.contains(&overlay.name) {
+        return Ok(());
+    }
+    // Currently in the recursion stack — true cycle.
+    if stack.contains(&overlay.name) {
+        stack.push(overlay.name.clone());
+        return Err(anyhow::anyhow!(
+            "Cycle detected: overlay '{}' forms a cycle (path: {})",
+            overlay.name,
+            stack.join(" -> ")
+        ));
+    }
+    stack.push(overlay.name.clone());
+
+    let target = overlay.resolve_target(ctx)?;
+
+    // Every overlay needs a place to live, even one with no files of its own
+    // (a `uses`-only or git-only overlay) — mirrors the unconditional
+    // `EnsureDir` at the top of `Overlay::apply_inner`.
+    entries.push(DesiredEntry {
+        target: target.clone(),
+        provenance: Provenance::Overlay {
+            overlay: overlay.name.clone(),
+            source: overlay.root.clone(),
+        },
+        intent: MaterializationIntent::Directory,
+    });
+
+    if let Some(uses) = &overlay.uses {
+        if ctx.no_uses {
+            tracing::debug!(overlay = %overlay.name, "skipping uses (--no-uses)");
+        } else {
+            for name in uses {
+                let used = ctx
+                    .repository
+                    .get(name)
+                    .with_context(|| format!("used overlay '{}' not found", name))?;
+                let sub_ctx = ctx.with_overlay(used.clone());
+                build_inner(&sub_ctx, &used, visited, stack, entries)?;
+            }
+        }
+    }
+
+    // Git-managed paths: not yet materializable (#108/#110 own turning these
+    // into a real checkout/worktree), but carried so a future Plan/diff/status
+    // (#13/#109/#12) can at least see and report on them.
+    if let Some(git_repos) = &overlay.git {
+        for (repo_key, config) in git_repos {
+            let repo_target = if repo_key == ROOT_PATH {
+                target.clone()
+            } else {
+                target.join(repo_key)
+            };
+            entries.push(DesiredEntry {
+                target: repo_target,
+                provenance: Provenance::Git {
+                    overlay: overlay.name.clone(),
+                    repo_key: repo_key.clone(),
+                    config: Box::new(config.clone()),
+                },
+                intent: MaterializationIntent::Checkout,
+            });
+        }
+    }
+
+    walk_overlay_tree(overlay, &target, entries)?;
+
+    // Mirrors `apply_symlinks`'s resolved-overlay bookkeeping so `.link.*`
+    // sidecar templates get the same (limited) `{{ overlays[...] }}` support
+    // as today's apply.
+    let ctx_with_target =
+        ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
+    build_symlink_sidecars(&ctx_with_target, overlay, &target, entries)?;
+
+    stack.pop();
+    visited.insert(overlay.name.clone());
+
+    Ok(())
+}
+
+/// Walk the overlay's own tree, producing one entry per file/directory —
+/// same filters as `actions::fs::link` (overlay descriptor files, `.link.*`
+/// sidecars, and `exclude` globs are skipped).
+fn walk_overlay_tree(
+    overlay: &Overlay,
+    target: &Path,
+    entries: &mut Vec<DesiredEntry>,
+) -> Result<()> {
+    let exclude = GlobBuilder::new(&overlays::GLOB_PATTERN)
+        .literal_separator(true)
+        .build()?
+        .compile_matcher();
+    let symlink_config = GlobBuilder::new("**/*.link.{toml,yaml,yml}")
+        .literal_separator(true)
+        .build()?
+        .compile_matcher();
+
+    let mut walker = WalkDir::new(&overlay.root).min_depth(1).into_iter();
+    while let Some(entry) = walker.next() {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("skipping entry due to error: {}", e);
+                continue;
+            }
+        };
+        let path = entry.path();
+
+        if exclude.is_match(path) || symlink_config.is_match(path) {
+            continue;
+        }
+
+        let rel_path = match path.strip_prefix(&overlay.root) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        if overlay.is_excluded(rel_path) {
+            continue;
+        }
+
+        let entry_target = target.join(rel_path);
+
+        // A directory matching `link_dirs` is one materialization unit — its
+        // children are not separately enumerated (unlike `actions::fs::link`,
+        // which still walks and acts on them today; left untouched here).
+        if path.is_dir() && overlay.is_link_dir(rel_path) {
+            entries.push(DesiredEntry {
+                target: entry_target,
+                provenance: Provenance::Overlay {
+                    overlay: overlay.name.clone(),
+                    source: path.to_path_buf(),
+                },
+                intent: MaterializationIntent::SymlinkDirectory {
+                    source: path.to_path_buf(),
+                    link_type: symlink::LinkType::Soft,
+                },
+            });
+            walker.skip_current_dir();
+            continue;
+        }
+
+        if path.is_dir() {
+            entries.push(DesiredEntry {
+                target: entry_target,
+                provenance: Provenance::Overlay {
+                    overlay: overlay.name.clone(),
+                    source: path.to_path_buf(),
+                },
+                intent: MaterializationIntent::Directory,
+            });
+        } else {
+            entries.push(DesiredEntry {
+                target: entry_target,
+                provenance: Provenance::Overlay {
+                    overlay: overlay.name.clone(),
+                    source: path.to_path_buf(),
+                },
+                intent: MaterializationIntent::SymlinkFile {
+                    source: path.to_path_buf(),
+                    link_type: symlink::LinkType::Soft,
+                },
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolve `.link.{toml,yaml,yml}` sidecars into entries, mirroring
+/// `Overlay::apply_symlinks`.
+fn build_symlink_sidecars(
+    ctx: &exec::Context,
+    overlay: &Overlay,
+    target: &Path,
+    entries: &mut Vec<DesiredEntry>,
+) -> Result<()> {
+    let symlinks = symlink::discover_symlinks(&overlay.root)?;
+    for (name, config) in symlinks {
+        let resolved_str = symlink::render_symlink_target(&config.target, ctx)?;
+        let resolved = PathBuf::from(&resolved_str);
+        let is_dir = resolved.is_dir()
+            || resolved_str.ends_with(std::path::MAIN_SEPARATOR_STR)
+            || resolved_str.ends_with('/');
+        let entry_target = target.join(&name);
+        let config_path = sidecar_config_path(&overlay.root, &name);
+
+        let provenance = Provenance::SymlinkSidecar {
+            overlay: overlay.name.clone(),
+            config: config_path,
+            template: config.target.clone(),
+            resolved: resolved.clone(),
+        };
+        let intent = if is_dir {
+            MaterializationIntent::SymlinkDirectory {
+                source: resolved,
+                link_type: config.r#type,
+            }
+        } else {
+            MaterializationIntent::SymlinkFile {
+                source: resolved,
+                link_type: config.r#type,
+            }
+        };
+
+        entries.push(DesiredEntry {
+            target: entry_target,
+            provenance,
+            intent,
+        });
+    }
+    Ok(())
+}
+
+/// Reconstruct the sidecar file path for a symlink `stem`, since
+/// `discover_symlinks` only returns the stem and parsed config, not the
+/// originating file. Mirrors its own TOML > YAML > YML precedence.
+fn sidecar_config_path(overlay_root: &Path, stem: &str) -> PathBuf {
+    for ext in ["toml", "yaml", "yml"] {
+        let candidate = overlay_root.join(format!("{stem}.link.{ext}"));
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    // Shouldn't happen: `discover_symlinks` found this stem from one of
+    // these three files. Fall back to the canonical (TOML) form for a
+    // stable, if slightly inaccurate, diagnostic path.
+    overlay_root.join(format!("{stem}.link.toml"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::symlink::LinkType;
+    use crate::exec::Context;
+    use crate::overlays::Repository;
+    use assert_fs::TempDir;
+    use assert_fs::prelude::*;
+    use rstest::rstest;
+
+    fn repo_and_root() -> (TempDir, Repository) {
+        let td = TempDir::new().unwrap();
+        let repo = Repository::new(td.path().to_path_buf());
+        (td, repo)
+    }
+
+    fn ctx(root: PathBuf, repo: Repository) -> exec::Ctx {
+        Context::builder().root(root).repository(repo).build()
+    }
+
+    fn ctx_no_uses(root: PathBuf, repo: Repository) -> exec::Ctx {
+        Context::builder()
+            .root(root)
+            .repository(repo)
+            .no_uses(true)
+            .build()
+    }
+
+    #[rstest]
+    fn empty_overlay_has_only_root_directory_entry() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+        assert_eq!(tree.len(), 1);
+        let entry = &tree.entries()[0];
+        assert_eq!(entry.target, td.path().to_path_buf());
+        assert!(matches!(entry.intent, MaterializationIntent::Directory));
+    }
+
+    #[rstest]
+    fn plain_files_and_nested_dirs_produce_expected_entries() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        overlay_dir.child("file.txt").write_str("content").unwrap();
+        overlay_dir.child("sub").create_dir_all().unwrap();
+        overlay_dir
+            .child("sub/nested.txt")
+            .write_str("nested")
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let root = td.path().to_path_buf();
+        // root dir + file.txt + sub (dir) + sub/nested.txt
+        assert_eq!(tree.len(), 4);
+
+        let file_entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == root.join("file.txt"))
+            .expect("file.txt entry present");
+        match &file_entry.intent {
+            MaterializationIntent::SymlinkFile { source, link_type } => {
+                assert_eq!(source, &overlay.root.join("file.txt"));
+                assert_eq!(*link_type, LinkType::Soft);
+            }
+            other => panic!("unexpected intent: {other:?}"),
+        }
+
+        let sub_entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == root.join("sub"))
+            .expect("sub dir entry present");
+        assert!(matches!(sub_entry.intent, MaterializationIntent::Directory));
+
+        let nested_entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == root.join("sub/nested.txt"))
+            .expect("sub/nested.txt entry present");
+        assert!(matches!(
+            nested_entry.intent,
+            MaterializationIntent::SymlinkFile { .. }
+        ));
+    }
+
+    #[rstest]
+    fn excluded_files_are_absent() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nexclude = \"*.bak\"")
+            .unwrap();
+        overlay_dir.child("file.txt").write_str("keep").unwrap();
+        overlay_dir.child("file.bak").write_str("skip").unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let root = td.path().to_path_buf();
+        assert!(
+            tree.entries()
+                .iter()
+                .any(|e| e.target == root.join("file.txt"))
+        );
+        assert!(
+            !tree
+                .entries()
+                .iter()
+                .any(|e| e.target == root.join("file.bak"))
+        );
+    }
+
+    #[rstest]
+    fn link_dirs_produce_single_entry_without_children() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\nlink_dirs = [\"mydir\"]")
+            .unwrap();
+        overlay_dir.child("mydir").create_dir_all().unwrap();
+        overlay_dir
+            .child("mydir/inner.txt")
+            .write_str("content")
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let root = td.path().to_path_buf();
+        let dir_entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == root.join("mydir"))
+            .expect("mydir entry present");
+        match &dir_entry.intent {
+            MaterializationIntent::SymlinkDirectory { source, link_type } => {
+                assert_eq!(source, &overlay.root.join("mydir"));
+                assert_eq!(*link_type, LinkType::Soft);
+            }
+            other => panic!("unexpected intent: {other:?}"),
+        }
+        // The child must NOT be separately enumerated.
+        assert!(
+            !tree
+                .entries()
+                .iter()
+                .any(|e| e.target == root.join("mydir/inner.txt"))
+        );
+    }
+
+    #[rstest]
+    fn symlink_sidecar_file_target_produces_symlink_file_entry() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        overlay_dir
+            .child("nvim.link.toml")
+            .write_str("target = \"/opt/nvim-config\"")
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let root = td.path().to_path_buf();
+        let entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == root.join("nvim"))
+            .expect("nvim entry present");
+        match &entry.intent {
+            MaterializationIntent::SymlinkFile { source, link_type } => {
+                assert_eq!(source, &PathBuf::from("/opt/nvim-config"));
+                assert_eq!(*link_type, LinkType::Soft);
+            }
+            other => panic!("unexpected intent: {other:?}"),
+        }
+        match &entry.provenance {
+            Provenance::SymlinkSidecar {
+                config,
+                template,
+                resolved,
+                ..
+            } => {
+                assert_eq!(config, &overlay.root.join("nvim.link.toml"));
+                assert_eq!(template, "/opt/nvim-config");
+                assert_eq!(resolved, &PathBuf::from("/opt/nvim-config"));
+            }
+            other => panic!("unexpected provenance: {other:?}"),
+        }
+    }
+
+    #[rstest]
+    fn symlink_sidecar_directory_target_produces_symlink_directory_entry() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let real_dir = td.child("real_target_dir");
+        real_dir.create_dir_all().unwrap();
+        // Escape backslashes so Windows paths don't get misparsed as TOML
+        // unicode escape sequences (see `Overlay::resolve_target` tests).
+        let target_toml = real_dir.path().to_string_lossy().replace('\\', "\\\\");
+        overlay_dir
+            .child("app.link.toml")
+            .write_str(&format!("target = \"{}\"", target_toml))
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let root = td.path().to_path_buf();
+        let entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == root.join("app"))
+            .expect("app entry present");
+        assert!(matches!(
+            entry.intent,
+            MaterializationIntent::SymlinkDirectory { .. }
+        ));
+    }
+
+    #[rstest]
+    fn symlink_sidecar_hard_type_is_preserved() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        overlay_dir
+            .child("hard.link.toml")
+            .write_str("target = \"/opt/hard-target\"\ntype = \"hard\"")
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let root = td.path().to_path_buf();
+        let entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == root.join("hard"))
+            .expect("hard entry present");
+        match &entry.intent {
+            MaterializationIntent::SymlinkFile { link_type, .. } => {
+                assert_eq!(*link_type, LinkType::Hard);
+            }
+            other => panic!("unexpected intent: {other:?}"),
+        }
+    }
+
+    #[rstest]
+    fn git_root_path_produces_checkout_entry_at_target_root() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\ngit = \"https://example.com/repo.git\"")
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let root = td.path().to_path_buf();
+        let entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == root && matches!(e.intent, MaterializationIntent::Checkout));
+        let entry = entry.expect("checkout entry at target root present");
+        match &entry.provenance {
+            Provenance::Git {
+                config, repo_key, ..
+            } => {
+                assert_eq!(config.url, "https://example.com/repo.git");
+                assert_eq!(repo_key, ".");
+            }
+            other => panic!("unexpected provenance: {other:?}"),
+        }
+    }
+
+    #[rstest]
+    fn git_named_path_produces_checkout_entry_at_that_path() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\n[git]\n\".config/nvim\" = \"https://example.com/nvim.git\"")
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let root = td.path().to_path_buf();
+        let entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == root.join(".config/nvim"))
+            .expect("checkout entry at .config/nvim present");
+        assert!(matches!(entry.intent, MaterializationIntent::Checkout));
+    }
+
+    #[rstest]
+    fn uses_composition_includes_both_overlays_own_targets() {
+        let (td, repo) = repo_and_root();
+
+        let child_dir = td.child("child");
+        child_dir.create_dir_all().unwrap();
+        child_dir
+            .child("over.toml")
+            .write_str("target = \"~/child-target\"")
+            .unwrap();
+        child_dir.child("file.txt").write_str("content").unwrap();
+
+        let parent_dir = td.child("parent");
+        parent_dir.create_dir_all().unwrap();
+        parent_dir
+            .child("over.toml")
+            .write_str("target = \"~/parent-target\"\nuses = [\"child\"]")
+            .unwrap();
+        parent_dir.child("own.txt").write_str("own").unwrap();
+
+        let parent = repo.get("parent").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &parent).unwrap();
+
+        let root = td.path().to_path_buf();
+        assert!(
+            tree.entries()
+                .iter()
+                .any(|e| e.target == root.join("parent-target/own.txt"))
+        );
+        assert!(
+            tree.entries()
+                .iter()
+                .any(|e| e.target == root.join("child-target/file.txt"))
+        );
+    }
+
+    #[rstest]
+    fn no_uses_excludes_used_overlay_entries() {
+        let (td, repo) = repo_and_root();
+
+        let child_dir = td.child("child");
+        child_dir.create_dir_all().unwrap();
+        child_dir
+            .child("over.toml")
+            .write_str("target = \"~/child-target\"")
+            .unwrap();
+        child_dir.child("file.txt").write_str("content").unwrap();
+
+        let parent_dir = td.child("parent");
+        parent_dir.create_dir_all().unwrap();
+        parent_dir
+            .child("over.toml")
+            .write_str("target = \"~/parent-target\"\nuses = [\"child\"]")
+            .unwrap();
+
+        let parent = repo.get("parent").unwrap();
+        let c = ctx_no_uses(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &parent).unwrap();
+
+        let root = td.path().to_path_buf();
+        assert!(
+            !tree
+                .entries()
+                .iter()
+                .any(|e| e.target == root.join("child-target/file.txt"))
+        );
+    }
+
+    /// Diamond dependency: A uses B and C, both B and C use D.
+    /// D's entries should appear only once and no false cycle error should occur.
+    #[rstest]
+    fn diamond_dependency_includes_shared_overlay_entries_once() {
+        let (td, repo) = repo_and_root();
+
+        let d = td.child("d");
+        d.create_dir_all().unwrap();
+        d.child("over.toml")
+            .write_str("target = \"~/d-target\"")
+            .unwrap();
+        d.child("shared.txt").write_str("shared").unwrap();
+
+        let b = td.child("b");
+        b.create_dir_all().unwrap();
+        b.child("over.toml")
+            .write_str("target = \"~/b-target\"\nuses = [\"d\"]")
+            .unwrap();
+
+        let c_ov = td.child("c");
+        c_ov.create_dir_all().unwrap();
+        c_ov.child("over.toml")
+            .write_str("target = \"~/c-target\"\nuses = [\"d\"]")
+            .unwrap();
+
+        let a = td.child("a");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("target = \"~/a-target\"\nuses = [\"b\", \"c\"]")
+            .unwrap();
+
+        let overlay_a = repo.get("a").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay_a).unwrap();
+
+        let root = td.path().to_path_buf();
+        let matches = tree
+            .entries()
+            .iter()
+            .filter(|e| e.target == root.join("d-target/shared.txt"))
+            .count();
+        assert_eq!(matches, 1, "d's entry should appear exactly once");
+    }
+
+    /// True cycle: A uses B, B uses A. Should produce a cycle error.
+    #[rstest]
+    fn true_cycle_is_detected() {
+        let (td, repo) = repo_and_root();
+
+        let a = td.child("a_cycle");
+        a.create_dir_all().unwrap();
+        a.child("over.toml")
+            .write_str("target = \"~\"\nuses = [\"b_cycle\"]")
+            .unwrap();
+
+        let b = td.child("b_cycle");
+        b.create_dir_all().unwrap();
+        b.child("over.toml")
+            .write_str("target = \"~\"\nuses = [\"a_cycle\"]")
+            .unwrap();
+
+        let overlay_a = repo.get("a_cycle").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let result = DesiredTree::build(&c, &overlay_a);
+        assert!(result.is_err(), "cycle should be detected");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Cycle detected"),
+            "error should mention cycle: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("a_cycle"),
+            "error should mention the cycling overlay: {err_msg}"
+        );
+    }
+
+    #[rstest]
+    fn descriptor_and_sidecar_config_files_are_not_entries() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        overlay_dir
+            .child("app.link.toml")
+            .write_str("target = \"/opt/app\"")
+            .unwrap();
+        overlay_dir.child("file.txt").write_str("content").unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        assert!(
+            !tree
+                .entries()
+                .iter()
+                .any(|e| e.target == overlay.root.join("over.toml"))
+        );
+        assert!(
+            !tree
+                .entries()
+                .iter()
+                .any(|e| e.target == overlay.root.join("app.link.toml"))
+        );
+    }
+
+    #[rstest]
+    fn entries_are_sorted_by_target() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        overlay_dir.child("zeta.txt").write_str("z").unwrap();
+        overlay_dir.child("alpha.txt").write_str("a").unwrap();
+        overlay_dir.child("mid").create_dir_all().unwrap();
+        overlay_dir.child("mid/file.txt").write_str("m").unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let targets: Vec<_> = tree.entries().iter().map(|e| e.target.clone()).collect();
+        let mut sorted = targets.clone();
+        sorted.sort();
+        assert_eq!(targets, sorted);
+    }
+
+    #[test]
+    fn empty_tree_reports_empty() {
+        let tree = DesiredTree::default();
+        assert!(tree.is_empty());
+        assert_eq!(tree.len(), 0);
+    }
+}
