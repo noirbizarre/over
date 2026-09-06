@@ -305,6 +305,21 @@ impl Context {
     }
 }
 
+/// Shared handle to a [`Context`], cheap to clone (an `Arc` bump) and safe to
+/// pass across `.await` points.
+///
+/// Parameter-shape convention across the codebase (all three are
+/// intentional, not interchangeable by accident):
+/// - `ctx: Ctx` (owned) — trait methods (`Action::execute`,
+///   `Materializer::materialize`) and anything that must move the context
+///   into a spawned/boxed future or store it past the call. Cheap to
+///   produce at the call site via `ctx.clone()`.
+/// - `ctx: &Ctx` — thin, non-owning wrappers that may need to clone once to
+///   delegate into an owning callee (e.g. `Overlay::add_file` borrowing here
+///   and cloning once before calling `actions::fs::add_file`).
+/// - `ctx: &Context` — pure readers that only inspect fields (flags, `root`,
+///   …) and never need `Arc` semantics; `&Ctx` derefs to `&Context` at call
+///   sites, so this is the most permissive signature for such helpers.
 pub type Ctx = Arc<Context>;
 
 #[cfg(test)]
