@@ -69,7 +69,7 @@ impl Repository {
         Ok(overlays)
     }
 
-    /// Get a repository by its name/relative path
+    /// Get an overlay by its name/relative path
     pub fn get(&self, name: &str) -> Result<Overlay> {
         let root = self.root.join(name);
         if !root.exists() {
