@@ -328,6 +328,7 @@ mod tests {
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use indicatif::{MultiProgress, ProgressBar};
+    use rstest::rstest;
 
     fn dummy_repo() -> Repository {
         #[cfg(unix)]
@@ -367,50 +368,50 @@ mod tests {
         assert_eq!(ctx.machine.arch, std::env::consts::ARCH);
     }
 
+    /// Every flag `Context::builder()` sets ends up exactly as requested,
+    /// independent of which other flags are also set — whether all five are
+    /// requested (mirrors the former `builder_sets_flags`) or only some
+    /// (mirrors the former `builder_partial_flags`); unset flags must stay
+    /// `false` rather than leaking a previous case's value.
+    #[rstest]
+    #[case(true, true, true, true, true)]
+    #[case(true, false, true, false, false)]
+    fn builder_sets_requested_flags(
+        #[case] dry_run: bool,
+        #[case] debug: bool,
+        #[case] verbose: bool,
+        #[case] force: bool,
+        #[case] no_prompt: bool,
+    ) {
+        let ctx = Context::builder()
+            .dry_run(dry_run)
+            .debug(debug)
+            .verbose(verbose)
+            .force(force)
+            .no_prompt(no_prompt)
+            .build();
+
+        assert_eq!(ctx.dry_run, dry_run);
+        assert_eq!(ctx.debug, debug);
+        assert_eq!(ctx.verbose, verbose);
+        assert_eq!(ctx.force, force);
+        assert_eq!(ctx.no_prompt, no_prompt);
+    }
+
     #[test]
-    fn builder_sets_flags() {
+    fn builder_sets_root_and_repository() {
         #[cfg(unix)]
         let root_path = PathBuf::from("/home/test");
         #[cfg(windows)]
         let root_path = PathBuf::from("C:\\home\\test");
 
         let ctx = Context::builder()
-            .dry_run(true)
-            .debug(true)
-            .verbose(true)
-            .force(true)
-            .no_prompt(true)
             .root(root_path.clone())
             .repository(dummy_repo())
             .build();
 
-        assert!(ctx.dry_run);
-        assert!(ctx.debug);
-        assert!(ctx.verbose);
-        assert!(ctx.force);
-        assert!(ctx.no_prompt);
         assert_eq!(ctx.root, root_path);
         assert_eq!(ctx.repository.root, dummy_repo().root);
-    }
-
-    #[test]
-    fn builder_partial_flags() {
-        #[cfg(unix)]
-        let root_path = PathBuf::from("/tmp");
-        #[cfg(windows)]
-        let root_path = PathBuf::from("C:\\tmp");
-
-        let ctx = Context::builder()
-            .dry_run(true)
-            .verbose(true)
-            .root(root_path)
-            .build();
-
-        assert!(ctx.dry_run);
-        assert!(!ctx.debug);
-        assert!(ctx.verbose);
-        assert!(!ctx.force);
-        assert!(!ctx.no_prompt);
     }
 
     #[test]
