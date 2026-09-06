@@ -38,6 +38,19 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if let Some(link_dirs) = &overlay.link_dirs {
         ui::info(format!("  link_dirs: {}", link_dirs.join(", "))).ok();
     }
+    if let Some(defaults) = &overlay.defaults {
+        ui::info(format!(
+            "  defaults: materialization = {}",
+            defaults.materialization
+        ))
+        .ok();
+    }
+    if let Some(rules) = &overlay.rules {
+        ui::info("  rules:").ok();
+        for rule in rules {
+            ui::info(format!("    {}: {}", rule.path, rule.materialization)).ok();
+        }
+    }
     if let Some(git) = &overlay.git {
         ui::info("  git repositories:").ok();
         for (path, cfg) in git {

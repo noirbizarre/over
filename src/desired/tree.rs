@@ -235,7 +235,10 @@ fn walk_overlay_tree(
 
         let entry_target = target.join(rel_path);
 
-        // A directory matching `link_dirs` is one materialization unit — its
+        // A directory resolved to `SymlinkDirectory` — via a `rules`
+        // entry, `defaults.materialization`, or a legacy `link_dirs` match,
+        // all resolved through the same mechanism (#113/#126,
+        // `Overlay::is_link_dir`) — is one materialization unit; its
         // children are not separately enumerated.
         if path.is_dir() && overlay.is_link_dir(rel_path) {
             entries.push(DesiredEntry {
@@ -561,6 +564,121 @@ mod tests {
                 .iter()
                 .any(|e| e.target == root.join("mydir/inner.txt"))
         );
+    }
+
+    /// #126: an explicit `rules` entry produces the same
+    /// `SymlinkDirectory` shape as `link_dirs`, through the same
+    /// resolution path.
+    #[rstest]
+    fn a_materialization_rule_produces_a_symlink_directory_entry() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str(
+                "target = \"~\"\n[[rules]]\npath = \"mydir\"\nmaterialization = \"symlink-directory\"",
+            )
+            .unwrap();
+        overlay_dir.child("mydir").create_dir_all().unwrap();
+        overlay_dir
+            .child("mydir/inner.txt")
+            .write_str("content")
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let root = td.path().to_path_buf();
+        let dir_entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == root.join("mydir"))
+            .expect("mydir entry present");
+        assert!(matches!(
+            dir_entry.intent,
+            MaterializationIntent::SymlinkDirectory { .. }
+        ));
+        assert!(
+            !tree
+                .entries()
+                .iter()
+                .any(|e| e.target == root.join("mydir/inner.txt"))
+        );
+    }
+
+    /// #113: `defaults.materialization` applies repository-/overlay-wide,
+    /// to every directory with no more specific `rules` override.
+    #[rstest]
+    fn defaults_materialization_applies_to_every_directory_without_a_rule() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\n[defaults]\nmaterialization = \"symlink-directory\"")
+            .unwrap();
+        overlay_dir.child("sub").create_dir_all().unwrap();
+        overlay_dir
+            .child("sub/inner.txt")
+            .write_str("content")
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let root = td.path().to_path_buf();
+        let sub_entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == root.join("sub"))
+            .expect("sub entry present");
+        assert!(matches!(
+            sub_entry.intent,
+            MaterializationIntent::SymlinkDirectory { .. }
+        ));
+    }
+
+    /// #113: a file added to a source subtree governed by a file-level
+    /// rule appears in the next `DesiredTree` build with no rule change —
+    /// `walk_overlay_tree` re-walks the filesystem every call, so this is
+    /// a regression test, not new behavior.
+    #[rstest]
+    fn a_newly_added_file_is_picked_up_without_any_rule_change() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let root = td.path().to_path_buf();
+
+        let before = DesiredTree::build(&c, &overlay).unwrap();
+        assert!(
+            !before
+                .entries()
+                .iter()
+                .any(|e| e.target == root.join("new.txt"))
+        );
+
+        overlay_dir.child("new.txt").write_str("content").unwrap();
+
+        let after = DesiredTree::build(&c, &overlay).unwrap();
+        let entry = after
+            .entries()
+            .iter()
+            .find(|e| e.target == root.join("new.txt"))
+            .expect("newly added file should appear in the next build");
+        assert!(matches!(
+            entry.intent,
+            MaterializationIntent::SymlinkFile { .. }
+        ));
     }
 
     #[rstest]

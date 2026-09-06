@@ -286,8 +286,10 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
     Ok(())
 }
 
-/// Add a directory to an overlay, either as a whole directory symlink (if it matches
-/// `link_dirs`) or by recursing into it and adding each file individually.
+/// Add a directory to an overlay, either as a whole directory symlink (if it
+/// resolves to `SymlinkDirectory` via `rules`/`defaults`/`link_dirs` — see
+/// `Overlay::is_link_dir`, #113/#126) or by recursing into it and adding
+/// each file individually.
 pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
     let src = if dir.is_relative() {
         current_dir()?.join(dir)
