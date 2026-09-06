@@ -18,6 +18,7 @@ integrates the same overlay model with git workflows — Git resolves
 | [`over completion`](completion.md) | Generate shell completion scripts |
 | [`over status`](status.md) | Get the current repository/directory overlays status |
 | [`over diff`](diff.md) | Show differences between desired and actual overlay state |
+| [`over sync`](sync.md) | Reconcile a checkout-materialized overlay with its git source |
 
 ## `git-over`
 

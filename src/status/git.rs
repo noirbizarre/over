@@ -110,8 +110,9 @@ fn inspect_checkout(path: &Path) -> Result<Status> {
 }
 
 /// Whether the working tree has uncommitted changes (tracked or
-/// untracked, ignored files excluded).
-fn is_dirty(repo: &Repository) -> Result<bool> {
+/// untracked, ignored files excluded). `pub(crate)`: reused by `crate::sync`
+/// to refuse pulling into a dirty checkout.
+pub(crate) fn is_dirty(repo: &Repository) -> Result<bool> {
     let mut opts = git2::StatusOptions::new();
     opts.include_ignored(false).include_untracked(true);
     Ok(!repo.statuses(Some(&mut opts))?.is_empty())
@@ -119,8 +120,10 @@ fn is_dirty(repo: &Repository) -> Result<bool> {
 
 /// Ahead/behind counts of `HEAD` against its upstream tracking branch.
 /// `None` when `HEAD` is detached or has no configured upstream — neither
-/// is an error, just nothing to compare against.
-fn ahead_behind(repo: &Repository) -> Result<Option<(usize, usize)>> {
+/// is an error, just nothing to compare against. `pub(crate)`: reused by
+/// `crate::sync` to decide whether a push is needed after a successful
+/// pull.
+pub(crate) fn ahead_behind(repo: &Repository) -> Result<Option<(usize, usize)>> {
     let head = repo.head()?;
     if !head.is_branch() {
         return Ok(None);

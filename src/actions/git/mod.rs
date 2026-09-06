@@ -1,4 +1,5 @@
 pub mod config;
+pub(crate) mod sync;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -550,6 +551,18 @@ static DONE_PROGRESS_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
         .expect("static progress template must be valid")
 });
 
+/// Credential-enabled `RemoteCallbacks` shared by every git2 network
+/// operation (clone, and — via `sync.rs` — fetch/push): a fresh
+/// `git2::Config::open_default()` per call so the system/global credential
+/// helpers are always read from their current on-disk state.
+pub(crate) fn remote_callbacks<'cb>() -> Result<git2::RemoteCallbacks<'cb>> {
+    let mut cb = git2::RemoteCallbacks::new();
+    let git_config = git2::Config::open_default()?;
+    let mut ch = CredentialHandler::new(git_config);
+    cb.credentials(move |url, username, allowed| ch.try_next_credential(url, username, allowed));
+    Ok(cb)
+}
+
 fn clone(
     url: &str,
     dst: &Path,
@@ -558,12 +571,7 @@ fn clone(
     recurse_submodules: bool,
     progress: &Sender<CloneMessage>,
 ) -> Result<Repository> {
-    let mut cb = git2::RemoteCallbacks::new();
-    let git_config = git2::Config::open_default()?;
-
-    // Credentials management
-    let mut ch = CredentialHandler::new(git_config);
-    cb.credentials(move |url, username, allowed| ch.try_next_credential(url, username, allowed));
+    let mut cb = remote_callbacks()?;
     cb.transfer_progress(|stats| {
         let stats = CloneStats::from(stats);
         // Ignore send errors (receiver may have dropped)

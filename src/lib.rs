@@ -13,6 +13,7 @@ pub mod materialize;
 pub mod overlays;
 pub mod plan;
 pub mod status;
+pub mod sync;
 pub mod ui;
 pub mod xdg;
 
