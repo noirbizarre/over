@@ -1,7 +1,8 @@
 # `over apply`
 
-Apply a given overlay: symlink its files into the target root, clone any
-declared git repositories, and optionally install packages.
+Apply a given overlay: optionally install packages first (`--install`), then
+clone any declared git repositories and symlink its files into the target
+root.
 
 ```
 Usage: over apply [OPTIONS] [NAME]
