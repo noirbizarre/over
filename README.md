@@ -53,6 +53,9 @@ over --help
 | `over lint` | Check overlays for configuration issues |
 | `over completion` | Generate shell completion scripts |
 | `over status` | Get the current repository/directory overlays status |
+| `over diff` | Show differences between desired and actual overlay state |
+| `over sync` | Reconcile a checkout-materialized overlay with its git source |
+| `over unapply` | Remove a given overlay's own entries from the target |
 
 A companion binary `git-over` integrates with git workflows:
 
