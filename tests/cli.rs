@@ -522,6 +522,229 @@ fn diff_empty_repository_reports_no_overlays() -> TestResult {
     Ok(())
 }
 
+// ── sync integration tests ────────────────────────────────────────────────
+
+fn git(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .status()
+        .expect("failed to run git");
+    assert!(status.success(), "git {args:?} failed in {}", dir.display());
+}
+
+/// A local "origin" repository with one commit — good enough for git2's
+/// local transport to clone/fetch/push against.
+fn setup_git_origin(path: &Path) {
+    fs::create_dir_all(path).unwrap();
+    git(path, &["init"]);
+    git(
+        path,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    );
+}
+
+/// A `gitsync`-style overlay whose *root* content is cloned from `origin`
+/// (the `over sync` bidirectional sync surface — see ADR-014).
+fn setup_git_overlay(home: &Path, name: &str, origin: &Path) {
+    let ov = home.join(name);
+    fs::create_dir_all(&ov).unwrap();
+    let origin_str = origin.to_string_lossy().replace('\\', "\\\\");
+    fs::write(
+        ov.join("over.toml"),
+        format!("target = \"~\"\ngit = \"{origin_str}\"\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn sync_unknown_overlay_fails() -> TestResult {
+    let tmp = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["sync", "does-not-exist"])
+        .assert()
+        .failure();
+    Ok(())
+}
+
+#[test]
+fn sync_empty_repository_reports_no_overlays() -> TestResult {
+    let tmp = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(contains("No overlays found"));
+    Ok(())
+}
+
+#[test]
+fn sync_overlay_without_git_entry_succeeds_quietly() -> TestResult {
+    let repo = setup_overlay_repo();
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["sync", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .success();
+    Ok(())
+}
+
+#[test]
+fn sync_reports_up_to_date_right_after_apply() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let origin = canonical_tmp.join("origin");
+    setup_git_origin(&origin);
+    setup_git_overlay(&canonical_tmp, "gitsync", &origin);
+
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["apply", "gitsync", "--root"])
+        .arg(root.path())
+        .arg("--force")
+        .assert()
+        .success();
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["sync", "gitsync", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("up to date"));
+    Ok(())
+}
+
+#[test]
+fn sync_pulls_and_fast_forwards_after_upstream_advances() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let origin = canonical_tmp.join("origin");
+    setup_git_origin(&origin);
+    setup_git_overlay(&canonical_tmp, "gitsync2", &origin);
+
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["apply", "gitsync2", "--root"])
+        .arg(root.path())
+        .arg("--force")
+        .assert()
+        .success();
+
+    // Advance "upstream" after the initial clone.
+    fs::write(origin.join("new.txt"), b"new")?;
+    git(&origin, &["add", "new.txt"]);
+    git(
+        &origin,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "advance",
+        ],
+    );
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["sync", "gitsync2", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("fast-forwarded"));
+
+    assert!(root.path().join("new.txt").exists());
+    Ok(())
+}
+
+#[test]
+fn sync_blocks_on_dirty_checkout_without_touching_it() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let origin = canonical_tmp.join("origin");
+    setup_git_origin(&origin);
+    setup_git_overlay(&canonical_tmp, "gitsync3", &origin);
+
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["apply", "gitsync3", "--root"])
+        .arg(root.path())
+        .arg("--force")
+        .assert()
+        .success();
+
+    fs::write(root.path().join("dirty.txt"), b"uncommitted")?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["sync", "gitsync3", "--root"])
+        .arg(root.path())
+        .assert()
+        .failure()
+        .stdout(contains("blocked"));
+
+    // Untouched: the dirty file is still there, nothing was reverted/merged.
+    assert!(root.path().join("dirty.txt").exists());
+    Ok(())
+}
+
+#[test]
+fn sync_dry_run_reports_without_mutating() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let origin = canonical_tmp.join("origin");
+    setup_git_origin(&origin);
+    setup_git_overlay(&canonical_tmp, "gitsync4", &origin);
+
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["apply", "gitsync4", "--root"])
+        .arg(root.path())
+        .arg("--force")
+        .assert()
+        .success();
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["sync", "gitsync4", "--root"])
+        .arg(root.path())
+        .arg("--dry-run")
+        .assert()
+        .success()
+        .stdout(contains("up to date"));
+    Ok(())
+}
+
 // ── show integration tests ──────────────────────────────────────────────
 
 #[test]

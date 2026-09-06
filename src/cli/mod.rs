@@ -16,6 +16,7 @@ mod list;
 mod new;
 mod show;
 mod status;
+mod sync;
 
 #[derive(Parser, Debug)]
 #[clap(
@@ -82,6 +83,12 @@ pub enum Commands {
         about = "Show differences between desired and actual overlay state"
     )]
     Diff(diff::Params),
+
+    #[clap(
+        name = "sync",
+        about = "Reconcile a checkout-materialized overlay with its git source"
+    )]
+    Sync(sync::Params),
 }
 
 impl CLI {
@@ -125,6 +132,9 @@ pub async fn main() -> Result<()> {
         }
         Some(Commands::Diff(ref opt)) => {
             diff::execute(&args, opt).await?;
+        }
+        Some(Commands::Sync(ref opt)) => {
+            sync::execute(&args, opt).await?;
         }
         None => {
             use clap::CommandFactory;

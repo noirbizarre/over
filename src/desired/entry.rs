@@ -40,11 +40,13 @@ pub enum MaterializationIntent {
         source: PathBuf,
         link_type: LinkType,
     },
-    /// A Git-managed path (`overlay.git`). Not yet materializable — no
-    /// [`crate::materialize::Materializer`] claims this intent yet, #110
-    /// owns turning this into a real checkout/worktree backend. Carried
-    /// here so a future `Plan`/diff/status (#13/#109/#12) can at least see
-    /// and report on it.
+    /// A Git-managed path (`overlay.git`). Materialized by
+    /// [`crate::materialize::CheckoutMaterializer`] (#110): ensures the
+    /// repository/worktree is present and configured, the same "presence"
+    /// concern `actions::git::clone_repositories` already implements.
+    /// Content-level bidirectional synchronization (fetch/merge/push) is a
+    /// separate, explicit operation (`over sync`, `crate::sync`), not part
+    /// of materialization.
     Checkout,
 }
 

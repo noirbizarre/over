@@ -18,16 +18,18 @@
 //! Materializer::materialize   — concrete filesystem/Git changes
 //! ```
 //!
-//! Today [`MaterializerRegistry`] registers exactly one backend,
-//! [`SymlinkMaterializer`], which owns every intent except
-//! [`MaterializationIntent::Checkout`](crate::desired::MaterializationIntent::Checkout).
-//! No backend claims `Checkout` yet: [`MaterializerRegistry::find`] returns
-//! `None` for it, and `Plan::build` falls back to `Operation::Deferred`
-//! exactly like before this issue. #110 adds a `CheckoutMaterializer` here
-//! to turn `Checkout` entries into real Git worktrees/checkouts, without
-//! `Plan` changing at all. #113's rule-migration semantics are a later
-//! extension of the same registry.
+//! [`MaterializerRegistry`] registers two backends: [`SymlinkMaterializer`]
+//! (every intent except `Checkout`) and [`CheckoutMaterializer`] (#110),
+//! which owns [`MaterializationIntent::Checkout`](crate::desired::MaterializationIntent::Checkout) —
+//! ensuring a git checkout/worktree is present and configured, exactly like
+//! `actions::git::clone_repositories` already does. It does *not* implement
+//! content-level bidirectional sync (fetch/merge/push): that's `over sync`
+//! (`crate::sync`), a separate, explicit operation — see
+//! [ADR-014](https://github.com/noirbizarre/over/blob/main/docs/adr/014-bidirectional-checkout-synchronization.md).
+//! #113's rule-migration semantics are a later extension of the same
+//! registry.
 
+mod checkout;
 mod symlink;
 
 use anyhow::Result;
@@ -37,6 +39,7 @@ use crate::desired::{DesiredEntry, MaterializationIntent};
 use crate::exec::Ctx;
 use crate::plan::{Operation, PlanStep};
 
+pub use checkout::CheckoutMaterializer;
 pub use symlink::SymlinkMaterializer;
 
 /// A materialization backend: owns both read-only actual-state inspection
@@ -74,9 +77,10 @@ pub struct MaterializerRegistry {
 impl Default for MaterializerRegistry {
     fn default() -> Self {
         Self {
-            // #110 adds `Box::new(CheckoutMaterializer)` here to claim
-            // `MaterializationIntent::Checkout`.
-            backends: vec![Box::new(SymlinkMaterializer)],
+            backends: vec![
+                Box::new(SymlinkMaterializer),
+                Box::new(CheckoutMaterializer),
+            ],
         }
     }
 }
@@ -125,9 +129,9 @@ mod tests {
     }
 
     #[test]
-    fn registry_has_no_backend_for_checkout_yet() {
+    fn registry_finds_checkout_materializer_for_checkout() {
         let registry = MaterializerRegistry::default();
-        assert!(registry.find(&MaterializationIntent::Checkout).is_none());
+        assert!(registry.find(&MaterializationIntent::Checkout).is_some());
     }
 
     #[test]

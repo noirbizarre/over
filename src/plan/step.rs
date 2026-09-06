@@ -110,16 +110,36 @@ impl fmt::Display for PlanStep {
                 current,
                 short_path(&source.to_string_lossy()),
             ),
-            (MaterializationIntent::Checkout, _) => write!(
+            (MaterializationIntent::Checkout, Operation::Create) => write!(
+                f,
+                "{} {} {}",
+                emojis::THREAD,
+                style::white("clone repository:"),
+                target,
+            ),
+            (MaterializationIntent::Checkout, Operation::Noop) => write!(
                 f,
                 "{} {} {} ({})",
-                emojis::THREAD,
+                emojis::CHECKMARK,
                 style::white("checkout:"),
                 target,
-                style::white("git materialization not yet supported, see #110"),
+                style::white("present (use `over sync` to update)"),
             ),
-            // `Directory`/`SymlinkFile`/`SymlinkDirectory` never produce
-            // `Deferred` (only `Checkout` does, handled above) — unreachable
+            // `CheckoutMaterializer::classify` never returns `Conflict` (git
+            // states are surfaced by `over status`/`over diff`/`over sync`
+            // instead, never routed through filesystem conflict
+            // resolution) — unreachable in practice, but a clear fallback
+            // beats a silently wrong line.
+            (MaterializationIntent::Checkout, Operation::Conflict { current }) => write!(
+                f,
+                "{} {} {} ({})",
+                emojis::WARNING,
+                style::yellow("conflict:"),
+                target,
+                current,
+            ),
+            // Every intent has a registered `Materializer` since #110; no
+            // step should ever classify as `Deferred` anymore — unreachable
             // in practice, but a clear fallback beats a silently wrong line.
             (_, Operation::Deferred) => write!(f, "{} deferred: {}", emojis::WARNING, target),
         }
@@ -224,13 +244,36 @@ mod tests {
     }
 
     #[test]
+    fn create_checkout_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::Checkout),
+            operation: Operation::Create,
+        };
+        let s = format!("{step}");
+        assert!(s.contains("clone repository:"));
+    }
+
+    #[test]
+    fn noop_checkout_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::Checkout),
+            operation: Operation::Noop,
+        };
+        let s = format!("{step}");
+        assert!(s.contains("checkout:"));
+        assert!(s.contains("over sync"));
+    }
+
+    #[test]
     fn deferred_checkout_display() {
+        // Unreachable in practice since #110 (every intent has a
+        // registered Materializer), but the fallback message must still
+        // render something sensible if ever constructed directly.
         let step = PlanStep {
             entry: entry(MaterializationIntent::Checkout),
             operation: Operation::Deferred,
         };
         let s = format!("{step}");
-        assert!(s.contains("checkout:"));
-        assert!(s.contains("#110"));
+        assert!(s.contains("deferred"));
     }
 }

@@ -56,6 +56,15 @@ impl DesiredTree {
         &self.entries
     }
 
+    /// Test-only: build a tree directly from a list of entries, bypassing
+    /// `Overlay`/config resolution. Used by other modules' tests
+    /// (`crate::sync`) that exercise entry-level behavior without needing
+    /// a full overlay/repository/target-resolution fixture.
+    #[cfg(test)]
+    pub(crate) fn from_entries(entries: Vec<DesiredEntry>) -> Self {
+        Self { entries }
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -142,10 +151,9 @@ fn collect_own_entries(
         intent: MaterializationIntent::Directory,
     });
 
-    // Git-managed paths: not yet materializable (no registered Materializer
-    // claims this intent yet; #110 owns turning these into a real
-    // checkout/worktree backend), but carried so a future Plan/diff/status
-    // (#13/#109/#12) can at least see and report on them.
+    // Git-managed paths: materialized by CheckoutMaterializer (#110), which
+    // ensures presence/configuration only — content-level bidirectional
+    // sync is `over sync` (crate::sync), a separate explicit operation.
     if let Some(git_repos) = &overlay.git {
         for (repo_key, config) in git_repos {
             let repo_target = if repo_key == ROOT_PATH {
