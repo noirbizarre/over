@@ -48,6 +48,14 @@ pub enum MaterializationIntent {
     /// separate, explicit operation (`over sync`, `crate::sync`), not part
     /// of materialization.
     Checkout,
+    /// A managed block injected into an existing (possibly foreign) file,
+    /// delimited by marker lines unique to `marker` (#66). The first intent
+    /// to ever produce [`EntryKind::File`]: unlike every other intent, the
+    /// target isn't replaced wholesale — only the delimited region is
+    /// written/compared, so unrelated content in the same file is never
+    /// touched. `content` is used verbatim (no template rendering — that's
+    /// #61's job, kept independent per #66's own scope).
+    PartialFile { content: String, marker: String },
 }
 
 impl MaterializationIntent {
@@ -59,6 +67,7 @@ impl MaterializationIntent {
             }
             MaterializationIntent::SymlinkFile { .. }
             | MaterializationIntent::SymlinkDirectory { .. } => EntryKind::Symlink,
+            MaterializationIntent::PartialFile { .. } => EntryKind::File,
         }
     }
 }
@@ -90,6 +99,9 @@ pub enum Provenance {
         repo_key: String,
         config: Box<GitRepoConfig>,
     },
+    /// A `*.partial.{toml,yaml,yml}` sidecar declaring a managed block
+    /// injected into an external file (#66).
+    PartialSidecar { overlay: String, config: PathBuf },
 }
 
 /// A single desired filesystem node — the canonical unit [`super::DesiredTree`]
@@ -137,6 +149,15 @@ mod tests {
             link_type: LinkType::Soft,
         };
         assert_eq!(intent.kind(), EntryKind::Symlink);
+    }
+
+    #[test]
+    fn partial_file_intent_kind_is_file() {
+        let intent = MaterializationIntent::PartialFile {
+            content: "alias ll='ls -la'".to_string(),
+            marker: "aliases".to_string(),
+        };
+        assert_eq!(intent.kind(), EntryKind::File);
     }
 
     #[test]

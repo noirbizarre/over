@@ -41,6 +41,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use tokio::task::spawn_blocking;
 
+use crate::actions::partial::{self, BlockState};
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent};
 use crate::exec::Ctx;
 use crate::plan::actual::{self, ActualState};
@@ -287,6 +288,10 @@ async fn dematerialize(entry: &DesiredEntry) -> Result<()> {
             remove_symlink_if_unchanged(entry.target.clone(), source.clone()).await
         }
         MaterializationIntent::Checkout => remove_checkout_if_clean(entry.clone()).await,
+        MaterializationIntent::PartialFile { content, marker } => {
+            remove_partial_block_if_unchanged(entry.target.clone(), marker.clone(), content.clone())
+                .await
+        }
     }
 }
 
@@ -327,6 +332,45 @@ async fn remove_symlink_if_unchanged(target: PathBuf, source: PathBuf) -> Result
             Ok(())
         }
         _ => Ok(()),
+    })
+    .await?
+}
+
+/// Strip the managed block for `marker` from `target`, but only if it
+/// *still* matches `expected` exactly right now — re-read here (not just
+/// trusted from classification) for the same classify→execute
+/// race-safety reason as [`remove_symlink_if_unchanged`]. A block that's
+/// drifted (hand-edited) or gone malformed since classification is left
+/// untouched, never forced.
+///
+/// If stripping the block leaves nothing (or only whitespace) behind, the
+/// file itself is removed — mirroring [`remove_dir_if_empty`]'s "a
+/// directory disappears exactly when it turns out to hold nothing but
+/// what this overlay put there". Otherwise the file is rewritten with
+/// just the block removed, every other byte preserved.
+async fn remove_partial_block_if_unchanged(
+    target: PathBuf,
+    marker: String,
+    expected: String,
+) -> Result<()> {
+    spawn_blocking(move || {
+        let current = match fs::read_to_string(&target) {
+            Ok(s) => s,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        match partial::find_block(&current, &marker) {
+            BlockState::Found(existing) if existing == expected => {
+                let stripped = partial::remove_block(&current, &marker);
+                if stripped.trim().is_empty() {
+                    fs::remove_file(&target)?;
+                } else {
+                    fs::write(&target, stripped)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()), // Drifted, malformed, or already gone — leave alone.
+        }
     })
     .await?
 }
@@ -492,6 +536,169 @@ mod tests {
         assert!(report.is_empty());
         assert!(!report.has_pending_removals());
         assert!(!report.needs_attention());
+    }
+
+    fn partial_entry(target: PathBuf, content: &str, marker: &str) -> DesiredEntry {
+        DesiredEntry {
+            target,
+            provenance: Provenance::PartialSidecar {
+                overlay: "ov".to_string(),
+                config: PathBuf::from("/repo/ov/aliases.partial.toml"),
+            },
+            intent: MaterializationIntent::PartialFile {
+                content: content.to_string(),
+                marker: marker.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn matching_partial_block_classifies_as_removed() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file.txt");
+        fs::write(
+            &target,
+            "before\n# >>> over: m >>>\nalias x=y\n# <<< over: m <<<\nafter\n",
+        )
+        .unwrap();
+        let desired = DesiredTree::from_entries(vec![partial_entry(target, "alias x=y", "m")]);
+        let report = Report::build(&desired).unwrap();
+        assert_eq!(report.entries()[0].outcome, Outcome::Removed);
+    }
+
+    #[test]
+    fn drifted_partial_block_is_not_owned() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file.txt");
+        fs::write(
+            &target,
+            "# >>> over: m >>>\nhand-edited\n# <<< over: m <<<\n",
+        )
+        .unwrap();
+        let desired = DesiredTree::from_entries(vec![partial_entry(target, "alias x=y", "m")]);
+        let report = Report::build(&desired).unwrap();
+        assert!(matches!(
+            report.entries()[0].outcome,
+            Outcome::NotOwned { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn execute_strips_block_and_keeps_surrounding_content() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file.txt");
+        fs::write(
+            &target,
+            "before\n# >>> over: m >>>\nalias x=y\n# <<< over: m <<<\nafter\n",
+        )
+        .unwrap();
+        let desired =
+            DesiredTree::from_entries(vec![partial_entry(target.clone(), "alias x=y", "m")]);
+        let report = Report::build(&desired).unwrap();
+        report.execute(Context::builder().build()).await.unwrap();
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), "before\nafter\n");
+    }
+
+    #[tokio::test]
+    async fn execute_removes_file_when_block_was_all_it_contained() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file.txt");
+        fs::write(&target, "# >>> over: m >>>\nalias x=y\n# <<< over: m <<<\n").unwrap();
+        let desired =
+            DesiredTree::from_entries(vec![partial_entry(target.clone(), "alias x=y", "m")]);
+        let report = Report::build(&desired).unwrap();
+        report.execute(Context::builder().build()).await.unwrap();
+
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn execute_leaves_drifted_block_untouched() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file.txt");
+        let original = "# >>> over: m >>>\nhand-edited\n# <<< over: m <<<\n";
+        fs::write(&target, original).unwrap();
+        let desired =
+            DesiredTree::from_entries(vec![partial_entry(target.clone(), "alias x=y", "m")]);
+        let report = Report::build(&desired).unwrap();
+        report.execute(Context::builder().build()).await.unwrap();
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn remove_partial_block_if_unchanged_missing_target_is_a_no_op() {
+        // Simulates a classify→execute race: the target vanished between
+        // `Report::build` and `Report::execute` (e.g. removed by something
+        // else entirely). Never an error — nothing left to strip.
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("does-not-exist.txt");
+        remove_partial_block_if_unchanged(target.clone(), "m".to_string(), "alias x=y".to_string())
+            .await
+            .unwrap();
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn remove_partial_block_if_unchanged_propagates_read_errors() {
+        // A non-`NotFound` I/O error (permission denied) must propagate,
+        // not be silently swallowed like a genuine "already gone" race —
+        // mirrors `desired::tree::tests::unreadable_subdirectory_is_skipped_with_a_warning`'s
+        // own permission-based error injection.
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file.txt");
+        fs::write(&target, "content").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = remove_partial_block_if_unchanged(
+            target.clone(),
+            "m".to_string(),
+            "alias x=y".to_string(),
+        )
+        .await;
+
+        // Restore permissions so the `TempDir` can clean up regardless of
+        // the assertion outcome.
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn remove_partial_block_if_unchanged_leaves_drifted_block_untouched() {
+        // Direct call (bypassing `Report::build`/`execute`, which would
+        // never even reach this function for a drifted block — it
+        // classifies as `Conflict`/`NotOwned` and is skipped upstream):
+        // exercises the race-safety re-check on its own terms.
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file.txt");
+        let original = "# >>> over: m >>>\nhand-edited\n# <<< over: m <<<\n";
+        fs::write(&target, original).unwrap();
+        remove_partial_block_if_unchanged(target.clone(), "m".to_string(), "alias x=y".to_string())
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn dry_run_execute_does_not_touch_partial_block() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file.txt");
+        let original = "# >>> over: m >>>\nalias x=y\n# <<< over: m <<<\n";
+        fs::write(&target, original).unwrap();
+        let desired =
+            DesiredTree::from_entries(vec![partial_entry(target.clone(), "alias x=y", "m")]);
+        let report = Report::build(&desired).unwrap();
+        report
+            .execute(Context::builder().dry_run(true).build())
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), original);
     }
 
     #[rstest]

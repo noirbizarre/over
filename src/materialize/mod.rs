@@ -18,9 +18,11 @@
 //! Materializer::materialize   — concrete filesystem/Git changes
 //! ```
 //!
-//! [`MaterializerRegistry`] registers two backends: [`SymlinkMaterializer`]
-//! (every intent except `Checkout`) and [`CheckoutMaterializer`] (#110),
-//! which owns [`MaterializationIntent::Checkout`](crate::desired::MaterializationIntent::Checkout) —
+//! [`MaterializerRegistry`] registers three backends: [`PartialFileMaterializer`]
+//! (#66, [`MaterializationIntent::PartialFile`](crate::desired::MaterializationIntent::PartialFile)),
+//! [`SymlinkMaterializer`] (every remaining intent except `Checkout`), and
+//! [`CheckoutMaterializer`] (#110), which owns
+//! [`MaterializationIntent::Checkout`](crate::desired::MaterializationIntent::Checkout) —
 //! ensuring a git checkout/worktree is present and configured, exactly like
 //! `actions::git::clone_repositories` already does. It does *not* implement
 //! content-level bidirectional sync (fetch/merge/push): that's `over sync`
@@ -30,6 +32,7 @@
 //! registry.
 
 mod checkout;
+mod partial;
 mod symlink;
 
 use anyhow::Result;
@@ -40,6 +43,7 @@ use crate::exec::Ctx;
 use crate::plan::{Operation, PlanStep};
 
 pub use checkout::CheckoutMaterializer;
+pub use partial::PartialFileMaterializer;
 pub use symlink::SymlinkMaterializer;
 
 /// A materialization backend: owns both read-only actual-state inspection
@@ -78,6 +82,10 @@ impl Default for MaterializerRegistry {
     fn default() -> Self {
         Self {
             backends: vec![
+                // Must come before `SymlinkMaterializer`: `PartialFile` is
+                // a distinct intent, but registration order matters for
+                // any future intent whose `handles()` might overlap.
+                Box::new(PartialFileMaterializer),
                 Box::new(SymlinkMaterializer),
                 Box::new(CheckoutMaterializer),
             ],
@@ -132,6 +140,16 @@ mod tests {
     fn registry_finds_checkout_materializer_for_checkout() {
         let registry = MaterializerRegistry::default();
         assert!(registry.find(&MaterializationIntent::Checkout).is_some());
+    }
+
+    #[test]
+    fn registry_finds_partial_file_materializer_for_partial_file() {
+        let registry = MaterializerRegistry::default();
+        let intent = MaterializationIntent::PartialFile {
+            content: "alias x=y".to_string(),
+            marker: "m".to_string(),
+        };
+        assert!(registry.find(&intent).is_some());
     }
 
     #[test]

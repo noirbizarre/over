@@ -138,6 +138,39 @@ impl fmt::Display for PlanStep {
                 target,
                 current,
             ),
+            (MaterializationIntent::PartialFile { marker, .. }, Operation::Create) => write!(
+                f,
+                "{} {} {} ({} '{}')",
+                emojis::BLOCK,
+                style::white("insert block:"),
+                target,
+                style::white("marker"),
+                marker,
+            ),
+            (MaterializationIntent::PartialFile { marker, .. }, Operation::Noop) => write!(
+                f,
+                "{} {} {} ({} '{}' {})",
+                emojis::CHECKMARK,
+                style::white("block:"),
+                target,
+                style::white("marker"),
+                marker,
+                style::white("already present"),
+            ),
+            (
+                MaterializationIntent::PartialFile { marker, .. },
+                Operation::Conflict { current },
+            ) => {
+                write!(
+                    f,
+                    "{} {} block '{}' in {} doesn't match ({})",
+                    emojis::WARNING,
+                    style::yellow("conflict:"),
+                    marker,
+                    target,
+                    current,
+                )
+            }
             // Every intent has a registered `Materializer` since #110; no
             // step should ever classify as `Deferred` anymore — unreachable
             // in practice, but a clear fallback beats a silently wrong line.
@@ -262,6 +295,49 @@ mod tests {
         let s = format!("{step}");
         assert!(s.contains("checkout:"));
         assert!(s.contains("over sync"));
+    }
+
+    #[test]
+    fn create_partial_file_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::PartialFile {
+                content: "alias x=y".to_string(),
+                marker: "aliases".to_string(),
+            }),
+            operation: Operation::Create,
+        };
+        let s = format!("{step}");
+        assert!(s.contains("insert block:"));
+        assert!(s.contains("aliases"));
+    }
+
+    #[test]
+    fn noop_partial_file_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::PartialFile {
+                content: "alias x=y".to_string(),
+                marker: "aliases".to_string(),
+            }),
+            operation: Operation::Noop,
+        };
+        let s = format!("{step}");
+        assert!(s.contains("already present"));
+    }
+
+    #[test]
+    fn conflict_partial_file_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::PartialFile {
+                content: "alias x=y".to_string(),
+                marker: "aliases".to_string(),
+            }),
+            operation: Operation::Conflict {
+                current: ActualState::File,
+            },
+        };
+        let s = format!("{step}");
+        assert!(s.contains("conflict:"));
+        assert!(s.contains("aliases"));
     }
 
     #[test]

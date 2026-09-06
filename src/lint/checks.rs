@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use globset::GlobBuilder;
 
+use crate::actions::partial::discover_partials;
 use crate::actions::symlink::{LinkType, discover_symlinks};
 use crate::overlays::Overlay;
 
@@ -18,6 +19,7 @@ pub fn check_overlay(overlay: &Overlay) -> Vec<Diagnostic> {
     diagnostics.extend(check_invalid_link_dirs_globs(overlay));
     diagnostics.extend(check_git(overlay));
     diagnostics.extend(check_symlinks(overlay));
+    diagnostics.extend(check_partials(overlay));
 
     diagnostics
 }
@@ -268,6 +270,40 @@ fn check_symlinks(overlay: &Overlay) -> Vec<Diagnostic> {
                 )
                 .with_hint("hard links are not supported for directories on most filesystems"),
             );
+        }
+    }
+
+    diagnostics
+}
+
+// ── partial-file checks (#66) ────────────────────────────────────────────
+
+fn check_partials(overlay: &Overlay) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    let partials = match discover_partials(&overlay.root) {
+        Ok(p) => p,
+        Err(e) => {
+            diagnostics.push(Diagnostic::error(
+                &overlay.name,
+                format!("failed to discover partial configs: {e}"),
+            ));
+            return diagnostics;
+        }
+    };
+
+    for (name, config) in &partials {
+        // `discover_partials` already skips (with a `tracing::warn!`) any
+        // entry with an empty `target`/`content` before it ever reaches
+        // `partials`, so neither can ever be empty here — the only thing
+        // left worth flagging statically is a `target` template that
+        // won't render.
+        let test_state = std::collections::HashMap::<String, String>::new();
+        if let Err(e) = crate::exec::templates::render_string(&config.target, &test_state) {
+            diagnostics.push(Diagnostic::error(
+                &overlay.name,
+                format!("partial `{name}`: invalid template in `target`: {e}"),
+            ));
         }
     }
 
@@ -562,5 +598,42 @@ worktree = true
                 .iter()
                 .any(|d| d.severity == Severity::Error && d.message.contains("invalid template"))
         );
+    }
+
+    // ── partial checks (#66) ─────────────────────────────────────────────
+
+    #[rstest]
+    fn test_check_partials_valid_no_diagnostics() {
+        let overlay = setup_overlay("target = \"~\"");
+        let partial_file = overlay.root.join("test.partial.toml");
+        std::fs::write(&partial_file, "target = \"/foo\"\ncontent = \"x\"").unwrap();
+        let diags = check_partials(&overlay);
+        assert!(diags.is_empty());
+    }
+
+    #[rstest]
+    fn test_check_partials_invalid_template() {
+        let overlay = setup_overlay("target = \"~\"");
+        let partial_file = overlay.root.join("test.partial.toml");
+        std::fs::write(&partial_file, "target = \"{{ invalid\"\ncontent = \"x\"").unwrap();
+        let diags = check_partials(&overlay);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.severity == Severity::Error && d.message.contains("invalid template"))
+        );
+    }
+
+    #[rstest]
+    fn test_check_partials_discover_error() {
+        let overlay = setup_overlay("target = \"~\"");
+        let partial_file = overlay.root.join("bad.partial.toml");
+        // Malformed TOML syntax (not just a missing/empty field) makes
+        // `discover_partials` itself return an `Err`, not just skip an
+        // entry.
+        std::fs::write(&partial_file, "not valid toml [[[").unwrap();
+        let diags = check_partials(&overlay);
+        assert!(diags.iter().any(|d| d.severity == Severity::Error
+            && d.message.contains("failed to discover partial configs")));
     }
 }

@@ -38,3 +38,4 @@ by editing the old one. The history is the value.
 | [013](013-diff-has-its-own-taxonomy-and-uses-similar-for-content-diffs.md) | `diff` has its own taxonomy and uses `similar` for content diffs, amending ADR-011 |
 | [014](014-bidirectional-checkout-synchronization.md) | Bidirectional checkout synchronization is `over sync`, scoped to an overlay's root git entry |
 | [015](015-unapply-reuses-plan-classification-and-only-removes-safely-reversible-state.md) | `unapply` reuses `Plan`'s classification and only ever removes safely reversible state |
+| [016](016-partial-file-managed-blocks.md) | Partial files are managed blocks injected via a sidecar, not a stem-plus-sidecar pair |

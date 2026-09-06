@@ -24,7 +24,10 @@ pub struct SymlinkMaterializer;
 #[async_trait(?Send)]
 impl Materializer for SymlinkMaterializer {
     fn handles(&self, intent: &MaterializationIntent) -> bool {
-        !matches!(intent, MaterializationIntent::Checkout)
+        !matches!(
+            intent,
+            MaterializationIntent::Checkout | MaterializationIntent::PartialFile { .. }
+        )
     }
 
     /// Classify a single entry against current filesystem state. Read-only.
@@ -49,7 +52,7 @@ impl Materializer for SymlinkMaterializer {
                     other => Operation::Conflict { current: other },
                 })
             }
-            MaterializationIntent::Checkout => {
+            MaterializationIntent::Checkout | MaterializationIntent::PartialFile { .. } => {
                 unreachable!("MaterializerRegistry only calls classify() after handles() passed")
             }
         }
@@ -104,8 +107,8 @@ fn build_action(ctx: Ctx, entry: &DesiredEntry) -> Box<dyn Action> {
                 ))
             }
         }
-        MaterializationIntent::Checkout => {
-            unreachable!("SymlinkMaterializer::handles filters out Checkout entries")
+        MaterializationIntent::Checkout | MaterializationIntent::PartialFile { .. } => {
+            unreachable!("SymlinkMaterializer::handles filters out Checkout/PartialFile entries")
         }
     }
 }
@@ -132,6 +135,15 @@ mod tests {
     fn handles_returns_false_for_checkout() {
         let m = SymlinkMaterializer;
         assert!(!m.handles(&MaterializationIntent::Checkout));
+    }
+
+    #[test]
+    fn handles_returns_false_for_partial_file() {
+        let m = SymlinkMaterializer;
+        assert!(!m.handles(&MaterializationIntent::PartialFile {
+            content: "x".to_string(),
+            marker: "m".to_string(),
+        }));
     }
 
     #[test]
