@@ -84,12 +84,12 @@ fn print_overlay_diff(
         style::cyan(&short_path(&target.to_string_lossy())),
     );
 
-    if !report.has_changes() {
+    if !report.needs_attention() {
         println!("  {}", style::white("no differences"));
     }
 
     for diff_entry in report.entries() {
-        if cli.verbose || diff_entry.has_diff() {
+        if cli.verbose || diff_entry.needs_attention() {
             println!("  {diff_entry}");
         }
     }

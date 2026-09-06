@@ -77,9 +77,9 @@ pub struct DiffEntry {
 
 impl DiffEntry {
     /// Whether this entry has anything worth showing — used by the CLI
-    /// to decide what to print without `--verbose`, same convention as
-    /// `status::Status::needs_attention`.
-    pub fn has_diff(&self) -> bool {
+    /// to decide what to print without `--verbose`, same name and
+    /// convention as `status::Status::needs_attention`.
+    pub fn needs_attention(&self) -> bool {
         !matches!(self.change, Change::Unchanged)
     }
 }
@@ -176,9 +176,11 @@ impl Report {
         self.entries.is_empty()
     }
 
-    /// Whether anything in this report has a diff worth showing.
-    pub fn has_changes(&self) -> bool {
-        self.entries.iter().any(DiffEntry::has_diff)
+    /// Whether anything in this report needs attention (has a diff worth
+    /// showing) — same name and convention as `status::Report` and
+    /// `unapply::Report`.
+    pub fn needs_attention(&self) -> bool {
+        self.entries.iter().any(DiffEntry::needs_attention)
     }
 }
 
@@ -311,7 +313,7 @@ mod tests {
 
         assert_eq!(report.entries().len(), 1);
         assert!(matches!(report.entries()[0].change, Change::Missing));
-        assert!(report.has_changes());
+        assert!(report.needs_attention());
     }
 
     #[tokio::test]
@@ -346,8 +348,8 @@ mod tests {
             .find(|e| e.entry.target == td.path().join("file.txt"))
             .unwrap();
         assert!(matches!(file_entry.change, Change::Unchanged));
-        assert!(!file_entry.has_diff());
-        assert!(!report.has_changes());
+        assert!(!file_entry.needs_attention());
+        assert!(!report.needs_attention());
     }
 
     #[rstest]
@@ -388,7 +390,7 @@ mod tests {
             }
             other => panic!("expected Modified, got {other:?}"),
         }
-        assert!(report.has_changes());
+        assert!(report.needs_attention());
     }
 
     #[test]
@@ -613,7 +615,7 @@ mod tests {
     fn empty_desired_tree_produces_empty_report() {
         let report = Report::build(&DesiredTree::default()).unwrap();
         assert!(report.is_empty());
-        assert!(!report.has_changes());
+        assert!(!report.needs_attention());
     }
 
     #[rstest]

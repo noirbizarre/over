@@ -47,7 +47,7 @@ pub enum Status {
 }
 
 impl Status {
-    /// Whether this status needs attention — used by [`Report::has_issues`]
+    /// Whether this status needs attention — used by [`Report::needs_attention`]
     /// and by the CLI to decide what to show without `--verbose`.
     pub fn needs_attention(&self) -> bool {
         !matches!(self, Status::Applied)
@@ -225,7 +225,7 @@ impl Report {
     /// `Applied`). Informational only — `over status` never fails the
     /// process just because entries need attention, mirroring `git
     /// status`.
-    pub fn has_issues(&self) -> bool {
+    pub fn needs_attention(&self) -> bool {
         self.entries.iter().any(|e| e.status.needs_attention())
     }
 }
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(report.entries().len(), 1);
         assert_eq!(report.entries()[0].status, Status::Missing);
         assert_eq!(report.counts().missing, 1);
-        assert!(report.has_issues());
+        assert!(report.needs_attention());
     }
 
     #[tokio::test]
@@ -329,7 +329,7 @@ mod tests {
             .unwrap();
         assert_eq!(file_status.status, Status::Applied);
         assert_eq!(report.counts().missing, 0);
-        assert!(!report.has_issues());
+        assert!(!report.needs_attention());
     }
 
     #[rstest]
@@ -359,7 +359,7 @@ mod tests {
             .find(|e| e.entry.target == td.path().join("file.txt"))
             .unwrap();
         assert_eq!(file_status.status, Status::Conflict);
-        assert!(report.has_issues());
+        assert!(report.needs_attention());
     }
 
     #[test]
@@ -381,7 +381,7 @@ mod tests {
     fn empty_desired_tree_produces_empty_report() {
         let report = Report::build(&DesiredTree::default()).unwrap();
         assert!(report.is_empty());
-        assert!(!report.has_issues());
+        assert!(!report.needs_attention());
     }
 
     #[test]
@@ -496,7 +496,7 @@ mod tests {
                 diverged: 1,
             }
         );
-        assert!(report.has_issues());
+        assert!(report.needs_attention());
     }
 
     #[test]
