@@ -15,9 +15,11 @@ pub(crate) const EXTENSIONS: &[&str] = &["yml", "yaml", "toml"];
 
 pub mod overlay;
 pub mod repository;
+pub mod rules;
 
 pub use overlay::Overlay;
 pub use repository::Repository;
+pub use rules::{Defaults, MaterializationKind, MaterializationRule};
 
 /// Overlay files search pattern
 pub static GLOB_PATTERN: LazyLock<String> =

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use globset::GlobBuilder;
+use walkdir::WalkDir;
 
 use crate::actions::partial::discover_partials;
 use crate::actions::symlink::{LinkType, discover_symlinks};
@@ -17,6 +18,10 @@ pub fn check_overlay(overlay: &Overlay) -> Vec<Diagnostic> {
     diagnostics.extend(check_invalid_exclude_globs(overlay));
     diagnostics.extend(check_empty_link_dirs(overlay));
     diagnostics.extend(check_invalid_link_dirs_globs(overlay));
+    diagnostics.extend(check_empty_rules(overlay));
+    diagnostics.extend(check_invalid_rules_globs(overlay));
+    diagnostics.extend(check_duplicate_rule_paths(overlay));
+    diagnostics.extend(check_rules_paths_exist(overlay));
     diagnostics.extend(check_git(overlay));
     diagnostics.extend(check_symlinks(overlay));
     diagnostics.extend(check_partials(overlay));
@@ -127,6 +132,107 @@ fn check_invalid_link_dirs_globs(overlay: &Overlay) -> Vec<Diagnostic> {
                     format!("invalid glob pattern in `link_dirs`: \"{pattern}\""),
                 )
                 .with_hint(format!("{err}")),
+            );
+        }
+    }
+    diagnostics
+}
+
+// ── materialization rules checks (#113/#126) ────────────────────────────
+
+fn check_empty_rules(overlay: &Overlay) -> Vec<Diagnostic> {
+    if matches!(&overlay.rules, Some(list) if list.is_empty()) {
+        vec![
+            Diagnostic::warning(&overlay.name, "empty `rules` list is redundant")
+                .with_hint("remove the `rules` field or add path overrides"),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+fn check_invalid_rules_globs(overlay: &Overlay) -> Vec<Diagnostic> {
+    let Some(rules) = &overlay.rules else {
+        return Vec::new();
+    };
+
+    let mut diagnostics = Vec::new();
+    for rule in rules {
+        if let Err(err) = GlobBuilder::new(&rule.path).literal_separator(true).build() {
+            diagnostics.push(
+                Diagnostic::error(
+                    &overlay.name,
+                    format!("invalid glob pattern in `rules`: \"{}\"", rule.path),
+                )
+                .with_hint(format!("{err}")),
+            );
+        }
+    }
+    diagnostics
+}
+
+/// A rule whose `path` exactly duplicates an earlier one always shadows
+/// it (`rules::resolve` breaks specificity ties by keeping the last
+/// match), so the earlier entry can never take effect.
+fn check_duplicate_rule_paths(overlay: &Overlay) -> Vec<Diagnostic> {
+    let Some(rules) = &overlay.rules else {
+        return Vec::new();
+    };
+
+    let mut diagnostics = Vec::new();
+    let mut seen = HashSet::new();
+    for rule in rules {
+        if !seen.insert(&rule.path) {
+            diagnostics.push(
+                Diagnostic::warning(
+                    &overlay.name,
+                    format!(
+                        "duplicate rule path \"{}\"; only the last entry ever applies",
+                        rule.path
+                    ),
+                )
+                .with_hint("remove the redundant rule"),
+            );
+        }
+    }
+    diagnostics
+}
+
+/// A rule whose glob never matches anything under the overlay is either a
+/// typo or leftover from a rename — flag it rather than silently doing
+/// nothing.
+fn check_rules_paths_exist(overlay: &Overlay) -> Vec<Diagnostic> {
+    let Some(rules) = &overlay.rules else {
+        return Vec::new();
+    };
+
+    let mut diagnostics = Vec::new();
+    for rule in rules {
+        let Ok(glob) = GlobBuilder::new(&rule.path).literal_separator(true).build() else {
+            // Already reported by `check_invalid_rules_globs`.
+            continue;
+        };
+        let matcher = glob.compile_matcher();
+        let exists = WalkDir::new(&overlay.root)
+            .min_depth(1)
+            .into_iter()
+            .filter_map(Result::ok)
+            .any(|e| {
+                e.path()
+                    .strip_prefix(&overlay.root)
+                    .ok()
+                    .is_some_and(|rel| matcher.is_match(rel))
+            });
+        if !exists {
+            diagnostics.push(
+                Diagnostic::warning(
+                    &overlay.name,
+                    format!(
+                        "rule path \"{}\" does not match any file or directory in the overlay",
+                        rule.path
+                    ),
+                )
+                .with_hint("remove the rule or fix the path"),
             );
         }
     }
@@ -436,6 +542,88 @@ mod tests {
     fn test_valid_glob_in_link_dirs() {
         let overlay = setup_overlay("target = \"~\"\nlink_dirs = [\".config/*\"]");
         let diags = check_invalid_link_dirs_globs(&overlay);
+        assert!(diags.is_empty());
+    }
+
+    // ── materialization rules checks (#113/#126) ─────────────────────────
+
+    #[rstest]
+    fn test_empty_rules() {
+        let overlay = setup_overlay("target = \"~\"\nrules = []");
+        let diags = check_empty_rules(&overlay);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+    }
+
+    #[rstest]
+    fn test_invalid_glob_in_rules() {
+        let overlay = setup_overlay(
+            "target = \"~\"\n[[rules]]\npath = \"[invalid\"\nmaterialization = \"symlink\"",
+        );
+        let diags = check_invalid_rules_globs(&overlay);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(diags[0].message.contains("invalid glob"));
+    }
+
+    #[rstest]
+    fn test_valid_glob_in_rules() {
+        let overlay = setup_overlay(
+            "target = \"~\"\n[[rules]]\npath = \".config/*\"\nmaterialization = \"symlink-directory\"",
+        );
+        let diags = check_invalid_rules_globs(&overlay);
+        assert!(diags.is_empty());
+    }
+
+    #[rstest]
+    fn test_duplicate_rule_paths() {
+        let overlay = setup_overlay(
+            r#"
+target = "~"
+[[rules]]
+path = "dup"
+materialization = "symlink"
+
+[[rules]]
+path = "dup"
+materialization = "symlink-directory"
+"#,
+        );
+        let diags = check_duplicate_rule_paths(&overlay);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert!(diags[0].message.contains("duplicate rule path"));
+    }
+
+    #[rstest]
+    fn test_rule_path_does_not_exist() {
+        let overlay = setup_overlay(
+            "target = \"~\"\n[[rules]]\npath = \"missing\"\nmaterialization = \"symlink-directory\"",
+        );
+        let diags = check_rules_paths_exist(&overlay);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert!(diags[0].message.contains("does not match any file"));
+    }
+
+    #[rstest]
+    fn test_rule_path_existence_check_skips_invalid_globs() {
+        // An invalid glob is already reported by `check_invalid_rules_globs`
+        // — `check_rules_paths_exist` must skip it rather than double-report.
+        let overlay = setup_overlay(
+            "target = \"~\"\n[[rules]]\npath = \"[invalid\"\nmaterialization = \"symlink-directory\"",
+        );
+        let diags = check_rules_paths_exist(&overlay);
+        assert!(diags.is_empty());
+    }
+
+    #[rstest]
+    fn test_rule_path_exists_no_diagnostic() {
+        let overlay = setup_overlay(
+            "target = \"~\"\n[[rules]]\npath = \"present\"\nmaterialization = \"symlink-directory\"",
+        );
+        std::fs::create_dir_all(overlay.root.join("present")).unwrap();
+        let diags = check_rules_paths_exist(&overlay);
         assert!(diags.is_empty());
     }
 

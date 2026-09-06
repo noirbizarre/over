@@ -17,6 +17,7 @@ use crate::plan::Plan;
 use crate::ui;
 use crate::ui::{emojis, style};
 
+use super::rules::{self, Defaults, MaterializationKind, MaterializationRule};
 use super::{DEFAULT_TARGET, Repository};
 
 fn default_none() -> Option<Vec<String>> {
@@ -84,8 +85,24 @@ pub struct Overlay {
 
     pub install: Option<InstallConfig>,
 
+    /// Repository-/overlay-level default materialization applied to every
+    /// directory with no matching `rules` entry (#113/#126). Absent
+    /// entirely falls back to [`MaterializationKind::Symlink`] (today's
+    /// implicit default) — see [`rules::resolve`].
+    pub defaults: Option<Defaults>,
+
+    /// Path/subtree materialization overrides (#113/#126); most specific
+    /// match wins — see [`rules::resolve`]. `link_dirs` below is
+    /// equivalent to a `rules` entry with `materialization:
+    /// symlink-directory` and is resolved through the same mechanism
+    /// (ADR-017).
+    pub rules: Option<Vec<MaterializationRule>>,
+
     /// Glob patterns for directories that should be symlinked as a unit
-    /// rather than recursed into when adding.
+    /// rather than recursed into when adding. Kept for backward
+    /// compatibility: internally equivalent to a `rules` entry with
+    /// `materialization: symlink-directory` (ADR-017) — prefer `rules`
+    /// for new configs; both resolve through [`rules::resolve`].
     pub link_dirs: Option<Vec<String>>,
 }
 
@@ -162,21 +179,19 @@ impl Overlay {
         })
     }
 
-    /// Check if a relative path matches any `link_dirs` glob pattern,
-    /// meaning it should be symlinked as a whole directory rather than recursed into.
+    /// Resolve the effective materialization for a directory at
+    /// `rel_path`: the most specific matching `rules` entry, else
+    /// `defaults.materialization`, else `Symlink` — see [`rules::resolve`].
+    pub fn materialization_for(&self, rel_path: &Path) -> MaterializationKind {
+        rules::resolve(self, rel_path)
+    }
+
+    /// Whether a relative path should be symlinked as a whole directory
+    /// unit rather than recursed into. Broadened beyond a literal
+    /// `link_dirs` glob match to also honor `rules`/`defaults`
+    /// (#113/#126) — see [`Self::materialization_for`].
     pub fn is_link_dir(&self, rel_path: &Path) -> bool {
-        let patterns = match &self.link_dirs {
-            Some(p) if !p.is_empty() => p,
-            _ => return false,
-        };
-        for pattern in patterns {
-            if let Ok(glob) = GlobBuilder::new(pattern).literal_separator(true).build()
-                && glob.compile_matcher().is_match(rel_path)
-            {
-                return true;
-            }
-        }
-        false
+        self.materialization_for(rel_path) == MaterializationKind::SymlinkDirectory
     }
 
     /// Check if a relative path matches any `exclude` glob pattern.

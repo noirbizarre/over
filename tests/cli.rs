@@ -1412,6 +1412,37 @@ link_dirs = [".config/nvim"]
     Ok(())
 }
 
+/// #126: `over show` displays resolved `defaults`/`rules` when configured.
+#[test]
+fn show_overlay_with_materialization_rules() -> TestResult {
+    let tmp = TempDir::new()?;
+    let ov = tmp.path().join("rules_overlay");
+    fs::create_dir_all(&ov)?;
+    fs::write(
+        ov.join("over.toml"),
+        br#"target = "~"
+[defaults]
+materialization = "symlink-directory"
+
+[[rules]]
+path = "special"
+materialization = "symlink"
+"#,
+    )?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["show", "rules_overlay"])
+        .assert()
+        .success()
+        .stdout(contains("rules_overlay"))
+        .stdout(contains("defaults: materialization = symlink-directory"))
+        .stdout(contains("rules:"))
+        .stdout(contains("special: symlink"));
+    Ok(())
+}
+
 #[test]
 fn show_overlay_with_install_config() -> TestResult {
     let tmp = TempDir::new()?;
