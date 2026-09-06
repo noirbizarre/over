@@ -30,3 +30,7 @@ Options:
   links files.
 - A file that already exists at the target triggers an interactive prompt
   (skip, overwrite, absorb, diff) unless `--force` or `--no-prompt` is given.
+- `--dry-run`/`--verbose` print the structured reconciliation plan (one line
+  per entry: create/no-op/conflict) before executing it, rather than just
+  reporting success or failure. See
+  [ADR-011](../adr/011-plan-then-execute-reconciliation.md).
