@@ -468,23 +468,32 @@ impl Action for EnsurePartialBlock {
             match actual::inspect(&target)? {
                 ActualState::Missing => {
                     if let Some(parent) = target.parent() {
-                        fs::create_dir_all(parent)?;
+                        fs::create_dir_all(parent).with_context(|| {
+                            format!(
+                                "failed to create parent directories for {}",
+                                target.display()
+                            )
+                        })?;
                     }
-                    fs::write(&target, block_only(&marker, &content))?;
+                    fs::write(&target, block_only(&marker, &content))
+                        .with_context(|| format!("failed to write {}", target.display()))?;
                     Ok(())
                 }
                 ActualState::Directory | ActualState::Symlink { .. } => {
                     if !resolve_structural_conflict(&ctx2, &target)? {
                         return Ok(()); // Skipped.
                     }
-                    fs::write(&target, block_only(&marker, &content))?;
+                    fs::write(&target, block_only(&marker, &content))
+                        .with_context(|| format!("failed to write {}", target.display()))?;
                     Ok(())
                 }
                 ActualState::File => {
-                    let current = fs::read_to_string(&target)?;
+                    let current = fs::read_to_string(&target)
+                        .with_context(|| format!("failed to read {}", target.display()))?;
                     match find_block(&current, &marker) {
                         BlockState::Absent => {
-                            fs::write(&target, append_block(&current, &marker, &content))?;
+                            fs::write(&target, append_block(&current, &marker, &content))
+                                .with_context(|| format!("failed to write {}", target.display()))?;
                         }
                         BlockState::Found(existing) if existing == content => {
                             // Already correct — `materialize` is only ever
@@ -504,7 +513,8 @@ impl Action for EnsurePartialBlock {
                                 // well-formed block after them instead.
                                 _ => append_block(&current, &marker, &content),
                             };
-                            fs::write(&target, updated)?;
+                            fs::write(&target, updated)
+                                .with_context(|| format!("failed to write {}", target.display()))?;
                         }
                     }
                     Ok(())
@@ -803,6 +813,101 @@ mod tests {
             fs::read_to_string(&target).unwrap(),
             "# >>> over: m >>>\nalias x=y\n# <<< over: m <<<\n"
         );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn ensure_partial_block_reports_context_when_parent_cannot_be_created() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = TempDir::new().unwrap();
+        // `target` itself is missing (so `actual::inspect` reports
+        // `Missing` rather than erroring), but its read-only parent
+        // rejects creating the still-missing `nested/` component —
+        // exercises the `.with_context` wrapping added to name the
+        // offending path.
+        let readonly = td.path().join("readonly");
+        fs::create_dir_all(&readonly).unwrap();
+        let target = readonly.join("nested/.zshrc");
+        fs::set_permissions(&readonly, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let action =
+            EnsurePartialBlock::new(target.clone(), "m".to_string(), "alias x=y".to_string());
+        let result = action.execute(ctx_force(false, false, false)).await;
+
+        fs::set_permissions(&readonly, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("failed to create parent directories")
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn ensure_partial_block_reports_context_when_write_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = TempDir::new().unwrap();
+        let dir = td.path().join("readonly");
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join(".zshrc");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let action =
+            EnsurePartialBlock::new(target.clone(), "m".to_string(), "alias x=y".to_string());
+        let result = action.execute(ctx_force(false, false, false)).await;
+
+        // Restore permissions so the `TempDir` can clean up regardless of
+        // the assertion outcome.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("failed to write"));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn ensure_partial_block_reports_context_when_read_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = TempDir::new().unwrap();
+        let target = td.path().join(".zshrc");
+        fs::write(&target, "export FOO=bar\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let action =
+            EnsurePartialBlock::new(target.clone(), "m".to_string(), "alias x=y".to_string());
+        let result = action.execute(ctx_force(false, false, false)).await;
+
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("failed to read"));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn ensure_partial_block_reports_context_when_append_write_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = TempDir::new().unwrap();
+        let target = td.path().join(".zshrc");
+        // Readable (so the block-detection read succeeds and finds no
+        // existing block) but not writable, so appending the new block
+        // fails.
+        fs::write(&target, "export FOO=bar\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o444)).unwrap();
+
+        let action =
+            EnsurePartialBlock::new(target.clone(), "m".to_string(), "alias x=y".to_string());
+        let result = action.execute(ctx_force(false, false, false)).await;
+
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("failed to write"));
     }
 
     #[tokio::test]
