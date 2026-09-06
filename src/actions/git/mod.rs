@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result, anyhow};
 use async_trait::async_trait;
-use config::{GitRepoConfig, ROOT_PATH};
 use futures::future::join_all;
 use git2::{Progress, Repository};
 use git2_credentials::CredentialHandler;
@@ -20,6 +19,7 @@ use tokio::{
     task::spawn_blocking,
 };
 
+use crate::actions::git::config::{GitRepoConfig, ROOT_PATH};
 use crate::overlays::Overlay;
 use crate::{
     exec::{Action, Ctx},
