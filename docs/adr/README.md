@@ -36,3 +36,5 @@ by editing the old one. The history is the value.
 | [011](011-plan-then-execute-reconciliation.md) | Plan-then-execute reconciliation, amending ADR-005 and ADR-006 |
 | [012](012-materializer-backend-registry.md) | Materializer backend registry, amending ADR-011 |
 | [013](013-diff-has-its-own-taxonomy-and-uses-similar-for-content-diffs.md) | `diff` has its own taxonomy and uses `similar` for content diffs, amending ADR-011 |
+| [014](014-bidirectional-checkout-synchronization.md) | Bidirectional checkout synchronization is `over sync`, scoped to an overlay's root git entry |
+| [015](015-unapply-reuses-plan-classification-and-only-removes-safely-reversible-state.md) | `unapply` reuses `Plan`'s classification and only ever removes safely reversible state |

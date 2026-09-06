@@ -33,6 +33,7 @@ nav = [
     { "over status" = "usage/status.md" },
     { "over diff" = "usage/diff.md" },
     { "over sync" = "usage/sync.md" },
+    { "over unapply" = "usage/unapply.md" },
     { "git over mount" = "usage/git-over-mount.md" },
     { "git over add" = "usage/git-over-add.md" },
     { "git over status" = "usage/git-over-status.md" },

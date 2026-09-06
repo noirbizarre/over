@@ -745,6 +745,141 @@ fn sync_dry_run_reports_without_mutating() -> TestResult {
     Ok(())
 }
 
+// ── unapply integration tests ────────────────────────────────────────────
+
+#[test]
+fn unapply_unknown_overlay_fails() -> TestResult {
+    let tmp = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["unapply", "does-not-exist"])
+        .assert()
+        .failure();
+    Ok(())
+}
+
+#[test]
+fn unapply_before_apply_reports_already_absent() -> TestResult {
+    let repo = setup_overlay_repo();
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["unapply", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("already absent"));
+    Ok(())
+}
+
+#[test]
+fn unapply_removes_applied_symlink_and_apply_restores_it() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("dev").join("file.txt"), b"content")?;
+    let root = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["apply", "dev", "--root"])
+        .arg(root.path())
+        .arg("--force")
+        .assert()
+        .success();
+    assert!(root.path().join("file.txt").is_symlink());
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["unapply", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("remove:"));
+    assert!(!root.path().join("file.txt").exists());
+    // Overlay source is untouched.
+    assert!(repo.path().join("dev").join("file.txt").exists());
+
+    // Reversible: a plain `over apply` restores it fully.
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["apply", "dev", "--root"])
+        .arg(root.path())
+        .arg("--force")
+        .assert()
+        .success();
+    assert!(root.path().join("file.txt").is_symlink());
+    Ok(())
+}
+
+#[test]
+fn unapply_leaves_foreign_file_untouched_and_fails() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("dev").join("file.txt"), b"overlay")?;
+    let root = TempDir::new()?;
+    fs::write(root.path().join("file.txt"), b"existing")?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["unapply", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .failure()
+        .stdout(contains("skip:"));
+
+    assert_eq!(fs::read(root.path().join("file.txt"))?, b"existing");
+    Ok(())
+}
+
+#[test]
+fn unapply_dry_run_reports_without_mutating() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("dev").join("file.txt"), b"content")?;
+    let root = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["apply", "dev", "--root"])
+        .arg(root.path())
+        .arg("--force")
+        .assert()
+        .success();
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["unapply", "dev", "--root"])
+        .arg(root.path())
+        .arg("--dry-run")
+        .assert()
+        .success()
+        .stdout(contains("remove:"));
+
+    assert!(root.path().join("file.txt").is_symlink());
+    Ok(())
+}
+
+#[test]
+fn unapply_debug_output() -> TestResult {
+    let repo = setup_overlay_repo();
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .arg("--debug")
+        .args(["unapply", "dev", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stderr(contains("CLI args"));
+    Ok(())
+}
+
 // ── show integration tests ──────────────────────────────────────────────
 
 #[test]
