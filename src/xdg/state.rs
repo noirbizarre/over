@@ -19,7 +19,7 @@ use std::path::PathBuf;
 // us advisory `flock`/`LockFileEx` locking natively, so no extra dependency
 // (e.g. `fs4`) is needed here.
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::task::spawn_blocking;

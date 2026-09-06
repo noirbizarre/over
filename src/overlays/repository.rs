@@ -5,7 +5,7 @@ use globset::GlobBuilder;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::{Context as _, Result};
 
 use super::overlay::Overlay;
 use super::{BASENAME, Format, GLOB_PATTERN};
