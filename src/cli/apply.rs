@@ -9,6 +9,7 @@ use crate::actions;
 use crate::cli::CLI;
 use crate::exec::Context;
 use crate::overlays::Repository;
+use crate::ui;
 use crate::ui::style::DialogTheme;
 use crate::ui::{emojis, style};
 #[derive(Args, Debug)]
@@ -87,13 +88,13 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
 
     overlay.apply(&ctx).await.inspect_err(|e| {
-        eprintln!(
+        let _ = ui::warn(format!(
             "{} {} {}: {}",
             emojis::CROSSMARK,
             style::white_b("Failed to apply overlay"),
             style::cyan(&overlay.name),
             e,
-        );
+        ));
     })?;
 
     Ok(())

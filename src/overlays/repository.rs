@@ -5,7 +5,7 @@ use globset::GlobBuilder;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::{Context as _, Result};
 
 use super::overlay::Overlay;
 use super::{BASENAME, Format, GLOB_PATTERN};
@@ -17,11 +17,11 @@ pub struct Repository {
     pub root: PathBuf,
 }
 
-// impl std::fmt::Display for Repository {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         std::fmt::Display::fmt(&self.root.display(), f)
-//     }
-// }
+impl std::fmt::Display for Repository {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.root.display(), f)
+    }
+}
 
 impl Repository {
     pub fn new(root: PathBuf) -> Self {
@@ -69,7 +69,7 @@ impl Repository {
         Ok(overlays)
     }
 
-    /// Get a repository by its name/relative path
+    /// Get an overlay by its name/relative path
     pub fn get(&self, name: &str) -> Result<Overlay> {
         let root = self.root.join(name);
         if !root.exists() {
@@ -110,6 +110,17 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn display_shows_the_root_path() {
+        #[cfg(unix)]
+        let root = PathBuf::from("/some/dotfiles");
+        #[cfg(windows)]
+        let root = PathBuf::from("C:\\some\\dotfiles");
+
+        let repo = Repository::new(root.clone());
+        assert_eq!(repo.to_string(), root.display().to_string());
+    }
 
     #[test]
     fn preferred_format_returns_toml_from_toml_config() {

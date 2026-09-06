@@ -1,7 +1,8 @@
 # `over apply`
 
-Apply a given overlay: symlink its files into the target root, clone any
-declared git repositories, and optionally install packages.
+Apply a given overlay: optionally install packages first (`--install`), then
+clone any declared git repositories and symlink its files into the target
+root.
 
 ```
 Usage: over apply [OPTIONS] [NAME]
@@ -29,3 +30,7 @@ Options:
   links files.
 - A file that already exists at the target triggers an interactive prompt
   (skip, overwrite, absorb, diff) unless `--force` or `--no-prompt` is given.
+- `--dry-run`/`--verbose` print the structured reconciliation plan (one line
+  per entry: create/no-op/conflict) before executing it, rather than just
+  reporting success or failure. See
+  [ADR-011](../adr/011-plan-then-execute-reconciliation.md).

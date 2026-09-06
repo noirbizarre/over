@@ -6,10 +6,12 @@ use crate::actions::symlink::LinkType;
 /// What kind of filesystem node a [`DesiredEntry`] should be, independent of
 /// *how* it gets there (see [`MaterializationIntent`]).
 ///
-/// `File` is reserved for #61 (content-templated files): today's
-/// symlink-first apply (ADR-006, ADR-010) never writes real file content, so
-/// [`super::DesiredTree::build`] never produces it — only `Directory` and
-/// `Symlink` are reachable for now.
+/// `File` is produced by [`MaterializationIntent::PartialFile`] (#66):
+/// managed-block content written into an existing file. Rendered/templated
+/// whole-file content (#61) is a separate, still-unimplemented concern —
+/// symlink-first apply (ADR-006, ADR-010) otherwise never writes real file
+/// content, so today only `Directory`, `Symlink`, and the `PartialFile` case
+/// of `File` are reachable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
     Directory,

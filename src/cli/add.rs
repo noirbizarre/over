@@ -1,18 +1,18 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::{Result, anyhow};
 use clap::Args;
-use dialoguer::Input;
+use dialoguer::{FuzzySelect, Input};
+use dirs::home_dir;
 
 use crate::actions::symlink::SymlinkConfig;
 use crate::cli::CLI;
 use crate::cli::common::resolve_inputs;
 use crate::exec::Context;
 use crate::overlays::Repository;
+use crate::ui;
 use crate::ui::emojis;
 use crate::ui::style::{self, DialogTheme};
-use anyhow::{Result, anyhow};
-use dialoguer::FuzzySelect;
-use dirs::home_dir;
 
 #[derive(Args, Debug)]
 pub struct Params {
@@ -93,13 +93,13 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             .add_files(&ctx, &regular_paths)
             .await
             .inspect_err(|e| {
-                eprintln!(
+                let _ = ui::warn(format!(
                     "{} {} {}: {}",
                     emojis::CROSSMARK,
                     style::white_b("Failed to add to overlay"),
                     style::cyan(&overlay.name),
                     e,
-                );
+                ));
             })?;
     }
 
@@ -141,13 +141,14 @@ fn add_symlink(
     let toml_content = toml::to_string_pretty(&config)?;
     std::fs::write(&config_path, toml_content)?;
 
-    println!(
+    ui::info(format!(
         "{} {} {} {}",
         emojis::CHECKMARK,
         style::white_b("Created symlink config"),
         style::cyan(config_path.display()),
         style::white_b("in overlay"),
-    );
+    ))
+    .ok();
 
     Ok(())
 }

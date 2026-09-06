@@ -32,7 +32,13 @@ can use, not what an overlay is.
 Nothing requires the overlay repository itself to be under version control
 — `over` has no opinion on it. Most users do put `~/.dotfiles` under git
 anyway, but that's outside `over`'s model entirely: there is no built-in
-history, diffing, or sync for the overlay content.
+history for the *overlay repository itself* (no commit log of `~/.dotfiles`
+managed by `over`). This predates and is unrelated to `over diff`
+([ADR-013](013-diff-has-its-own-taxonomy-and-uses-similar-for-content-diffs.md))
+and `over sync` ([ADR-014](014-bidirectional-checkout-synchronization.md)),
+which compare/reconcile desired vs. actual *target* state and
+checkout-materialized git repositories declared via `git:`, not the overlay
+repository's own history.
 
 Because identity is filesystem path, renaming or moving an overlay directory
 renames the overlay — and breaks anything that referenced its old name

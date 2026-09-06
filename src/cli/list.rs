@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use anyhow::Result;
 use clap::Args;
 use termtree::Tree;
 
 use crate::cli::CLI;
 use crate::overlays::Repository;
-use anyhow::Result;
+use crate::ui;
 
 #[derive(Args, Debug)]
 pub struct Params {
@@ -29,7 +30,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         print!("{tree}");
     } else {
         for overlay in &overlays {
-            println!("{}", overlay.name);
+            ui::info(&overlay.name).ok();
         }
     }
 

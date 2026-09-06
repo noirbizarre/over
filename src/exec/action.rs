@@ -9,12 +9,3 @@ use super::context::Ctx;
 pub trait Action: Display {
     async fn execute(&self, ctx: Ctx) -> Result<()>;
 }
-
-// pub struct Progress {
-//     percent: u8,
-// }
-
-// #[async_trait]
-// pub trait WithProgress {
-//     fn listen(&self) -> Receiver<Progress>;
-// }

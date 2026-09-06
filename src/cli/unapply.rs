@@ -9,6 +9,7 @@ use crate::cli::CLI;
 use crate::desired::DesiredTree;
 use crate::exec::Context;
 use crate::overlays::Repository;
+use crate::ui;
 use crate::ui::style::DialogTheme;
 use crate::ui::{emojis, style};
 use crate::unapply::{Outcome, Report};
@@ -81,22 +82,23 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let desired = DesiredTree::build_own(&ctx, &overlay)?;
     let report = Report::build(&desired)?;
 
-    println!(
+    ui::info(format!(
         "{} {} {} {} {}",
         emojis::PACKAGE,
         style::white_b("Overlay"),
         style::cyan(&overlay.name),
         style::white_b("->"),
         style::cyan(&short_path(&target.to_string_lossy())),
-    );
-    println!("  {}", report.counts());
+    ))
+    .ok();
+    ui::info(format!("  {}", report.counts())).ok();
 
     for entry_outcome in report.entries() {
         if cli.verbose || !matches!(entry_outcome.outcome, Outcome::AlreadyAbsent) {
-            println!("  {entry_outcome}");
+            ui::info(format!("  {entry_outcome}")).ok();
         }
     }
-    println!();
+    ui::info("").ok();
 
     report.execute(ctx).await?;
 

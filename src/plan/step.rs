@@ -29,10 +29,11 @@ pub enum Operation {
     /// Target exists and does not match the desired intent.
     Conflict { current: ActualState },
     /// No registered [`crate::materialize::Materializer`] claims this
-    /// entry's intent yet (today, only
-    /// [`MaterializationIntent::Checkout`] — #110 owns turning this into a
-    /// real checkout/worktree). Carried so a plan preview can still report
-    /// on it; [`super::Plan::execute`] never acts on it.
+    /// entry's intent. Unreachable in practice since #110 gave every intent
+    /// (including [`MaterializationIntent::Checkout`]) a real backend, but
+    /// kept as a defensive fallback so a plan preview still reports
+    /// something sensible instead of panicking; [`super::Plan::execute`]
+    /// never acts on it.
     Deferred,
 }
 

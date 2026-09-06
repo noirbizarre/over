@@ -10,6 +10,7 @@ use dirs::home_dir;
 
 use crate::exec::Context;
 use crate::overlays::{BASENAME, DEFAULT_TARGET, Format, Repository};
+use crate::ui;
 use crate::ui::style::{self, DialogTheme};
 
 use super::CLI;
@@ -107,12 +108,13 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if !args.dry_run {
         fs::create_dir_all(&overlay_root)?;
     }
-    println!(
+    ui::info(format!(
         "{} {} {}",
         style::white_b("Created overlay directory"),
         style::cyan(&path),
         style::white_b(&format!("({})", format)),
-    );
+    ))
+    .ok();
 
     // Write the overlay descriptor
     // Only include the target if it differs from the inherited value
@@ -124,8 +126,12 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     };
     let content = build_descriptor(descriptor_target, format, &git_entries);
     if args.dry_run {
-        println!("{}", style::white_b("Descriptor content (dry-run):"));
-        println!("{}", content);
+        ui::info(format!(
+            "{}",
+            style::white_b("Descriptor content (dry-run):")
+        ))
+        .ok();
+        ui::info(&content).ok();
     } else {
         fs::write(&descriptor, &content)?;
     }
@@ -146,7 +152,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         overlay.add_files(&ctx, &files_to_absorb).await?;
     }
 
-    println!(
+    ui::info(format!(
         "{} {} {} {}{}",
         style::white_b("Overlay"),
         style::cyan(&path),
@@ -165,7 +171,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 },
             )
         },
-    );
+    ))
+    .ok();
 
     Ok(())
 }

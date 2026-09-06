@@ -10,7 +10,7 @@
 
 use std::fs;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 
 use crate::actions::partial::{BlockState, EnsurePartialBlock, find_block};
@@ -43,7 +43,8 @@ impl Materializer for PartialFileMaterializer {
         match actual::inspect(&entry.target)? {
             ActualState::Missing => Ok(Operation::Create),
             ActualState::File => {
-                let current = fs::read_to_string(&entry.target)?;
+                let current = fs::read_to_string(&entry.target)
+                    .with_context(|| format!("failed to read {}", entry.target.display()))?;
                 Ok(match find_block(&current, marker) {
                     // No block yet: inserting one is purely additive, same
                     // "nothing here yet" spirit as `Operation::Create`.
@@ -122,6 +123,26 @@ mod tests {
         target.write_str("unrelated content\n").unwrap();
         let e = entry(target.path().to_path_buf(), "alias x=y", "m");
         assert!(matches!(m.classify(&e).unwrap(), Operation::Create));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn classify_reports_context_when_target_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let m = PartialFileMaterializer;
+        let td = TempDir::new().unwrap();
+        let target = td.child("file.txt");
+        target.write_str("unrelated content\n").unwrap();
+        fs::set_permissions(target.path(), fs::Permissions::from_mode(0o000)).unwrap();
+
+        let e = entry(target.path().to_path_buf(), "alias x=y", "m");
+        let result = m.classify(&e);
+
+        fs::set_permissions(target.path(), fs::Permissions::from_mode(0o644)).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("failed to read"));
     }
 
     #[test]

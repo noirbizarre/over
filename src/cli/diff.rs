@@ -9,6 +9,7 @@ use crate::desired::DesiredTree;
 use crate::diff::Report;
 use crate::exec::Context;
 use crate::overlays::{Overlay, Repository};
+use crate::ui;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
@@ -43,7 +44,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     };
 
     if overlays.is_empty() {
-        println!("No overlays found.");
+        ui::info("No overlays found.").ok();
         return Ok(());
     }
 
@@ -75,25 +76,26 @@ fn print_overlay_diff(
     let desired = DesiredTree::build(&ctx, overlay)?;
     let report = Report::build(&desired)?;
 
-    println!(
+    ui::info(format!(
         "{} {} {} {} {}",
         emojis::PACKAGE,
         style::white_b("Overlay"),
         style::cyan(&overlay.name),
         style::white_b("->"),
         style::cyan(&short_path(&target.to_string_lossy())),
-    );
+    ))
+    .ok();
 
-    if !report.has_changes() {
-        println!("  {}", style::white("no differences"));
+    if !report.needs_attention() {
+        ui::info(format!("  {}", style::white("no differences"))).ok();
     }
 
     for diff_entry in report.entries() {
-        if cli.verbose || diff_entry.has_diff() {
-            println!("  {diff_entry}");
+        if cli.verbose || diff_entry.needs_attention() {
+            ui::info(format!("  {diff_entry}")).ok();
         }
     }
-    println!();
+    ui::info("").ok();
 
     Ok(())
 }

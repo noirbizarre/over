@@ -33,7 +33,7 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 use crate::actions::partial::{self, BlockState};
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent};
@@ -77,9 +77,9 @@ pub struct DiffEntry {
 
 impl DiffEntry {
     /// Whether this entry has anything worth showing — used by the CLI
-    /// to decide what to print without `--verbose`, same convention as
-    /// `status::Status::needs_attention`.
-    pub fn has_diff(&self) -> bool {
+    /// to decide what to print without `--verbose`, same name and
+    /// convention as `status::Status::needs_attention`.
+    pub fn needs_attention(&self) -> bool {
         !matches!(self.change, Change::Unchanged)
     }
 }
@@ -176,9 +176,11 @@ impl Report {
         self.entries.is_empty()
     }
 
-    /// Whether anything in this report has a diff worth showing.
-    pub fn has_changes(&self) -> bool {
-        self.entries.iter().any(DiffEntry::has_diff)
+    /// Whether anything in this report needs attention (has a diff worth
+    /// showing) — same name and convention as `status::Report` and
+    /// `unapply::Report`.
+    pub fn needs_attention(&self) -> bool {
+        self.entries.iter().any(DiffEntry::needs_attention)
     }
 }
 
@@ -228,7 +230,8 @@ fn classify_conflict(entry: &DesiredEntry, current: &ActualState) -> Result<Chan
         // diff just the block's content, not the whole file — the rest of
         // the target is never `over`'s concern.
         (MaterializationIntent::PartialFile { content, marker }, ActualState::File) => {
-            let current_text = fs::read_to_string(&entry.target)?;
+            let current_text = fs::read_to_string(&entry.target)
+                .with_context(|| format!("failed to read {}", entry.target.display()))?;
             let existing_block = match partial::find_block(&current_text, marker) {
                 BlockState::Found(x) => x.to_string(),
                 // Absent/malformed: nothing block-shaped to diff against —
@@ -254,8 +257,10 @@ fn classify_conflict(entry: &DesiredEntry, current: &ActualState) -> Result<Chan
 /// their content, falling back to a binary marker if either side isn't
 /// valid UTF-8 (mirrors git's own "binary files differ").
 fn content_diff_files(actual_path: &Path, desired_path: &Path) -> Result<ContentDiff> {
-    let old = fs::read(actual_path)?;
-    let new = fs::read(desired_path)?;
+    let old = fs::read(actual_path)
+        .with_context(|| format!("failed to read {}", actual_path.display()))?;
+    let new = fs::read(desired_path)
+        .with_context(|| format!("failed to read {}", desired_path.display()))?;
     Ok(match (String::from_utf8(old), String::from_utf8(new)) {
         (Ok(old), Ok(new)) => ContentDiff::from_texts(&old, &new),
         _ => ContentDiff::binary(),
@@ -311,7 +316,7 @@ mod tests {
 
         assert_eq!(report.entries().len(), 1);
         assert!(matches!(report.entries()[0].change, Change::Missing));
-        assert!(report.has_changes());
+        assert!(report.needs_attention());
     }
 
     #[tokio::test]
@@ -346,8 +351,8 @@ mod tests {
             .find(|e| e.entry.target == td.path().join("file.txt"))
             .unwrap();
         assert!(matches!(file_entry.change, Change::Unchanged));
-        assert!(!file_entry.has_diff());
-        assert!(!report.has_changes());
+        assert!(!file_entry.needs_attention());
+        assert!(!report.needs_attention());
     }
 
     #[rstest]
@@ -388,7 +393,76 @@ mod tests {
             }
             other => panic!("expected Modified, got {other:?}"),
         }
-        assert!(report.has_changes());
+        assert!(report.needs_attention());
+    }
+
+    #[rstest]
+    #[cfg(unix)]
+    fn existing_file_conflict_reports_context_when_actual_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        overlay_dir
+            .child("file.txt")
+            .write_str("desired content\n")
+            .unwrap();
+        let actual = td.path().join("file.txt");
+        fs::write(&actual, "actual content\n").unwrap();
+        fs::set_permissions(&actual, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay.clone())
+            .build();
+
+        let desired = DesiredTree::build(&ctx, &overlay).unwrap();
+        let result = Report::build(&desired);
+
+        fs::set_permissions(&actual, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("failed to read"));
+    }
+
+    #[rstest]
+    #[cfg(unix)]
+    fn existing_file_conflict_reports_context_when_desired_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let desired_file = overlay_dir.child("file.txt");
+        desired_file.write_str("desired content\n").unwrap();
+        fs::set_permissions(desired_file.path(), fs::Permissions::from_mode(0o000)).unwrap();
+        fs::write(td.path().join("file.txt"), "actual content\n").unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay.clone())
+            .build();
+
+        let desired = DesiredTree::build(&ctx, &overlay).unwrap();
+        let result = Report::build(&desired);
+
+        fs::set_permissions(desired_file.path(), fs::Permissions::from_mode(0o644)).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("failed to read"));
     }
 
     #[test]
@@ -422,6 +496,38 @@ mod tests {
             }
             other => panic!("expected Modified, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn drifted_partial_block_reports_context_when_target_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file.txt");
+        fs::write(
+            &target,
+            "before\n# >>> over: m >>>\nhand-edited\n# <<< over: m <<<\nafter\n",
+        )
+        .unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o000)).unwrap();
+        let entry = DesiredEntry {
+            target: target.clone(),
+            provenance: crate::desired::Provenance::PartialSidecar {
+                overlay: "ov".to_string(),
+                config: std::path::PathBuf::from("/repo/ov/aliases.partial.toml"),
+            },
+            intent: MaterializationIntent::PartialFile {
+                content: "alias x=y".to_string(),
+                marker: "m".to_string(),
+            },
+        };
+        let result = classify_conflict(&entry, &ActualState::File);
+
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("failed to read"));
     }
 
     #[test]
@@ -613,7 +719,7 @@ mod tests {
     fn empty_desired_tree_produces_empty_report() {
         let report = Report::build(&DesiredTree::default()).unwrap();
         assert!(report.is_empty());
-        assert!(!report.has_changes());
+        assert!(!report.needs_attention());
     }
 
     #[rstest]

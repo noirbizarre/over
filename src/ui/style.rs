@@ -1,9 +1,9 @@
 use std::fmt;
+use std::sync::LazyLock;
 
 use clap::builder::styling;
 use console::{Style, StyledObject, style};
 use dialoguer::theme::Theme;
-use std::sync::LazyLock;
 
 pub static TICK_CHARS_BRAILLE_4_6_DOWN: LazyLock<String> = LazyLock::new(|| String::from("⠶⢲⣰⣤⣆⡖"));
 pub static TICK_CHARS_BRAILLE_4_6_UP: LazyLock<String> = LazyLock::new(|| String::from("⠛⠹⠼⠶⠧⠏"));

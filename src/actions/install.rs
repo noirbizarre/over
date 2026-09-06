@@ -1,10 +1,12 @@
 use std::collections::{BTreeSet, HashSet};
 use std::env::consts::OS;
 
-use crate::{exec::Ctx, overlays::Overlay, utils::detect_linux_distro_id};
 use anyhow::{Context as AnyhowContext, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 use which::which;
+
+use crate::ui;
+use crate::{exec::Ctx, overlays::Overlay, utils::detect_linux_distro_id};
 
 /// Serde helper: accept either a single string or a list of strings for
 /// `Option<Vec<String>>` fields, normalising both to `Some(vec![…])`.
@@ -96,7 +98,7 @@ where
 async fn run_cmd(ctx: &Ctx, program: &str, args: &[&str]) -> Result<()> {
     use tokio::process::Command;
     if ctx.verbose || ctx.dry_run {
-        println!("$ {} {}", program, args.join(" "));
+        ui::info(format!("$ {} {}", program, args.join(" "))).ok();
     }
     if ctx.dry_run {
         return Ok(());

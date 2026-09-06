@@ -38,7 +38,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use tokio::task::spawn_blocking;
 
 use crate::actions::partial::{self, BlockState};
@@ -363,9 +363,11 @@ async fn remove_partial_block_if_unchanged(
             BlockState::Found(existing) if existing == expected => {
                 let stripped = partial::remove_block(&current, &marker);
                 if stripped.trim().is_empty() {
-                    fs::remove_file(&target)?;
+                    fs::remove_file(&target)
+                        .with_context(|| format!("failed to remove {}", target.display()))?;
                 } else {
-                    fs::write(&target, stripped)?;
+                    fs::write(&target, stripped)
+                        .with_context(|| format!("failed to write {}", target.display()))?;
                 }
                 Ok(())
             }
@@ -666,6 +668,65 @@ mod tests {
         fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn remove_partial_block_if_unchanged_reports_context_when_removal_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Stripping the block leaves nothing behind, so the file itself
+        // must be removed — but its read-only parent directory rejects
+        // the removal, exercising the `.with_context` wrapping around
+        // `fs::remove_file`.
+        let td = TempDir::new().unwrap();
+        let dir = td.path().join("readonly");
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("file.txt");
+        fs::write(&target, "# >>> over: m >>>\nalias x=y\n# <<< over: m <<<\n").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = remove_partial_block_if_unchanged(
+            target.clone(),
+            "m".to_string(),
+            "alias x=y".to_string(),
+        )
+        .await;
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("failed to remove"));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn remove_partial_block_if_unchanged_reports_context_when_write_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Stripping the block leaves surrounding content behind, so the
+        // file must be rewritten — but it's read-only, exercising the
+        // `.with_context` wrapping around `fs::write`.
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file.txt");
+        fs::write(
+            &target,
+            "before\n# >>> over: m >>>\nalias x=y\n# <<< over: m <<<\nafter\n",
+        )
+        .unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o444)).unwrap();
+
+        let result = remove_partial_block_if_unchanged(
+            target.clone(),
+            "m".to_string(),
+            "alias x=y".to_string(),
+        )
+        .await;
+
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("failed to write"));
     }
 
     #[tokio::test]

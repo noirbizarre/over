@@ -5,6 +5,7 @@ use dirs::home_dir;
 use crate::cli::common::resolve_inputs;
 use crate::exec::Context;
 use crate::overlays::Repository;
+use crate::ui;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
@@ -59,14 +60,15 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let root = home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?;
     let _rel_path = repo_relative_path(&overlay, &root, &repo_root)?;
 
-    println!(
+    ui::info(format!(
         "{} {} {} {} {}",
         emojis::PACKAGE,
         style::white("Adding files from"),
         style::cyan(&short_path(&workdir.to_string_lossy())),
         style::white("to overlay"),
         style::cyan(&overlay.name),
-    );
+    ))
+    .ok();
 
     // Build execution context with the overlay's target as root
     let ctx = Context::builder()
@@ -82,13 +84,13 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let resolved = resolve_inputs(&args.files)?;
 
     overlay.add_files(&ctx, &resolved).await.inspect_err(|e| {
-        eprintln!(
+        let _ = ui::warn(format!(
             "{} {} {}: {}",
             emojis::CROSSMARK,
             style::white_b("Failed to add to overlay"),
             style::cyan(&overlay.name),
             e,
-        );
+        ));
     })?;
 
     // Compute relative paths from the repo root for .git/info/exclude
@@ -107,12 +109,13 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         exclude_paths(&git_repo, &refs)?;
 
         if cli.verbose {
-            println!(
+            ui::info(format!(
                 "{} {} {}",
                 emojis::CHECKMARK,
                 style::white("Added to .git/info/exclude:"),
                 style::cyan(&exclude_entries.join(", ")),
-            );
+            ))
+            .ok();
         }
     }
 
@@ -127,7 +130,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         })
         .collect();
 
-    println!(
+    ui::info(format!(
         "{} {} {} {} {} ({})",
         emojis::SPARKLE,
         style::white_b("Added"),
@@ -135,7 +138,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         style::white_b("file(s) to overlay"),
         style::cyan(&overlay.name),
         added_display.join(", "),
-    );
+    ))
+    .ok();
 
     Ok(())
 }

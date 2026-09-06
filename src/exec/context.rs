@@ -305,6 +305,21 @@ impl Context {
     }
 }
 
+/// Shared handle to a [`Context`], cheap to clone (an `Arc` bump) and safe to
+/// pass across `.await` points.
+///
+/// Parameter-shape convention across the codebase (all three are
+/// intentional, not interchangeable by accident):
+/// - `ctx: Ctx` (owned) — trait methods (`Action::execute`,
+///   `Materializer::materialize`) and anything that must move the context
+///   into a spawned/boxed future or store it past the call. Cheap to
+///   produce at the call site via `ctx.clone()`.
+/// - `ctx: &Ctx` — thin, non-owning wrappers that may need to clone once to
+///   delegate into an owning callee (e.g. `Overlay::add_file` borrowing here
+///   and cloning once before calling `actions::fs::add_file`).
+/// - `ctx: &Context` — pure readers that only inspect fields (flags, `root`,
+///   …) and never need `Arc` semantics; `&Ctx` derefs to `&Context` at call
+///   sites, so this is the most permissive signature for such helpers.
 pub type Ctx = Arc<Context>;
 
 #[cfg(test)]
@@ -313,6 +328,7 @@ mod tests {
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use indicatif::{MultiProgress, ProgressBar};
+    use rstest::rstest;
 
     fn dummy_repo() -> Repository {
         #[cfg(unix)]
@@ -352,50 +368,50 @@ mod tests {
         assert_eq!(ctx.machine.arch, std::env::consts::ARCH);
     }
 
+    /// Every flag `Context::builder()` sets ends up exactly as requested,
+    /// independent of which other flags are also set — whether all five are
+    /// requested (mirrors the former `builder_sets_flags`) or only some
+    /// (mirrors the former `builder_partial_flags`); unset flags must stay
+    /// `false` rather than leaking a previous case's value.
+    #[rstest]
+    #[case(true, true, true, true, true)]
+    #[case(true, false, true, false, false)]
+    fn builder_sets_requested_flags(
+        #[case] dry_run: bool,
+        #[case] debug: bool,
+        #[case] verbose: bool,
+        #[case] force: bool,
+        #[case] no_prompt: bool,
+    ) {
+        let ctx = Context::builder()
+            .dry_run(dry_run)
+            .debug(debug)
+            .verbose(verbose)
+            .force(force)
+            .no_prompt(no_prompt)
+            .build();
+
+        assert_eq!(ctx.dry_run, dry_run);
+        assert_eq!(ctx.debug, debug);
+        assert_eq!(ctx.verbose, verbose);
+        assert_eq!(ctx.force, force);
+        assert_eq!(ctx.no_prompt, no_prompt);
+    }
+
     #[test]
-    fn builder_sets_flags() {
+    fn builder_sets_root_and_repository() {
         #[cfg(unix)]
         let root_path = PathBuf::from("/home/test");
         #[cfg(windows)]
         let root_path = PathBuf::from("C:\\home\\test");
 
         let ctx = Context::builder()
-            .dry_run(true)
-            .debug(true)
-            .verbose(true)
-            .force(true)
-            .no_prompt(true)
             .root(root_path.clone())
             .repository(dummy_repo())
             .build();
 
-        assert!(ctx.dry_run);
-        assert!(ctx.debug);
-        assert!(ctx.verbose);
-        assert!(ctx.force);
-        assert!(ctx.no_prompt);
         assert_eq!(ctx.root, root_path);
         assert_eq!(ctx.repository.root, dummy_repo().root);
-    }
-
-    #[test]
-    fn builder_partial_flags() {
-        #[cfg(unix)]
-        let root_path = PathBuf::from("/tmp");
-        #[cfg(windows)]
-        let root_path = PathBuf::from("C:\\tmp");
-
-        let ctx = Context::builder()
-            .dry_run(true)
-            .verbose(true)
-            .root(root_path)
-            .build();
-
-        assert!(ctx.dry_run);
-        assert!(!ctx.debug);
-        assert!(ctx.verbose);
-        assert!(!ctx.force);
-        assert!(!ctx.no_prompt);
     }
 
     #[test]

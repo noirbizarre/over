@@ -14,8 +14,10 @@ use super::Materializer;
 /// symlinks (file- or directory-level), dispatched to the existing
 /// `actions::fs`/`actions::symlink` `Action` impls. Owns every
 /// [`MaterializationIntent`] except
-/// [`MaterializationIntent::Checkout`](crate::desired::MaterializationIntent::Checkout),
-/// which #110 will give its own backend.
+/// [`MaterializationIntent::Checkout`](crate::desired::MaterializationIntent::Checkout)
+/// (owned by `CheckoutMaterializer`, #110) and
+/// [`MaterializationIntent::PartialFile`](crate::desired::MaterializationIntent::PartialFile)
+/// (owned by `PartialFileMaterializer`, #66).
 ///
 /// This is a pure move of the logic that used to live directly in
 /// `plan::reconcile` (`classify`/`build_action`) — no behavior change.
