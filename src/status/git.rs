@@ -4,10 +4,11 @@
 //! `repo.graph_ahead_behind()`) rather than reimplementing clean/dirty/
 //! ahead/behind/diverged detection.
 //!
-//! No [`crate::materialize::Materializer`] claims `Checkout` yet (#110 owns
-//! that), so this only ever *reads* whatever `actions::git::clone_repositories`
-//! (called directly by `Overlay::apply`, outside the `Plan`/`Materializer`
-//! model) already put on disk.
+//! `Checkout` has a registered [`crate::materialize::Materializer`]
+//! (`CheckoutMaterializer`, #110) like every other intent, but this module
+//! only ever *reads* whatever `actions::git::clone_repositories` (called
+//! directly by `Overlay::apply`, before the `Plan`/`Materializer` pipeline
+//! runs) already put on disk — content-level sync stays `over sync`'s job.
 
 use std::path::Path;
 

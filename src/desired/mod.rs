@@ -6,8 +6,9 @@
 //! apply` (#13) builds a [`crate::plan::Plan`] from a `DesiredTree` and
 //! executes it via a registered [`crate::materialize::Materializer`]
 //! (#108) — git repository checkouts remain a separate,
-//! `actions::git::clone_repositories` step, orthogonal to the plan, until
-//! #110 gives them a real materializer backend:
+//! `actions::git::clone_repositories` step, orthogonal to the plan, even
+//! though #110's `CheckoutMaterializer` classifies them like any other
+//! intent:
 //!
 //! ```text
 //! root configuration

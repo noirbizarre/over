@@ -39,13 +39,11 @@
 //!
 //! ## What's deliberately *not* here
 //!
-//! - A real Git-checkout backend: [`MaterializationIntent::Checkout`]
-//!   entries have no registered [`crate::materialize::Materializer`] yet,
-//!   so they're classified as [`Operation::Deferred`] and never executed —
-//!   #110 registers a `CheckoutMaterializer` to change that, without this
-//!   module changing. `Overlay::apply` still clones git repositories
-//!   through the existing, separate `actions::git::clone_repositories`,
-//!   entirely orthogonal to this module.
+//! - Presence of the git repository itself: #110's `CheckoutMaterializer`
+//!   owns classifying [`MaterializationIntent::Checkout`] entries like every
+//!   other intent, but `Overlay::apply` still clones git repositories
+//!   through the existing, separate `actions::git::clone_repositories`
+//!   *before* building the `Plan`, entirely orthogonal to this module.
 //! - Materialization-rule migrations (symlink ↔ checkout, file-level ↔
 //!   directory-level symlink) and `defaults:`/`rules:` configuration —
 //!   #113. [`Operation`] is designed to grow variants for this without a

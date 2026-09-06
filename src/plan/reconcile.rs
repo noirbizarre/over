@@ -33,9 +33,9 @@ pub struct Plan {
 impl Plan {
     /// Classify every entry in `desired` against current state, asking the
     /// registered [`Materializer`](crate::materialize::Materializer) that
-    /// owns each entry's intent. An intent no backend claims yet (today,
-    /// only [`MaterializationIntent::Checkout`](crate::desired::MaterializationIntent::Checkout))
-    /// classifies as [`Operation::Deferred`].
+    /// owns each entry's intent. Since #110 every intent has a registered
+    /// backend, so [`Operation::Deferred`] is unreachable in practice — kept
+    /// as a defensive fallback if that ever stops being true.
     pub fn build(desired: &DesiredTree) -> Result<Self> {
         let registry = MaterializerRegistry::default();
         let mut steps = Vec::with_capacity(desired.len());
@@ -74,8 +74,8 @@ impl Plan {
     /// deterministic order (`DesiredTree` sorts entries by target path, so
     /// a directory's entry always precedes anything nested under it).
     /// `Noop`/`Deferred` steps are skipped — the former because there's
-    /// nothing to do, the latter because no backend claims that intent yet
-    /// (today, only [`MaterializationIntent::Checkout`](crate::desired::MaterializationIntent::Checkout) — #110).
+    /// nothing to do, the latter because it's unreachable in practice since
+    /// #110 (kept as a defensive fallback).
     pub async fn execute(&self, ctx: Ctx) -> Result<()> {
         let has_actionable = self
             .steps
