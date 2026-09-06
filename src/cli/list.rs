@@ -6,6 +6,7 @@ use termtree::Tree;
 
 use crate::cli::CLI;
 use crate::overlays::Repository;
+use crate::ui;
 use anyhow::Result;
 
 #[derive(Args, Debug)]
@@ -29,7 +30,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         print!("{tree}");
     } else {
         for overlay in &overlays {
-            println!("{}", overlay.name);
+            ui::info(&overlay.name).ok();
         }
     }
 

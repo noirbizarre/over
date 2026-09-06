@@ -8,6 +8,15 @@ pub fn info(msg: impl AsRef<str>) -> Result<()> {
     Ok(())
 }
 
+/// Write a warning-level line to stderr — the `eprintln!` equivalent of
+/// [`info`], for user-facing warnings that aren't a full error chain (see
+/// [`display_error`] for that).
+pub fn warn(msg: impl AsRef<str>) -> Result<()> {
+    let term = Term::stderr();
+    term.write_line(msg.as_ref())?;
+    Ok(())
+}
+
 /// Initialize the tracing subscriber with the given verbosity level.
 ///
 /// - Default (no flags): only warnings and errors

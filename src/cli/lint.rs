@@ -4,6 +4,7 @@ use console::style;
 use crate::cli::CLI;
 use crate::lint::{Severity, lint_repository};
 use crate::overlays::Repository;
+use crate::ui;
 use anyhow::Result;
 
 #[derive(Args, Debug)]
@@ -15,7 +16,7 @@ pub async fn execute(cli: &CLI, _args: &Params) -> Result<()> {
     let result = lint_repository(&repo);
 
     if result.diagnostics.is_empty() {
-        println!("{}", style("No issues found").green().bold());
+        ui::info(format!("{}", style("No issues found").green().bold())).ok();
         return Ok(());
     }
 
@@ -26,18 +27,23 @@ pub async fn execute(cli: &CLI, _args: &Params) -> Result<()> {
         };
         let overlay_label = style(format!("[{}]", diag.overlay)).cyan();
 
-        println!("{severity_label}{overlay_label}: {}", diag.message);
+        ui::info(format!("{severity_label}{overlay_label}: {}", diag.message)).ok();
 
         if let Some(file) = &diag.file {
             let location = format!("{}/{file}", diag.overlay);
-            println!("  {} {}", style("-->").dim(), style(location).dim());
+            ui::info(format!(
+                "  {} {}",
+                style("-->").dim(),
+                style(location).dim()
+            ))
+            .ok();
         }
 
         if let Some(hint) = &diag.hint {
-            println!("  {} {hint}", style("=").dim());
+            ui::info(format!("  {} {hint}", style("=").dim())).ok();
         }
 
-        println!();
+        ui::info("").ok();
     }
 
     // Summary
@@ -68,7 +74,7 @@ pub async fn execute(cli: &CLI, _args: &Params) -> Result<()> {
             .bold()
         ));
     }
-    println!("{} found", parts.join(", "));
+    ui::info(format!("{} found", parts.join(", "))).ok();
 
     if result.has_errors() {
         anyhow::bail!(

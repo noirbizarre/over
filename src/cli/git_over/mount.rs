@@ -9,6 +9,7 @@ use noyalib::compat::serde_yaml as serde_yml;
 
 use crate::actions::git::config::{GitConfig, GitRepoConfig, RemoteConfig, WorktreeEntry};
 use crate::overlays::{self, Format, Repository};
+use crate::ui;
 use crate::ui::style::DialogTheme;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
@@ -67,12 +68,13 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         over_repo.get(name)?
     } else if let Some(name) = get_overlay_config(&git_repo)? {
         let overlay = over_repo.get(&name)?;
-        println!(
+        ui::info(format!(
             "{} {} {}",
             emojis::PACKAGE,
             style::white("Using overlay from git config:"),
             style::cyan(&name),
-        );
+        ))
+        .ok();
         overlay
     } else {
         let overlays = over_repo.overlays()?;
@@ -99,14 +101,15 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .to_str()
         .ok_or_else(|| anyhow!("repository path is not valid UTF-8"))?;
 
-    println!(
+    ui::info(format!(
         "{} {} {} {} {}",
         emojis::LINK,
         style::white("Mounting"),
         style::cyan(&short_path(&repo_root.to_string_lossy())),
         style::white("to overlay"),
         style::cyan(&overlay.name),
-    );
+    ))
+    .ok();
 
     // ── Inspect local repo properties ────────────────────────────────────
 
@@ -253,45 +256,47 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let existing_entry = overlay.git.as_ref().and_then(|git| git.get(rel_path_str));
 
     if let Some(existing) = existing_entry {
-        println!(
+        ui::info(format!(
             "\n{} {} {}",
             emojis::PACKAGE,
             style::white_b("Overlay already has a git entry for"),
             style::cyan(rel_path_str),
-        );
-        println!("  url: {}", style::cyan(&existing.url));
+        ))
+        .ok();
+        ui::info(format!("  url: {}", style::cyan(&existing.url))).ok();
         if let Some(ref branch) = existing.branch {
-            println!("  branch: {}", style::cyan(branch));
+            ui::info(format!("  branch: {}", style::cyan(branch))).ok();
         }
         if let Some(ref remotes) = existing.remotes {
             for (name, cfg) in remotes {
-                println!("  remote {}: {}", style::cyan(name), cfg.url);
+                ui::info(format!("  remote {}: {}", style::cyan(name), cfg.url)).ok();
             }
         }
         if let Some(ref config) = existing.config {
             for (key, value) in &config.entries {
-                println!("  config {}: {}", style::cyan(key), value);
+                ui::info(format!("  config {}: {}", style::cyan(key), value)).ok();
             }
         }
         if existing.per_worktree_config {
-            println!("  per_worktree_config: {}", style::cyan("true"));
+            ui::info(format!("  per_worktree_config: {}", style::cyan("true"))).ok();
         }
         if let Some(ref wt_config) = existing.worktree_config {
             for (key, value) in &wt_config.entries {
-                println!("  worktree_config {}: {}", style::cyan(key), value);
+                ui::info(format!("  worktree_config {}: {}", style::cyan(key), value)).ok();
             }
         }
-        println!();
+        ui::info("").ok();
     }
 
     // ── Prompt user to select properties to export ───────────────────────
 
     if exportable.is_empty() {
-        println!(
+        ui::info(format!(
             "{} {}",
             emojis::CHECKMARK,
             style::white("No exportable properties found in local repo"),
-        );
+        ))
+        .ok();
     } else {
         let labels: Vec<&str> = exportable.iter().map(|p| p.label.as_str()).collect();
         let defaults: Vec<bool> = exportable
@@ -316,11 +321,12 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             .map_err(|e| anyhow!("selection cancelled: {}", e))?;
 
         if selections.is_empty() {
-            println!(
+            ui::info(format!(
                 "{} {}",
                 emojis::CHECKMARK,
                 style::white("No properties selected, skipping export"),
-            );
+            ))
+            .ok();
         } else {
             // Build the GitRepoConfig from selected properties
             let mut url = String::new();
@@ -417,26 +423,28 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             })
             .await??;
 
-            println!(
+            ui::info(format!(
                 "{} {} {} {} {}",
                 emojis::SPARKLE,
                 style::white_b("Exported git config for"),
                 style::cyan(rel_path_str),
                 style::white_b("to overlay"),
                 style::cyan(&overlay.name),
-            );
+            ))
+            .ok();
         }
     }
 
     // ── Write overlay name to git config ─────────────────────────────────
 
     set_overlay_config(&git_repo, &overlay.name)?;
-    println!(
+    ui::info(format!(
         "{} {} {}",
         emojis::CHECKMARK,
         style::white("Set over.overlay ="),
         style::cyan(&overlay.name),
-    );
+    ))
+    .ok();
 
     Ok(())
 }

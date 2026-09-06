@@ -14,6 +14,7 @@ use crate::actions::install::InstallConfig;
 use crate::desired::DesiredTree;
 use crate::exec::{self, Ctx};
 use crate::plan::Plan;
+use crate::ui;
 use crate::ui::{emojis, style};
 
 use super::{DEFAULT_TARGET, Repository};
@@ -245,14 +246,15 @@ impl Overlay {
             stack.push(self.name.clone());
 
             let target = self.resolve_target(ctx)?;
-            println!(
+            ui::info(format!(
                 "{} {} {} {} {}",
                 emojis::PACKAGE,
                 style::white_b("Applying overlay"),
                 style::cyan(&self.name),
                 style::white_b("to"),
                 style::cyan(&target.to_string_lossy()),
-            );
+            ))
+            .ok();
             if let Some(uses) = &self.uses {
                 if ctx.no_uses {
                     tracing::debug!(overlay = %self.name, "skipping uses (--no-uses)");
@@ -287,14 +289,14 @@ impl Overlay {
             let desired = DesiredTree::build_own(&ctx_with_target, self)?;
             let plan = Plan::build(&desired)?;
             if ctx.verbose || ctx.dry_run {
-                println!("{plan}");
+                ui::info(format!("{plan}")).ok();
             }
             plan.execute(ctx_with_target).await?;
 
             stack.pop();
             visited.insert(self.name.clone());
 
-            println!(
+            ui::info(format!(
                 "{} {} {} {} {} {}",
                 emojis::SPARKLE,
                 style::white_b("Applied overlay"),
@@ -302,7 +304,8 @@ impl Overlay {
                 style::white_b("to"),
                 style::cyan(&target.to_string_lossy()),
                 style::white_b("with success"),
-            );
+            ))
+            .ok();
 
             Ok(())
         })

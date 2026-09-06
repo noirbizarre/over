@@ -30,6 +30,7 @@ use tokio::task::spawn_blocking;
 use crate::diff::ContentDiff;
 use crate::exec::{Action, Ctx};
 use crate::plan::actual::{self, ActualState};
+use crate::ui;
 use crate::ui::style::DialogTheme;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
@@ -416,7 +417,7 @@ fn resolve_block_conflict(
                     BlockState::Found(x) => x,
                     _ => current,
                 };
-                println!("{}", ContentDiff::from_texts(existing, desired));
+                ui::info(format!("{}", ContentDiff::from_texts(existing, desired))).ok();
                 // Loop back to prompt.
             }
         }

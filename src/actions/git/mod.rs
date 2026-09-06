@@ -32,7 +32,8 @@ pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Resul
             "{} {}",
             emojis::THREAD,
             style::white("Cloning repositories"),
-        ))?;
+        ))
+        .ok();
         let subctx = ctx.with_multiprogress(MultiProgress::new());
         let results = join_all(git_repos.iter().map(|(path, repo_config)| {
             let target = if path == ROOT_PATH {
@@ -269,7 +270,11 @@ fn ensure_remotes(
             if existing.url().ok() != Some(remote_config.url.as_str()) {
                 repo.remote_set_url(name, &remote_config.url)?;
                 if verbose {
-                    println!("  Updated remote {name} URL to {}", remote_config.url);
+                    ui::info(format!(
+                        "  Updated remote {name} URL to {}",
+                        remote_config.url
+                    ))
+                    .ok();
                 }
             }
             drop(existing);
@@ -281,7 +286,7 @@ fn ensure_remotes(
                 repo.remote(name, &remote_config.url)?;
             }
             if verbose {
-                println!("  Added remote {name} -> {}", remote_config.url);
+                ui::info(format!("  Added remote {name} -> {}", remote_config.url)).ok();
             }
         }
 
@@ -432,10 +437,11 @@ fn create_worktree(
             )
         })?;
         if verbose {
-            println!(
+            ui::info(format!(
                 "  Created worktree '{name}' at {} (branch: {branch})",
                 wt_path.display()
-            );
+            ))
+            .ok();
         }
     } else {
         return Err(anyhow!("branch '{branch}' not found for worktree '{name}'"));
@@ -456,7 +462,7 @@ fn apply_git_config(
             .set_str(key, value)
             .with_context(|| format!("failed to set git config {key}"))?;
         if verbose {
-            println!("  Set config {key} = {value}");
+            ui::info(format!("  Set config {key} = {value}")).ok();
         }
     }
     Ok(())
@@ -479,7 +485,7 @@ fn apply_config_to_file(
         cfg.set_str(key, value)
             .with_context(|| format!("failed to set {key} in {}", path.display()))?;
         if verbose {
-            println!("  Set {} {key} = {value}", path.display());
+            ui::info(format!("  Set {} {key} = {value}", path.display())).ok();
         }
     }
     Ok(())
@@ -509,7 +515,7 @@ fn apply_per_worktree_config(
         .set_str("extensions.worktreeConfig", "true")
         .context("failed to set extensions.worktreeConfig")?;
     if verbose {
-        println!("  Set config extensions.worktreeConfig = true");
+        ui::info("  Set config extensions.worktreeConfig = true").ok();
     }
 
     let is_bare = config.worktree || config.worktrees.is_some();
@@ -518,7 +524,7 @@ fn apply_per_worktree_config(
             .set_str("core.bare", "false")
             .context("failed to set core.bare = false in shared config")?;
         if verbose {
-            println!("  Set config core.bare = false");
+            ui::info("  Set config core.bare = false").ok();
         }
     }
     drop(git_cfg);

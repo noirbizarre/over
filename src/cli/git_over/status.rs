@@ -5,6 +5,7 @@ use dirs::home_dir;
 use walkdir::WalkDir;
 
 use crate::overlays::{self, Repository};
+use crate::ui;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
@@ -32,26 +33,29 @@ pub async fn execute(cli: &CLI) -> Result<()> {
     let root = home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?;
     let rel_path = repo_relative_path(&overlay, &root, &repo_root)?;
 
-    println!(
+    ui::info(format!(
         "{} {} {}",
         emojis::PACKAGE,
         style::white_b("Repository:"),
         style::cyan(&short_path(&repo_root.to_string_lossy())),
-    );
+    ))
+    .ok();
     if is_worktree {
-        println!(
+        ui::info(format!(
             "  {} {}",
             style::white("Worktree:"),
             style::cyan(&short_path(&workdir.to_string_lossy())),
-        );
+        ))
+        .ok();
     } else if is_bare {
-        println!(
+        ui::info(format!(
             "  {} {}",
             style::white("Mode:"),
             style::cyan("worktree workspace (bare)"),
-        );
+        ))
+        .ok();
     }
-    println!(
+    ui::info(format!(
         "  {} {} {}",
         style::white("Overlay:"),
         style::cyan(&overlay.name),
@@ -59,13 +63,15 @@ pub async fn execute(cli: &CLI) -> Result<()> {
             "({})",
             short_path(&overlay.root.to_string_lossy())
         )),
-    );
-    println!(
+    ))
+    .ok();
+    ui::info(format!(
         "  {} {}",
         style::white("Relative path:"),
         style::cyan(rel_path.display()),
-    );
-    println!();
+    ))
+    .ok();
+    ui::info("").ok();
 
     // ── Overlay-managed files in worktree ────────────────────────────────
     // Walk the repo working tree, find symlinks pointing into the overlay root.
@@ -135,38 +141,41 @@ pub async fn execute(cli: &CLI) -> Result<()> {
     // ── Display results ──────────────────────────────────────────────────
 
     if managed_files.is_empty() && unapplied_files.is_empty() {
-        println!(
+        ui::info(format!(
             "  {} {}",
             emojis::CHECKMARK,
             style::white("No overlay-managed files found"),
-        );
+        ))
+        .ok();
         return Ok(());
     }
 
     if !managed_files.is_empty() {
-        println!(
+        ui::info(format!(
             "{} {} ({})",
             emojis::LINK,
             style::white_b("Managed files"),
             managed_files.len(),
-        );
+        ))
+        .ok();
         for file in &managed_files {
-            println!("  {} {}", emojis::GREEN_CIRCLE, style::cyan(file));
+            ui::info(format!("  {} {}", emojis::GREEN_CIRCLE, style::cyan(file))).ok();
         }
     }
 
     if !unapplied_files.is_empty() {
         if !managed_files.is_empty() {
-            println!();
+            ui::info("").ok();
         }
-        println!(
+        ui::info(format!(
             "{} {} ({})",
             emojis::PACKAGE,
             style::white_b("Overlay files not applied"),
             unapplied_files.len(),
-        );
+        ))
+        .ok();
         for file in &unapplied_files {
-            println!("  {} {}", style::yellow("?"), style::yellow(file));
+            ui::info(format!("  {} {}", style::yellow("?"), style::yellow(file))).ok();
         }
     }
 

@@ -9,6 +9,7 @@ use crate::desired::DesiredTree;
 use crate::exec::Context;
 use crate::overlays::{Overlay, Repository};
 use crate::status::Report;
+use crate::ui;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
@@ -43,7 +44,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     };
 
     if overlays.is_empty() {
-        println!("No overlays found.");
+        ui::info("No overlays found.").ok();
         return Ok(());
     }
 
@@ -75,22 +76,23 @@ fn print_overlay_status(
     let desired = DesiredTree::build(&ctx, overlay)?;
     let report = Report::build(&desired)?;
 
-    println!(
+    ui::info(format!(
         "{} {} {} {} {}",
         emojis::PACKAGE,
         style::white_b("Overlay"),
         style::cyan(&overlay.name),
         style::white_b("->"),
         style::cyan(&short_path(&target.to_string_lossy())),
-    );
-    println!("  {}", report.counts());
+    ))
+    .ok();
+    ui::info(format!("  {}", report.counts())).ok();
 
     for entry_status in report.entries() {
         if cli.verbose || entry_status.status.needs_attention() {
-            println!("  {entry_status}");
+            ui::info(format!("  {entry_status}")).ok();
         }
     }
-    println!();
+    ui::info("").ok();
 
     Ok(())
 }

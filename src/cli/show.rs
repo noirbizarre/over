@@ -2,6 +2,7 @@ use clap::Args;
 
 use crate::cli::CLI;
 use crate::overlays::Repository;
+use crate::ui;
 use crate::ui::style;
 use crate::utils::short_path;
 use anyhow::Result;
@@ -21,26 +22,30 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let repo = Repository::new(home);
     let overlay = repo.get(&args.name)?;
 
-    println!("{}", style::white_b(&overlay.name));
-    println!("  root:   {}", short_path(&overlay.root.to_string_lossy()));
-    println!("  target: {}", overlay.target);
+    ui::info(format!("{}", style::white_b(&overlay.name))).ok();
+    ui::info(format!(
+        "  root:   {}",
+        short_path(&overlay.root.to_string_lossy())
+    ))
+    .ok();
+    ui::info(format!("  target: {}", overlay.target)).ok();
     if let Some(desc) = &overlay.description {
-        println!("  desc:   {}", desc);
+        ui::info(format!("  desc:   {}", desc)).ok();
     }
     if let Some(uses) = &overlay.uses {
-        println!("  uses:   {}", uses.join(", "));
+        ui::info(format!("  uses:   {}", uses.join(", "))).ok();
     }
     if let Some(link_dirs) = &overlay.link_dirs {
-        println!("  link_dirs: {}", link_dirs.join(", "));
+        ui::info(format!("  link_dirs: {}", link_dirs.join(", "))).ok();
     }
     if let Some(git) = &overlay.git {
-        println!("  git repositories:");
+        ui::info("  git repositories:").ok();
         for (path, cfg) in git {
-            println!("    {}: {}", path, cfg.url);
+            ui::info(format!("    {}: {}", path, cfg.url)).ok();
         }
     }
     if overlay.install.is_some() {
-        println!("  install: configured");
+        ui::info("  install: configured").ok();
     }
     Ok(())
 }

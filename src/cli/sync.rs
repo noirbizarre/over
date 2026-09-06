@@ -9,6 +9,7 @@ use crate::desired::DesiredTree;
 use crate::exec::Context;
 use crate::overlays::{Overlay, Repository};
 use crate::sync::{self, SyncOptions, SyncOutcome};
+use crate::ui;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
@@ -86,7 +87,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     };
 
     if overlays.is_empty() {
-        println!("No overlays found.");
+        ui::info("No overlays found.").ok();
         return Ok(());
     }
 
@@ -128,38 +129,40 @@ async fn sync_overlay(
 
     if outcomes.is_empty() {
         if cli.verbose {
-            println!(
+            ui::info(format!(
                 "{} {} {} {}",
                 emojis::PACKAGE,
                 style::white_b("Overlay"),
                 style::cyan(&overlay.name),
                 style::white("has no checkout-materialized root entry"),
-            );
+            ))
+            .ok();
         }
         return Ok(false);
     }
 
-    println!(
+    ui::info(format!(
         "{} {} {} {} {}",
         emojis::PACKAGE,
         style::white_b("Overlay"),
         style::cyan(&overlay.name),
         style::white_b("->"),
         style::cyan(&short_path(&target.to_string_lossy())),
-    );
+    ))
+    .ok();
     // Unconditional summary (mirrors `status::Report::counts()`), so a
     // plain `over sync` still reports e.g. "1 up to date" without needing
     // `--verbose` — only the noisier per-checkout lines below are gated.
-    println!("  {}", summarize(&outcomes));
+    ui::info(format!("  {}", summarize(&outcomes))).ok();
 
     let mut needs_attention = false;
     for outcome in &outcomes {
         needs_attention |= outcome.needs_attention();
         if cli.verbose || !matches!(outcome, SyncOutcome::UpToDate { .. }) {
-            println!("  {outcome}");
+            ui::info(format!("  {outcome}")).ok();
         }
     }
-    println!();
+    ui::info("").ok();
 
     Ok(needs_attention)
 }

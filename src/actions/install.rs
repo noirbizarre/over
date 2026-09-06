@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashSet};
 use std::env::consts::OS;
 
+use crate::ui;
 use crate::{exec::Ctx, overlays::Overlay, utils::detect_linux_distro_id};
 use anyhow::{Context as AnyhowContext, Result};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -96,7 +97,7 @@ where
 async fn run_cmd(ctx: &Ctx, program: &str, args: &[&str]) -> Result<()> {
     use tokio::process::Command;
     if ctx.verbose || ctx.dry_run {
-        println!("$ {} {}", program, args.join(" "));
+        ui::info(format!("$ {} {}", program, args.join(" "))).ok();
     }
     if ctx.dry_run {
         return Ok(());

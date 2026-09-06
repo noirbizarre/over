@@ -16,6 +16,7 @@ use walkdir::WalkDir;
 
 use crate::exec::{Action, Ctx};
 use crate::overlays::Overlay;
+use crate::ui;
 use crate::ui::style::DialogTheme;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
@@ -227,11 +228,11 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
         file
     };
     if ctx.debug {
-        println!("{:#?}", src);
+        ui::info(format!("{:#?}", src)).ok();
     }
     let root = overlay.resolve_target(&ctx)?;
     if ctx.debug {
-        println!("{:#?}", root);
+        ui::info(format!("{:#?}", root)).ok();
     }
     let rel_path = match src.strip_prefix(&root) {
         Ok(tail) => tail,
@@ -251,7 +252,7 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
     {
         let dir_action = EnsureDir::new(parent.to_path_buf());
         if ctx.verbose || ctx.dry_run {
-            println!("{}", dir_action);
+            ui::info(format!("{}", dir_action)).ok();
         }
         dir_action.execute(ctx.clone()).await?;
     }
@@ -260,12 +261,12 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
     let link_action = EnsureLink::new(ctx.clone(), target.clone(), src.to_path_buf());
 
     if ctx.verbose || ctx.dry_run {
-        println!("{}", move_action);
+        ui::info(format!("{}", move_action)).ok();
     }
     move_action.execute(ctx.clone()).await?;
 
     if ctx.verbose || ctx.dry_run {
-        println!("{}", link_action);
+        ui::info(format!("{}", link_action)).ok();
     }
     if let Err(e) = link_action.execute(ctx.clone()).await {
         // Rollback: move file back to original location
@@ -315,7 +316,7 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
         {
             let dir_action = EnsureDir::new(parent.to_path_buf());
             if ctx.verbose || ctx.dry_run {
-                println!("{}", dir_action);
+                ui::info(format!("{}", dir_action)).ok();
             }
             dir_action.execute(ctx.clone()).await?;
         }
@@ -324,12 +325,12 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
         let link_action = EnsureDirLink::new(ctx.clone(), target, src);
 
         if ctx.verbose || ctx.dry_run {
-            println!("{}", move_action);
+            ui::info(format!("{}", move_action)).ok();
         }
         move_action.execute(ctx.clone()).await?;
 
         if ctx.verbose || ctx.dry_run {
-            println!("{}", link_action);
+            ui::info(format!("{}", link_action)).ok();
         }
         link_action.execute(ctx.clone()).await?;
     } else {
