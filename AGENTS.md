@@ -19,12 +19,18 @@ src/
 ├── actions/      filesystem, symlink, install and git side effects
 ├── cli/          argument types for both binaries
 ├── desired/      the DesiredTree/DesiredEntry desired-state model
+├── diff/         `over diff` desired-vs-actual comparison
 ├── exec/         execution context and templating
 ├── lint/         `over lint` diagnostics
 ├── materialize/  Materializer backends (registry, symlink)
 ├── overlays/     the Overlay/Repository domain model
 ├── plan/         the Plan/PlanStep reconciliation model
-└── ui/           logging, styling, emojis
+├── status/       `over status` desired-state classification
+├── sync/         `over sync` bidirectional checkout synchronization
+├── ui/           logging, styling, emojis
+├── unapply/      `over unapply` reversal of an overlay's own entries
+├── xdg/          XDG state/cache layout and persistence
+└── utils/        shared helpers
 ```
 
 Dependencies point inward. Nothing in the library knows a command exists.
