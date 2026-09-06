@@ -4,7 +4,7 @@ pub(crate) mod sync;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::{Context as _, Result, anyhow};
 use async_trait::async_trait;
@@ -12,7 +12,6 @@ use futures::future::join_all;
 use git2::{Progress, Repository};
 use git2_credentials::CredentialHandler;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use std::sync::LazyLock;
 use tokio::{
     spawn,
     sync::mpsc::{self, Sender},
