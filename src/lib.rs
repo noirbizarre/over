@@ -15,6 +15,7 @@ pub mod plan;
 pub mod status;
 pub mod sync;
 pub mod ui;
+pub mod unapply;
 pub mod xdg;
 
 pub mod utils;

@@ -17,6 +17,7 @@ mod new;
 mod show;
 mod status;
 mod sync;
+mod unapply;
 
 #[derive(Parser, Debug)]
 #[clap(
@@ -89,6 +90,12 @@ pub enum Commands {
         about = "Reconcile a checkout-materialized overlay with its git source"
     )]
     Sync(sync::Params),
+
+    #[clap(
+        name = "unapply",
+        about = "Remove a given overlay's own entries from the target"
+    )]
+    Unapply(unapply::Params),
 }
 
 impl CLI {
@@ -135,6 +142,9 @@ pub async fn main() -> Result<()> {
         }
         Some(Commands::Sync(ref opt)) => {
             sync::execute(&args, opt).await?;
+        }
+        Some(Commands::Unapply(ref opt)) => {
+            unapply::execute(&args, opt).await?;
         }
         None => {
             use clap::CommandFactory;
@@ -254,6 +264,12 @@ mod tests {
     fn cli_diff_subcommand() {
         let args = CLI::parse_from(["over", "diff"]);
         assert!(matches!(args.cmd, Some(Commands::Diff(_))));
+    }
+
+    #[test]
+    fn cli_unapply_subcommand() {
+        let args = CLI::parse_from(["over", "unapply", "myoverlay"]);
+        assert!(matches!(args.cmd, Some(Commands::Unapply(_))));
     }
 
     #[test]
