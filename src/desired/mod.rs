@@ -25,11 +25,11 @@
 //!
 //! [`DesiredTree::build`] walks an [`Overlay`](crate::overlays::Overlay) and
 //! everything it transitively `uses`, translating today's *implicit*
-//! symlink-first rules (`link_dirs`, `exclude`, `.link.*` sidecars, `git`)
-//! into an explicit list of [`DesiredEntry`] values. It never touches the
-//! filesystem beyond read-only inspection already required by that
-//! resolution (e.g. checking whether a `.link.*` sidecar target is a
-//! directory).
+//! symlink-first rules (`link_dirs`, `exclude`, `.link.*` sidecars,
+//! `.partial.*` sidecars (#66), `git`) into an explicit list of
+//! [`DesiredEntry`] values. It never touches the filesystem beyond
+//! read-only inspection already required by that resolution (e.g.
+//! checking whether a `.link.*` sidecar target is a directory).
 //!
 //! ## What's deliberately *not* here
 //!

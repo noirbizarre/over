@@ -35,6 +35,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use crate::actions::partial::{self, BlockState};
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent};
 use crate::plan::{ActualState, Operation, Plan};
 use crate::status::{self, Status};
@@ -223,6 +224,23 @@ fn classify_conflict(entry: &DesiredEntry, current: &ActualState) -> Result<Chan
         (MaterializationIntent::Checkout, _) => {
             unreachable!("Checkout entries never reach Plan::build's Conflict classification")
         }
+        // A partial-managed block drifted (or its markers are malformed):
+        // diff just the block's content, not the whole file — the rest of
+        // the target is never `over`'s concern.
+        (MaterializationIntent::PartialFile { content, marker }, ActualState::File) => {
+            let current_text = fs::read_to_string(&entry.target)?;
+            let existing_block = match partial::find_block(&current_text, marker) {
+                BlockState::Found(x) => x.to_string(),
+                // Absent/malformed: nothing block-shaped to diff against —
+                // fall back to the whole file so at least something useful
+                // is shown.
+                _ => current_text,
+            };
+            Ok(Change::Modified(ContentDiff::from_texts(
+                &existing_block,
+                content,
+            )))
+        }
         // Everything else structurally mismatched (a directory expected,
         // or a directory-symlink expected but a real file/directory
         // found): nothing meaningful to diff.
@@ -371,6 +389,68 @@ mod tests {
             other => panic!("expected Modified, got {other:?}"),
         }
         assert!(report.has_changes());
+    }
+
+    #[test]
+    fn drifted_partial_block_produces_block_level_diff() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file.txt");
+        fs::write(
+            &target,
+            "before\n# >>> over: m >>>\nhand-edited\n# <<< over: m <<<\nafter\n",
+        )
+        .unwrap();
+        let entry = DesiredEntry {
+            target: target.clone(),
+            provenance: crate::desired::Provenance::PartialSidecar {
+                overlay: "ov".to_string(),
+                config: std::path::PathBuf::from("/repo/ov/aliases.partial.toml"),
+            },
+            intent: MaterializationIntent::PartialFile {
+                content: "alias x=y".to_string(),
+                marker: "m".to_string(),
+            },
+        };
+        let change = classify_conflict(&entry, &ActualState::File).unwrap();
+        match change {
+            Change::Modified(diff) => {
+                let s = format!("{diff}");
+                assert!(s.contains("hand-edited"));
+                assert!(s.contains("alias x=y"));
+                assert!(!s.contains("before"));
+                assert!(!s.contains("after"));
+            }
+            other => panic!("expected Modified, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_partial_block_falls_back_to_whole_file_diff() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file.txt");
+        // Begin marker with no matching end marker: `find_block` reports
+        // `Malformed`, which has no block-shaped region to diff against.
+        fs::write(&target, "# >>> over: m >>>\nstray, no end marker\n").unwrap();
+        let entry = DesiredEntry {
+            target: target.clone(),
+            provenance: crate::desired::Provenance::PartialSidecar {
+                overlay: "ov".to_string(),
+                config: std::path::PathBuf::from("/repo/ov/aliases.partial.toml"),
+            },
+            intent: MaterializationIntent::PartialFile {
+                content: "alias x=y".to_string(),
+                marker: "m".to_string(),
+            },
+        };
+        let change = classify_conflict(&entry, &ActualState::File).unwrap();
+        match change {
+            Change::Modified(diff) => {
+                let s = format!("{diff}");
+                assert!(s.contains("stray, no end marker"));
+                assert!(s.contains("alias x=y"));
+            }
+            other => panic!("expected Modified, got {other:?}"),
+        }
     }
 
     #[rstest]

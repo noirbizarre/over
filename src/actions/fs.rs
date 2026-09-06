@@ -127,7 +127,12 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 }
 
 /// Remove a target path (file, symlink, or directory).
-fn remove_target(target: &Path) -> Result<()> {
+///
+/// `pub(crate)`: reused by `actions::partial::EnsurePartialBlock` (#66) for
+/// its own structural-conflict resolution (a directory/symlink sitting
+/// where a partial-managed file should be), rather than duplicating this
+/// logic.
+pub(crate) fn remove_target(target: &Path) -> Result<()> {
     if target.is_symlink() {
         // Determine if it's a file or dir symlink
         if target.is_dir() {

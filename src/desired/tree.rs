@@ -6,7 +6,7 @@ use globset::GlobBuilder;
 use walkdir::WalkDir;
 
 use crate::actions::git::config::ROOT_PATH;
-use crate::actions::symlink;
+use crate::actions::{partial, symlink};
 use crate::exec;
 use crate::overlays::{self, Overlay};
 
@@ -181,6 +181,7 @@ fn collect_own_entries(
     let ctx_with_target =
         ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
     build_symlink_sidecars(&ctx_with_target, overlay, target, &mut entries)?;
+    build_partial_sidecars(&ctx_with_target, overlay, &mut entries)?;
 
     Ok(entries)
 }
@@ -202,6 +203,10 @@ fn walk_overlay_tree(
         .literal_separator(true)
         .build()?
         .compile_matcher();
+    let partial_config = GlobBuilder::new("**/*.partial.{toml,yaml,yml}")
+        .literal_separator(true)
+        .build()?
+        .compile_matcher();
 
     let mut walker = WalkDir::new(&overlay.root).min_depth(1).into_iter();
     while let Some(entry) = walker.next() {
@@ -214,7 +219,8 @@ fn walk_overlay_tree(
         };
         let path = entry.path();
 
-        if exclude.is_match(path) || symlink_config.is_match(path) {
+        if exclude.is_match(path) || symlink_config.is_match(path) || partial_config.is_match(path)
+        {
             continue;
         }
 
@@ -333,6 +339,55 @@ fn sidecar_config_path(overlay_root: &Path, stem: &str) -> PathBuf {
     // these three files. Fall back to the canonical (TOML) form for a
     // stable, if slightly inaccurate, diagnostic path.
     overlay_root.join(format!("{stem}.link.toml"))
+}
+
+/// Resolve `.partial.{toml,yaml,yml}` sidecars into
+/// [`MaterializationIntent::PartialFile`] entries (#66): a managed block
+/// injected into `target` (rendered the same way a `.link.*` sidecar's
+/// `target` is — this reuses `symlink::render_symlink_target` directly,
+/// since it's already a generic path-template renderer, not
+/// symlink-specific in implementation).
+///
+/// Unlike `.link.*` sidecars, the entry's target is the rendered path
+/// *itself*, not `target_root.join(stem)`: a managed block's target is an
+/// arbitrary external file (e.g. `~/.zshrc`), not something living under
+/// the overlay's own target root by naming convention.
+fn build_partial_sidecars(
+    ctx: &exec::Context,
+    overlay: &Overlay,
+    entries: &mut Vec<DesiredEntry>,
+) -> Result<()> {
+    let partials = partial::discover_partials(&overlay.root)?;
+    for (name, config) in partials {
+        let resolved = symlink::render_symlink_target(&config.target, ctx)?;
+        let config_path = partial_sidecar_config_path(&overlay.root, &name);
+        let marker = config.marker.unwrap_or_else(|| name.clone());
+
+        entries.push(DesiredEntry {
+            target: PathBuf::from(resolved),
+            provenance: Provenance::PartialSidecar {
+                overlay: overlay.name.clone(),
+                config: config_path,
+            },
+            intent: MaterializationIntent::PartialFile {
+                content: config.content,
+                marker,
+            },
+        });
+    }
+    Ok(())
+}
+
+/// Reconstruct the sidecar file path for a partial `stem`, mirroring
+/// [`sidecar_config_path`]'s own TOML > YAML > YML precedence.
+fn partial_sidecar_config_path(overlay_root: &Path, stem: &str) -> PathBuf {
+    for ext in ["toml", "yaml", "yml"] {
+        let candidate = overlay_root.join(format!("{stem}.partial.{ext}"));
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    overlay_root.join(format!("{stem}.partial.toml"))
 }
 
 #[cfg(test)]
@@ -619,6 +674,118 @@ mod tests {
             }
             other => panic!("unexpected intent: {other:?}"),
         }
+    }
+
+    #[rstest]
+    fn partial_sidecar_produces_partial_file_entry_at_rendered_target() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let external = td.child("external.zshrc");
+        external.write_str("export FOO=bar\n").unwrap();
+        let target_toml = external.path().to_string_lossy().replace('\\', "\\\\");
+        overlay_dir
+            .child("aliases.partial.toml")
+            .write_str(&format!(
+                "target = \"{}\"\ncontent = \"alias x=y\"",
+                target_toml
+            ))
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == external.path().to_path_buf())
+            .expect("partial entry present at the rendered target");
+        match &entry.intent {
+            MaterializationIntent::PartialFile { content, marker } => {
+                assert_eq!(content, "alias x=y");
+                assert_eq!(marker, "aliases");
+            }
+            other => panic!("unexpected intent: {other:?}"),
+        }
+        match &entry.provenance {
+            Provenance::PartialSidecar { config, .. } => {
+                assert_eq!(config, &overlay.root.join("aliases.partial.toml"));
+            }
+            other => panic!("unexpected provenance: {other:?}"),
+        }
+    }
+
+    #[rstest]
+    fn partial_sidecar_custom_marker_is_used() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let target_toml = td
+            .path()
+            .join("out.txt")
+            .to_string_lossy()
+            .replace('\\', "\\\\");
+        overlay_dir
+            .child("aliases.partial.toml")
+            .write_str(&format!(
+                "target = \"{}\"\ncontent = \"x\"\nmarker = \"custom\"",
+                target_toml
+            ))
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == td.path().join("out.txt"))
+            .expect("partial entry present");
+        match &entry.intent {
+            MaterializationIntent::PartialFile { marker, .. } => assert_eq!(marker, "custom"),
+            other => panic!("unexpected intent: {other:?}"),
+        }
+    }
+
+    #[rstest]
+    fn partial_sidecar_config_files_are_not_entries() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let target_toml = td
+            .path()
+            .join("out.txt")
+            .to_string_lossy()
+            .replace('\\', "\\\\");
+        overlay_dir
+            .child("aliases.partial.toml")
+            .write_str(&format!("target = \"{}\"\ncontent = \"x\"", target_toml))
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        assert!(
+            !tree
+                .entries()
+                .iter()
+                .any(|e| e.target == overlay.root.join("aliases.partial.toml"))
+        );
     }
 
     #[rstest]
