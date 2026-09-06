@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use anyhow::Result;
 use clap::Args;
 use termtree::Tree;
 
 use crate::cli::CLI;
 use crate::overlays::Repository;
 use crate::ui;
-use anyhow::Result;
 
 #[derive(Args, Debug)]
 pub struct Params {

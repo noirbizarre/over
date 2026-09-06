@@ -1,11 +1,12 @@
 use std::collections::{BTreeSet, HashSet};
 use std::env::consts::OS;
 
-use crate::ui;
-use crate::{exec::Ctx, overlays::Overlay, utils::detect_linux_distro_id};
 use anyhow::{Context as AnyhowContext, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 use which::which;
+
+use crate::ui;
+use crate::{exec::Ctx, overlays::Overlay, utils::detect_linux_distro_id};
 
 /// Serde helper: accept either a single string or a list of strings for
 /// `Option<Vec<String>>` fields, normalising both to `Some(vec![…])`.

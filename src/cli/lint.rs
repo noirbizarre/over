@@ -1,3 +1,4 @@
+use anyhow::Result;
 use clap::Args;
 use console::style;
 
@@ -5,7 +6,6 @@ use crate::cli::CLI;
 use crate::lint::{Severity, lint_repository};
 use crate::overlays::Repository;
 use crate::ui;
-use anyhow::Result;
 
 #[derive(Args, Debug)]
 pub struct Params {}

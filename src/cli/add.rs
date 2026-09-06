@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::{Result, anyhow};
 use clap::Args;
-use dialoguer::Input;
+use dialoguer::{FuzzySelect, Input};
+use dirs::home_dir;
 
 use crate::actions::symlink::SymlinkConfig;
 use crate::cli::CLI;
@@ -11,9 +13,6 @@ use crate::overlays::Repository;
 use crate::ui;
 use crate::ui::emojis;
 use crate::ui::style::{self, DialogTheme};
-use anyhow::{Result, anyhow};
-use dialoguer::FuzzySelect;
-use dirs::home_dir;
 
 #[derive(Args, Debug)]
 pub struct Params {

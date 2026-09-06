@@ -1,3 +1,4 @@
+use anyhow::Result;
 use clap::Args;
 
 use crate::cli::CLI;
@@ -5,7 +6,6 @@ use crate::overlays::Repository;
 use crate::ui;
 use crate::ui::style;
 use crate::utils::short_path;
-use anyhow::Result;
 
 #[derive(Args, Debug)]
 pub struct Params {
