@@ -331,6 +331,7 @@ mod tests {
                 source: PathBuf::from("/repo/ov"),
             },
             intent,
+            permissions: None,
         }
     }
 
@@ -431,6 +432,7 @@ mod tests {
                 source: PathBuf::from("/repo/ov"),
             },
             intent: MaterializationIntent::Directory,
+            permissions: None,
         };
         let ctx = Context::builder().build();
         let action = build_action(ctx, &entry);
@@ -524,6 +526,7 @@ mod tests {
                 source: source.path().to_path_buf(),
             },
             intent: MaterializationIntent::Directory,
+            permissions: None,
         };
         match m.classify(&e).unwrap() {
             Operation::Migrate { from, to, blocked } => {
@@ -557,6 +560,7 @@ mod tests {
                 source: PathBuf::from("/repo/ov/somewhere-else"),
             },
             intent: MaterializationIntent::Directory,
+            permissions: None,
         };
         assert!(matches!(
             m.classify(&e).unwrap(),
@@ -591,6 +595,7 @@ mod tests {
                 source: source.path().to_path_buf(),
                 link_type: LinkType::Soft,
             },
+            permissions: None,
         };
         match m.classify(&e).unwrap() {
             Operation::Migrate { from, to, blocked } => {
@@ -625,6 +630,7 @@ mod tests {
                 source: source.path().to_path_buf(),
                 link_type: LinkType::Soft,
             },
+            permissions: None,
         };
         assert!(matches!(
             m.classify(&e).unwrap(),
@@ -654,6 +660,7 @@ mod tests {
                 source: source.path().to_path_buf(),
                 link_type: LinkType::Soft,
             },
+            permissions: None,
         };
         let step = PlanStep {
             entry: e,
@@ -699,6 +706,7 @@ mod tests {
                 source: source.clone(),
                 link_type: LinkType::Soft,
             },
+            permissions: None,
         };
         let step = PlanStep {
             entry: e,
@@ -739,6 +747,7 @@ mod tests {
                 source: PathBuf::from("/opt/x"),
                 link_type: LinkType::Soft,
             },
+            permissions: None,
         };
         let ctx = Context::builder().build();
         let action = build_action(ctx, &entry);

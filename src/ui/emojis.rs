@@ -14,6 +14,7 @@ pub static WARNING: Emoji<'_, '_> = Emoji("⚠️", "");
 pub static TRASH: Emoji<'_, '_> = Emoji("🗑️", "");
 pub static BLOCK: Emoji<'_, '_> = Emoji("🧩", "");
 pub static MIGRATE: Emoji<'_, '_> = Emoji("🔀", "");
+pub static LOCK: Emoji<'_, '_> = Emoji("🔒", "");
 // static LOOKING_GLASS: Emoji<'_, '_> = Emoji("🔍  ", "");
 // static TRUCK: Emoji<'_, '_> = Emoji("🚚  ", "");
 // static CLIP: Emoji<'_, '_> = Emoji("🔗  ", "");

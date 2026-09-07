@@ -102,6 +102,38 @@ of walked file-by-file) still works and is equivalent to a `rules` entry
 with `materialization = "symlink-directory"` — both resolve through the
 same mechanism. See [ADR-017](adr/017-materialization-rules-generalize-link-dirs.md).
 
+## File Permissions
+
+`defaults.mode` and `permissions` mirror `defaults.materialization`/`rules`
+exactly (same cascading inheritance, same specificity precedence), but
+declare a desired permission mode instead of a materialization strategy:
+
+```toml
+[defaults]
+mode = "644"                          # octal string; applied when no more
+                                       # specific `permissions` entry matches
+
+[[permissions]]
+path = "ssh/agent"                     # matches a partial sidecar's own stem
+mode = "600"
+```
+
+- Only meaningful for [Partial Files](#partial-files) — the one place
+  `over` writes real, target-owned content directly today. Every symlinked
+  file/directory shares its overlay source's inode: there's no independent
+  target permission to set without `over` mutating that tracked source
+  file, which stays out of scope (see
+  [ADR-020](adr/020-file-permissions-are-hierarchical-rules-scoped-to-partial-files.md)).
+- `path` matches a `<name>.partial.{toml,yaml,yml}` sidecar's own stem
+  (e.g. `ssh/agent` for `ssh/agent.partial.toml`), not its rendered
+  `target`.
+- No `permissions`/`defaults.mode` at all (the default) leaves permissions
+  entirely unmanaged — identical to pre-#65 behavior.
+- A drift (the block's content already matches, but the target's actual
+  mode doesn't) is auto-fixed on the next `over apply`, reported by `over
+  status`/`over diff` like any other pending change — never a blocking
+  conflict.
+
 ## Partial Files
 
 A `<name>.partial.{toml,yaml,yml}` sidecar file, placed anywhere in an

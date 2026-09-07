@@ -4,10 +4,11 @@
 //! `.link.*` sidecar convention (`src/actions/symlink.rs`) as closely as
 //! possible.
 //!
-//! Deliberately independent of #61 (full file templating) and #113
-//! (hierarchical rules): `content` is used verbatim, never rendered, and
-//! there is no per-path rule resolution here — the sidecar is, like
-//! `.link.*`, today's only per-path configuration mechanism.
+//! Deliberately independent of #61 (full file templating): `content` is
+//! used verbatim, never rendered. #65 does resolve a hierarchical
+//! `permissions`/`defaults.mode` rule for the target's declared mode (see
+//! `crate::overlays::permissions` and ADR-020) — the one hierarchical-rule
+//! concern this module honors, applied via [`EnsurePartialBlock::with_permissions`].
 //!
 //! v1 assumes a `#`-comment target file (shell rc files, ini-style
 //! configs, gitconfig, ssh config...) — the marker line format is fixed,
@@ -29,6 +30,7 @@ use tokio::task::spawn_blocking;
 
 use crate::diff::ContentDiff;
 use crate::exec::{Action, Ctx};
+use crate::overlays::FileMode;
 use crate::plan::actual::{self, ActualState};
 use crate::ui;
 use crate::ui::style::DialogTheme;
@@ -430,6 +432,10 @@ pub struct EnsurePartialBlock {
     pub target: PathBuf,
     pub marker: String,
     pub content: String,
+    /// Desired permission mode (#65), applied to `target` right after any
+    /// write this action performs. `None` (the default via `new`) leaves
+    /// permissions entirely unmanaged, matching pre-#65 behavior.
+    pub permissions: Option<FileMode>,
 }
 
 impl EnsurePartialBlock {
@@ -438,7 +444,16 @@ impl EnsurePartialBlock {
             target,
             marker,
             content,
+            permissions: None,
         }
+    }
+
+    /// Declare the permission mode to enforce on `target` after writing
+    /// (#65) — a builder rather than a `new()` parameter so the ~15
+    /// existing 3-arg call sites (this action predates #65) stay untouched.
+    pub fn with_permissions(mut self, permissions: Option<FileMode>) -> Self {
+        self.permissions = permissions;
+        self
     }
 }
 
@@ -455,6 +470,29 @@ impl fmt::Display for EnsurePartialBlock {
     }
 }
 
+/// Write `data` to `target`, then apply `permissions` (#65) if declared —
+/// factored out since `EnsurePartialBlock::execute` writes the target from
+/// several distinct branches, all of which must apply the same declared
+/// mode.
+fn write_target(
+    target: &Path,
+    data: impl AsRef<[u8]>,
+    permissions: Option<FileMode>,
+) -> Result<()> {
+    fs::write(target, data).with_context(|| format!("failed to write {}", target.display()))?;
+    #[cfg(unix)]
+    if let Some(mode) = permissions {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(target, fs::Permissions::from_mode(mode.bits()))
+            .with_context(|| format!("failed to set permissions on {}", target.display()))?;
+    }
+    // Permission bits aren't a meaningful concept to enforce here on
+    // non-unix platforms (see ADR-020) — `permissions` is simply unused.
+    #[cfg(not(unix))]
+    let _ = permissions;
+    Ok(())
+}
+
 #[async_trait]
 impl Action for EnsurePartialBlock {
     async fn execute(&self, ctx: Ctx) -> Result<()> {
@@ -464,6 +502,7 @@ impl Action for EnsurePartialBlock {
         let target = self.target.clone();
         let marker = self.marker.clone();
         let content = self.content.clone();
+        let permissions = self.permissions;
         let ctx2 = ctx.clone();
         spawn_blocking(move || -> Result<()> {
             match actual::inspect(&target)? {
@@ -476,16 +515,14 @@ impl Action for EnsurePartialBlock {
                             )
                         })?;
                     }
-                    fs::write(&target, block_only(&marker, &content))
-                        .with_context(|| format!("failed to write {}", target.display()))?;
+                    write_target(&target, block_only(&marker, &content), permissions)?;
                     Ok(())
                 }
                 ActualState::Directory | ActualState::Symlink { .. } => {
                     if !resolve_structural_conflict(&ctx2, &target)? {
                         return Ok(()); // Skipped.
                     }
-                    fs::write(&target, block_only(&marker, &content))
-                        .with_context(|| format!("failed to write {}", target.display()))?;
+                    write_target(&target, block_only(&marker, &content), permissions)?;
                     Ok(())
                 }
                 ActualState::File => {
@@ -493,14 +530,21 @@ impl Action for EnsurePartialBlock {
                         .with_context(|| format!("failed to read {}", target.display()))?;
                     match find_block(&current, &marker) {
                         BlockState::Absent => {
-                            fs::write(&target, append_block(&current, &marker, &content))
-                                .with_context(|| format!("failed to write {}", target.display()))?;
+                            write_target(
+                                &target,
+                                append_block(&current, &marker, &content),
+                                permissions,
+                            )?;
                         }
                         BlockState::Found(existing) if existing == content => {
                             // Already correct — `materialize` is only ever
                             // invoked for `Create`/`Conflict` steps, so this
                             // is a defensive no-op against a classify→
-                            // execute race, not the expected path.
+                            // execute race, not the expected path. A
+                            // permission-only drift is never routed through
+                            // here either (`Operation::Repair` bypasses
+                            // `EnsurePartialBlock` entirely — see
+                            // `materialize::partial`).
                         }
                         BlockState::Found(_) | BlockState::Malformed => {
                             if !resolve_block_conflict(&ctx2, &target, &marker, &current, &content)?
@@ -514,8 +558,7 @@ impl Action for EnsurePartialBlock {
                                 // well-formed block after them instead.
                                 _ => append_block(&current, &marker, &content),
                             };
-                            fs::write(&target, updated)
-                                .with_context(|| format!("failed to write {}", target.display()))?;
+                            write_target(&target, updated, permissions)?;
                         }
                     }
                     Ok(())
@@ -928,6 +971,62 @@ mod tests {
             fs::read_to_string(&target).unwrap(),
             "export FOO=bar\n# >>> over: m >>>\nalias x=y\n# <<< over: m <<<\n"
         );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn ensure_partial_block_applies_permissions_to_a_new_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = TempDir::new().unwrap();
+        let target = td.path().join(".zshrc");
+        let action =
+            EnsurePartialBlock::new(target.clone(), "m".to_string(), "alias x=y".to_string())
+                .with_permissions(Some(FileMode::parse("600").unwrap()));
+        action
+            .execute(ctx_force(false, false, false))
+            .await
+            .unwrap();
+
+        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn ensure_partial_block_applies_permissions_when_appending_to_an_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = TempDir::new().unwrap();
+        let target = td.path().join(".zshrc");
+        fs::write(&target, "export FOO=bar\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let action =
+            EnsurePartialBlock::new(target.clone(), "m".to_string(), "alias x=y".to_string())
+                .with_permissions(Some(FileMode::parse("600").unwrap()));
+        action
+            .execute(ctx_force(false, false, false))
+            .await
+            .unwrap();
+
+        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[tokio::test]
+    async fn ensure_partial_block_without_declared_permissions_leaves_default_mode() {
+        // No `.with_permissions(...)` call at all — must behave exactly
+        // like before #65 (no permission management whatsoever).
+        let td = TempDir::new().unwrap();
+        let target = td.path().join(".zshrc");
+        let action =
+            EnsurePartialBlock::new(target.clone(), "m".to_string(), "alias x=y".to_string());
+        action
+            .execute(ctx_force(false, false, false))
+            .await
+            .unwrap();
+        assert!(target.exists());
     }
 
     #[tokio::test]

@@ -40,7 +40,11 @@
 //!   `Overlay::materialization_for`/`crate::overlays::rules` before this
 //!   module ever walks the overlay tree.)
 //! - Rendered file content (`DesiredEntry` has no `content` field) — #61.
-//! - Permission metadata (`DesiredEntry` has no `permissions` field) — #65.
+//! - Permission metadata is present (`DesiredEntry.permissions`, #65) but
+//!   scoped to entries `over` writes content for directly (`PartialFile`
+//!   today) — a symlinked entry shares its overlay source's inode, so
+//!   there's no independent target permission to manage without mutating
+//!   that source, which stays out of scope (see ADR-020).
 //! - Comparing against actual filesystem state and materializing anything —
 //!   that's [`crate::plan`] (#13) and [`crate::materialize`] (#108).
 //!   `DesiredTree` is consumed by those, not a replacement for

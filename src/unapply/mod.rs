@@ -197,7 +197,11 @@ impl Report {
                     other => Outcome::CheckoutNotClean { status: other },
                 },
                 (_, Operation::Create) => Outcome::AlreadyAbsent,
-                (_, Operation::Noop) => Outcome::Removed,
+                // A permission-only drift (#65) doesn't change ownership:
+                // the content is still exactly what this overlay put
+                // there, only its mode needs a `chmod` — just as safe to
+                // remove as a plain `Noop`.
+                (_, Operation::Noop | Operation::Repair { .. }) => Outcome::Removed,
                 (_, Operation::Conflict { current }) => Outcome::NotOwned {
                     current: current.clone(),
                 },
@@ -533,6 +537,7 @@ mod tests {
                 source,
                 link_type: LinkType::Soft,
             },
+            permissions: None,
         };
         let desired = DesiredTree::from_entries(vec![entry]);
         let report = Report::build(&desired).unwrap();
@@ -558,6 +563,7 @@ mod tests {
                 content: content.to_string(),
                 marker: marker.to_string(),
             },
+            permissions: None,
         }
     }
 
@@ -831,6 +837,7 @@ mod tests {
                 }),
             },
             intent: MaterializationIntent::Checkout,
+            permissions: None,
         }
     }
 
@@ -877,6 +884,7 @@ mod tests {
                 source: PathBuf::from("/repo/ov"),
                 link_type: LinkType::Soft,
             },
+            permissions: None,
         };
         let desired = DesiredTree::from_entries(vec![entry]);
         let report = Report::build(&desired).unwrap();
@@ -1120,6 +1128,7 @@ mod tests {
                         source: PathBuf::from("/repo/ov/target"),
                         link_type: LinkType::Soft,
                     },
+                    permissions: None,
                 },
                 outcome,
             }

@@ -42,3 +42,4 @@ by editing the old one. The history is the value.
 | [017](017-materialization-rules-generalize-link-dirs.md) | Materialization rules generalize `link_dirs` into path/subtree overrides, amending ADR-006 |
 | [018](018-root-declared-overlays-extend-descriptor-discovery.md) | Root-declared `overlays:` paths extend descriptor-glob discovery, amending ADR-002 |
 | [019](019-default-overlay-selection-extends-templating-to-overlay-choice.md) | `default_overlay` extends templating to overlay selection, amending ADR-010 |
+| [020](020-file-permissions-are-hierarchical-rules-scoped-to-partial-files.md) | File permissions are hierarchical rules scoped to `PartialFile` entries |

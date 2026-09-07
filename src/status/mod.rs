@@ -30,7 +30,9 @@ pub enum Status {
     Applied,
     /// Target doesn't exist yet.
     Missing,
-    /// A git checkout has uncommitted changes.
+    /// A git checkout has uncommitted changes, or a filesystem entry's
+    /// content/kind already matches but its permission mode differs (#65,
+    /// `Operation::Repair`) — auto-fixable on the next `apply`.
     Modified,
     /// A dangling soft symlink (correctly pointed, but its source
     /// disappeared), or a checkout path that isn't a valid git repo.
@@ -190,6 +192,11 @@ impl Report {
                 // `Conflict` is accurate (and an improvement over silently
                 // misclassifying these as `Noop`, as happened before #129).
                 (_, Operation::Migrate { .. }) => Status::Conflict,
+                // A permission-only drift (#65): content/kind already
+                // matches, only the mode needs fixing — auto-fixable, not a
+                // real conflict, so it's reported the same way a dirty git
+                // checkout is.
+                (_, Operation::Repair { .. }) => Status::Modified,
                 (_, Operation::Deferred) => {
                     unreachable!("only Checkout entries ever classify as Deferred")
                 }
@@ -446,6 +453,7 @@ mod tests {
                         source: std::path::PathBuf::from("/repo/ov"),
                     },
                     intent: MaterializationIntent::Directory,
+                    permissions: None,
                 },
                 status,
             }
@@ -491,6 +499,7 @@ mod tests {
                         source: std::path::PathBuf::from("/repo/ov"),
                     },
                     intent: MaterializationIntent::Directory,
+                    permissions: None,
                 },
                 status,
             }

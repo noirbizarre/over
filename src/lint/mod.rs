@@ -254,6 +254,7 @@ const VALID_OVERLAY_KEYS: &[&str] = &[
     "install",
     "link_dirs",
     "overlays",
+    "permissions",
     "rules",
     "target",
     "uses",

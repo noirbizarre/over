@@ -15,7 +15,7 @@ use tokio::task::spawn_blocking;
 use walkdir::WalkDir;
 
 use crate::exec::{Action, Ctx};
-use crate::overlays::Overlay;
+use crate::overlays::{FileMode, Overlay};
 use crate::ui;
 use crate::ui::style::DialogTheme;
 use crate::ui::{emojis, style};
@@ -506,6 +506,61 @@ impl Action for EnsureDir {
     }
 }
 
+/// Enforce a declared permission mode on an existing target (#65) — the
+/// materialization for `Operation::Repair`, when an entry's content/kind
+/// already matches but its mode doesn't. Never creates or removes
+/// anything; the target must already exist.
+pub struct SetPermissions {
+    pub path: PathBuf,
+    pub mode: FileMode,
+}
+
+impl SetPermissions {
+    pub fn new(path: PathBuf, mode: FileMode) -> Self {
+        Self { path, mode }
+    }
+}
+
+impl fmt::Display for SetPermissions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {} {} ({})",
+            emojis::LOCK,
+            style::white("set permissions:"),
+            short_path(&self.path.to_string_lossy()),
+            self.mode,
+        )
+    }
+}
+
+#[async_trait]
+impl Action for SetPermissions {
+    async fn execute(&self, ctx: Ctx) -> Result<()> {
+        if ctx.dry_run {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = self.path.clone();
+            let mode = self.mode.bits();
+            spawn_blocking(move || -> Result<()> {
+                fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+                Ok(())
+            })
+            .await??;
+        }
+        // Permission bits aren't a meaningful concept to enforce here on
+        // non-unix platforms — nothing to do (see ADR-020).
+        #[cfg(not(unix))]
+        {
+            tracing::debug!(path = %self.path.display(), "permission metadata is not enforced on non-unix platforms");
+        }
+        Ok(())
+    }
+}
+
 pub struct EnsureDirLink {
     pub ctx: Ctx,
     pub source: PathBuf,
@@ -697,6 +752,55 @@ mod tests {
         let action = EnsureDir::new(dir_path.clone());
         action.execute(c.clone()).await.unwrap();
         assert!(dir_path.exists(), "directory should be created");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn set_permissions_changes_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = TempDir::new().unwrap();
+        let file = td.child("file.txt");
+        file.write_str("content").unwrap();
+        fs::set_permissions(file.path(), fs::Permissions::from_mode(0o644)).unwrap();
+
+        let action =
+            SetPermissions::new(file.path().to_path_buf(), FileMode::parse("600").unwrap());
+        let ctx = Context::builder().build();
+        action.execute(ctx).await.unwrap();
+
+        let mode = fs::metadata(file.path()).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn set_permissions_dry_run_does_not_touch_filesystem() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = TempDir::new().unwrap();
+        let file = td.child("file.txt");
+        file.write_str("content").unwrap();
+        fs::set_permissions(file.path(), fs::Permissions::from_mode(0o644)).unwrap();
+
+        let action =
+            SetPermissions::new(file.path().to_path_buf(), FileMode::parse("600").unwrap());
+        let ctx = Context::builder().dry_run(true).build();
+        action.execute(ctx).await.unwrap();
+
+        let mode = fs::metadata(file.path()).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o644, "dry_run must never touch the filesystem");
+    }
+
+    #[test]
+    fn set_permissions_display() {
+        let action = SetPermissions::new(
+            PathBuf::from("/tmp/file.txt"),
+            FileMode::parse("600").unwrap(),
+        );
+        let s = format!("{action}");
+        assert!(s.contains("set permissions:"));
+        assert!(s.contains("600"));
     }
 
     #[tokio::test]

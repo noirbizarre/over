@@ -17,6 +17,7 @@ use crate::plan::Plan;
 use crate::ui;
 use crate::ui::{emojis, style};
 
+use super::permissions::{self, FileMode, PermissionRule};
 use super::rules::{self, Defaults, MaterializationKind, MaterializationRule};
 use super::{DEFAULT_TARGET, Repository};
 
@@ -104,6 +105,13 @@ pub struct Overlay {
     /// `materialization: symlink-directory` (ADR-017) — prefer `rules`
     /// for new configs; both resolve through [`rules::resolve`].
     pub link_dirs: Option<Vec<String>>,
+
+    /// Path/subtree permission overrides (#65); most specific match wins —
+    /// see [`permissions::resolve`]. Only meaningful for entries `over`
+    /// writes content for directly (`PartialFile` today); symlinked
+    /// entries share their source's permission and are never looked up
+    /// this way (ADR-020).
+    pub permissions: Option<Vec<PermissionRule>>,
 }
 
 impl fmt::Display for Overlay {
@@ -204,6 +212,15 @@ impl Overlay {
     /// (#113/#126) — see [`Self::materialization_for`].
     pub fn is_link_dir(&self, rel_path: &Path) -> bool {
         self.materialization_for(rel_path) == MaterializationKind::SymlinkDirectory
+    }
+
+    /// Resolve the effective desired [`FileMode`] for `rel_path` (most
+    /// specific `permissions` entry, else `defaults.mode`, else `None`) —
+    /// see [`permissions::resolve`]. Only meaningful for entries `over`
+    /// writes content for directly (`PartialFile`, #65); symlinked entries
+    /// share their source's permission and are never looked up this way.
+    pub fn permission_for(&self, rel_path: &Path) -> Option<FileMode> {
+        permissions::resolve(self, rel_path)
     }
 
     /// Check if a relative path matches any `exclude` glob pattern.

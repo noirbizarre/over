@@ -149,6 +149,7 @@ fn collect_own_entries(
             source: overlay.root.clone(),
         },
         intent: MaterializationIntent::Directory,
+        permissions: None,
     });
 
     // Git-managed paths: materialized by CheckoutMaterializer (#110), which
@@ -169,6 +170,7 @@ fn collect_own_entries(
                     config: Box::new(config.clone()),
                 },
                 intent: MaterializationIntent::Checkout,
+                permissions: None,
             });
         }
     }
@@ -251,6 +253,7 @@ fn walk_overlay_tree(
                     source: path.to_path_buf(),
                     link_type: symlink::LinkType::Soft,
                 },
+                permissions: None,
             });
             walker.skip_current_dir();
             continue;
@@ -264,6 +267,7 @@ fn walk_overlay_tree(
                     source: path.to_path_buf(),
                 },
                 intent: MaterializationIntent::Directory,
+                permissions: None,
             });
         } else {
             entries.push(DesiredEntry {
@@ -276,6 +280,7 @@ fn walk_overlay_tree(
                     source: path.to_path_buf(),
                     link_type: symlink::LinkType::Soft,
                 },
+                permissions: None,
             });
         }
     }
@@ -323,6 +328,10 @@ fn build_symlink_sidecars(
             target: entry_target,
             provenance,
             intent,
+            // Symlink sidecars carry a source outside the overlay's own
+            // walked tree, but the same reasoning applies: no independent
+            // target permission without mutating that source (ADR-020).
+            permissions: None,
         });
     }
     Ok(())
@@ -365,6 +374,12 @@ fn build_partial_sidecars(
         let resolved = symlink::render_symlink_target(&config.target, ctx)?;
         let config_path = partial_sidecar_config_path(&overlay.root, &name);
         let marker = config.marker.unwrap_or_else(|| name.clone());
+        // The only intent `over` writes real target content for directly
+        // (#65) — resolved against the sidecar's own overlay-relative stem
+        // (not the rendered, possibly-external `target`), so `permissions`
+        // rules match the same identity `.link.*`/`.partial.*` naming
+        // already uses elsewhere.
+        let permissions = overlay.permission_for(Path::new(&name));
 
         entries.push(DesiredEntry {
             target: PathBuf::from(resolved),
@@ -376,6 +391,7 @@ fn build_partial_sidecars(
                 content: config.content,
                 marker,
             },
+            permissions,
         });
     }
     Ok(())
@@ -873,6 +889,144 @@ mod tests {
             MaterializationIntent::PartialFile { marker, .. } => assert_eq!(marker, "custom"),
             other => panic!("unexpected intent: {other:?}"),
         }
+    }
+
+    // ── #65: permission resolution ───────────────────────────────────────
+
+    #[rstest]
+    fn partial_sidecar_resolves_permission_from_defaults() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"\n[defaults]\nmode = \"600\"")
+            .unwrap();
+        let target_toml = td
+            .path()
+            .join("out.txt")
+            .to_string_lossy()
+            .replace('\\', "\\\\");
+        overlay_dir
+            .child("aliases.partial.toml")
+            .write_str(&format!("target = \"{}\"\ncontent = \"x\"", target_toml))
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == td.path().join("out.txt"))
+            .expect("partial entry present");
+        assert_eq!(
+            entry.permissions,
+            Some(crate::overlays::FileMode::parse("600").unwrap())
+        );
+    }
+
+    #[rstest]
+    fn partial_sidecar_specific_rule_overrides_defaults() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str(
+                "target = \"~\"\n[defaults]\nmode = \"644\"\n\n[[permissions]]\npath = \"aliases\"\nmode = \"600\"",
+            )
+            .unwrap();
+        let target_toml = td
+            .path()
+            .join("out.txt")
+            .to_string_lossy()
+            .replace('\\', "\\\\");
+        overlay_dir
+            .child("aliases.partial.toml")
+            .write_str(&format!("target = \"{}\"\ncontent = \"x\"", target_toml))
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == td.path().join("out.txt"))
+            .expect("partial entry present");
+        assert_eq!(
+            entry.permissions,
+            Some(crate::overlays::FileMode::parse("600").unwrap())
+        );
+    }
+
+    #[rstest]
+    fn partial_sidecar_without_any_rule_has_no_permission() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        let target_toml = td
+            .path()
+            .join("out.txt")
+            .to_string_lossy()
+            .replace('\\', "\\\\");
+        overlay_dir
+            .child("aliases.partial.toml")
+            .write_str(&format!("target = \"{}\"\ncontent = \"x\"", target_toml))
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == td.path().join("out.txt"))
+            .expect("partial entry present");
+        assert_eq!(entry.permissions, None);
+    }
+
+    /// Symlinked entries share their overlay source's inode — there is no
+    /// independent target permission to manage without mutating that
+    /// source (ADR-020), so a `permissions` rule matching a plain file's
+    /// path must never populate `DesiredEntry.permissions` for it, even
+    /// when the rule's `path` matches exactly.
+    #[rstest]
+    fn symlinked_file_never_carries_a_permission_even_with_a_matching_rule() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str(
+                "target = \"~\"\n[defaults]\nmode = \"600\"\n\n[[permissions]]\npath = \"file.txt\"\nmode = \"600\"",
+            )
+            .unwrap();
+        overlay_dir.child("file.txt").write_str("content").unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone());
+        let tree = DesiredTree::build(&c, &overlay).unwrap();
+
+        let root = td.path().to_path_buf();
+        let file_entry = tree
+            .entries()
+            .iter()
+            .find(|e| e.target == root.join("file.txt"))
+            .expect("file.txt entry present");
+        assert!(matches!(
+            file_entry.intent,
+            MaterializationIntent::SymlinkFile { .. }
+        ));
+        assert_eq!(file_entry.permissions, None);
     }
 
     #[rstest]
