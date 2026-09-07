@@ -113,6 +113,14 @@ impl fmt::Display for Overlay {
 }
 
 impl Overlay {
+    /// Build an overlay from its own directory, cascading config from
+    /// every ancestor up to and including the repository root (ADR-002).
+    /// The overlay's own descriptor is *not* required to exist (#127,
+    /// ADR-018): a directory declared only via the repository root's
+    /// `overlays:` key (or requested directly via `Repository::get`) with
+    /// zero local `over.*` anywhere in its ancestor chain still resolves,
+    /// entirely from inherited config plus hardcoded defaults (e.g.
+    /// `target`'s `set_default` below).
     pub fn new(repository: &Repository, root: &Path) -> Result<Self> {
         // Normalize to `/` so overlay names are portable identifiers that
         // don't leak the platform's native path separator (`\` on Windows).
@@ -131,7 +139,11 @@ impl Overlay {
                         .to_str()
                         .ok_or_else(|| anyhow::anyhow!("config path is not valid UTF-8"))?,
                 )
-                .required(dir == root),
+                // Never required (#127, ADR-018): every level of the
+                // cascade, including the overlay's own directory, is
+                // optional — a fully descriptor-less overlay still
+                // resolves via ancestor config + repository defaults.
+                .required(false),
             );
             if dir == repository.root {
                 break;
@@ -516,6 +528,23 @@ mod tests {
         assert!(overlay.is_link_dir(Path::new(".local/share/fonts")));
         assert!(!overlay.is_link_dir(Path::new(".config/other")));
         assert!(!overlay.is_link_dir(Path::new("random")));
+    }
+
+    #[test]
+    fn overlay_with_zero_local_descriptor_resolves_via_ancestor_config() {
+        let (td, repo) = repo_and_root();
+        // Repository root descriptor, providing the only `target` in the
+        // whole ancestor chain.
+        td.child("over.toml")
+            .write_str("target = \"~/inherited\"")
+            .unwrap();
+        // The overlay's own directory has no `over.*` file at all.
+        let overlay_dir = td.child("hosts/laptop");
+        overlay_dir.create_dir_all().unwrap();
+
+        let overlay = repo.get("hosts/laptop").unwrap();
+        assert_eq!(overlay.name, "hosts/laptop");
+        assert_eq!(overlay.target, "~/inherited");
     }
 
     #[rstest]

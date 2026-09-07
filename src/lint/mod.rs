@@ -126,7 +126,12 @@ fn discover_overlay_dirs(repo: &Repository) -> Vec<(PathBuf, String)> {
         .filter_map(|e| e.path().parent().map(|p| p.to_path_buf()))
         .collect();
 
+    // Union with root-declared `overlays:` directories (#113/#127), same
+    // as `Repository::overlays()` — otherwise `over lint` would be blind
+    // to overlays declared only via the root config.
+    dirs.extend(repo.declared_overlay_dirs());
     dirs.sort();
+    dirs.dedup();
 
     dirs.iter()
         .enumerate()
@@ -134,7 +139,13 @@ fn discover_overlay_dirs(repo: &Repository) -> Vec<(PathBuf, String)> {
         .filter_map(|(_, dir)| {
             dir.strip_prefix(&repo.root)
                 .ok()
-                .and_then(|rel| rel.to_str().map(|s| s.to_string()))
+                // Normalize to `/` so this name matches the one
+                // `Overlay::new` computes for the same directory
+                // (src/overlays/overlay.rs) — otherwise a nested overlay's
+                // key here (`\`-separated on Windows) would never equal
+                // the `/`-separated name another overlay's `uses` entry
+                // references, breaking cross-overlay checks on Windows.
+                .and_then(|rel| rel.to_str().map(|s| s.replace('\\', "/")))
                 .map(|name| (dir.clone(), name))
         })
         .collect()
@@ -242,6 +253,7 @@ const VALID_OVERLAY_KEYS: &[&str] = &[
     "git",
     "install",
     "link_dirs",
+    "overlays",
     "rules",
     "target",
     "uses",
@@ -665,6 +677,34 @@ mod tests {
 
         let result = lint_repository(&repo);
         assert!(result.diagnostics.is_empty());
+    }
+
+    #[rstest]
+    fn test_lint_discovers_root_declared_overlay_without_local_descriptor() {
+        let (td, repo) = setup_repo();
+        // `uses` cascades from the root descriptor (ADR-002) down to
+        // `hosts/laptop`, which has zero local descriptor of its own —
+        // only discoverable via the root declaration (#113/#127). If
+        // `over lint` were blind to it, this cycle/reference check would
+        // never run and no diagnostic would be produced.
+        td.child("over.toml")
+            .write_str(
+                "target = \"~\"\nuses = [\"nonexistent\"]\n\n[[overlays]]\npath = \"hosts/*\"",
+            )
+            .unwrap();
+        td.child("hosts/laptop").create_dir_all().unwrap();
+
+        let result = lint_repository(&repo);
+        assert!(result.has_errors());
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.overlay == "hosts/laptop"
+                    && d.message.contains("uses references non-existent overlay")),
+            "expected a diagnostic on hosts/laptop, got: {:?}",
+            result.diagnostics
+        );
     }
 
     #[rstest]

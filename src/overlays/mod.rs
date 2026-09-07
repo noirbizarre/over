@@ -13,10 +13,12 @@ pub(crate) const DEFAULT_TARGET: &str = "~";
 /// Overlay files extensions
 pub(crate) const EXTENSIONS: &[&str] = &["yml", "yaml", "toml"];
 
+pub mod discovery;
 pub mod overlay;
 pub mod repository;
 pub mod rules;
 
+pub use discovery::OverlayDeclaration;
 pub use overlay::Overlay;
 pub use repository::Repository;
 pub use rules::{Defaults, MaterializationKind, MaterializationRule};
