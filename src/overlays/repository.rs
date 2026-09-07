@@ -10,6 +10,7 @@ use anyhow::{Context as _, Result};
 use super::discovery::{OverlayDeclaration, resolve_declared_dirs};
 use super::overlay::Overlay;
 use super::{BASENAME, Format, GLOB_PATTERN};
+use crate::exec;
 
 /// Manage all overlays
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
@@ -108,6 +109,30 @@ impl Repository {
         resolve_declared_dirs(&self.root, &declarations)
     }
 
+    /// Resolve the repository root's configured `default_overlay`, if any
+    /// (#113/#128), rendering it as a template against `ctx` — the same
+    /// `exec::Context` used for `target` (see `Overlay::resolve_target`),
+    /// so `{{ machine.hostname }}` etc. can select a machine-specific
+    /// overlay — then validating the rendered name actually exists.
+    ///
+    /// `Ok(None)` means no `default_overlay` is configured: silent,
+    /// matching `preferred_format()`'s absent-means-opt-out contract.
+    /// `Err` means it *is* configured but broken (bad template, or names
+    /// an overlay that doesn't exist): a misconfigured default must never
+    /// silently fall through to another selection method (never silence
+    /// errors, AGENTS.md).
+    pub fn default_overlay(&self, ctx: &exec::Context) -> Result<Option<Overlay>> {
+        let Some(raw) = self.root_config().default_overlay else {
+            return Ok(None);
+        };
+        let name = exec::templates::render_string(&raw, ctx)
+            .with_context(|| format!("failed to render default_overlay template '{raw}'"))?;
+        let overlay = self
+            .get(&name)
+            .with_context(|| format!("configured default_overlay '{name}' not found"))?;
+        Ok(Some(overlay))
+    }
+
     /// One-shot, non-cascading read of the repository root's own
     /// descriptor. Unlike `Overlay::new`'s ancestor-chain cascade
     /// (ADR-002), this reads *only* `self.root`'s file: `format` and
@@ -133,6 +158,7 @@ impl Repository {
 struct RootConfig {
     format: Option<Format>,
     overlays: Option<Vec<OverlayDeclaration>>,
+    default_overlay: Option<String>,
 }
 
 #[cfg(test)]
@@ -286,6 +312,87 @@ mod tests {
         assert_eq!(overlays.len(), 1, "should not produce a duplicate entry");
         assert_eq!(overlays[0].name, "shared");
         assert_eq!(overlays[0].target, "~/shared");
+    }
+
+    #[test]
+    fn default_overlay_returns_none_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let ctx = exec::Context::builder().repository(repo.clone()).build();
+        assert!(repo.default_overlay(&ctx).unwrap().is_none());
+    }
+
+    #[test]
+    fn default_overlay_resolves_static_name() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("over.toml"),
+            "default_overlay = \"myoverlay\"",
+        )
+        .unwrap();
+        let ov = tmp.path().join("myoverlay");
+        fs::create_dir_all(&ov).unwrap();
+        fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
+
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let ctx = exec::Context::builder().repository(repo.clone()).build();
+        let overlay = repo.default_overlay(&ctx).unwrap().unwrap();
+        assert_eq!(overlay.name, "myoverlay");
+    }
+
+    #[test]
+    fn default_overlay_renders_machine_template() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("over.toml"),
+            "default_overlay = \"hosts/{{ machine.hostname }}\"",
+        )
+        .unwrap();
+        let ov = tmp.path().join("hosts/laptop");
+        fs::create_dir_all(&ov).unwrap();
+        fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
+
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let machine = exec::MachineInfo {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            hostname: "laptop".to_string(),
+            username: "tester".to_string(),
+            distro: None,
+            distro_id: None,
+        };
+        let ctx = exec::Context::builder()
+            .repository(repo.clone())
+            .machine(machine)
+            .build();
+        let overlay = repo.default_overlay(&ctx).unwrap().unwrap();
+        assert_eq!(overlay.name, "hosts/laptop");
+    }
+
+    #[test]
+    fn default_overlay_errors_when_named_overlay_missing() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("over.toml"),
+            "default_overlay = \"does-not-exist\"",
+        )
+        .unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let ctx = exec::Context::builder().repository(repo.clone()).build();
+        assert!(repo.default_overlay(&ctx).is_err());
+    }
+
+    #[test]
+    fn default_overlay_errors_on_invalid_template_syntax() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("over.toml"),
+            "default_overlay = \"{{ invalid\"",
+        )
+        .unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let ctx = exec::Context::builder().repository(repo.clone()).build();
+        assert!(repo.default_overlay(&ctx).is_err());
     }
 
     #[test]

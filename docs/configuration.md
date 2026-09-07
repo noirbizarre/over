@@ -33,6 +33,33 @@ This preference only governs what `over new` **writes**. Reading an overlay
 tolerates any of `.toml`/`.yaml`/`.yml` regardless of this setting — see
 [ADR-003](adr/003-overlay-descriptors-tolerate-any-format-on-read.md).
 
+### Default Overlay Selection
+
+The `default_overlay` field names the overlay commands should act on when
+no `NAME` argument is given. It's rendered as a template against the same
+context used for an overlay's own `target` field (`{{ machine.* }}`, etc.),
+so it can resolve to a different overlay per machine:
+
+```toml
+default_overlay = "hosts/{{ machine.hostname }}"
+```
+
+Selection priority (highest to lowest) for `over apply`/`over unapply`:
+
+1. An explicit `NAME` CLI argument.
+2. The resolved `default_overlay`.
+3. The existing interactive fuzzy-select prompt.
+
+For `over status`/`over diff`/`over sync`, omitting `NAME` normally reports
+on every overlay; once `default_overlay` is configured, it narrows an
+omitted `NAME` to just that overlay instead. Pass `-a`/`--all` to force
+"every overlay" regardless of a configured default.
+
+A `default_overlay` naming an overlay that doesn't exist, or that fails to
+render, is a hard error — never a silent fallback to another selection
+method. See
+[ADR-019](adr/019-default-overlay-selection-extends-templating-to-overlay-choice.md).
+
 ## Materialization Rules
 
 By default, every file in an overlay is symlinked individually and every

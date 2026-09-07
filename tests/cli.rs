@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::{error::Error, fs};
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tempfile::TempDir;
 
@@ -105,6 +106,61 @@ fn apply_without_name_empty_repo_fails() -> TestResult {
     cmd.assert()
         .failure()
         .stderr(contains("no overlays found in repository"));
+    Ok(())
+}
+
+/// A configured `default_overlay` (#128) is used without prompting when
+/// `NAME` is omitted.
+#[test]
+fn apply_without_name_uses_configured_default_overlay() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["apply", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains("dev"));
+    Ok(())
+}
+
+/// An explicit `NAME` always overrides a configured `default_overlay`
+/// (#128).
+#[test]
+fn apply_explicit_name_overrides_default_overlay() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    let other = repo.path().join("other");
+    fs::create_dir_all(&other)?;
+    fs::write(other.join("over.toml"), b"target = \"~\"")?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["apply", "other", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains("other"));
+    Ok(())
+}
+
+/// A `default_overlay` naming a nonexistent overlay is a hard error, not
+/// a silent fallback to the interactive prompt (#128).
+#[test]
+fn apply_without_name_misconfigured_default_overlay_fails() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(
+        repo.path().join("over.toml"),
+        b"default_overlay = \"does-not-exist\"",
+    )?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["apply", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(contains("default_overlay"));
     Ok(())
 }
 
@@ -414,6 +470,52 @@ fn status_empty_repository_reports_no_overlays() -> TestResult {
     Ok(())
 }
 
+/// A configured `default_overlay` (#128) narrows an omitted `NAME` to
+/// just that overlay instead of reporting on every overlay.
+#[test]
+fn status_without_name_narrows_to_configured_default_overlay() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    let other = repo.path().join("other");
+    fs::create_dir_all(&other)?;
+    fs::write(other.join("over.toml"), b"target = \"~\"")?;
+    let root = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["status", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("dev"))
+        .stdout(contains("other").not());
+    Ok(())
+}
+
+/// `--all` recovers "every overlay" even with a `default_overlay`
+/// configured (#128).
+#[test]
+fn status_all_flag_overrides_configured_default_overlay() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    let other = repo.path().join("other");
+    fs::create_dir_all(&other)?;
+    fs::write(other.join("over.toml"), b"target = \"~\"")?;
+    let root = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["status", "--all", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("dev"))
+        .stdout(contains("other"));
+    Ok(())
+}
+
 // ── diff integration tests ───────────────────────────────────────────────
 
 #[test]
@@ -522,6 +624,52 @@ fn diff_empty_repository_reports_no_overlays() -> TestResult {
     Ok(())
 }
 
+/// A configured `default_overlay` (#128) narrows an omitted `NAME` to
+/// just that overlay instead of reporting on every overlay.
+#[test]
+fn diff_without_name_narrows_to_configured_default_overlay() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    let other = repo.path().join("other");
+    fs::create_dir_all(&other)?;
+    fs::write(other.join("over.toml"), b"target = \"~\"")?;
+    let root = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["diff", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("dev"))
+        .stdout(contains("other").not());
+    Ok(())
+}
+
+/// `--all` recovers "every overlay" even with a `default_overlay`
+/// configured (#128).
+#[test]
+fn diff_all_flag_overrides_configured_default_overlay() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    let other = repo.path().join("other");
+    fs::create_dir_all(&other)?;
+    fs::write(other.join("over.toml"), b"target = \"~\"")?;
+    let root = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["diff", "--all", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("dev"))
+        .stdout(contains("other"));
+    Ok(())
+}
+
 // ── sync integration tests ────────────────────────────────────────────────
 
 fn git(dir: &Path, args: &[&str]) {
@@ -588,6 +736,54 @@ fn sync_empty_repository_reports_no_overlays() -> TestResult {
         .assert()
         .success()
         .stdout(contains("No overlays found"));
+    Ok(())
+}
+
+/// A configured `default_overlay` (#128) narrows an omitted `NAME` to
+/// just that overlay instead of syncing every overlay. `--verbose` makes
+/// a git-entry-less overlay still print its name, so the assertion can
+/// tell which overlay(s) were actually visited.
+#[test]
+fn sync_without_name_narrows_to_configured_default_overlay() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    let other = repo.path().join("other");
+    fs::create_dir_all(&other)?;
+    fs::write(other.join("over.toml"), b"target = \"~\"")?;
+    let root = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["sync", "--verbose", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("dev"))
+        .stdout(contains("other").not());
+    Ok(())
+}
+
+/// `--all` recovers "every overlay" even with a `default_overlay`
+/// configured (#128).
+#[test]
+fn sync_all_flag_overrides_configured_default_overlay() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    let other = repo.path().join("other");
+    fs::create_dir_all(&other)?;
+    fs::write(other.join("over.toml"), b"target = \"~\"")?;
+    let root = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["sync", "--all", "--verbose", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("dev"))
+        .stdout(contains("other"));
     Ok(())
 }
 
@@ -756,6 +952,24 @@ fn unapply_unknown_overlay_fails() -> TestResult {
         .args(["unapply", "does-not-exist"])
         .assert()
         .failure();
+    Ok(())
+}
+
+/// A configured `default_overlay` (#128) is used without prompting when
+/// `NAME` is omitted.
+#[test]
+fn unapply_without_name_uses_configured_default_overlay() -> TestResult {
+    let repo = setup_overlay_repo();
+    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["unapply", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("dev"));
     Ok(())
 }
 

@@ -15,7 +15,9 @@ use crate::utils::short_path;
 
 #[derive(Args, Debug)]
 pub struct Params {
-    #[clap(help = "Name of the overlay to sync (all overlays if omitted)")]
+    #[clap(
+        help = "Name of the overlay to sync (default_overlay if configured, all overlays otherwise)"
+    )]
     name: Option<String>,
 
     #[clap(short, long, help = "The target root directory (~)")]
@@ -23,6 +25,14 @@ pub struct Params {
 
     #[clap(long, help = "Do not process uses")]
     no_uses: bool,
+
+    #[clap(
+        long,
+        short,
+        conflicts_with = "name",
+        help = "Sync every overlay, ignoring any configured default_overlay"
+    )]
+    all: bool,
 
     #[clap(
         long,
@@ -81,9 +91,19 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .or_else(home_dir)
         .ok_or_else(|| anyhow!("could not determine home directory"))?;
 
-    let overlays = match &args.name {
-        Some(name) => vec![repo.get(name)?],
-        None => repo.overlays()?,
+    let overlays = match (&args.name, args.all) {
+        (Some(name), _) => vec![repo.get(name)?],
+        (None, true) => repo.overlays()?,
+        (None, false) => {
+            let ctx = Context::builder()
+                .root(root.clone())
+                .repository(repo.clone())
+                .build();
+            match repo.default_overlay(&ctx)? {
+                Some(overlay) => vec![overlay],
+                None => repo.overlays()?,
+            }
+        }
     };
 
     if overlays.is_empty() {
@@ -217,6 +237,7 @@ mod tests {
             name: name.map(String::from),
             root: Some(root),
             no_uses: false,
+            all: false,
             pull_only: false,
             push_only: false,
             continue_: false,
@@ -309,6 +330,64 @@ mod tests {
             &params(Some("does-not-exist"), root.path().to_path_buf()),
         )
         .await;
+        assert!(result.is_err());
+    }
+
+    /// An omitted `NAME` narrows to just the configured `default_overlay`
+    /// instead of syncing every overlay (#128).
+    #[tokio::test]
+    async fn sync_default_overlay_narrows_omitted_name() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("over.toml"), "default_overlay = \"plain\"").unwrap();
+        let root = tmp.child("root");
+        root.create_dir_all().unwrap();
+        for name in ["plain", "other"] {
+            let ov = tmp.path().join(name);
+            fs::create_dir_all(&ov).unwrap();
+            fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
+        }
+
+        let cli = make_cli(tmp.path().to_path_buf());
+        let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
+        assert!(result.is_ok());
+    }
+
+    /// `--all` recovers today's "every overlay" behavior even when a
+    /// `default_overlay` is configured (#128).
+    #[tokio::test]
+    async fn sync_all_flag_overrides_configured_default() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("over.toml"), "default_overlay = \"plain\"").unwrap();
+        let root = tmp.child("root");
+        root.create_dir_all().unwrap();
+        for name in ["plain", "other"] {
+            let ov = tmp.path().join(name);
+            fs::create_dir_all(&ov).unwrap();
+            fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
+        }
+
+        let cli = make_cli(tmp.path().to_path_buf());
+        let mut p = params(None, root.path().to_path_buf());
+        p.all = true;
+        let result = execute(&cli, &p).await;
+        assert!(result.is_ok());
+    }
+
+    /// A `default_overlay` naming a nonexistent overlay is a hard error,
+    /// not a silent fallback to "all overlays" (#128).
+    #[tokio::test]
+    async fn sync_misconfigured_default_overlay_errors() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("over.toml"),
+            "default_overlay = \"does-not-exist\"",
+        )
+        .unwrap();
+        let root = tmp.child("root");
+        root.create_dir_all().unwrap();
+
+        let cli = make_cli(tmp.path().to_path_buf());
+        let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
         assert!(result.is_err());
     }
 

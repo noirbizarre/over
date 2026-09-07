@@ -8,7 +8,7 @@ root.
 Usage: over apply [OPTIONS] [NAME]
 
 Arguments:
-  [NAME]  Name of the overlay to apply
+  [NAME]  Name of the overlay to apply (uses default_overlay if configured)
 
 Options:
   -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
@@ -23,6 +23,9 @@ Options:
   -h, --help         Print help
 ```
 
+- When `NAME` is omitted, the repository's configured `default_overlay` (if
+  any) is used instead of prompting interactively — see
+  [Default Overlay Selection](../configuration.md#default-overlay-selection).
 - `--no-uses` applies only the named overlay, skipping every overlay it
   `uses`.
 - `--install` additionally runs the `install` section (see

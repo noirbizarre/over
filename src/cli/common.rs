@@ -2,7 +2,12 @@ use std::env::current_dir;
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
+use dialoguer::FuzzySelect;
 use dirs::home_dir;
+
+use crate::exec;
+use crate::overlays::{Overlay, Repository};
+use crate::ui::style::DialogTheme;
 
 /// Check whether a string contains glob metacharacters.
 pub fn is_glob_pattern(s: &str) -> bool {
@@ -65,6 +70,36 @@ pub fn resolve_inputs(inputs: &[String]) -> Result<Vec<PathBuf>> {
     }
 
     Ok(resolved)
+}
+
+/// Resolve which overlay a single-`NAME`-argument command (`apply`,
+/// `unapply`) should act on: an explicit CLI name always wins; if
+/// omitted, the repository's templated `default_overlay` is tried next
+/// (#128); only if neither applies does this fall back to the existing
+/// interactive `FuzzySelect` prompt.
+pub fn select_overlay(
+    repo: &Repository,
+    ctx: &exec::Context,
+    name: Option<&str>,
+    prompt: &str,
+) -> Result<Overlay> {
+    if let Some(name) = name {
+        return repo.get(name);
+    }
+    if let Some(overlay) = repo.default_overlay(ctx)? {
+        return Ok(overlay);
+    }
+    let overlays = repo.overlays()?;
+    if overlays.is_empty() {
+        return Err(anyhow!("no overlays found in repository"));
+    }
+    let selection = FuzzySelect::with_theme(&DialogTheme::default())
+        .with_prompt(prompt)
+        .default(0)
+        .items(&overlays[..])
+        .interact()
+        .map_err(|e| anyhow!("overlay selection cancelled: {}", e))?;
+    Ok(overlays[selection].clone())
 }
 
 #[cfg(test)]
@@ -154,6 +189,70 @@ mod tests {
         let td = TempDir::new().unwrap();
         let pattern = format!("{}/*.nonexistent", td.path().display());
         let result = resolve_inputs(&[pattern]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn select_overlay_explicit_name_wins_over_default() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("over.toml"),
+            "default_overlay = \"default-one\"",
+        )
+        .unwrap();
+        for name in ["default-one", "explicit-one"] {
+            let ov = tmp.path().join(name);
+            std::fs::create_dir_all(&ov).unwrap();
+            std::fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
+        }
+
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let ctx = exec::Context::builder().repository(repo.clone()).build();
+        let overlay =
+            select_overlay(&repo, &ctx, Some("explicit-one"), "Choose an overlay").unwrap();
+        assert_eq!(overlay.name, "explicit-one");
+    }
+
+    #[test]
+    fn select_overlay_uses_default_when_name_omitted() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("over.toml"),
+            "default_overlay = \"myoverlay\"",
+        )
+        .unwrap();
+        let ov = tmp.path().join("myoverlay");
+        std::fs::create_dir_all(&ov).unwrap();
+        std::fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
+
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let ctx = exec::Context::builder().repository(repo.clone()).build();
+        let overlay = select_overlay(&repo, &ctx, None, "Choose an overlay").unwrap();
+        assert_eq!(overlay.name, "myoverlay");
+    }
+
+    #[test]
+    fn select_overlay_no_default_and_empty_repo_errors() {
+        let tmp = TempDir::new().unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let ctx = exec::Context::builder().repository(repo.clone()).build();
+        let result = select_overlay(&repo, &ctx, None, "Choose an overlay");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn select_overlay_misconfigured_default_errors_without_prompting() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("over.toml"),
+            "default_overlay = \"does-not-exist\"",
+        )
+        .unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let ctx = exec::Context::builder().repository(repo.clone()).build();
+        // Must error, not silently fall through to an interactive prompt
+        // that would hang the test suite waiting on stdin.
+        let result = select_overlay(&repo, &ctx, None, "Choose an overlay");
         assert!(result.is_err());
     }
 }

@@ -6,16 +6,22 @@ Get the current repository/directory overlays status.
 Usage: over status [OPTIONS] [NAME]
 
 Arguments:
-  [NAME]  Name of the overlay to check (all overlays if omitted)
+  [NAME]  Name of the overlay to check (default_overlay if configured, all overlays otherwise)
 
 Options:
   -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
   -r, --root <ROOT>  The target root directory (~)
   -d, --debug        Toggle debug traces
       --no-uses      Do not process uses
+  -a, --all          Check every overlay, ignoring any configured default_overlay
   -v, --verbose      Toggle verbose output
   -h, --help         Print help
 ```
+
+When `NAME` is omitted, a configured `default_overlay` (see
+[Default Overlay Selection](../configuration.md#default-overlay-selection))
+narrows the report to just that overlay; pass `--all` to report on every
+overlay regardless.
 
 Each entry is classified into one of 8 statuses (referenced by `over diff`
 and `over unapply` too):
