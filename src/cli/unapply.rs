@@ -2,22 +2,21 @@ use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
 use clap::Args;
-use dialoguer::FuzzySelect;
 use dirs::home_dir;
 
 use crate::cli::CLI;
+use crate::cli::common::select_overlay;
 use crate::desired::DesiredTree;
 use crate::exec::Context;
 use crate::overlays::Repository;
 use crate::ui;
-use crate::ui::style::DialogTheme;
 use crate::ui::{emojis, style};
 use crate::unapply::{Outcome, Report};
 use crate::utils::short_path;
 
 #[derive(Args, Debug)]
 pub struct Params {
-    #[clap(help = "Name of the overlay to unapply")]
+    #[clap(help = "Name of the overlay to unapply (uses default_overlay if configured)")]
     name: Option<String>,
 
     #[clap(short, long, help = "The target root directory (~)")]
@@ -38,26 +37,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let home = cli.resolve_home()?;
     let repo = Repository::new(home);
-    let overlay = match &args.name {
-        Some(name) => repo.get(name)?,
-        None => {
-            let overlays = repo.overlays()?;
-            if overlays.is_empty() {
-                return Err(anyhow!("no overlays found in repository"));
-            }
-            let selection = FuzzySelect::with_theme(&DialogTheme::default())
-                .with_prompt("Choose the overlay to unapply")
-                .default(0)
-                .items(&overlays[..])
-                .interact()
-                .map_err(|e| anyhow!("overlay selection cancelled: {}", e))?;
-            overlays[selection].clone()
-        }
-    };
-    if cli.debug {
-        tracing::debug!(?overlay, "resolved overlay");
-    }
-
     let root = args
         .root
         .clone()
@@ -70,8 +49,19 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .verbose(cli.verbose)
         .root(root)
         .repository(repo)
-        .overlay(overlay.clone())
         .build();
+
+    let overlay = select_overlay(
+        &ctx.repository,
+        &ctx,
+        args.name.as_deref(),
+        "Choose the overlay to unapply",
+    )?;
+    if cli.debug {
+        tracing::debug!(?overlay, "resolved overlay");
+    }
+
+    let ctx = ctx.with_overlay(overlay.clone());
     let target = overlay.resolve_target(&ctx)?;
     let ctx = ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
 

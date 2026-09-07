@@ -8,21 +8,27 @@ the checkout back upstream.
 Usage: over sync [OPTIONS] [NAME]
 
 Arguments:
-  [NAME]  Name of the overlay to sync (all overlays if omitted)
+  [NAME]  Name of the overlay to sync (default_overlay if configured, all overlays otherwise)
 
 Options:
   -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
   -r, --root <ROOT>  The target root directory (~)
   -d, --debug        Toggle debug traces
       --no-uses      Do not process uses
-      --pull-only    Only pull upstream changes into the checkout
+  -a, --all          Sync every overlay, ignoring any configured default_overlay
   -v, --verbose      Toggle verbose output
+      --pull-only    Only pull upstream changes into the checkout
       --push-only    Only push local commits to the overlay source
       --continue     Re-attempt a sync after resolving conflicts manually
       --abort        Abort an in-progress merge left by a conflicted sync
   -n, --dry-run      Report what would happen without syncing
   -h, --help         Print help
 ```
+
+When `NAME` is omitted, a configured `default_overlay` (see
+[Default Overlay Selection](../configuration.md#default-overlay-selection))
+narrows the sync to just that overlay; pass `--all` to sync every overlay
+regardless.
 
 ## Scope: the overlay's root git entry only
 
