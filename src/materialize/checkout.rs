@@ -16,9 +16,10 @@
 //! This materializer's `materialize` is therefore a correctness fallback
 //! (any other caller of `Plan::execute`, e.g. tests), not the primary path.
 
+use std::fs;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use tokio::task::spawn_blocking;
 
@@ -68,19 +69,55 @@ impl Materializer for CheckoutMaterializer {
     /// clean/dirty/ahead/behind/conflict detection — the same read-only
     /// inspection `over status`/`over diff` already rely on.
     fn classify(&self, entry: &DesiredEntry) -> Result<Operation> {
+        let actual = actual::inspect(&entry.target)?;
+
         // A stale symlink here (left by a `SymlinkFile`/`SymlinkDirectory`
-        // rule that used to resolve this path, #126) would otherwise make
-        // `status::git::inspect`'s `Repository::open` fail below ->
-        // `Status::Broken` -> collapse to `Noop`, silently stuck forever
-        // (the exact bug #129 fixes). Check `ActualState` first so a
-        // `symlink -> checkout` rule-change migration is detected instead.
-        // Always safe: removing a symlink never touches overlay source
-        // content, unlike a git checkout's own uncommitted work.
-        if let ActualState::Symlink { points_to } = actual::inspect(&entry.target)? {
+        // rule that used to resolve this path, #126, or a legacy `over`
+        // install predating XDG state tracking entirely, #130) would
+        // otherwise make `status::git::inspect`'s `Repository::open` fail
+        // below -> `Status::Broken` -> collapse to `Noop`, silently stuck
+        // forever (the exact bug #129 fixes). Check `ActualState` first so
+        // a `symlink -> checkout` migration is detected instead. Always
+        // safe: removing a symlink never touches overlay source content,
+        // unlike a git checkout's own uncommitted work.
+        if let ActualState::Symlink { points_to } = &actual {
             return Ok(Operation::Migrate {
-                from: reconstruct_symlink_intent(&points_to),
+                from: reconstruct_symlink_intent(points_to),
                 to: MaterializationIntent::Checkout,
                 blocked: None,
+            });
+        }
+
+        // A real, *non-empty* directory with no `.git`: the shape a legacy
+        // `over` install predating rules/checkouts actually produces —
+        // every file under this path recursed and symlinked individually
+        // (ADR-006's original default), not a single directory-level
+        // symlink (#130). An *empty* directory is deliberately left to the
+        // fallback below (unchanged from before this branch existed): it's
+        // indistinguishable from a plain placeholder directory created for
+        // this same target root before its first-ever clone, not evidence
+        // of anything legacy.
+        //
+        // Only auto-adopt when every leaf, recursively, is a symlink —
+        // nothing `over` didn't put there, so nothing is lost by removing
+        // it (`actual::is_symlink_only`, the same reasoning the branch
+        // above already applies to a single symlink). A real file mixed in
+        // means that can't be proven: surfaced as a conflict, never
+        // silently swallowed as `Noop` like it used to be.
+        if matches!(actual, ActualState::Directory)
+            && !entry.target.join(".git").exists()
+            && fs::read_dir(&entry.target)?.next().is_some()
+        {
+            return Ok(if actual::is_symlink_only(&entry.target)? {
+                Operation::Migrate {
+                    from: MaterializationIntent::Directory,
+                    to: MaterializationIntent::Checkout,
+                    blocked: None,
+                }
+            } else {
+                Operation::Conflict {
+                    current: ActualState::Directory,
+                }
             });
         }
 
@@ -101,12 +138,28 @@ impl Materializer for CheckoutMaterializer {
     }
 
     /// Invoked for `Operation::Create` (repository doesn't exist yet) and
-    /// for an unblocked `Operation::Migrate` (#129: a stale symlink sits
-    /// where a checkout is now desired) — the latter first removes the
-    /// symlink, then falls through to the same clone logic. Delegates to
-    /// the same, unchanged `EnsureGitRepository` action
-    /// `actions::git::clone_repositories` already runs per entry.
+    /// for an unblocked `Operation::Migrate` (#129: a stale symlink or a
+    /// legacy symlink-only directory, #130, sits where a checkout is now
+    /// desired) — the latter first removes what's there, then falls
+    /// through to the same clone logic. Delegates to the same, unchanged
+    /// `EnsureGitRepository` action `actions::git::clone_repositories`
+    /// already runs per entry.
     async fn materialize(&self, ctx: Ctx, step: &PlanStep) -> Result<()> {
+        // `classify` now returns this for a real file mixed into what
+        // would otherwise be a legacy symlink-only directory (#130) —
+        // previously unreachable for this materializer. Must never fall
+        // through to unconditionally cloning over it: there's no
+        // "absorb-diff"-style resolution for a checkout the way there is
+        // for symlinks/files, so this is the only safe response.
+        if let Operation::Conflict { current } = &step.operation {
+            return Err(anyhow!(
+                "refusing to clone into '{}': found {}, not a reconstructible \
+                 legacy `over` installation — move it aside and rerun",
+                step.entry.target.display(),
+                current,
+            ));
+        }
+
         let Provenance::Git {
             config, overlay, ..
         } = &step.entry.provenance
@@ -290,6 +343,117 @@ mod tests {
             }
             other => panic!("expected Migrate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn classify_legacy_symlink_only_directory_is_migrate_to_checkout() {
+        // The actual shape a legacy `over` install predates rules/checkout
+        // with: every file recursed and symlinked individually (ADR-006),
+        // not a single top-level symlink — #130's primary scenario.
+        let m = CheckoutMaterializer;
+        let td = TempDir::new().unwrap();
+        let source = td.child("source_dir");
+        source.create_dir_all().unwrap();
+        source.child("a.txt").write_str("a").unwrap();
+        source.child("sub").create_dir_all().unwrap();
+        source.child("sub/b.txt").write_str("b").unwrap();
+
+        let target = td.child("target_dir");
+        target.create_dir_all().unwrap();
+        fs::create_dir_all(target.path().join("sub")).unwrap();
+        symlink::symlink_file(source.path().join("a.txt"), target.path().join("a.txt")).unwrap();
+        symlink::symlink_file(
+            source.path().join("sub/b.txt"),
+            target.path().join("sub/b.txt"),
+        )
+        .unwrap();
+
+        let e = entry(target.path().to_path_buf(), git_config(""));
+        match m.classify(&e).unwrap() {
+            Operation::Migrate { from, to, blocked } => {
+                assert!(matches!(from, MaterializationIntent::Directory));
+                assert!(matches!(to, MaterializationIntent::Checkout));
+                assert!(blocked.is_none());
+            }
+            other => panic!("expected Migrate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_directory_with_foreign_file_is_conflict_not_noop() {
+        // A real file mixed into what would otherwise be a legacy
+        // symlink-only directory can't be proven safe to discard — must
+        // surface as a conflict, never silently as `Noop` (the exact bug
+        // #130 fixes for this shape).
+        let m = CheckoutMaterializer;
+        let td = TempDir::new().unwrap();
+        let source = td.child("source.txt");
+        source.write_str("content").unwrap();
+
+        let target = td.child("target_dir");
+        target.create_dir_all().unwrap();
+        symlink::symlink_file(source.path(), target.path().join("linked.txt")).unwrap();
+        fs::write(target.path().join("foreign.txt"), "not from over").unwrap();
+
+        let e = entry(target.path().to_path_buf(), git_config(""));
+        assert!(matches!(
+            m.classify(&e).unwrap(),
+            Operation::Conflict {
+                current: ActualState::Directory
+            }
+        ));
+    }
+
+    #[test]
+    fn classify_empty_directory_is_still_noop() {
+        // An empty directory with no `.git` is indistinguishable from a
+        // plain placeholder created before its first-ever clone — must
+        // not be treated as a legacy symlink-only install (regression
+        // guard for `classify_broken_checkout_is_noop`'s exact shape).
+        let m = CheckoutMaterializer;
+        let td = TempDir::new().unwrap();
+        let target = td.child("empty_dir");
+        target.create_dir_all().unwrap();
+
+        let e = entry(target.path().to_path_buf(), git_config(""));
+        assert!(matches!(m.classify(&e).unwrap(), Operation::Noop));
+    }
+
+    #[tokio::test]
+    async fn materialize_rejects_conflict() {
+        // `classify` can now return `Operation::Conflict` (#130) —
+        // `materialize` must refuse it outright rather than silently
+        // cloning over real content, and must touch nothing on disk.
+        use crate::exec::Context;
+
+        let td = TempDir::new().unwrap();
+        let source = td.child("source.txt");
+        source.write_str("content").unwrap();
+        let target = td.child("target_dir");
+        target.create_dir_all().unwrap();
+        symlink::symlink_file(source.path(), target.path().join("linked.txt")).unwrap();
+        fs::write(target.path().join("foreign.txt"), "not from over").unwrap();
+
+        let m = CheckoutMaterializer;
+        let e = entry(target.path().to_path_buf(), git_config(""));
+        let step = PlanStep {
+            entry: e,
+            operation: Operation::Conflict {
+                current: ActualState::Directory,
+            },
+        };
+        let ctx = Context::builder().build();
+        let result = m.materialize(ctx, &step).await;
+
+        assert!(result.is_err());
+        assert!(
+            target.path().join("foreign.txt").exists(),
+            "conflicting content must remain untouched"
+        );
+        assert!(
+            target.path().join("linked.txt").exists(),
+            "existing symlink must remain untouched"
+        );
     }
 
     #[tokio::test]

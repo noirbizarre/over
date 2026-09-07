@@ -72,6 +72,34 @@ pub fn inspect(path: &Path) -> Result<ActualState> {
     })
 }
 
+/// Whether `path` is, recursively, nothing but symlinks (or doesn't exist
+/// at all) — no real file/directory content anywhere underneath.
+///
+/// A symlink never holds unique data of its own — removing one is always
+/// safe (`CheckoutMaterializer::classify`'s stale-symlink branch, #129,
+/// already relies on exactly this reasoning for a single symlink). A
+/// directory built entirely of symlinks is safe to discard for the exact
+/// same reason, generalized: nothing is lost that `over` didn't put there
+/// in the first place. This is the primitive that recognizes a legacy
+/// `over` symlink-only installation with zero prior XDG state (#130) as
+/// safe to remove and replace with a checkout — a single real file
+/// anywhere underneath means that can't be proven, and must never be
+/// silently discarded.
+pub fn is_symlink_only(path: &Path) -> Result<bool> {
+    match inspect(path)? {
+        ActualState::Missing | ActualState::Symlink { .. } => Ok(true),
+        ActualState::File => Ok(false),
+        ActualState::Directory => {
+            for entry in fs::read_dir(path)? {
+                if !is_symlink_only(&entry?.path())? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +171,77 @@ mod tests {
             ActualState::Symlink { points_to } => assert_eq!(points_to, source),
             other => panic!("expected Symlink, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn missing_path_is_symlink_only() {
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("does-not-exist");
+        assert!(is_symlink_only(&path).unwrap());
+    }
+
+    #[test]
+    fn a_single_symlink_is_symlink_only() {
+        let td = TempDir::new().unwrap();
+        let source = td.child("source.txt");
+        source.write_str("content").unwrap();
+        let link = td.path().join("link.txt");
+        symlink::symlink_file(source.path(), &link).unwrap();
+        assert!(is_symlink_only(&link).unwrap());
+    }
+
+    #[test]
+    fn a_real_file_is_not_symlink_only() {
+        let td = TempDir::new().unwrap();
+        let file = td.child("afile.txt");
+        file.write_str("content").unwrap();
+        assert!(!is_symlink_only(file.path()).unwrap());
+    }
+
+    #[test]
+    fn a_directory_of_only_symlinks_is_symlink_only() {
+        let td = TempDir::new().unwrap();
+        let source = td.child("source_dir");
+        source.create_dir_all().unwrap();
+        source.child("a.txt").write_str("a").unwrap();
+        source.child("sub").create_dir_all().unwrap();
+        source.child("sub/b.txt").write_str("b").unwrap();
+
+        let target = td.child("target_dir");
+        target.create_dir_all().unwrap();
+        fs::create_dir_all(target.path().join("sub")).unwrap();
+        symlink::symlink_file(source.path().join("a.txt"), target.path().join("a.txt")).unwrap();
+        symlink::symlink_file(
+            source.path().join("sub/b.txt"),
+            target.path().join("sub/b.txt"),
+        )
+        .unwrap();
+
+        assert!(is_symlink_only(target.path()).unwrap());
+    }
+
+    #[test]
+    fn a_directory_with_one_real_file_is_not_symlink_only() {
+        let td = TempDir::new().unwrap();
+        let source = td.child("source.txt");
+        source.write_str("content").unwrap();
+
+        let target = td.child("target_dir");
+        target.create_dir_all().unwrap();
+        symlink::symlink_file(source.path(), target.path().join("linked.txt")).unwrap();
+        fs::write(target.path().join("foreign.txt"), "not from over").unwrap();
+
+        assert!(!is_symlink_only(target.path()).unwrap());
+    }
+
+    #[test]
+    fn a_real_file_nested_in_a_subdirectory_is_not_symlink_only() {
+        let td = TempDir::new().unwrap();
+        let target = td.child("target_dir");
+        target.create_dir_all().unwrap();
+        target.child("sub").create_dir_all().unwrap();
+        fs::write(target.path().join("sub/foreign.txt"), "not from over").unwrap();
+
+        assert!(!is_symlink_only(target.path()).unwrap());
     }
 }

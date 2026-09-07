@@ -18,8 +18,10 @@ use tokio::{
     task::spawn_blocking,
 };
 
+use crate::actions::fs::remove_target;
 use crate::actions::git::config::{GitRepoConfig, ROOT_PATH};
 use crate::overlays::Overlay;
+use crate::plan::actual::{self, ActualState};
 use crate::{
     exec::{Action, Ctx},
     ui::{self, emojis, style},
@@ -101,6 +103,54 @@ impl fmt::Display for EnsureGitRepository {
     }
 }
 
+/// Remove whatever legacy, symlink-only content already sits at `path` so a
+/// fresh clone can proceed — or refuse outright when it holds anything that
+/// isn't reconstructible (#130).
+///
+/// `Overlay::apply_inner` calls [`clone_repositories`] directly, *before*
+/// building/classifying a [`crate::plan::Plan`] — so a real `over apply`
+/// never actually goes through `CheckoutMaterializer::classify`'s
+/// `Operation::Migrate` detection (#129); it needs the identical reasoning
+/// inline here instead, or a legacy install would just make `git2`'s clone
+/// fail outright (destination already exists) with a confusing raw error.
+/// A stale symlink (a `SymlinkFile`/`SymlinkDirectory` rule that used to
+/// resolve this path) or a whole directory populated file-by-file with
+/// individual symlinks (ADR-006's original default, predating rules and
+/// checkouts entirely) holds no data of its own — removing either is
+/// always safe. A real file anywhere in the way means that can't be
+/// proven, and must never be silently discarded.
+///
+/// A pre-existing *empty* directory is left untouched (not evidence of
+/// anything legacy — just a placeholder `git2` already clones into fine),
+/// and an already-established checkout (`path/.git` exists) is left alone
+/// entirely — the `exists` check just below handles it as a normal,
+/// already-applied repository, exactly like before this function existed.
+fn remove_legacy_materialization(path: &Path) -> Result<()> {
+    match actual::inspect(path)? {
+        ActualState::Missing => Ok(()),
+        ActualState::Symlink { .. } => remove_target(path),
+        ActualState::File => Err(anyhow!(
+            "refusing to clone into '{}': a file already exists there \
+             (not a reconstructible legacy `over` installation)",
+            path.display(),
+        )),
+        ActualState::Directory => {
+            if path.join(".git").exists() || std::fs::read_dir(path)?.next().is_none() {
+                return Ok(());
+            }
+            if actual::is_symlink_only(path)? {
+                remove_target(path)
+            } else {
+                Err(anyhow!(
+                    "refusing to clone into '{}': contains real content that isn't a \
+                     reconstructible legacy `over` installation — move it aside and rerun",
+                    path.display(),
+                ))
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl Action for EnsureGitRepository {
     async fn execute(&self, ctx: Ctx) -> Result<()> {
@@ -111,17 +161,26 @@ impl Action for EnsureGitRepository {
         pb.set_style(CLONE_PROGRESS_STYLE.clone());
         pb.set_prefix(self.short_name());
 
-        let repo_path = if self.config.worktree || self.config.worktrees.is_some() {
-            self.path.join(".git")
-        } else {
-            self.path.clone()
-        };
-
         // For bare repos (worktree mode), repo_path is `path/.git` which is
         // specific enough. For normal repos, check for `.git` inside the
         // directory so a pre-existing empty directory isn't mistaken for a repo
         // (e.g. the target root created by overlay apply before cloning).
         let is_bare = self.config.worktree || self.config.worktrees.is_some();
+
+        // Bare/worktree repos are out of scope (#130): no version of `over`
+        // that predates this feature could ever have produced one, so
+        // there's nothing legacy to detect here.
+        if !is_bare && !ctx.dry_run {
+            let path = self.path.clone();
+            spawn_blocking(move || remove_legacy_materialization(&path)).await??;
+        }
+
+        let repo_path = if is_bare {
+            self.path.join(".git")
+        } else {
+            self.path.clone()
+        };
+
         let exists = if is_bare {
             repo_path.exists()
         } else {
@@ -1364,6 +1423,175 @@ mod tests {
         assert!(display.contains("/home/user/repos/repo"));
         assert!(display.contains("https://github.com/user/repo.git"));
         assert!(display.contains(" -> "));
+    }
+
+    // ── legacy symlink-only installation migration (#130) ───────────────
+    //
+    // `Overlay::apply_inner` calls `clone_repositories` (and so
+    // `EnsureGitRepository::execute`) directly, *before* `Plan::build`
+    // classifies anything — this is the actual `over apply` path a legacy
+    // install with zero prior XDG state hits, distinct from
+    // `materialize::checkout`'s classify-only tests, which only cover
+    // `over status`/`over diff`/`--dry-run` previews.
+
+    fn git_config(url: &str) -> GitRepoConfig {
+        GitRepoConfig {
+            url: url.to_string(),
+            branch: None,
+            tag: None,
+            rev: None,
+            recurse_submodules: false,
+            worktree: false,
+            per_worktree_config: false,
+            worktrees: None,
+            remotes: None,
+            config: None,
+            worktree_config: None,
+        }
+    }
+
+    fn multiprogress_ctx() -> crate::exec::Ctx {
+        use crate::exec::Context;
+        use crate::overlays::Repository;
+        Context::builder()
+            .repository(Repository::new(std::env::temp_dir()))
+            .build()
+            .with_multiprogress(MultiProgress::new())
+    }
+
+    #[tokio::test]
+    async fn execute_removes_legacy_symlink_before_cloning() {
+        let (source_td, _source_repo) = create_source_repo();
+        let dest_td = TempDir::new().unwrap();
+        let stale_source = dest_td.path().join("stale_source");
+        fs::create_dir_all(&stale_source).unwrap();
+        let target = dest_td.path().join("checkout");
+        symlink::symlink_dir(&stale_source, &target).unwrap();
+
+        let action = EnsureGitRepository::new(
+            target.clone(),
+            git_config(source_td.path().to_str().unwrap()),
+            "ov".to_string(),
+        );
+        action.execute(multiprogress_ctx()).await.unwrap();
+
+        assert!(!target.is_symlink(), "stale symlink should be gone");
+        assert!(target.join(".git").exists());
+        assert!(target.join("README.md").exists());
+    }
+
+    #[tokio::test]
+    async fn execute_removes_legacy_symlink_only_directory_before_cloning() {
+        // The actual shape a legacy `over` install predating rules/checkout
+        // produces: every file recursed and symlinked individually
+        // (ADR-006), not a single top-level symlink.
+        let (source_td, _source_repo) = create_source_repo();
+        let dest_td = TempDir::new().unwrap();
+
+        let legacy_source = dest_td.path().join("legacy_source");
+        fs::create_dir_all(&legacy_source).unwrap();
+        fs::write(legacy_source.join("a.txt"), "a").unwrap();
+
+        let target = dest_td.path().join("checkout");
+        fs::create_dir_all(&target).unwrap();
+        symlink::symlink_file(legacy_source.join("a.txt"), target.join("a.txt")).unwrap();
+
+        let action = EnsureGitRepository::new(
+            target.clone(),
+            git_config(source_td.path().to_str().unwrap()),
+            "ov".to_string(),
+        );
+        action.execute(multiprogress_ctx()).await.unwrap();
+
+        assert!(target.join(".git").exists());
+        assert!(target.join("README.md").exists());
+        assert!(
+            !target.join("a.txt").is_symlink(),
+            "legacy symlink-only directory should have been replaced wholesale"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_refuses_to_clone_over_real_file() {
+        let (source_td, _source_repo) = create_source_repo();
+        let dest_td = TempDir::new().unwrap();
+        let target = dest_td.path().join("checkout");
+        fs::write(&target, "not from over").unwrap();
+
+        let action = EnsureGitRepository::new(
+            target.clone(),
+            git_config(source_td.path().to_str().unwrap()),
+            "ov".to_string(),
+        );
+        let result = action.execute(multiprogress_ctx()).await;
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "not from over");
+    }
+
+    #[tokio::test]
+    async fn execute_refuses_to_clone_over_dirty_directory() {
+        let (source_td, _source_repo) = create_source_repo();
+        let dest_td = TempDir::new().unwrap();
+
+        let legacy_source = dest_td.path().join("legacy_source");
+        fs::create_dir_all(&legacy_source).unwrap();
+        fs::write(legacy_source.join("a.txt"), "a").unwrap();
+
+        let target = dest_td.path().join("checkout");
+        fs::create_dir_all(&target).unwrap();
+        symlink::symlink_file(legacy_source.join("a.txt"), target.join("a.txt")).unwrap();
+        fs::write(target.join("foreign.txt"), "not from over").unwrap();
+
+        let action = EnsureGitRepository::new(
+            target.clone(),
+            git_config(source_td.path().to_str().unwrap()),
+            "ov".to_string(),
+        );
+        let result = action.execute(multiprogress_ctx()).await;
+
+        assert!(result.is_err());
+        assert!(
+            target.join("foreign.txt").exists(),
+            "conflicting content must remain untouched"
+        );
+        assert!(
+            target.join("a.txt").is_symlink(),
+            "pre-existing symlink must remain untouched"
+        );
+        assert!(!target.join(".git").exists());
+    }
+
+    #[tokio::test]
+    async fn execute_dry_run_never_touches_a_legacy_symlink_or_directory() {
+        let (source_td, _source_repo) = create_source_repo();
+        let dest_td = TempDir::new().unwrap();
+        let stale_source = dest_td.path().join("stale_source");
+        fs::create_dir_all(&stale_source).unwrap();
+        let target = dest_td.path().join("checkout");
+        symlink::symlink_dir(&stale_source, &target).unwrap();
+
+        let action = EnsureGitRepository::new(
+            target.clone(),
+            git_config(source_td.path().to_str().unwrap()),
+            "ov".to_string(),
+        );
+        let ctx = {
+            use crate::exec::Context;
+            use crate::overlays::Repository;
+            Context::builder()
+                .repository(Repository::new(std::env::temp_dir()))
+                .dry_run(true)
+                .build()
+                .with_multiprogress(MultiProgress::new())
+        };
+        action.execute(ctx).await.unwrap();
+
+        assert!(
+            target.is_symlink(),
+            "dry-run must never remove the legacy symlink"
+        );
+        assert_eq!(fs::read_link(&target).unwrap(), stale_source);
     }
 
     // ── CloneState::update_bar ──────────────────────────────────────────
