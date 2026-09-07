@@ -184,6 +184,12 @@ impl Report {
                 (_, Operation::Create) => Status::Missing,
                 (_, Operation::Conflict { .. }) => Status::Conflict,
                 (intent, Operation::Noop) => classify_noop(intent),
+                // A pending rule-change migration (#129, blocked or not):
+                // target exists and doesn't match desired intent — `status`
+                // has no dedicated vocabulary for "migration pending", but
+                // `Conflict` is accurate (and an improvement over silently
+                // misclassifying these as `Noop`, as happened before #129).
+                (_, Operation::Migrate { .. }) => Status::Conflict,
                 (_, Operation::Deferred) => {
                     unreachable!("only Checkout entries ever classify as Deferred")
                 }
@@ -253,6 +259,29 @@ pub(crate) fn classify_noop(intent: &MaterializationIntent) -> Status {
         }
         _ => Status::Applied,
     }
+}
+
+/// Short, human-readable reason a checkout isn't safe to migrate away from
+/// yet — used by [`Operation::Migrate`](crate::plan::Operation)'s `blocked`
+/// field (#129). `unapply`'s own `status_word` stays separate (its own
+/// taxonomy, ADR-013); this is a full phrase, not a single word.
+pub(crate) fn describe(status: &Status) -> String {
+    match status {
+        Status::Applied => "is applied".to_string(),
+        Status::Missing => "is missing".to_string(),
+        Status::Modified => "has uncommitted changes".to_string(),
+        Status::Broken => "isn't a valid git repository".to_string(),
+        Status::Conflict => "has a merge/rebase/cherry-pick in progress".to_string(),
+        Status::Ahead(n) => format!("is {n} commit{} ahead of its upstream", plural(*n)),
+        Status::Behind(n) => format!("is {n} commit{} behind its upstream", plural(*n)),
+        Status::Diverged { ahead, behind } => {
+            format!("has diverged from its upstream ({ahead} ahead, {behind} behind)")
+        }
+    }
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }
 
 #[cfg(test)]
@@ -541,6 +570,37 @@ mod tests {
             .find(|e| matches!(e.entry.intent, MaterializationIntent::Checkout))
             .unwrap();
         assert_eq!(checkout_status.status, Status::Missing);
+    }
+
+    #[test]
+    fn describe_covers_every_status_variant() {
+        assert_eq!(describe(&Status::Applied), "is applied");
+        assert_eq!(describe(&Status::Missing), "is missing");
+        assert_eq!(describe(&Status::Modified), "has uncommitted changes");
+        assert_eq!(describe(&Status::Broken), "isn't a valid git repository");
+        assert_eq!(
+            describe(&Status::Conflict),
+            "has a merge/rebase/cherry-pick in progress"
+        );
+        assert_eq!(
+            describe(&Status::Ahead(1)),
+            "is 1 commit ahead of its upstream"
+        );
+        assert_eq!(
+            describe(&Status::Ahead(2)),
+            "is 2 commits ahead of its upstream"
+        );
+        assert_eq!(
+            describe(&Status::Behind(1)),
+            "is 1 commit behind its upstream"
+        );
+        assert_eq!(
+            describe(&Status::Diverged {
+                ahead: 2,
+                behind: 3
+            }),
+            "has diverged from its upstream (2 ahead, 3 behind)"
+        );
     }
 
     #[test]

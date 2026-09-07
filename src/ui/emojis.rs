@@ -13,6 +13,7 @@ pub static MOVE_FILE: Emoji<'_, '_> = Emoji("📃", "");
 pub static WARNING: Emoji<'_, '_> = Emoji("⚠️", "");
 pub static TRASH: Emoji<'_, '_> = Emoji("🗑️", "");
 pub static BLOCK: Emoji<'_, '_> = Emoji("🧩", "");
+pub static MIGRATE: Emoji<'_, '_> = Emoji("🔀", "");
 // static LOOKING_GLASS: Emoji<'_, '_> = Emoji("🔍  ", "");
 // static TRUCK: Emoji<'_, '_> = Emoji("🚚  ", "");
 // static CLIP: Emoji<'_, '_> = Emoji("🔗  ", "");
