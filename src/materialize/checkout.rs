@@ -16,12 +16,17 @@
 //! This materializer's `materialize` is therefore a correctness fallback
 //! (any other caller of `Plan::execute`, e.g. tests), not the primary path.
 
+use std::path::Path;
+
 use anyhow::Result;
 use async_trait::async_trait;
+use tokio::task::spawn_blocking;
 
 use crate::actions;
+use crate::actions::symlink::LinkType;
 use crate::desired::{DesiredEntry, MaterializationIntent, Provenance};
 use crate::exec::{Action, Ctx};
+use crate::plan::actual::{self, ActualState};
 use crate::plan::{Operation, PlanStep};
 use crate::status::{self, Status};
 
@@ -30,6 +35,28 @@ use super::Materializer;
 /// Owns [`MaterializationIntent::Checkout`]. See the module doc for the
 /// scope split with `over sync`.
 pub struct CheckoutMaterializer;
+
+/// Best-effort reconstruction of what a stale symlink used to materialize
+/// (#129), for [`Operation::Migrate`]'s `from` field — used only for
+/// `Display`/diagnostics, never for execution (removing a symlink doesn't
+/// need to know which kind it was). A directory-level symlink's target is
+/// itself a directory; anything else (a file, or a dangling link whose
+/// target no longer exists) is assumed file-level. Rule-driven symlinks
+/// are always soft (#126: `walk_overlay_tree` never resolves a `rules`/
+/// `defaults`/`link_dirs` match to a hard link).
+fn reconstruct_symlink_intent(points_to: &Path) -> MaterializationIntent {
+    if points_to.is_dir() {
+        MaterializationIntent::SymlinkDirectory {
+            source: points_to.to_path_buf(),
+            link_type: LinkType::Soft,
+        }
+    } else {
+        MaterializationIntent::SymlinkFile {
+            source: points_to.to_path_buf(),
+            link_type: LinkType::Soft,
+        }
+    }
+}
 
 #[async_trait(?Send)]
 impl Materializer for CheckoutMaterializer {
@@ -41,6 +68,22 @@ impl Materializer for CheckoutMaterializer {
     /// clean/dirty/ahead/behind/conflict detection — the same read-only
     /// inspection `over status`/`over diff` already rely on.
     fn classify(&self, entry: &DesiredEntry) -> Result<Operation> {
+        // A stale symlink here (left by a `SymlinkFile`/`SymlinkDirectory`
+        // rule that used to resolve this path, #126) would otherwise make
+        // `status::git::inspect`'s `Repository::open` fail below ->
+        // `Status::Broken` -> collapse to `Noop`, silently stuck forever
+        // (the exact bug #129 fixes). Check `ActualState` first so a
+        // `symlink -> checkout` rule-change migration is detected instead.
+        // Always safe: removing a symlink never touches overlay source
+        // content, unlike a git checkout's own uncommitted work.
+        if let ActualState::Symlink { points_to } = actual::inspect(&entry.target)? {
+            return Ok(Operation::Migrate {
+                from: reconstruct_symlink_intent(&points_to),
+                to: MaterializationIntent::Checkout,
+                blocked: None,
+            });
+        }
+
         Ok(match status::git::inspect(entry)? {
             Status::Missing => Operation::Create,
             // Applied/Modified/Ahead/Behind/Diverged/Broken/Conflict all
@@ -57,9 +100,11 @@ impl Materializer for CheckoutMaterializer {
         })
     }
 
-    /// Only ever invoked for `Operation::Create` (`Plan::execute` skips
-    /// `Noop`/`Deferred`) — i.e. only when the repository doesn't exist
-    /// yet. Delegates to the same, unchanged `EnsureGitRepository` action
+    /// Invoked for `Operation::Create` (repository doesn't exist yet) and
+    /// for an unblocked `Operation::Migrate` (#129: a stale symlink sits
+    /// where a checkout is now desired) — the latter first removes the
+    /// symlink, then falls through to the same clone logic. Delegates to
+    /// the same, unchanged `EnsureGitRepository` action
     /// `actions::git::clone_repositories` already runs per entry.
     async fn materialize(&self, ctx: Ctx, step: &PlanStep) -> Result<()> {
         let Provenance::Git {
@@ -71,6 +116,17 @@ impl Materializer for CheckoutMaterializer {
                  (see desired::tree::collect_own_entries)"
             );
         };
+
+        // `blocked: Some(_)` never occurs for a `symlink -> checkout`
+        // migration (removing a symlink is always safe, `classify` never
+        // constructs one) — `blocked: None` is spelled out explicitly
+        // anyway so this stays correct if that ever changes, rather than
+        // silently cloning over whatever's still there.
+        if matches!(step.operation, Operation::Migrate { blocked: None, .. }) && !ctx.dry_run {
+            let target = step.entry.target.clone();
+            spawn_blocking(move || actions::fs::remove_target(&target)).await??;
+        }
+
         actions::git::EnsureGitRepository::new(
             step.entry.target.clone(),
             (**config).clone(),
@@ -188,6 +244,99 @@ mod tests {
         dir.create_dir_all().unwrap();
         let e = entry(dir.path().to_path_buf(), git_config(""));
         assert!(matches!(m.classify(&e).unwrap(), Operation::Noop));
+    }
+
+    #[test]
+    fn classify_stale_symlink_file_is_migrate_to_checkout() {
+        // A `SymlinkFile` rule used to resolve this path; the rule changed
+        // to `overlay.git` (#129) — the stale symlink must be detected as
+        // a migration, never silently stuck as `Noop`.
+        let m = CheckoutMaterializer;
+        let td = TempDir::new().unwrap();
+        let source = td.child("source.txt");
+        source.write_str("hello").unwrap();
+        let target = td.path().join("target");
+        symlink::symlink_file(source.path(), &target).unwrap();
+
+        let e = entry(target, git_config(""));
+        match m.classify(&e).unwrap() {
+            Operation::Migrate { from, to, blocked } => {
+                assert!(matches!(from, MaterializationIntent::SymlinkFile { .. }));
+                assert!(matches!(to, MaterializationIntent::Checkout));
+                assert!(blocked.is_none());
+            }
+            other => panic!("expected Migrate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_stale_symlink_directory_is_migrate_to_checkout() {
+        let m = CheckoutMaterializer;
+        let td = TempDir::new().unwrap();
+        let source = td.child("source_dir");
+        source.create_dir_all().unwrap();
+        let target = td.path().join("target");
+        symlink::symlink_dir(source.path(), &target).unwrap();
+
+        let e = entry(target, git_config(""));
+        match m.classify(&e).unwrap() {
+            Operation::Migrate { from, to, blocked } => {
+                assert!(matches!(
+                    from,
+                    MaterializationIntent::SymlinkDirectory { .. }
+                ));
+                assert!(matches!(to, MaterializationIntent::Checkout));
+                assert!(blocked.is_none());
+            }
+            other => panic!("expected Migrate, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn materialize_migrate_removes_symlink_then_clones() {
+        use crate::exec::Context;
+        use crate::overlays::Repository;
+
+        let source_td = TempDir::new().unwrap();
+        init_committed_repo(source_td.path());
+
+        let dest_td = TempDir::new().unwrap();
+        // Stale symlink left by a prior `SymlinkDirectory` rule at the
+        // same path the checkout is now desired at.
+        let stale_source = dest_td.child("stale_source");
+        stale_source.create_dir_all().unwrap();
+        let target = dest_td.path().join("checkout");
+        symlink::symlink_dir(stale_source.path(), &target).unwrap();
+
+        let m = CheckoutMaterializer;
+        let e = entry(
+            target.clone(),
+            git_config(source_td.path().to_str().unwrap()),
+        );
+        let step = PlanStep {
+            entry: e,
+            operation: Operation::Migrate {
+                from: MaterializationIntent::SymlinkDirectory {
+                    source: stale_source.path().to_path_buf(),
+                    link_type: crate::actions::symlink::LinkType::Soft,
+                },
+                to: MaterializationIntent::Checkout,
+                blocked: None,
+            },
+        };
+
+        let repo = Repository::new(dest_td.path().to_path_buf());
+        let ctx = Context::builder()
+            .root(dest_td.path().to_path_buf())
+            .repository(repo)
+            .build()
+            .with_multiprogress(indicatif::MultiProgress::new());
+
+        m.materialize(ctx, &step).await.unwrap();
+
+        assert!(!target.is_symlink(), "stale symlink should be gone");
+        assert!(target.join(".git").exists());
+        assert!(target.join("README.md").exists());
     }
 
     #[tokio::test]

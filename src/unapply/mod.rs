@@ -201,6 +201,13 @@ impl Report {
                 (_, Operation::Conflict { current }) => Outcome::NotOwned {
                     current: current.clone(),
                 },
+                // A pending rule-change migration (#129, blocked or not):
+                // never remove something mid-migration — leave it alone
+                // and report it exactly like any other not-plain-owned
+                // entry, same as a `Conflict`.
+                (_, Operation::Migrate { .. }) => Outcome::NotOwned {
+                    current: actual::inspect(&step.entry.target)?,
+                },
                 // Every intent has a registered `Materializer` since #110;
                 // no step should ever classify as `Deferred` — unreachable
                 // in practice, but treated as "leave it alone" rather than
@@ -848,6 +855,34 @@ mod tests {
             Outcome::CheckoutNotClean {
                 status: Status::Modified
             }
+        ));
+        assert!(report.needs_attention());
+    }
+
+    #[test]
+    fn pending_migration_is_never_removed() {
+        // A clean git checkout sits where a directory symlink is now
+        // desired (#129, a rule/`overlay.git` change) — `Plan::build`
+        // classifies this as `Operation::Migrate`. Unapply must never
+        // remove something mid-migration, safe or not.
+        let td = TempDir::new().unwrap();
+        init_committed_repo(td.path());
+        let entry = DesiredEntry {
+            target: td.path().to_path_buf(),
+            provenance: Provenance::Overlay {
+                overlay: "ov".to_string(),
+                source: PathBuf::from("/repo/ov"),
+            },
+            intent: MaterializationIntent::SymlinkDirectory {
+                source: PathBuf::from("/repo/ov"),
+                link_type: LinkType::Soft,
+            },
+        };
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let report = Report::build(&desired).unwrap();
+        assert!(matches!(
+            report.entries()[0].outcome,
+            Outcome::NotOwned { .. }
         ));
         assert!(report.needs_attention());
     }

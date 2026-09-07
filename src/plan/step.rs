@@ -9,13 +9,6 @@ use super::actual::ActualState;
 /// What a single [`PlanStep`] needs to do to reconcile actual state with
 /// [`DesiredEntry`] intent.
 ///
-/// Deliberately a small, closed set today. One extension point this issue
-/// is asked to leave open, without implementing it yet:
-///
-/// - #113 will add rule-change transitions (symlink ↔ checkout, file-level
-///   ↔ directory-level symlink) as new variants here (e.g. a future
-///   `Migrate`) rather than requiring a different `Plan`/[`PlanStep`] shape.
-///
 /// #108 already replaced [`super::Plan::execute`]'s direct dispatch on
 /// [`MaterializationIntent`] with a lookup into a registered
 /// [`crate::materialize::Materializer`] per intent — `Operation` itself
@@ -28,6 +21,22 @@ pub enum Operation {
     Noop,
     /// Target exists and does not match the desired intent.
     Conflict { current: ActualState },
+    /// A rule/config change means this target should now be materialized
+    /// differently than it currently is (symlink ↔ checkout, file-level ↔
+    /// directory-level symlink — #129), reconstructed from `ActualState`
+    /// (plus git inspection when a checkout is involved) rather than an
+    /// implicit delete/recreate or a blunt [`Operation::Conflict`].
+    Migrate {
+        from: MaterializationIntent,
+        to: MaterializationIntent,
+        /// `None`: safe to perform automatically. `Some(reason)`: the
+        /// migration is understood but can't proceed yet (e.g. a dirty
+        /// checkout) — never executed, even under `--force`
+        /// ([`super::Plan::execute`] skips it exactly like `Noop`), but
+        /// still reported so it isn't silently invisible like a bare
+        /// `Noop` would be.
+        blocked: Option<String>,
+    },
     /// No registered [`crate::materialize::Materializer`] claims this
     /// entry's intent. Unreachable in practice since #110 gave every intent
     /// (including [`MaterializationIntent::Checkout`]) a real backend, but
@@ -35,6 +44,20 @@ pub enum Operation {
     /// something sensible instead of panicking; [`super::Plan::execute`]
     /// never acts on it.
     Deferred,
+}
+
+/// Short, human-readable word for a [`MaterializationIntent`], used only by
+/// [`Operation::Migrate`]'s `Display` rendering (`<from> -> <to>`) — not a
+/// full description of the intent's fields, just enough to name the shape
+/// that changed.
+fn intent_label(intent: &MaterializationIntent) -> &'static str {
+    match intent {
+        MaterializationIntent::Directory => "directory",
+        MaterializationIntent::SymlinkFile { .. } => "symlink",
+        MaterializationIntent::SymlinkDirectory { .. } => "directory symlink",
+        MaterializationIntent::Checkout => "checkout",
+        MaterializationIntent::PartialFile { .. } => "partial file",
+    }
 }
 
 /// One [`DesiredEntry`] paired with the [`Operation`] needed to reconcile it
@@ -172,6 +195,39 @@ impl fmt::Display for PlanStep {
                     current,
                 )
             }
+            (
+                _,
+                Operation::Migrate {
+                    from,
+                    to,
+                    blocked: None,
+                },
+            ) => write!(
+                f,
+                "{} {} {} ({} -> {})",
+                emojis::MIGRATE,
+                style::white("migrate:"),
+                target,
+                intent_label(from),
+                intent_label(to),
+            ),
+            (
+                _,
+                Operation::Migrate {
+                    from,
+                    to,
+                    blocked: Some(reason),
+                },
+            ) => write!(
+                f,
+                "{} {} {} ({} -> {}, {})",
+                emojis::WARNING,
+                style::yellow("migrate blocked:"),
+                target,
+                intent_label(from),
+                intent_label(to),
+                reason,
+            ),
             // Every intent has a registered `Materializer` since #110; no
             // step should ever classify as `Deferred` anymore — unreachable
             // in practice, but a clear fallback beats a silently wrong line.
@@ -339,6 +395,46 @@ mod tests {
         let s = format!("{step}");
         assert!(s.contains("conflict:"));
         assert!(s.contains("aliases"));
+    }
+
+    #[test]
+    fn migrate_symlink_to_checkout_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::Checkout),
+            operation: Operation::Migrate {
+                from: MaterializationIntent::SymlinkDirectory {
+                    source: PathBuf::from("/repo/ov/app"),
+                    link_type: LinkType::Soft,
+                },
+                to: MaterializationIntent::Checkout,
+                blocked: None,
+            },
+        };
+        let s = format!("{step}");
+        assert!(s.contains("migrate:"));
+        assert!(s.contains("directory symlink -> checkout"));
+    }
+
+    #[test]
+    fn migrate_checkout_to_symlink_blocked_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::SymlinkDirectory {
+                source: PathBuf::from("/repo/ov/app"),
+                link_type: LinkType::Soft,
+            }),
+            operation: Operation::Migrate {
+                from: MaterializationIntent::Checkout,
+                to: MaterializationIntent::SymlinkDirectory {
+                    source: PathBuf::from("/repo/ov/app"),
+                    link_type: LinkType::Soft,
+                },
+                blocked: Some("has uncommitted changes".to_string()),
+            },
+        };
+        let s = format!("{step}");
+        assert!(s.contains("migrate blocked:"));
+        assert!(s.contains("checkout -> directory symlink"));
+        assert!(s.contains("has uncommitted changes"));
     }
 
     #[test]

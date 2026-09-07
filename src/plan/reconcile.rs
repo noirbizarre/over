@@ -11,6 +11,17 @@ use crate::ui::style;
 
 use super::step::{Operation, PlanStep};
 
+/// Whether a step needs [`Materializer::materialize`](crate::materialize::Materializer::materialize)
+/// called for it: `Create`/`Conflict` always did; an unblocked `Migrate`
+/// does too (#129) — a blocked one doesn't, exactly like `Noop`/`Deferred`.
+fn is_actionable(operation: &Operation) -> bool {
+    match operation {
+        Operation::Create | Operation::Conflict { .. } => true,
+        Operation::Migrate { blocked, .. } => blocked.is_none(),
+        Operation::Noop | Operation::Deferred => false,
+    }
+}
+
 static SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
     ProgressStyle::with_template("{spinner:.cyan} {wide_msg}")
         .expect("static progress template must be valid")
@@ -70,17 +81,17 @@ impl Plan {
             .any(|s| matches!(s.operation, Operation::Conflict { .. }))
     }
 
-    /// Execute every actionable step (`Create`/`Conflict`) in the plan's
-    /// deterministic order (`DesiredTree` sorts entries by target path, so
-    /// a directory's entry always precedes anything nested under it).
-    /// `Noop`/`Deferred` steps are skipped — the former because there's
-    /// nothing to do, the latter because it's unreachable in practice since
-    /// #110 (kept as a defensive fallback).
+    /// Execute every actionable step (`Create`/`Conflict`/an unblocked
+    /// `Migrate`) in the plan's deterministic order (`DesiredTree` sorts
+    /// entries by target path, so a directory's entry always precedes
+    /// anything nested under it). `Noop`/`Deferred` steps are skipped — the
+    /// former because there's nothing to do, the latter because it's
+    /// unreachable in practice since #110 (kept as a defensive fallback). A
+    /// blocked `Migrate` (`blocked: Some(_)`) is skipped too — it's
+    /// understood, but not safe to perform yet (#129), and must never be
+    /// forced through.
     pub async fn execute(&self, ctx: Ctx) -> Result<()> {
-        let has_actionable = self
-            .steps
-            .iter()
-            .any(|s| matches!(s.operation, Operation::Create | Operation::Conflict { .. }));
+        let has_actionable = self.steps.iter().any(|s| is_actionable(&s.operation));
         if !has_actionable {
             return Ok(());
         }
@@ -91,7 +102,7 @@ impl Plan {
             .with_message("");
 
         for step in &self.steps {
-            if matches!(step.operation, Operation::Noop | Operation::Deferred) {
+            if !is_actionable(&step.operation) {
                 continue;
             }
 
@@ -136,6 +147,24 @@ impl fmt::Display for Plan {
             .iter()
             .filter(|s| matches!(s.operation, Operation::Conflict { .. }))
             .count();
+        let migrate = self
+            .steps
+            .iter()
+            .filter(|s| matches!(s.operation, Operation::Migrate { blocked: None, .. }))
+            .count();
+        let blocked = self
+            .steps
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.operation,
+                    Operation::Migrate {
+                        blocked: Some(_),
+                        ..
+                    }
+                )
+            })
+            .count();
         let deferred = self
             .steps
             .iter()
@@ -144,11 +173,14 @@ impl fmt::Display for Plan {
 
         writeln!(
             f,
-            "{} {} to create, {} unchanged, {} conflict(s), {} deferred",
+            "{} {} to create, {} unchanged, {} conflict(s), {} to migrate, \
+             {} migration(s) blocked, {} deferred",
             style::white_b("Plan:"),
             create,
             noop,
             conflicts,
+            migrate,
+            blocked,
             deferred,
         )?;
         for step in self
@@ -165,6 +197,8 @@ impl fmt::Display for Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::symlink::LinkType;
+    use crate::desired::{DesiredEntry, MaterializationIntent, Provenance};
     use crate::exec::Context;
     use crate::overlays::{Overlay, Repository};
     use assert_fs::TempDir;
@@ -402,6 +436,62 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn unblocked_migrate_is_actionable() {
+        let op = Operation::Migrate {
+            from: MaterializationIntent::Checkout,
+            to: MaterializationIntent::Directory,
+            blocked: None,
+        };
+        assert!(is_actionable(&op));
+    }
+
+    #[test]
+    fn blocked_migrate_is_not_actionable() {
+        let op = Operation::Migrate {
+            from: MaterializationIntent::Checkout,
+            to: MaterializationIntent::Directory,
+            blocked: Some("has uncommitted changes".to_string()),
+        };
+        assert!(!is_actionable(&op));
+    }
+
+    #[tokio::test]
+    async fn blocked_migrate_step_is_skipped_by_execute() {
+        let (td, repo) = repo_and_root();
+        let c = ctx(td.path().to_path_buf(), repo, None);
+        let target = td.path().join("some_target");
+        let entry = DesiredEntry {
+            target: target.clone(),
+            provenance: Provenance::Overlay {
+                overlay: "ov".to_string(),
+                source: PathBuf::from("/src"),
+            },
+            intent: MaterializationIntent::SymlinkDirectory {
+                source: PathBuf::from("/src"),
+                link_type: LinkType::Soft,
+            },
+        };
+        let plan = Plan {
+            steps: vec![PlanStep {
+                entry,
+                operation: Operation::Migrate {
+                    from: MaterializationIntent::Checkout,
+                    to: MaterializationIntent::SymlinkDirectory {
+                        source: PathBuf::from("/src"),
+                        link_type: LinkType::Soft,
+                    },
+                    blocked: Some("has uncommitted changes".to_string()),
+                },
+            }],
+        };
+        // No materializer would even be looked up for this step since it's
+        // skipped — if it weren't, this would fail trying to remove/link a
+        // nonexistent `/src`.
+        plan.execute(c).await.unwrap();
+        assert!(!target.exists());
+    }
+
     #[tokio::test]
     async fn sidecar_hard_link_is_dispatched_to_ensure_symlink() {
         let (td, repo) = repo_and_root();
@@ -431,5 +521,316 @@ mod tests {
         // Hard links are real files, not symlinks.
         assert!(!target.is_symlink());
         assert_eq!(fs::read_to_string(&target).unwrap(), "hard");
+    }
+
+    // ── #129: end-to-end rule-change migrations ─────────────────────────
+    //
+    // These use a `.link.toml` sidecar (not `link_dirs`/`rules`) for the
+    // symlink side of each scenario specifically so `conf` doesn't *also*
+    // exist as a real directory in the overlay's own source tree —
+    // `overlay.git` and `walk_overlay_tree` are two independent,
+    // uncoordinated `DesiredEntry` sources (a pre-existing gap, not #129's
+    // to fix), and having both resolve the same target would produce two
+    // competing entries instead of the single one these tests need.
+
+    fn init_committed_repo(path: &std::path::Path) {
+        let repo = git2::Repository::init(path).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+        drop(cfg);
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        fs::write(path.join("README.md"), "# Test").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn root_level_checkout_coexists_with_its_own_base_directory_entry() {
+        // `git = "<url>"` (the `ROOT_PATH` shorthand) makes the overlay's
+        // entire target root a checkout — `collect_own_entries` still
+        // unconditionally emits a plain `Directory` entry for that exact
+        // same root too (every overlay needs a place to live). A second
+        // `apply` (or a `--force` one, as here) must never treat the
+        // already-cloned checkout as a pending `Directory` migration and
+        // delete it — a real regression #129 introduced and fixed before
+        // landing.
+        //
+        // `target`/`root` must be a *separate* directory from the
+        // repository/overlay descriptor tree here (unlike most other tests
+        // in this file, which reuse the same `td` for both): the clone
+        // target is the root itself, and `libgit2` refuses to clone into a
+        // non-empty directory — which the repository root always is, since
+        // it holds the overlay's own `ov/` descriptor.
+        let (home, repo) = repo_and_root();
+        let overlay_dir = home.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        let source_repo = home.child("source_repo");
+        source_repo.create_dir_all().unwrap();
+        init_committed_repo(source_repo.path());
+        let repo_url = source_repo.path().to_string_lossy().replace('\\', "\\\\");
+        overlay_dir
+            .child("over.toml")
+            .write_str(&format!("target = \"~\"\ngit = \"{repo_url}\""))
+            .unwrap();
+        let root = TempDir::new().unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(
+            root.path().to_path_buf(),
+            repo.clone(),
+            Some(overlay.clone()),
+        );
+        let clone_ctx = c
+            .clone()
+            .with_multiprogress(indicatif::MultiProgress::new());
+        // Mirrors `Overlay::apply_inner`: `clone_repositories` runs before
+        // `Plan::build`/`execute` (ADR-014) — by the time the plan sees the
+        // `Checkout` entry, the repository already exists and classifies
+        // as `Noop`, exactly like a real `apply`.
+        crate::actions::git::clone_repositories(clone_ctx.clone(), &overlay, root.path())
+            .await
+            .unwrap();
+        assert!(root.path().join(".git").exists());
+
+        let desired = DesiredTree::build(&c, &overlay).unwrap();
+        Plan::build(&desired)
+            .unwrap()
+            .execute(clone_ctx.clone())
+            .await
+            .unwrap();
+        assert!(root.path().join(".git").exists(), "checkout must survive");
+
+        // Re-apply (mirroring `over apply --force` run twice): the plan
+        // must find nothing to migrate, and the checkout must survive.
+        let desired2 = DesiredTree::build(&c, &overlay).unwrap();
+        let plan2 = Plan::build(&desired2).unwrap();
+        assert!(
+            plan2
+                .steps()
+                .iter()
+                .all(|s| matches!(s.operation, Operation::Noop)),
+            "second plan should find nothing to do, got: {plan2}"
+        );
+        plan2.execute(clone_ctx).await.unwrap();
+        assert!(root.path().join(".git").exists(), "checkout must survive");
+    }
+
+    #[tokio::test]
+    async fn rule_change_from_symlink_to_checkout_migrates_and_clones() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+
+        // Phase 1: a `.link.toml` sidecar symlinks `conf` to some other
+        // real directory — apply creates the symlink.
+        let elsewhere = td.child("elsewhere");
+        elsewhere.create_dir_all().unwrap();
+        let elsewhere_toml = elsewhere.path().to_string_lossy().replace('\\', "\\\\");
+        overlay_dir
+            .child("conf.link.toml")
+            .write_str(&format!("target = \"{elsewhere_toml}\""))
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let desired = DesiredTree::build(&c, &overlay).unwrap();
+        Plan::build(&desired)
+            .unwrap()
+            .execute(c.clone())
+            .await
+            .unwrap();
+        let conf_target = td.path().join("conf");
+        assert!(conf_target.is_symlink(), "sidecar should create a symlink");
+
+        // Phase 2: drop the sidecar, add `conf` to `overlay.git` instead.
+        fs::remove_file(overlay_dir.path().join("conf.link.toml")).unwrap();
+        let source_repo = td.child("source_repo");
+        source_repo.create_dir_all().unwrap();
+        init_committed_repo(source_repo.path());
+        let repo_url = source_repo.path().to_string_lossy().replace('\\', "\\\\");
+        overlay_dir
+            .child("over.toml")
+            .write_str(&format!("target = \"~\"\n[git]\nconf = \"{repo_url}\""))
+            .unwrap();
+
+        let overlay2 = repo.get("ov").unwrap();
+        let desired2 = DesiredTree::build(&c, &overlay2).unwrap();
+        let plan2 = Plan::build(&desired2).unwrap();
+        let step = plan2
+            .steps()
+            .iter()
+            .find(|s| s.entry.target == conf_target)
+            .unwrap();
+        match &step.operation {
+            Operation::Migrate {
+                to, blocked: None, ..
+            } => assert!(matches!(to, MaterializationIntent::Checkout)),
+            other => panic!("expected a safe Migrate to Checkout, got {other:?}"),
+        }
+
+        let clone_ctx = c
+            .clone()
+            .with_multiprogress(indicatif::MultiProgress::new());
+        plan2.execute(clone_ctx).await.unwrap();
+        assert!(!conf_target.is_symlink(), "stale symlink should be gone");
+        assert!(conf_target.join(".git").exists(), "checkout now exists");
+        assert!(conf_target.join("README.md").exists());
+    }
+
+    #[tokio::test]
+    async fn clean_checkout_migrates_back_to_symlink_when_git_entry_removed() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+
+        // Phase 1: `conf` is a git checkout.
+        let source_repo = td.child("source_repo");
+        source_repo.create_dir_all().unwrap();
+        init_committed_repo(source_repo.path());
+        let repo_url = source_repo.path().to_string_lossy().replace('\\', "\\\\");
+        overlay_dir
+            .child("over.toml")
+            .write_str(&format!("target = \"~\"\n[git]\nconf = \"{repo_url}\""))
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let clone_ctx = c
+            .clone()
+            .with_multiprogress(indicatif::MultiProgress::new());
+        let desired = DesiredTree::build(&c, &overlay).unwrap();
+        Plan::build(&desired)
+            .unwrap()
+            .execute(clone_ctx)
+            .await
+            .unwrap();
+        let conf_target = td.path().join("conf");
+        assert!(conf_target.join(".git").exists());
+
+        // Phase 2: `overlay.git` is dropped, a `.link.toml` sidecar takes
+        // over the same path instead.
+        let elsewhere = td.child("elsewhere");
+        elsewhere.create_dir_all().unwrap();
+        let elsewhere_toml = elsewhere.path().to_string_lossy().replace('\\', "\\\\");
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        overlay_dir
+            .child("conf.link.toml")
+            .write_str(&format!("target = \"{elsewhere_toml}\""))
+            .unwrap();
+
+        let overlay2 = repo.get("ov").unwrap();
+        let desired2 = DesiredTree::build(&c, &overlay2).unwrap();
+        let plan2 = Plan::build(&desired2).unwrap();
+        let step = plan2
+            .steps()
+            .iter()
+            .find(|s| s.entry.target == conf_target)
+            .unwrap();
+        match &step.operation {
+            Operation::Migrate {
+                from,
+                blocked: None,
+                ..
+            } => assert!(matches!(from, MaterializationIntent::Checkout)),
+            other => panic!("expected a safe Migrate from Checkout, got {other:?}"),
+        }
+
+        plan2.execute(c.clone()).await.unwrap();
+        assert!(
+            !conf_target.join(".git").exists(),
+            "checkout should be gone"
+        );
+        assert!(conf_target.is_symlink(), "now a symlink instead");
+        assert_eq!(fs::read_link(&conf_target).unwrap(), elsewhere.path());
+    }
+
+    #[tokio::test]
+    async fn dirty_checkout_blocks_migration_back_to_symlink() {
+        let (td, repo) = repo_and_root();
+        let overlay_dir = td.child("ov");
+        overlay_dir.create_dir_all().unwrap();
+
+        let source_repo = td.child("source_repo");
+        source_repo.create_dir_all().unwrap();
+        init_committed_repo(source_repo.path());
+        let repo_url = source_repo.path().to_string_lossy().replace('\\', "\\\\");
+        overlay_dir
+            .child("over.toml")
+            .write_str(&format!("target = \"~\"\n[git]\nconf = \"{repo_url}\""))
+            .unwrap();
+
+        let overlay = repo.get("ov").unwrap();
+        let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
+        let clone_ctx = c
+            .clone()
+            .with_multiprogress(indicatif::MultiProgress::new());
+        let desired = DesiredTree::build(&c, &overlay).unwrap();
+        Plan::build(&desired)
+            .unwrap()
+            .execute(clone_ctx)
+            .await
+            .unwrap();
+        let conf_target = td.path().join("conf");
+
+        // Make an uncommitted change inside the checkout.
+        fs::write(conf_target.join("README.md"), "local edit").unwrap();
+
+        let elsewhere = td.child("elsewhere");
+        elsewhere.create_dir_all().unwrap();
+        let elsewhere_toml = elsewhere.path().to_string_lossy().replace('\\', "\\\\");
+        overlay_dir
+            .child("over.toml")
+            .write_str("target = \"~\"")
+            .unwrap();
+        overlay_dir
+            .child("conf.link.toml")
+            .write_str(&format!("target = \"{elsewhere_toml}\""))
+            .unwrap();
+
+        let overlay2 = repo.get("ov").unwrap();
+        let desired2 = DesiredTree::build(&c, &overlay2).unwrap();
+        let plan2 = Plan::build(&desired2).unwrap();
+        let step = plan2
+            .steps()
+            .iter()
+            .find(|s| s.entry.target == conf_target)
+            .unwrap();
+        match &step.operation {
+            Operation::Migrate {
+                blocked: Some(reason),
+                ..
+            } => assert!(reason.contains("uncommitted")),
+            other => panic!("expected a blocked Migrate, got {other:?}"),
+        }
+
+        // Even with `--force`, the dirty checkout must stay untouched.
+        let force_ctx = Context::builder()
+            .force(true)
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay2.clone())
+            .build();
+        plan2.execute(force_ctx).await.unwrap();
+        assert!(conf_target.join(".git").exists(), "checkout must remain");
+        assert_eq!(
+            fs::read_to_string(conf_target.join("README.md")).unwrap(),
+            "local edit",
+            "uncommitted change must remain"
+        );
     }
 }

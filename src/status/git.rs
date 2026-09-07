@@ -80,7 +80,13 @@ pub fn inspect(entry: &DesiredEntry) -> Result<Status> {
 /// *files* (not directories) redirecting to the shared bare repo are
 /// followed transparently by `Repository::open`, so this same logic covers
 /// both plain and worktree checkouts.
-fn inspect_checkout(path: &Path) -> Result<Status> {
+///
+/// `pub(crate)`: reused directly by `materialize::symlink` (#129) to detect
+/// a `checkout -> symlink` rule-change migration from a bare `&Path`,
+/// without needing a `Provenance::Git`-carrying `DesiredEntry` — the exact
+/// same safety gate `CheckoutMaterializer::classify` already relies on via
+/// [`inspect`], not re-derived.
+pub(crate) fn inspect_checkout(path: &Path) -> Result<Status> {
     if !path.exists() {
         return Ok(Status::Missing);
     }

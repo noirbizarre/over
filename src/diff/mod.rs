@@ -37,6 +37,7 @@ use anyhow::{Context as _, Result};
 
 use crate::actions::partial::{self, BlockState};
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent};
+use crate::plan::actual;
 use crate::plan::{ActualState, Operation, Plan};
 use crate::status::{self, Status};
 use crate::ui::{emojis, style};
@@ -196,6 +197,13 @@ fn classify_fs(entry: &DesiredEntry, operation: &Operation) -> Result<Change> {
             _ => Change::Unchanged,
         }),
         Operation::Conflict { current } => classify_conflict(entry, current),
+        // A pending rule-change migration (#129, blocked or not): a
+        // fundamentally different kind of entity occupies the target than
+        // what's currently desired — exactly what `Unexpected` already
+        // means, no meaningful line diff to show either way.
+        Operation::Migrate { .. } => Ok(Change::Unexpected {
+            actual: actual::inspect(&entry.target)?,
+        }),
         Operation::Deferred => unreachable!(
             "only Checkout entries ever classify as Deferred, and those are \
              routed to classify_checkout before reaching classify_fs"
@@ -713,6 +721,34 @@ mod tests {
         };
         let change = classify_fs(&entry, &Operation::Noop).unwrap();
         assert!(matches!(change, Change::Broken));
+    }
+
+    #[test]
+    fn migrate_operation_is_unexpected_with_current_actual_state() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let entry = DesiredEntry {
+            target: target.clone(),
+            provenance: crate::desired::Provenance::Overlay {
+                overlay: "ov".to_string(),
+                source: std::path::PathBuf::from("/repo/ov"),
+            },
+            intent: MaterializationIntent::SymlinkDirectory {
+                source: std::path::PathBuf::from("/repo/ov"),
+                link_type: LinkType::Soft,
+            },
+        };
+        let operation = Operation::Migrate {
+            from: MaterializationIntent::Checkout,
+            to: entry.intent.clone(),
+            blocked: None,
+        };
+        let change = classify_fs(&entry, &operation).unwrap();
+        match change {
+            Change::Unexpected { actual } => assert_eq!(actual, ActualState::Directory),
+            other => panic!("expected Unexpected, got {other:?}"),
+        }
     }
 
     #[test]

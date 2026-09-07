@@ -44,10 +44,12 @@
 //!   other intent, but `Overlay::apply` still clones git repositories
 //!   through the existing, separate `actions::git::clone_repositories`
 //!   *before* building the `Plan`, entirely orthogonal to this module.
-//! - Materialization-rule migrations (symlink ↔ checkout, file-level ↔
-//!   directory-level symlink) and `defaults:`/`rules:` configuration —
-//!   #113. [`Operation`] is designed to grow variants for this without a
-//!   `Plan`/`PlanStep` shape change.
+//! - `defaults:`/`rules:` configuration itself — #126, `crate::overlays::rules`.
+//!   [`Operation::Migrate`] (#129) reconciles what those rules resolve
+//!   *changing* between runs (symlink ↔ checkout, file-level ↔
+//!   directory-level symlink) without a `Plan`/`PlanStep` shape change, per
+//!   ADR-012's headroom — added as a new `Operation` variant, classified by
+//!   the same `Materializer`s that already own each intent.
 //! - `status`/`diff`/`unapply` commands themselves — #12/#109/#64. This
 //!   module only makes `Plan` reusable for them.
 
