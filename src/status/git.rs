@@ -209,6 +209,7 @@ mod tests {
                 config: Box::new(config),
             },
             intent: crate::desired::MaterializationIntent::Checkout,
+            permissions: None,
         }
     }
 

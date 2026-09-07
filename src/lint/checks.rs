@@ -22,6 +22,9 @@ pub fn check_overlay(overlay: &Overlay) -> Vec<Diagnostic> {
     diagnostics.extend(check_invalid_rules_globs(overlay));
     diagnostics.extend(check_duplicate_rule_paths(overlay));
     diagnostics.extend(check_rules_paths_exist(overlay));
+    diagnostics.extend(check_empty_permissions(overlay));
+    diagnostics.extend(check_invalid_permission_globs(overlay));
+    diagnostics.extend(check_duplicate_permission_rule_paths(overlay));
     diagnostics.extend(check_git(overlay));
     diagnostics.extend(check_symlinks(overlay));
     diagnostics.extend(check_partials(overlay));
@@ -233,6 +236,72 @@ fn check_rules_paths_exist(overlay: &Overlay) -> Vec<Diagnostic> {
                     ),
                 )
                 .with_hint("remove the rule or fix the path"),
+            );
+        }
+    }
+    diagnostics
+}
+
+// ── permission rules checks (#65) ────────────────────────────────────────
+//
+// No "paths exist" check here (unlike `check_rules_paths_exist`): a
+// `permissions` rule matches a `PartialFile` entry's own sidecar stem, not
+// a real path in the overlay's walked tree, so "exists in the walked
+// tree" doesn't apply the same way.
+
+fn check_empty_permissions(overlay: &Overlay) -> Vec<Diagnostic> {
+    if matches!(&overlay.permissions, Some(list) if list.is_empty()) {
+        vec![
+            Diagnostic::warning(&overlay.name, "empty `permissions` list is redundant")
+                .with_hint("remove the `permissions` field or add path overrides"),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+fn check_invalid_permission_globs(overlay: &Overlay) -> Vec<Diagnostic> {
+    let Some(permissions) = &overlay.permissions else {
+        return Vec::new();
+    };
+
+    let mut diagnostics = Vec::new();
+    for rule in permissions {
+        if let Err(err) = GlobBuilder::new(&rule.path).literal_separator(true).build() {
+            diagnostics.push(
+                Diagnostic::error(
+                    &overlay.name,
+                    format!("invalid glob pattern in `permissions`: \"{}\"", rule.path),
+                )
+                .with_hint(format!("{err}")),
+            );
+        }
+    }
+    diagnostics
+}
+
+/// A rule whose `path` exactly duplicates an earlier one always shadows it
+/// (`permissions::resolve` breaks specificity ties by keeping the last
+/// match, mirroring `rules::resolve`), so the earlier entry can never take
+/// effect.
+fn check_duplicate_permission_rule_paths(overlay: &Overlay) -> Vec<Diagnostic> {
+    let Some(permissions) = &overlay.permissions else {
+        return Vec::new();
+    };
+
+    let mut diagnostics = Vec::new();
+    let mut seen = HashSet::new();
+    for rule in permissions {
+        if !seen.insert(&rule.path) {
+            diagnostics.push(
+                Diagnostic::warning(
+                    &overlay.name,
+                    format!(
+                        "duplicate permission rule path \"{}\"; only the last entry ever applies",
+                        rule.path
+                    ),
+                )
+                .with_hint("remove the redundant rule"),
             );
         }
     }
@@ -625,6 +694,54 @@ materialization = "symlink-directory"
         std::fs::create_dir_all(overlay.root.join("present")).unwrap();
         let diags = check_rules_paths_exist(&overlay);
         assert!(diags.is_empty());
+    }
+
+    // ── permission rules checks (#65) ─────────────────────────────────────
+
+    #[rstest]
+    fn test_empty_permissions() {
+        let overlay = setup_overlay("target = \"~\"\npermissions = []");
+        let diags = check_empty_permissions(&overlay);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+    }
+
+    #[rstest]
+    fn test_invalid_glob_in_permissions() {
+        let overlay =
+            setup_overlay("target = \"~\"\n[[permissions]]\npath = \"[invalid\"\nmode = \"600\"");
+        let diags = check_invalid_permission_globs(&overlay);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(diags[0].message.contains("invalid glob"));
+    }
+
+    #[rstest]
+    fn test_valid_glob_in_permissions() {
+        let overlay =
+            setup_overlay("target = \"~\"\n[[permissions]]\npath = \"secrets/*\"\nmode = \"600\"");
+        let diags = check_invalid_permission_globs(&overlay);
+        assert!(diags.is_empty());
+    }
+
+    #[rstest]
+    fn test_duplicate_permission_rule_paths() {
+        let overlay = setup_overlay(
+            r#"
+target = "~"
+[[permissions]]
+path = "dup"
+mode = "600"
+
+[[permissions]]
+path = "dup"
+mode = "644"
+"#,
+        );
+        let diags = check_duplicate_permission_rule_paths(&overlay);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert!(diags[0].message.contains("duplicate permission rule path"));
     }
 
     // ── git checks ───────────────────────────────────────────────────────

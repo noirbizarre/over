@@ -16,7 +16,7 @@ use super::step::{Operation, PlanStep};
 /// does too (#129) — a blocked one doesn't, exactly like `Noop`/`Deferred`.
 fn is_actionable(operation: &Operation) -> bool {
     match operation {
-        Operation::Create | Operation::Conflict { .. } => true,
+        Operation::Create | Operation::Conflict { .. } | Operation::Repair { .. } => true,
         Operation::Migrate { blocked, .. } => blocked.is_none(),
         Operation::Noop | Operation::Deferred => false,
     }
@@ -170,17 +170,23 @@ impl fmt::Display for Plan {
             .iter()
             .filter(|s| matches!(s.operation, Operation::Deferred))
             .count();
+        let repair = self
+            .steps
+            .iter()
+            .filter(|s| matches!(s.operation, Operation::Repair { .. }))
+            .count();
 
         writeln!(
             f,
             "{} {} to create, {} unchanged, {} conflict(s), {} to migrate, \
-             {} migration(s) blocked, {} deferred",
+             {} migration(s) blocked, {} to repair, {} deferred",
             style::white_b("Plan:"),
             create,
             noop,
             conflicts,
             migrate,
             blocked,
+            repair,
             deferred,
         )?;
         for step in self
@@ -447,6 +453,15 @@ mod tests {
     }
 
     #[test]
+    fn repair_is_actionable() {
+        let op = Operation::Repair {
+            current: crate::overlays::FileMode::parse("644").unwrap(),
+            desired: crate::overlays::FileMode::parse("600").unwrap(),
+        };
+        assert!(is_actionable(&op));
+    }
+
+    #[test]
     fn blocked_migrate_is_not_actionable() {
         let op = Operation::Migrate {
             from: MaterializationIntent::Checkout,
@@ -471,6 +486,7 @@ mod tests {
                 source: PathBuf::from("/src"),
                 link_type: LinkType::Soft,
             },
+            permissions: None,
         };
         let plan = Plan {
             steps: vec![PlanStep {

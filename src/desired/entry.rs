@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::actions::git::config::GitRepoConfig;
 use crate::actions::symlink::LinkType;
+use crate::overlays::FileMode;
 
 /// What kind of filesystem node a [`DesiredEntry`] should be, independent of
 /// *how* it gets there (see [`MaterializationIntent`]).
@@ -109,15 +110,22 @@ pub enum Provenance {
 /// A single desired filesystem node — the canonical unit [`super::DesiredTree`]
 /// is made of.
 ///
-/// Deliberately does not carry rendered content (#61) or permission metadata
-/// (#65): both depend on this type and will extend it rather than have this
-/// issue guess their shape.
+/// Deliberately does not carry rendered content (#61): that depends on this
+/// type and will extend it rather than have this issue guess its shape.
 #[derive(Debug, Clone)]
 pub struct DesiredEntry {
     /// Absolute path this entry should exist at.
     pub target: PathBuf,
     pub provenance: Provenance,
     pub intent: MaterializationIntent,
+    /// Desired permission mode (#65), resolved from `overlay.defaults.mode`/
+    /// `overlay.permissions` — see [`crate::overlays::Overlay::permission_for`].
+    /// `None` for every intent except [`MaterializationIntent::PartialFile`]:
+    /// symlinked entries share their overlay source's inode (there is no
+    /// independent target permission to set without mutating that source,
+    /// out of scope for #65 — see ADR-020), and `Directory`/`Checkout`
+    /// entries have no permission concept here either.
+    pub permissions: Option<FileMode>,
 }
 
 impl DesiredEntry {
@@ -183,6 +191,7 @@ mod tests {
                 source: PathBuf::from("/overlay/file.txt"),
                 link_type: LinkType::Soft,
             },
+            permissions: None,
         };
         assert_eq!(entry.kind(), EntryKind::Symlink);
     }

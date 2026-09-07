@@ -204,6 +204,14 @@ fn classify_fs(entry: &DesiredEntry, operation: &Operation) -> Result<Change> {
         Operation::Migrate { .. } => Ok(Change::Unexpected {
             actual: actual::inspect(&entry.target)?,
         }),
+        // A permission-only drift (#65): content/kind already matches,
+        // only the mode differs — reuse the line-diff renderer for a
+        // trivial one-line "text" diff (`644` -> `755`), exactly like the
+        // symlink-target-path case above.
+        Operation::Repair { current, desired } => Ok(Change::Modified(ContentDiff::from_texts(
+            &current.to_string(),
+            &desired.to_string(),
+        ))),
         Operation::Deferred => unreachable!(
             "only Checkout entries ever classify as Deferred, and those are \
              routed to classify_checkout before reaching classify_fs"
@@ -492,6 +500,7 @@ mod tests {
                 content: "alias x=y".to_string(),
                 marker: "m".to_string(),
             },
+            permissions: None,
         };
         let change = classify_conflict(&entry, &ActualState::File).unwrap();
         match change {
@@ -529,6 +538,7 @@ mod tests {
                 content: "alias x=y".to_string(),
                 marker: "m".to_string(),
             },
+            permissions: None,
         };
         let result = classify_conflict(&entry, &ActualState::File);
 
@@ -555,6 +565,7 @@ mod tests {
                 content: "alias x=y".to_string(),
                 marker: "m".to_string(),
             },
+            permissions: None,
         };
         let change = classify_conflict(&entry, &ActualState::File).unwrap();
         match change {
@@ -718,6 +729,7 @@ mod tests {
                 source: std::path::PathBuf::from("/does/not/exist/anymore"),
                 link_type: LinkType::Soft,
             },
+            permissions: None,
         };
         let change = classify_fs(&entry, &Operation::Noop).unwrap();
         assert!(matches!(change, Change::Broken));
@@ -738,6 +750,7 @@ mod tests {
                 source: std::path::PathBuf::from("/repo/ov"),
                 link_type: LinkType::Soft,
             },
+            permissions: None,
         };
         let operation = Operation::Migrate {
             from: MaterializationIntent::Checkout,
@@ -828,6 +841,7 @@ mod tests {
                 }),
             },
             intent: MaterializationIntent::Checkout,
+            permissions: None,
         };
 
         let change = classify_checkout(&entry).unwrap();

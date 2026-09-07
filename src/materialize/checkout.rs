@@ -225,6 +225,7 @@ mod tests {
                 config: Box::new(config),
             },
             intent: MaterializationIntent::Checkout,
+            permissions: None,
         }
     }
 

@@ -19,6 +19,7 @@ use globset::GlobBuilder;
 use serde::{Deserialize, Serialize};
 
 use super::overlay::Overlay;
+use super::permissions::FileMode;
 
 /// How a directory-shaped entry should be materialized once a `rules`/
 /// `defaults` entry has been resolved for it (or none matched).
@@ -43,15 +44,22 @@ impl fmt::Display for MaterializationKind {
     }
 }
 
-/// Repository- or overlay-level default materialization, applied when no
-/// `rules` entry matches a given path. Inherited through the same
-/// cascading descriptor chain as every other overlay field (ADR-002): a
-/// root `over.toml` sets a repository-wide baseline, and any ancestor
-/// down to the overlay's own directory can override it.
+/// Repository- or overlay-level default materialization (and, since #65,
+/// default permission mode), applied when no more specific override
+/// matches a given path. Inherited through the same cascading descriptor
+/// chain as every other overlay field (ADR-002): a root `over.toml` sets a
+/// repository-wide baseline, and any ancestor down to the overlay's own
+/// directory can override it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Defaults {
     #[serde(default)]
     pub materialization: MaterializationKind,
+    /// Default permission mode for entries `over` writes content for
+    /// directly (`PartialFile`, #65) with no more specific `permissions`
+    /// rule — see [`super::permissions::resolve`]. `None` (the default)
+    /// leaves permissions entirely unmanaged, matching pre-#65 behavior.
+    #[serde(default)]
+    pub mode: Option<FileMode>,
 }
 
 /// A single path/subtree materialization override.

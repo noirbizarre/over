@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::desired::{DesiredEntry, MaterializationIntent};
+use crate::overlays::FileMode;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
@@ -44,6 +45,17 @@ pub enum Operation {
     /// something sensible instead of panicking; [`super::Plan::execute`]
     /// never acts on it.
     Deferred,
+    /// Target already matches desired content/kind, but its permission mode
+    /// differs from what's declared (#65) — auto-fixable, unlike a real
+    /// `Conflict`: nothing structural is wrong, only a `chmod` is needed.
+    /// Only ever produced for
+    /// [`MaterializationIntent::PartialFile`](crate::desired::MaterializationIntent::PartialFile)
+    /// entries with a declared `permissions` (ADR-020); every other intent's
+    /// permission is unmanaged and never classifies this way.
+    Repair {
+        current: FileMode,
+        desired: FileMode,
+    },
 }
 
 /// Short, human-readable word for a [`MaterializationIntent`], used only by
@@ -232,6 +244,15 @@ impl fmt::Display for PlanStep {
             // step should ever classify as `Deferred` anymore — unreachable
             // in practice, but a clear fallback beats a silently wrong line.
             (_, Operation::Deferred) => write!(f, "{} deferred: {}", emojis::WARNING, target),
+            (_, Operation::Repair { current, desired }) => write!(
+                f,
+                "{} {} {} ({} -> {})",
+                emojis::LOCK,
+                style::yellow("repair permissions:"),
+                target,
+                current,
+                desired,
+            ),
         }
     }
 }
@@ -251,6 +272,7 @@ mod tests {
                 source: PathBuf::from("/repo/ov/app"),
             },
             intent,
+            permissions: None,
         }
     }
 
@@ -435,6 +457,23 @@ mod tests {
         assert!(s.contains("migrate blocked:"));
         assert!(s.contains("checkout -> directory symlink"));
         assert!(s.contains("has uncommitted changes"));
+    }
+
+    #[test]
+    fn repair_permissions_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::PartialFile {
+                content: "alias x=y".to_string(),
+                marker: "aliases".to_string(),
+            }),
+            operation: Operation::Repair {
+                current: FileMode::parse("644").unwrap(),
+                desired: FileMode::parse("600").unwrap(),
+            },
+        };
+        let s = format!("{step}");
+        assert!(s.contains("repair permissions:"));
+        assert!(s.contains("644 -> 600"));
     }
 
     #[test]

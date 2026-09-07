@@ -15,11 +15,13 @@ pub(crate) const EXTENSIONS: &[&str] = &["yml", "yaml", "toml"];
 
 pub mod discovery;
 pub mod overlay;
+pub mod permissions;
 pub mod repository;
 pub mod rules;
 
 pub use discovery::OverlayDeclaration;
 pub use overlay::Overlay;
+pub use permissions::{FileMode, PermissionRule};
 pub use repository::Repository;
 pub use rules::{Defaults, MaterializationKind, MaterializationRule};
 

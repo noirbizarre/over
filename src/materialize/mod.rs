@@ -117,6 +117,7 @@ mod tests {
                 source: PathBuf::from("/repo/ov"),
             },
             intent,
+            permissions: None,
         }
     }
 
