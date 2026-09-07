@@ -941,6 +941,120 @@ fn sync_dry_run_reports_without_mutating() -> TestResult {
     Ok(())
 }
 
+// ── legacy symlink-only installation migration integration tests (#130) ───
+//
+// A legacy `over` install predates rules/checkout entirely: every file
+// recursed and symlinked individually (ADR-006's original default), no
+// `.git`, and — the scenario this issue is about — zero `$XDG_STATE_HOME`
+// tracking of any kind. `Overlay::apply_inner` clones git repositories
+// *before* `Plan::build` ever classifies anything (see
+// `actions::git::EnsureGitRepository::execute`'s `remove_legacy_materialization`,
+// #130), so this exercises the real `over apply` path end to end, not just
+// `over status`/`--dry-run` previews.
+
+#[test]
+#[cfg(unix)]
+fn legacy_symlink_only_installation_migrates_to_checkout_with_no_prior_xdg_state() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let origin = canonical_tmp.join("origin");
+    setup_git_origin(&origin);
+    setup_git_overlay(&canonical_tmp, "legacy", &origin);
+
+    let root = TempDir::new()?;
+    let target = canonical_for_matching(root.path())?;
+
+    // Simulate what a pre-rules/pre-checkout `over` left behind at this
+    // same target root: content recursed and symlinked file by file, with
+    // no `.git` and no XDG state ever written for it.
+    let legacy_source = canonical_tmp.join("legacy_source");
+    fs::create_dir_all(legacy_source.join("sub"))?;
+    fs::write(legacy_source.join("a.txt"), "a")?;
+    fs::write(legacy_source.join("sub/b.txt"), "b")?;
+    fs::create_dir_all(target.join("sub"))?;
+    std::os::unix::fs::symlink(legacy_source.join("a.txt"), target.join("a.txt"))?;
+    std::os::unix::fs::symlink(legacy_source.join("sub/b.txt"), target.join("sub/b.txt"))?;
+
+    // A fresh, empty `$XDG_STATE_HOME` — the issue's explicit requirement:
+    // no prior `over` state directory of any kind, not even an empty one
+    // `over` itself created.
+    let xdg_state_home = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["apply", "legacy", "--root"])
+        .arg(&target)
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .success();
+
+    assert!(
+        target.join(".git").exists(),
+        "legacy install should have been migrated to a checkout"
+    );
+    assert!(
+        !target.join("a.txt").is_symlink(),
+        "legacy symlinks should be gone, replaced by the checkout"
+    );
+    assert!(
+        !target.join("sub/b.txt").is_symlink(),
+        "legacy symlinks should be gone, replaced by the checkout"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn legacy_symlink_installation_with_drift_is_reported_as_conflict_not_replaced() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let origin = canonical_tmp.join("origin");
+    setup_git_origin(&origin);
+    setup_git_overlay(&canonical_tmp, "legacy2", &origin);
+
+    let root = TempDir::new()?;
+    let target = canonical_for_matching(root.path())?;
+
+    let legacy_source = canonical_tmp.join("legacy_source2");
+    fs::create_dir_all(&legacy_source)?;
+    fs::write(legacy_source.join("a.txt"), "a")?;
+    std::os::unix::fs::symlink(legacy_source.join("a.txt"), target.join("a.txt"))?;
+    // A real, non-symlink file mixed in — drift from what a legacy `over`
+    // install alone would ever have produced. Must never be silently
+    // discarded/replaced.
+    fs::write(target.join("foreign.txt"), "not from over")?;
+
+    let xdg_state_home = TempDir::new()?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["apply", "legacy2", "--root"])
+        .arg(&target)
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .failure();
+
+    assert!(
+        !target.join(".git").exists(),
+        "conflicting install must never be migrated"
+    );
+    assert!(
+        target.join("foreign.txt").exists(),
+        "conflicting content must remain untouched"
+    );
+    assert_eq!(
+        fs::read_to_string(target.join("foreign.txt"))?,
+        "not from over"
+    );
+    assert!(
+        target.join("a.txt").is_symlink(),
+        "pre-existing legacy symlink must remain untouched"
+    );
+    Ok(())
+}
+
 // ── unapply integration tests ────────────────────────────────────────────
 
 #[test]
