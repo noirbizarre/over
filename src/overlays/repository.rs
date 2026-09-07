@@ -7,6 +7,7 @@ use walkdir::WalkDir;
 
 use anyhow::{Context as _, Result};
 
+use super::discovery::{OverlayDeclaration, resolve_declared_dirs};
 use super::overlay::Overlay;
 use super::{BASENAME, Format, GLOB_PATTERN};
 
@@ -48,7 +49,13 @@ impl Repository {
             .filter_map(|e| e.path().parent().map(|p| p.to_path_buf()))
             .collect();
 
+        // Union with root-declared `overlays:` directories (#113/#127) —
+        // dedup by resolved path since a directory can be found by both
+        // mechanisms (e.g. a root-declared dir that also has its own
+        // descriptor).
+        dirs.extend(self.declared_overlay_dirs());
         dirs.sort();
+        dirs.dedup();
 
         let mut overlays = Vec::new();
         for (idx, dir) in dirs.iter().enumerate() {
@@ -89,18 +96,43 @@ impl Repository {
     /// Reads `format` from the repository root `over.{toml,yaml,yml}`.
     /// Returns `None` when no root config exists or the field is absent.
     pub fn preferred_format(&self) -> Option<Format> {
-        #[derive(Deserialize)]
-        struct RootPrefs {
-            format: Option<Format>,
-        }
-        let basename = self.root.join(BASENAME);
-        let cfg = Config::builder()
-            .add_source(File::with_name(basename.to_str()?).required(false))
-            .build()
-            .ok()?;
-        let prefs: RootPrefs = cfg.try_deserialize().ok()?;
-        prefs.format
+        self.root_config().format
     }
+
+    /// Directories declared via the repository root's `overlays:` key
+    /// (#113/#127), resolved to concrete filesystem paths. Public so
+    /// `over lint`'s own discovery (`lint::discover_overlay_dirs`) can
+    /// union the same set instead of re-deriving it.
+    pub fn declared_overlay_dirs(&self) -> Vec<PathBuf> {
+        let declarations = self.root_config().overlays.unwrap_or_default();
+        resolve_declared_dirs(&self.root, &declarations)
+    }
+
+    /// One-shot, non-cascading read of the repository root's own
+    /// descriptor. Unlike `Overlay::new`'s ancestor-chain cascade
+    /// (ADR-002), this reads *only* `self.root`'s file: `format` and
+    /// `overlays` are root-scoped fields with no meaning cascaded
+    /// per-overlay (ADR-018).
+    fn root_config(&self) -> RootConfig {
+        let basename = self.root.join(BASENAME);
+        let Some(path) = basename.to_str() else {
+            return RootConfig::default();
+        };
+        Config::builder()
+            .add_source(File::with_name(path).required(false))
+            .build()
+            .ok()
+            .and_then(|cfg| cfg.try_deserialize().ok())
+            .unwrap_or_default()
+    }
+}
+
+/// The repository root's own descriptor fields, read once and not
+/// cascaded to overlays (ADR-018) — see [`Repository::root_config`].
+#[derive(Debug, Deserialize, Default)]
+struct RootConfig {
+    format: Option<Format>,
+    overlays: Option<Vec<OverlayDeclaration>>,
 }
 
 #[cfg(test)]
@@ -215,5 +247,69 @@ mod tests {
         let overlays = repo.overlays().unwrap();
         assert_eq!(overlays.len(), 1);
         assert_eq!(overlays[0].name, "parent/child");
+    }
+
+    #[test]
+    fn overlays_discovers_root_declared_directory_without_local_descriptor() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("over.toml"),
+            "target = \"~\"\n\n[[overlays]]\npath = \"hosts/*\"",
+        )
+        .unwrap();
+        // No `over.*` at all in `hosts/laptop` — must still be discovered
+        // and resolve `target` from the repository root config.
+        fs::create_dir_all(tmp.path().join("hosts/laptop")).unwrap();
+
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let overlays = repo.overlays().unwrap();
+        assert_eq!(overlays.len(), 1);
+        assert_eq!(overlays[0].name, "hosts/laptop");
+        assert_eq!(overlays[0].target, "~");
+    }
+
+    #[test]
+    fn overlays_merges_declared_and_descriptor_discovery_without_duplicates() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("over.toml"),
+            "target = \"~\"\n\n[[overlays]]\npath = \"shared\"",
+        )
+        .unwrap();
+        // Also has its own local descriptor — matched by both mechanisms.
+        let shared = tmp.path().join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("over.toml"), "target = \"~/shared\"").unwrap();
+
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let overlays = repo.overlays().unwrap();
+        assert_eq!(overlays.len(), 1, "should not produce a duplicate entry");
+        assert_eq!(overlays[0].name, "shared");
+        assert_eq!(overlays[0].target, "~/shared");
+    }
+
+    #[test]
+    fn overlays_root_declaration_glob_matching_nothing_is_silently_empty() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("over.toml"),
+            "target = \"~\"\n\n[[overlays]]\npath = \"nonexistent/*\"",
+        )
+        .unwrap();
+        // A legitimate sibling overlay so this test isn't tripped up by
+        // the pre-existing (unrelated to #127) edge case where the
+        // repository root itself, when it has its own `over.toml` and no
+        // descendant overlay at all, is discovered as an overlay with an
+        // empty name — the root is always a path-prefix of every other
+        // discovered dir and gets skipped by the "more specific overlay
+        // wins" rule below as soon as one exists.
+        let other = tmp.path().join("other");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("over.toml"), "target = \"~\"").unwrap();
+
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let overlays = repo.overlays().unwrap();
+        assert_eq!(overlays.len(), 1);
+        assert_eq!(overlays[0].name, "other");
     }
 }

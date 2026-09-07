@@ -40,3 +40,4 @@ by editing the old one. The history is the value.
 | [015](015-unapply-reuses-plan-classification-and-only-removes-safely-reversible-state.md) | `unapply` reuses `Plan`'s classification and only ever removes safely reversible state |
 | [016](016-partial-file-managed-blocks.md) | Partial files are managed blocks injected via a sidecar, not a stem-plus-sidecar pair |
 | [017](017-materialization-rules-generalize-link-dirs.md) | Materialization rules generalize `link_dirs` into path/subtree overrides, amending ADR-006 |
+| [018](018-root-declared-overlays-extend-descriptor-discovery.md) | Root-declared `overlays:` paths extend descriptor-glob discovery, amending ADR-002 |
