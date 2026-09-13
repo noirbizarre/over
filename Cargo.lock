@@ -348,6 +348,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
 name = "dirs-sys"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -383,7 +392,7 @@ dependencies = [
  "config",
  "console",
  "dialoguer",
- "dirs",
+ "dirs 7.0.0",
  "etcetera",
  "futures",
  "gethostname",
@@ -675,7 +684,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09d9eedcb32d1389500ca2ac94a34939b89dacc3235b872e2cb4a36f24fcb191"
 dependencies = [
  "dialoguer",
- "dirs",
+ "dirs 6.0.0",
  "git2",
  "pest",
  "pest_derive",
