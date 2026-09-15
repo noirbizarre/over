@@ -26,9 +26,14 @@ use crate::utils::short_path;
 /// matching the minimum set called for by #12.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
-    /// Target matches desired intent — nothing to do.
+    /// Target matches desired intent — nothing to do. For a declared
+    /// (non-root) `git` entry (#140, ADR-021), this means the repository
+    /// is present and its declared configuration (url/tag/rev/remotes/git
+    /// config) is applied — regardless of any uncommitted changes, local
+    /// commits, or other content a plugin manager (or the user) put there.
     Applied,
-    /// Target doesn't exist yet.
+    /// Target doesn't exist yet. For a declared `git` entry, this means it
+    /// still needs provisioning (#140).
     Missing,
     /// A git checkout has uncommitted changes, or a filesystem entry's
     /// content/kind already matches but its permission mode differs (#65,
@@ -37,8 +42,11 @@ pub enum Status {
     /// A dangling soft symlink (correctly pointed, but its source
     /// disappeared), or a checkout path that isn't a valid git repo.
     Broken,
-    /// Target exists and doesn't match desired intent, or a git checkout
-    /// has a merge/rebase/cherry-pick in progress.
+    /// Target exists and doesn't match desired intent, a git checkout has
+    /// a merge/rebase/cherry-pick in progress, or — for a declared
+    /// (non-root) `git` entry (#140) — its declared configuration
+    /// (url/tag/rev/remotes/git config) no longer matches what's requested
+    /// ("configuration drift").
     Conflict,
     /// A git checkout is ahead of its upstream by this many commits.
     Ahead(usize),

@@ -39,3 +39,21 @@ and `over unapply` too):
 
 Without `--verbose`, only entries other than `Applied` are printed; pass
 `--verbose` to also print unchanged entries.
+
+## Declared `git` repositories
+
+A `git` entry declared at the overlay's own root (`git = "<url>"`, or a
+`"."` key) is a real checkout: its status reflects the checkout's own
+working-tree/upstream state (dirty, ahead, behind, diverged, merge in
+progress), same as any other git repository you work in directly.
+
+Any other `git` entry (declared at a subpath, e.g. a plugin manager's
+clone) is a **declared, provisioned resource** instead: its status only
+reflects whether it's present and its declared configuration
+(`url`/`tag`/`rev`/`remotes`/`config`) is applied. Uncommitted changes,
+local commits, untracked files, or an in-progress merge inside it never
+make it `Modified`/`Ahead`/`Behind`/`Diverged`/`Conflict` — that content
+isn't something `over` manages. If its declared configuration itself
+changes (e.g. its `url`), it's reported `Conflict` until the next `over
+apply` reconciles it. See
+[ADR-021](../adr/021-declared-git-repositories-report-provisioning-not-content-status.md).

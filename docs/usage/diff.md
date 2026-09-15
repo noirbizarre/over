@@ -37,8 +37,11 @@ labelling an entry as needing attention, it shows *what* differs —
   occupies a target (e.g. a real directory where a symlink was expected) —
   there's nothing meaningful to diff in that case;
 - the same dirty/ahead/behind/diverged/merge-in-progress state
-  `over status` reports for `git` checkouts (commit/merge mechanics
-  themselves are out of scope — see #110).
+  `over status` reports for the overlay's own root `git` checkout (commit/
+  merge mechanics themselves are out of scope — see #110). A declared
+  (non-root) `git` entry instead only shows a `Conflict` when its declared
+  configuration itself has drifted — see
+  [ADR-021](../adr/021-declared-git-repositories-report-provisioning-not-content-status.md).
 
 Without `--verbose`, only entries with something to show are printed; pass
 `--verbose` to also print unchanged entries. See

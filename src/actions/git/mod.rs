@@ -435,7 +435,12 @@ fn ensure_worktrees(
 }
 
 /// Detect the default branch name from a repository's HEAD or remote refs.
-fn detect_default_branch(repo: &Repository) -> Result<String> {
+///
+/// `pub(crate)`: reused read-only by `status::git::inspect_declared` (#140)
+/// to check the auto-created default-branch worktree's presence for a
+/// declared (non-root) bare+worktree repository, without re-deriving the
+/// same HEAD/`origin/HEAD`/main/master fallback chain.
+pub(crate) fn detect_default_branch(repo: &Repository) -> Result<String> {
     // Try HEAD reference first
     if let Ok(head) = repo.head()
         && let Ok(name) = head.shorthand()
