@@ -849,4 +849,82 @@ mod tests {
         let display = format!("{}", DiffEntry { entry, change });
         assert!(display.contains("modified:"));
     }
+
+    /// Build a declared (non-root, `repo_key != "."`) `Checkout` entry
+    /// backed by a real committed git repo at `path`, whose `origin`
+    /// remote is set to `url` — the shared fixture for the two declared-
+    /// repo tests below (#140).
+    fn declared_checkout_entry(path: &std::path::Path, url: &str) -> DesiredEntry {
+        use crate::actions::git::config::GitRepoConfig;
+        use git2::{Repository as GitRepository, Signature};
+
+        let repo = GitRepository::init(path).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+        drop(cfg);
+        let sig = Signature::now("Test", "test@test.com").unwrap();
+        fs::write(path.join("README.md"), "# Test").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        repo.remote("origin", url).unwrap();
+
+        DesiredEntry {
+            target: path.to_path_buf(),
+            provenance: crate::desired::Provenance::Git {
+                overlay: "ov".to_string(),
+                repo_key: ".config/nvim".to_string(),
+                config: Box::new(GitRepoConfig {
+                    url: url.to_string(),
+                    branch: None,
+                    tag: None,
+                    rev: None,
+                    recurse_submodules: false,
+                    worktree: false,
+                    per_worktree_config: false,
+                    worktrees: None,
+                    remotes: None,
+                    config: None,
+                    worktree_config: None,
+                }),
+            },
+            intent: MaterializationIntent::Checkout,
+            permissions: None,
+        }
+    }
+
+    #[test]
+    fn declared_repo_with_unrelated_dirty_content_is_unchanged() {
+        // #140: unlike the root checkout (see
+        // `dirty_git_checkout_maps_to_checkout_modified`), unrelated dirty
+        // content in a declared (non-root) repository must never surface
+        // as a diff — only its declared configuration matters.
+        let td = TempDir::new().unwrap();
+        let entry = declared_checkout_entry(td.path(), "https://example.com/nvim.git");
+        fs::write(td.path().join("README.md"), "written by the plugin").unwrap();
+        fs::write(td.path().join("state.json"), "{}").unwrap();
+
+        let change = classify_checkout(&entry).unwrap();
+        assert!(matches!(change, Change::Unchanged));
+    }
+
+    #[test]
+    fn declared_repo_config_drift_is_reported_as_checkout_conflict() {
+        let td = TempDir::new().unwrap();
+        let mut entry = declared_checkout_entry(td.path(), "https://example.com/nvim.git");
+        // Declared config now points elsewhere than what's actually cloned.
+        if let crate::desired::Provenance::Git { config, .. } = &mut entry.provenance {
+            config.url = "https://example.com/different-plugin.git".to_string();
+        }
+
+        let change = classify_checkout(&entry).unwrap();
+        assert!(matches!(change, Change::Checkout(Status::Conflict)));
+    }
 }

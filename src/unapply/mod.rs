@@ -22,11 +22,17 @@
 //!   is no need to track "did `over` create this directory or did it
 //!   already exist": emptiness is the only signal, and it's always
 //!   re-checked at removal time.
-//! - A git checkout is only ever removed when [`status::git::inspect`]
-//!   reports [`Status::Applied`] (fully in sync with its upstream, nothing
-//!   uncommitted or unpushed) — reusing the exact same read-only inspection
-//!   `over sync`/`over status` already rely on, per ADR-014's "never
-//!   discard uncommitted changes or local commits implicitly".
+//! - A git checkout — the overlay's own root checkout, or any declared
+//!   (non-root) repository alike — is only ever removed when
+//!   [`status::git::inspect_content`] reports [`Status::Applied`] (fully in
+//!   sync with its upstream, nothing uncommitted or unpushed), per ADR-014's
+//!   "never discard uncommitted changes or local commits implicitly".
+//!   Deliberately `inspect_content`, not the (root/declared-aware)
+//!   `status::git::inspect` `over status`/`over diff` use (#140, ADR-021):
+//!   this destructive gate must stay exactly as strict for a declared
+//!   repository as for the root checkout, never relaxed just because
+//!   `status`/`diff`'s *reporting* got more lenient about a declared
+//!   repository's unrelated content.
 //!
 //! Everything unapply removes is therefore also reversible: symlinks and
 //! directories come back with a plain `over apply` (overlay source content
@@ -183,19 +189,30 @@ impl Report {
     ///
     /// [`Plan`]'s classification is deliberately too coarse for
     /// `Checkout` entries (`CheckoutMaterializer` collapses everything but
-    /// `Missing` to `Noop`, ADR-014) — [`status::git::inspect`] is used
-    /// directly instead, exactly like `status`/`diff` already do, so only a
-    /// fully-in-sync checkout (`Status::Applied`) is ever removed.
+    /// `Missing` to `Noop`, ADR-014) — [`status::git::inspect_content`] is
+    /// used directly instead, so only a fully-in-sync checkout
+    /// (`Status::Applied`) is ever removed.
+    ///
+    /// Deliberately `inspect_content`, not `status::git::inspect` (#140,
+    /// ADR-021): the latter reports a declared (non-root) repository as
+    /// `Applied` once its *declared configuration* is satisfied, ignoring
+    /// uncommitted changes/local commits by design — exactly the content
+    /// this destructive removal must never discard. Removing a declared
+    /// repository's whole directory tree is exactly as irreversible as
+    /// removing the root checkout's, so this gate stays as strict as
+    /// before #140 for both.
     pub fn build(desired: &DesiredTree) -> Result<Self> {
         let plan = Plan::build(desired)?;
         let mut entries = Vec::with_capacity(plan.len());
         for step in plan.steps() {
             let outcome = match (&step.entry.intent, &step.operation) {
-                (MaterializationIntent::Checkout, _) => match status::git::inspect(&step.entry)? {
-                    Status::Missing => Outcome::AlreadyAbsent,
-                    Status::Applied => Outcome::Removed,
-                    other => Outcome::CheckoutNotClean { status: other },
-                },
+                (MaterializationIntent::Checkout, _) => {
+                    match status::git::inspect_content(&step.entry)? {
+                        Status::Missing => Outcome::AlreadyAbsent,
+                        Status::Applied => Outcome::Removed,
+                        other => Outcome::CheckoutNotClean { status: other },
+                    }
+                }
                 (_, Operation::Create) => Outcome::AlreadyAbsent,
                 // A permission-only drift (#65) doesn't change ownership:
                 // the content is still exactly what this overlay put
@@ -389,13 +406,18 @@ async fn remove_partial_block_if_unchanged(
 }
 
 /// Remove a git checkout's whole target directory, only if
-/// [`status::git::inspect`] still reports [`Status::Applied`] right now —
-/// re-checked here (not just trusted from classification) for the same
-/// classify→execute race-safety reason as
+/// [`status::git::inspect_content`] still reports [`Status::Applied`] right
+/// now — re-checked here (not just trusted from classification) for the
+/// same classify→execute race-safety reason as
 /// [`remove_symlink_if_unchanged`]. Anything else is left alone.
+///
+/// `inspect_content`, not `status::git::inspect` — see [`Report::build`]'s
+/// doc comment (#140, ADR-021): this destructive removal must never be
+/// fooled by a declared repository's config-only "Applied" status into
+/// discarding uncommitted/unpushed content.
 async fn remove_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
     spawn_blocking(move || {
-        if !matches!(status::git::inspect(&entry)?, Status::Applied) {
+        if !matches!(status::git::inspect_content(&entry)?, Status::Applied) {
             return Ok(());
         }
         fs::remove_dir_all(&entry.target)?;
@@ -1096,6 +1118,85 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dest_td.path().join("README.md")).unwrap(),
             "changed"
+        );
+    }
+
+    /// Same shape as `checkout_entry`, but a declared (non-root) entry —
+    /// used by the safety-decoupling regression test below (#140).
+    fn declared_checkout_entry(target: PathBuf, url: &str) -> DesiredEntry {
+        DesiredEntry {
+            target,
+            provenance: Provenance::Git {
+                overlay: "ov".to_string(),
+                repo_key: ".config/nvim".to_string(),
+                config: Box::new(crate::actions::git::config::GitRepoConfig {
+                    url: url.to_string(),
+                    branch: None,
+                    tag: None,
+                    rev: None,
+                    recurse_submodules: false,
+                    worktree: false,
+                    per_worktree_config: false,
+                    worktrees: None,
+                    remotes: None,
+                    config: None,
+                    worktree_config: None,
+                }),
+            },
+            intent: MaterializationIntent::Checkout,
+            permissions: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn unapply_never_removes_a_declared_repo_with_uncommitted_changes_even_though_status_reports_it_applied()
+     {
+        // #140/ADR-021: `over status`/`over diff` treat a declared repo as
+        // `Applied` once its declared configuration matches, even with
+        // unrelated uncommitted content — but `unapply`'s destructive
+        // removal must stay exactly as strict as it is for the root
+        // checkout. This is the regression guard for that deliberate
+        // decoupling (`Report::build`/`remove_checkout_if_clean` must call
+        // `status::git::inspect_content`, never the root/declared-aware
+        // `status::git::inspect`).
+        let source_td = TempDir::new().unwrap();
+        init_committed_repo(source_td.path());
+        let dest_td = TempDir::new().unwrap();
+        let cloned = git2::build::RepoBuilder::new()
+            .clone(source_td.path().to_str().unwrap(), dest_td.path())
+            .unwrap();
+        let origin_url = cloned
+            .find_remote("origin")
+            .unwrap()
+            .url()
+            .unwrap()
+            .to_string();
+        drop(cloned);
+        fs::write(dest_td.path().join("README.md"), "written by the plugin").unwrap();
+
+        let entry = declared_checkout_entry(dest_td.path().to_path_buf(), &origin_url);
+
+        // Sanity check: the new provisioning-aware `status::git::inspect`
+        // really does report `Applied` here — otherwise this test wouldn't
+        // be exercising the decoupling it's meant to guard.
+        assert_eq!(status::git::inspect(&entry).unwrap(), Status::Applied);
+
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let report = Report::build(&desired).unwrap();
+        assert!(matches!(
+            report.entries()[0].outcome,
+            Outcome::CheckoutNotClean { .. }
+        ));
+
+        let ctx = Context::builder().build();
+        report.execute(ctx).await.unwrap();
+        assert!(
+            dest_td.path().join(".git").exists(),
+            "a declared repo with uncommitted changes must never be removed"
+        );
+        assert_eq!(
+            fs::read_to_string(dest_td.path().join("README.md")).unwrap(),
+            "written by the plugin"
         );
     }
 
