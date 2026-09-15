@@ -921,7 +921,15 @@ mod tests {
         let td = TempDir::new().unwrap();
         init_committed_repo(td.path());
         let mut entries = HashMap::new();
-        entries.insert("core.autocrlf".to_string(), "true".to_string());
+        // Deliberately not a real git setting (unlike e.g. `core.autocrlf`,
+        // which Git for Windows commonly sets to `true` at the system/
+        // global config level — `repo.config()` reads that layered config,
+        // so it would spuriously "already match" on Windows CI runners and
+        // not actually exercise a missing-entry mismatch).
+        entries.insert(
+            "over-test.declared-config-marker".to_string(),
+            "expected-value".to_string(),
+        );
         let mut config = git_config(false, None);
         config.config = Some(crate::actions::git::config::GitConfig { entries });
         let e = declared_entry(td.path().to_path_buf(), config);
