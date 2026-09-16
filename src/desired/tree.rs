@@ -8,7 +8,7 @@ use walkdir::WalkDir;
 use crate::actions::git::config::ROOT_PATH;
 use crate::actions::{partial, symlink};
 use crate::exec;
-use crate::overlays::{self, Overlay};
+use crate::overlays::{self, MaterializationKind, Overlay};
 
 use super::entry::{DesiredEntry, MaterializationIntent, Provenance};
 
@@ -139,6 +139,31 @@ fn collect_own_entries(
 ) -> Result<Vec<DesiredEntry>> {
     let mut entries = Vec::new();
 
+    // #141: the whole overlay resolves to a virtual checkout (via
+    // `defaults.materialization = "checkout"`, or an explicit `path = "."`
+    // rule) — one entry owns the entire subtree; the base `Directory` entry
+    // and the per-file/per-directory walk below are both skipped, since
+    // `VirtualCheckoutMaterializer` handles the whole managed path itself
+    // (mirrors `SymlinkDirectory`'s "children not separately enumerated",
+    // just anchored at the overlay root instead of a subdirectory).
+    if overlay.materialization_for(Path::new("")) == MaterializationKind::Checkout {
+        entries.push(DesiredEntry {
+            target: target.to_path_buf(),
+            provenance: Provenance::Overlay {
+                overlay: overlay.name.clone(),
+                source: overlay.root.clone(),
+            },
+            intent: MaterializationIntent::VirtualCheckout,
+            permissions: None,
+        });
+        build_git_entries(overlay, target, &mut entries);
+        let ctx_with_target =
+            ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
+        build_symlink_sidecars(&ctx_with_target, overlay, target, &mut entries)?;
+        build_partial_sidecars(&ctx_with_target, overlay, &mut entries)?;
+        return Ok(entries);
+    }
+
     // Every overlay needs a place to live, even one with no files of its own
     // (a `uses`-only or git-only overlay) — mirrors the unconditional
     // `EnsureDir` at the top of `Overlay::apply_inner`.
@@ -152,28 +177,7 @@ fn collect_own_entries(
         permissions: None,
     });
 
-    // Git-managed paths: materialized by CheckoutMaterializer (#110), which
-    // ensures presence/configuration only — content-level bidirectional
-    // sync is `over sync` (crate::sync), a separate explicit operation.
-    if let Some(git_repos) = &overlay.git {
-        for (repo_key, config) in git_repos {
-            let repo_target = if repo_key == ROOT_PATH {
-                target.to_path_buf()
-            } else {
-                target.join(repo_key)
-            };
-            entries.push(DesiredEntry {
-                target: repo_target,
-                provenance: Provenance::Git {
-                    overlay: overlay.name.clone(),
-                    repo_key: repo_key.clone(),
-                    config: Box::new(config.clone()),
-                },
-                intent: MaterializationIntent::Checkout,
-                permissions: None,
-            });
-        }
-    }
+    build_git_entries(overlay, target, &mut entries);
 
     walk_overlay_tree(overlay, target, &mut entries)?;
 
@@ -186,6 +190,36 @@ fn collect_own_entries(
     build_partial_sidecars(&ctx_with_target, overlay, &mut entries)?;
 
     Ok(entries)
+}
+
+/// Git-managed paths declared via `overlay.git`: materialized by
+/// `CheckoutMaterializer` (#110), which ensures presence/configuration
+/// only — content-level bidirectional sync is `over sync` (crate::sync), a
+/// separate explicit operation. Unrelated to `MaterializationIntent::VirtualCheckout`
+/// (#141, see its doc) — both can coexist at different paths within the
+/// same overlay, including when the overlay root itself resolves to a
+/// virtual checkout.
+fn build_git_entries(overlay: &Overlay, target: &Path, entries: &mut Vec<DesiredEntry>) {
+    let Some(git_repos) = &overlay.git else {
+        return;
+    };
+    for (repo_key, config) in git_repos {
+        let repo_target = if repo_key == ROOT_PATH {
+            target.to_path_buf()
+        } else {
+            target.join(repo_key)
+        };
+        entries.push(DesiredEntry {
+            target: repo_target,
+            provenance: Provenance::Git {
+                overlay: overlay.name.clone(),
+                repo_key: repo_key.clone(),
+                config: Box::new(config.clone()),
+            },
+            intent: MaterializationIntent::Checkout,
+            permissions: None,
+        });
+    }
 }
 
 /// Walk the overlay's own tree, producing one entry per file/directory —
@@ -237,26 +271,50 @@ fn walk_overlay_tree(
 
         let entry_target = target.join(rel_path);
 
-        // A directory resolved to `SymlinkDirectory` — via a `rules`
-        // entry, `defaults.materialization`, or a legacy `link_dirs` match,
-        // all resolved through the same mechanism (#113/#126,
-        // `Overlay::is_link_dir`) — is one materialization unit; its
-        // children are not separately enumerated.
-        if path.is_dir() && overlay.is_link_dir(rel_path) {
-            entries.push(DesiredEntry {
-                target: entry_target,
-                provenance: Provenance::Overlay {
-                    overlay: overlay.name.clone(),
-                    source: path.to_path_buf(),
-                },
-                intent: MaterializationIntent::SymlinkDirectory {
-                    source: path.to_path_buf(),
-                    link_type: symlink::LinkType::Soft,
-                },
-                permissions: None,
-            });
-            walker.skip_current_dir();
-            continue;
+        // A directory resolved to `SymlinkDirectory` or `Checkout` — via a
+        // `rules` entry, `defaults.materialization`, or a legacy
+        // `link_dirs` match, all resolved through the same mechanism
+        // (#113/#126, `Overlay::materialization_for`) — is one
+        // materialization unit; its children are not separately
+        // enumerated.
+        if path.is_dir() {
+            match overlay.materialization_for(rel_path) {
+                MaterializationKind::SymlinkDirectory => {
+                    entries.push(DesiredEntry {
+                        target: entry_target,
+                        provenance: Provenance::Overlay {
+                            overlay: overlay.name.clone(),
+                            source: path.to_path_buf(),
+                        },
+                        intent: MaterializationIntent::SymlinkDirectory {
+                            source: path.to_path_buf(),
+                            link_type: symlink::LinkType::Soft,
+                        },
+                        permissions: None,
+                    });
+                    walker.skip_current_dir();
+                    continue;
+                }
+                MaterializationKind::Checkout => {
+                    // #141: a subtree-level virtual checkout — the whole
+                    // directory is one materialization unit owned by
+                    // `VirtualCheckoutMaterializer`; its files are not
+                    // separately enumerated here (it does its own
+                    // git-tree-based enumeration instead).
+                    entries.push(DesiredEntry {
+                        target: entry_target,
+                        provenance: Provenance::Overlay {
+                            overlay: overlay.name.clone(),
+                            source: path.to_path_buf(),
+                        },
+                        intent: MaterializationIntent::VirtualCheckout,
+                        permissions: None,
+                    });
+                    walker.skip_current_dir();
+                    continue;
+                }
+                MaterializationKind::Symlink => {}
+            }
         }
 
         if path.is_dir() {

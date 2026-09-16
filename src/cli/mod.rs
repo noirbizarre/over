@@ -7,12 +7,14 @@ use crate::ui::style::clap_styles;
 
 mod add;
 mod apply;
+mod commit;
 pub(crate) mod common;
 mod completion;
 mod diff;
 pub mod git_over;
 mod lint;
 mod list;
+mod log;
 mod new;
 mod show;
 mod status;
@@ -96,6 +98,18 @@ pub enum Commands {
         about = "Remove a given overlay's own entries from the target"
     )]
     Unapply(unapply::Params),
+
+    #[clap(
+        name = "commit",
+        about = "Commit local changes in a checkout-materialized overlay back to its source repository"
+    )]
+    Commit(commit::Params),
+
+    #[clap(
+        name = "log",
+        about = "Show the git history behind a checkout-materialized overlay"
+    )]
+    Log(log::Params),
 }
 
 impl CLI {
@@ -145,6 +159,12 @@ pub async fn main() -> Result<()> {
         }
         Some(Commands::Unapply(ref opt)) => {
             unapply::execute(&args, opt).await?;
+        }
+        Some(Commands::Commit(ref opt)) => {
+            commit::execute(&args, opt).await?;
+        }
+        Some(Commands::Log(ref opt)) => {
+            log::execute(&args, opt).await?;
         }
         None => {
             use clap::CommandFactory;
@@ -270,6 +290,24 @@ mod tests {
     fn cli_unapply_subcommand() {
         let args = CLI::parse_from(["over", "unapply", "myoverlay"]);
         assert!(matches!(args.cmd, Some(Commands::Unapply(_))));
+    }
+
+    #[test]
+    fn cli_commit_subcommand() {
+        let args = CLI::parse_from(["over", "commit", "myoverlay"]);
+        assert!(matches!(args.cmd, Some(Commands::Commit(_))));
+    }
+
+    #[test]
+    fn cli_log_subcommand() {
+        let args = CLI::parse_from(["over", "log"]);
+        assert!(matches!(args.cmd, Some(Commands::Log(_))));
+    }
+
+    #[test]
+    fn cli_log_subcommand_with_overlay_name() {
+        let args = CLI::parse_from(["over", "log", "myoverlay"]);
+        assert!(matches!(args.cmd, Some(Commands::Log(_))));
     }
 
     #[test]

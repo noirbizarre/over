@@ -23,13 +23,19 @@ pub mod state;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
+use dialoguer::{Confirm, Input};
 use git2::{Repository, RepositoryState};
 
 use crate::actions::git::config::ROOT_PATH;
 use crate::actions::git::sync as git_sync;
+use crate::commit::{self, CommitOptions, CommitOutcome};
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent, Provenance};
+use crate::materialize::virtual_checkout::git as vc_git;
+use crate::materialize::virtual_checkout::state as vc_state;
 use crate::status::git as status_git;
+use crate::status::{self, Status};
+use crate::ui::style::DialogTheme;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 use crate::xdg::XdgDirs;
@@ -50,6 +56,11 @@ pub struct SyncOptions {
     /// Never perform network I/O or mutate anything — mirrors
     /// `EnsureGitRepository`'s own `!ctx.dry_run` gate on cloning.
     pub dry_run: bool,
+    /// Never prompt interactively (#141): a virtual checkout with local
+    /// changes is reported as `Blocked` instead of asking whether to
+    /// commit them. Has no effect on root `Checkout` entries, which never
+    /// prompt in the first place (ADR-014).
+    pub no_prompt: bool,
 }
 
 impl Default for SyncOptions {
@@ -59,6 +70,7 @@ impl Default for SyncOptions {
             push: true,
             abort: false,
             dry_run: false,
+            no_prompt: false,
         }
     }
 }
@@ -75,6 +87,12 @@ pub enum SyncOutcome {
     /// Local commits (from a prior state, or just created by a pull's
     /// merge/fast-forward) were pushed to `origin`.
     Pushed { path: PathBuf },
+    /// A virtual checkout's local file changes were committed into its
+    /// source repository after the user confirmed an interactive prompt
+    /// (#141) — the virtual-checkout equivalent of `Pushed`, kept as its
+    /// own variant since "pushed to origin" would be a misleading label
+    /// for "committed locally in the overlay's own source repository".
+    Committed { path: PathBuf, files: usize },
     /// A merge produced real conflict markers; resolve manually (`git add`
     /// + `git commit`) and re-run `over sync`, or run `over sync --abort`.
     Conflict { path: PathBuf },
@@ -103,6 +121,7 @@ impl SyncOutcome {
             | SyncOutcome::FastForwarded { path }
             | SyncOutcome::Merged { path }
             | SyncOutcome::Pushed { path }
+            | SyncOutcome::Committed { path, .. }
             | SyncOutcome::Conflict { path }
             | SyncOutcome::Blocked { path, .. }
             | SyncOutcome::Aborted { path } => path,
@@ -117,6 +136,7 @@ impl SyncOutcome {
             SyncOutcome::FastForwarded { .. } => "fast-forwarded",
             SyncOutcome::Merged { .. } => "merged",
             SyncOutcome::Pushed { .. } => "pushed",
+            SyncOutcome::Committed { .. } => "committed",
             SyncOutcome::Conflict { .. } => "conflict",
             SyncOutcome::Blocked { .. } => "blocked",
             SyncOutcome::Aborted { .. } => "aborted",
@@ -162,6 +182,15 @@ impl fmt::Display for SyncOutcome {
                     target
                 )
             }
+            SyncOutcome::Committed { files, .. } => write!(
+                f,
+                "{} {} {} ({} file{} committed)",
+                emojis::SPARKLE,
+                style::white("committed:"),
+                target,
+                files,
+                if *files == 1 { "" } else { "s" },
+            ),
             SyncOutcome::Conflict { .. } => write!(
                 f,
                 "{} {} {} ({})",
@@ -210,25 +239,35 @@ pub async fn sync(desired: &DesiredTree, opts: &SyncOptions) -> Result<Vec<SyncO
 
     let mut outcomes = Vec::new();
     for entry in desired.entries() {
-        if !matches!(entry.intent, MaterializationIntent::Checkout) {
-            continue;
-        }
-        let Provenance::Git { repo_key, .. } = &entry.provenance else {
-            unreachable!(
-                "Checkout entries only ever carry Provenance::Git \
-                 (see desired::tree::collect_own_entries)"
-            );
-        };
-        if repo_key != ROOT_PATH {
-            continue;
-        }
+        match &entry.intent {
+            MaterializationIntent::Checkout => {
+                let Provenance::Git { repo_key, .. } = &entry.provenance else {
+                    unreachable!(
+                        "Checkout entries only ever carry Provenance::Git \
+                         (see desired::tree::collect_own_entries)"
+                    );
+                };
+                if repo_key != ROOT_PATH {
+                    continue;
+                }
 
-        for unit in sync_units(entry)? {
-            let outcome = sync_unit(&unit, opts)?;
-            if !opts.dry_run {
-                persist_checkpoint(&state_file, &unit, &outcome).await?;
+                for unit in sync_units(entry)? {
+                    let outcome = sync_unit(&unit, opts)?;
+                    if !opts.dry_run {
+                        persist_checkpoint(&state_file, &unit, &outcome).await?;
+                    }
+                    outcomes.push(outcome);
+                }
             }
-            outcomes.push(outcome);
+            // #141: a virtual checkout is always its own single sync
+            // unit — no worktree expansion (that concept is specific to
+            // `overlay.git`'s bare+worktrees form), and reconciliation is
+            // entirely local (no network I/O), unlike the root `Checkout`
+            // case above.
+            MaterializationIntent::VirtualCheckout => {
+                outcomes.push(sync_virtual_checkout(entry, opts).await?);
+            }
+            _ => {}
         }
     }
 
@@ -383,6 +422,179 @@ fn handle_unresolved_state(
     })
 }
 
+/// Reconcile a single virtual checkout entry (#141). Entirely local — the
+/// "source" is the overlay's own repository, already on disk, so there's
+/// never any fetch/push against a remote here, unlike [`sync_unit`]'s root
+/// `Checkout` handling above. Deterministic per [`Status`]:
+///
+/// - `Applied` -> [`SyncOutcome::UpToDate`].
+/// - `Behind` (source-only changes, nothing local to lose) -> re-checkout
+///   the drifted content and advance the recorded `base_oid` ->
+///   [`SyncOutcome::FastForwarded`]. Gated on `opts.pull` (mirrors "pull"
+///   for a root checkout: bringing new upstream content in).
+/// - `Modified` (local-only changes) -> gated on `opts.push` (mirrors
+///   "push": sending local content back to the source); if allowed and
+///   not `opts.no_prompt`, asks for confirmation (and a message) before
+///   committing — declining, or `no_prompt`, leaves everything untouched
+///   and reports [`SyncOutcome::Blocked`].
+/// - `Diverged`/`Conflict` (the same file, or the checkout as a whole,
+///   changed incompatibly on both sides) -> [`SyncOutcome::Conflict`],
+///   never auto-resolved.
+/// - `Missing`/`Broken` -> [`SyncOutcome::Blocked`] (nothing to sync;
+///   `over apply` materializes it).
+async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Result<SyncOutcome> {
+    let path = entry.target.clone();
+    let vc_status = status::virtual_checkout::inspect(entry)?;
+
+    match vc_status {
+        Status::Applied => Ok(SyncOutcome::UpToDate { path }),
+        Status::Behind(_) => {
+            if !opts.pull {
+                return Ok(SyncOutcome::UpToDate { path });
+            }
+            if opts.dry_run {
+                return Ok(SyncOutcome::FastForwarded { path });
+            }
+            fast_forward_virtual_checkout(entry).await?;
+            Ok(SyncOutcome::FastForwarded { path })
+        }
+        Status::Modified => {
+            if !opts.push {
+                return Ok(SyncOutcome::Blocked {
+                    path,
+                    reason: "uncommitted changes (run `over commit`, or re-run without \
+                             --pull-only)"
+                        .to_string(),
+                });
+            }
+            if opts.dry_run {
+                // Never prompts, never mutates under dry-run (mirrors
+                // `EnsureGitRepository`'s own `!ctx.dry_run` gate).
+                return Ok(SyncOutcome::Blocked {
+                    path,
+                    reason: "uncommitted changes; would prompt to commit".to_string(),
+                });
+            }
+            commit_virtual_checkout_interactively(entry, opts).await
+        }
+        Status::Diverged { .. } | Status::Conflict => Ok(SyncOutcome::Conflict { path }),
+        Status::Missing => Ok(SyncOutcome::Blocked {
+            path,
+            reason: "not materialized yet; run `over apply`".to_string(),
+        }),
+        Status::Broken => Ok(SyncOutcome::Blocked {
+            path,
+            reason: "virtual checkout association is broken; run `over apply` to re-adopt it"
+                .to_string(),
+        }),
+        Status::Ahead(_) => unreachable!(
+            "status::virtual_checkout::inspect never reports Ahead \
+             (there's no notion of the target being ahead of the source)"
+        ),
+    }
+}
+
+/// Ask whether to commit a virtual checkout's local changes, then a commit
+/// message, and commit if confirmed — never touches anything if the user
+/// declines. `opts.no_prompt` skips straight to `Blocked` instead of
+/// asking, per the issue's "the user must be able to decline committing"
+/// and "never auto-commit without explicit user consent".
+async fn commit_virtual_checkout_interactively(
+    entry: &DesiredEntry,
+    opts: &SyncOptions,
+) -> Result<SyncOutcome> {
+    let path = entry.target.clone();
+    if opts.no_prompt {
+        return Ok(SyncOutcome::Blocked {
+            path,
+            reason: "uncommitted changes; run `over commit` (--no-prompt disables the sync-time \
+                     confirmation)"
+                .to_string(),
+        });
+    }
+
+    let pending = status::virtual_checkout::file_changes(entry)?;
+    let confirmed = Confirm::with_theme(&DialogTheme::default())
+        .with_prompt(format!(
+            "{} local file{} changed at {} — commit {} now?",
+            pending.len(),
+            if pending.len() == 1 { "" } else { "s" },
+            short_path(&path.to_string_lossy()),
+            if pending.len() == 1 { "it" } else { "them" },
+        ))
+        .default(true)
+        .interact()
+        .map_err(|e| anyhow!("commit confirmation prompt failed: {}", e))?;
+
+    if !confirmed {
+        return Ok(SyncOutcome::Blocked {
+            path,
+            reason: "local changes not committed (declined)".to_string(),
+        });
+    }
+
+    let message = Input::<String>::with_theme(&DialogTheme::default())
+        .with_prompt("Commit message")
+        .allow_empty(true)
+        .interact_text()
+        .map_err(|e| anyhow!("commit message prompt failed: {}", e))?;
+    let message = if message.trim().is_empty() {
+        None
+    } else {
+        Some(message)
+    };
+
+    match commit::commit(entry, &CommitOptions { message }).await? {
+        CommitOutcome::Committed { files, .. } => Ok(SyncOutcome::Committed { path, files }),
+        // Raced with something else changing the checkout between
+        // `inspect` above and now — report accurately rather than
+        // pretending the earlier snapshot still holds.
+        CommitOutcome::NothingToCommit => Ok(SyncOutcome::UpToDate { path }),
+        CommitOutcome::Blocked { conflicting_files } => {
+            let _ = conflicting_files;
+            Ok(SyncOutcome::Conflict { path })
+        }
+        CommitOutcome::NotVirtualCheckout => unreachable!(
+            "sync_virtual_checkout only ever calls commit::commit for a VirtualCheckout entry"
+        ),
+    }
+}
+
+/// Re-checkout `entry`'s managed subtree from the source repository's
+/// current `HEAD` and advance the recorded `base_oid` — safe only because
+/// [`sync_virtual_checkout`] only calls this for [`Status::Behind`]
+/// (confirmed no local changes to lose). All git2/filesystem work is
+/// synchronous, hence `spawn_blocking`.
+async fn fast_forward_virtual_checkout(entry: &DesiredEntry) -> Result<()> {
+    let Provenance::Overlay { source, .. } = &entry.provenance else {
+        unreachable!(
+            "VirtualCheckout entries only ever carry Provenance::Overlay \
+             (see desired::tree::{{collect_own_entries,walk_overlay_tree}})"
+        );
+    };
+    let Some(mut record) = vc_state::record_for(&entry.target).await? else {
+        anyhow::bail!(
+            "no virtual checkout association recorded for '{}' — run `over apply` first",
+            entry.target.display(),
+        );
+    };
+
+    let target = entry.target.clone();
+    let source = source.clone();
+    let new_base_oid = tokio::task::spawn_blocking(move || {
+        let (repo, managed_path) = vc_git::discover_source(&source)?;
+        let head_tree = vc_git::base_tree(&repo, None)?;
+        let subtree = vc_git::managed_subtree(&repo, &head_tree, &managed_path)?;
+        let content_tree = vc_git::managed_content_tree(&repo, &subtree)?;
+        vc_git::checkout_subtree(&repo, &content_tree, &target)?;
+        anyhow::Ok(repo.head()?.peel_to_commit()?.id().to_string())
+    })
+    .await??;
+
+    record.base_oid = new_base_oid;
+    vc_state::persist(&entry.target, record).await
+}
+
 fn current_branch_name(repo: &Repository) -> Result<String> {
     repo.head()?
         .shorthand()
@@ -430,6 +642,7 @@ mod tests {
     use super::*;
     use crate::actions::git::config::GitRepoConfig;
     use assert_fs::TempDir;
+    use assert_fs::prelude::*;
     use git2::Signature;
     use std::fs;
 
@@ -649,6 +862,239 @@ mod tests {
         let outcomes = sync(&desired, &SyncOptions::default()).await.unwrap();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0], SyncOutcome::UpToDate { path: main_wt });
+    }
+
+    // ── #141: virtual checkout sync tests ──────────────────────────────
+
+    fn virtual_checkout_entry(target: PathBuf, source: PathBuf) -> DesiredEntry {
+        DesiredEntry {
+            target,
+            provenance: Provenance::Overlay {
+                overlay: "ov".to_string(),
+                source,
+            },
+            intent: MaterializationIntent::VirtualCheckout,
+            permissions: None,
+        }
+    }
+
+    async fn materialize_virtual_checkout(source_root: &std::path::Path, target: &std::path::Path) {
+        let repo = Repository::open(source_root).unwrap();
+        fs::create_dir_all(target).unwrap();
+        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
+        vc_git::checkout_subtree(&repo, &head_tree, target).unwrap();
+        let base_oid = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        vc_state::persist(
+            target,
+            crate::materialize::virtual_checkout::state::VirtualCheckoutRecord {
+                overlay: "ov".to_string(),
+                managed_path: PathBuf::new(),
+                base_oid,
+                created_at: 0,
+                last_commit_at: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_up_to_date_reports_up_to_date() {
+        let source_td = TempDir::new().unwrap();
+        source_td.child("a.txt").write_str("a").unwrap();
+        init_committed_repo(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        materialize_virtual_checkout(source_td.path(), target_td.path()).await;
+
+        let entry = virtual_checkout_entry(
+            target_td.path().to_path_buf(),
+            source_td.path().to_path_buf(),
+        );
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let outcomes = sync(&desired, &SyncOptions::default()).await.unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(
+            outcomes[0],
+            SyncOutcome::UpToDate {
+                path: target_td.path().to_path_buf()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_behind_fast_forwards_without_prompting() {
+        let source_td = TempDir::new().unwrap();
+        source_td.child("a.txt").write_str("a").unwrap();
+        let source_repo = init_committed_repo_ret(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        materialize_virtual_checkout(source_td.path(), target_td.path()).await;
+
+        fs::write(source_td.path().join("a.txt"), "advanced").unwrap();
+        commit_all(&source_repo, "advance");
+
+        let entry = virtual_checkout_entry(
+            target_td.path().to_path_buf(),
+            source_td.path().to_path_buf(),
+        );
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let outcomes = sync(&desired, &SyncOptions::default()).await.unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(
+            outcomes[0],
+            SyncOutcome::FastForwarded {
+                path: target_td.path().to_path_buf()
+            }
+        );
+        assert_eq!(
+            fs::read_to_string(target_td.path().join("a.txt")).unwrap(),
+            "advanced"
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_dry_run_behind_does_not_mutate() {
+        let source_td = TempDir::new().unwrap();
+        source_td.child("a.txt").write_str("a").unwrap();
+        let source_repo = init_committed_repo_ret(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        materialize_virtual_checkout(source_td.path(), target_td.path()).await;
+
+        fs::write(source_td.path().join("a.txt"), "advanced").unwrap();
+        commit_all(&source_repo, "advance");
+
+        let entry = virtual_checkout_entry(
+            target_td.path().to_path_buf(),
+            source_td.path().to_path_buf(),
+        );
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let opts = SyncOptions {
+            dry_run: true,
+            ..SyncOptions::default()
+        };
+        let outcomes = sync(&desired, &opts).await.unwrap();
+        assert_eq!(
+            outcomes[0],
+            SyncOutcome::FastForwarded {
+                path: target_td.path().to_path_buf()
+            }
+        );
+        // Reports what *would* happen without actually touching the target.
+        assert_eq!(
+            fs::read_to_string(target_td.path().join("a.txt")).unwrap(),
+            "a"
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_modified_with_no_prompt_is_blocked_and_untouched() {
+        let source_td = TempDir::new().unwrap();
+        source_td.child("a.txt").write_str("a").unwrap();
+        init_committed_repo(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        materialize_virtual_checkout(source_td.path(), target_td.path()).await;
+
+        fs::write(target_td.path().join("a.txt"), "local edit").unwrap();
+
+        let entry = virtual_checkout_entry(
+            target_td.path().to_path_buf(),
+            source_td.path().to_path_buf(),
+        );
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let opts = SyncOptions {
+            no_prompt: true,
+            ..SyncOptions::default()
+        };
+        let outcomes = sync(&desired, &opts).await.unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(outcomes[0], SyncOutcome::Blocked { .. }));
+        assert!(outcomes[0].needs_attention());
+        // Untouched: neither the target nor the source repository changed.
+        assert_eq!(
+            fs::read_to_string(target_td.path().join("a.txt")).unwrap(),
+            "local edit"
+        );
+        let source_repo = Repository::open(source_td.path()).unwrap();
+        assert_eq!(
+            source_repo
+                .head()
+                .unwrap()
+                .peel_to_commit()
+                .unwrap()
+                .parent_count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_push_only_disabled_reports_blocked_for_local_changes() {
+        let source_td = TempDir::new().unwrap();
+        source_td.child("a.txt").write_str("a").unwrap();
+        init_committed_repo(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        materialize_virtual_checkout(source_td.path(), target_td.path()).await;
+
+        fs::write(target_td.path().join("a.txt"), "local edit").unwrap();
+
+        let entry = virtual_checkout_entry(
+            target_td.path().to_path_buf(),
+            source_td.path().to_path_buf(),
+        );
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let opts = SyncOptions {
+            push: false,
+            ..SyncOptions::default()
+        };
+        let outcomes = sync(&desired, &opts).await.unwrap();
+        assert!(matches!(outcomes[0], SyncOutcome::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_conflicting_file_reports_conflict_without_mutating() {
+        let source_td = TempDir::new().unwrap();
+        source_td.child("a.txt").write_str("a").unwrap();
+        let source_repo = init_committed_repo_ret(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        materialize_virtual_checkout(source_td.path(), target_td.path()).await;
+
+        fs::write(target_td.path().join("a.txt"), "local edit").unwrap();
+        fs::write(source_td.path().join("a.txt"), "source edit").unwrap();
+        commit_all(&source_repo, "advance differently");
+
+        let entry = virtual_checkout_entry(
+            target_td.path().to_path_buf(),
+            source_td.path().to_path_buf(),
+        );
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let outcomes = sync(&desired, &SyncOptions::default()).await.unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(outcomes[0], SyncOutcome::Conflict { .. }));
+        assert!(outcomes[0].needs_attention());
+        // Neither side touched: still exactly the diverging content.
+        assert_eq!(
+            fs::read_to_string(target_td.path().join("a.txt")).unwrap(),
+            "local edit"
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_missing_is_blocked() {
+        let source_td = TempDir::new().unwrap();
+        source_td.child("a.txt").write_str("a").unwrap();
+        init_committed_repo(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        let missing_target = target_td.path().join("does-not-exist");
+
+        let entry = virtual_checkout_entry(missing_target, source_td.path().to_path_buf());
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let outcomes = sync(&desired, &SyncOptions::default()).await.unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(outcomes[0], SyncOutcome::Blocked { .. }));
     }
 
     // ── test-only helpers duplicated from `actions::git::sync`'s test

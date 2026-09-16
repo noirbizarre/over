@@ -22,6 +22,7 @@ Options:
       --continue     Re-attempt a sync after resolving conflicts manually
       --abort        Abort an in-progress merge left by a conflicted sync
   -n, --dry-run      Report what would happen without syncing
+      --no-prompt    Never prompt to commit a virtual checkout's local changes; report them as blocked instead
   -h, --help         Print help
 ```
 
@@ -75,7 +76,7 @@ known locally.
   merge back to the pre-merge `HEAD`.
 
 `over sync` persists a small, informational-only checkpoint under
-`$XDG_STATE_HOME/over` (overlay/checkout association, last synced commit
+$XDG_STATE_HOME/over` (overlay/checkout association, last synced commit
 and outcome). It is never read back to decide correctness — git's own
 repository state remains authoritative — so deleting it is always
 harmless.
@@ -83,3 +84,26 @@ harmless.
 See [ADR-014](../adr/014-bidirectional-checkout-synchronization.md) and
 [the roadmap](https://github.com/noirbizarre/over/issues/112) for the full
 design rationale.
+
+## Virtual checkouts (`materialization = "checkout"`)
+
+A [virtual checkout](../adr/022-virtual-checkout-materialization.md) — no
+`.git` at the target, backed by the overlay's own source repository — is
+reconciled by the same `over sync` command, but entirely **locally**: no
+network I/O, since the "source" is already the repository `over` reads the
+overlay from.
+
+- Nothing changed anywhere -> up to date.
+- Only the source repository moved (nothing local to lose) -> the target
+  is refreshed automatically (`--pull-only`/`--push-only` still apply:
+  gated on the pull direction).
+- Only the target has local edits -> asks for confirmation (and a commit
+  message) before committing them into the source repository — the same
+  as running `over commit` yourself. Declining, or passing `--no-prompt`,
+  leaves both sides untouched and reports the checkout as blocked.
+- The *same* file changed on both sides, to different content -> reported
+  as a conflict, never auto-resolved; resolve manually (edit the target
+  and/or the source repository directly), then re-run.
+
+`--dry-run` never prompts and never mutates anything for a virtual
+checkout either, matching its root-`Checkout` behavior above.

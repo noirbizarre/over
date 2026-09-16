@@ -5,6 +5,7 @@
 
 pub mod actions;
 pub mod cli;
+pub mod commit;
 pub mod desired;
 pub mod diff;
 pub mod exec;

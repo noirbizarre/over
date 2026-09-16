@@ -41,7 +41,13 @@ labelling an entry as needing attention, it shows *what* differs —
   merge mechanics themselves are out of scope — see #110). A declared
   (non-root) `git` entry instead only shows a `Conflict` when its declared
   configuration itself has drifted — see
-  [ADR-021](../adr/021-declared-git-repositories-report-provisioning-not-content-status.md).
+  [ADR-021](../adr/021-declared-git-repositories-report-provisioning-not-content-status.md);
+- for a **virtual checkout** (`materialization = "checkout"`, no `.git` at
+  the target — see [ADR-022](../adr/022-virtual-checkout-materialization.md)),
+  the same aggregate status `over status` reports, plus a real line-level
+  content diff for each modified file (base content vs. current on-disk
+  content) and a plain added/deleted marker for the rest — computed
+  against the checkout's recorded base revision, not a real git index.
 
 Without `--verbose`, only entries with something to show are printed; pass
 `--verbose` to also print unchanged entries. See

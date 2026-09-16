@@ -51,6 +51,18 @@ pub enum MaterializationIntent {
     /// separate, explicit operation (`over sync`, `crate::sync`), not part
     /// of materialization.
     Checkout,
+    /// A subtree materialized as a virtual checkout (#141,
+    /// `MaterializationKind::Checkout` in `overlays::rules`): ordinary,
+    /// directly editable files at the target, with **no** `.git` there —
+    /// backed by the overlay's own source repository instead of a
+    /// separately declared/cloned one. Unrelated to [`Self::Checkout`]
+    /// above (see its doc and ADR-022 for the distinction). Materialized by
+    /// `crate::materialize::virtual_checkout::VirtualCheckoutMaterializer`;
+    /// content reconciliation (`over status`/`over diff`/`over commit`/
+    /// `over sync`) is computed by comparing on-disk blob hashes against
+    /// the overlay's own repository, never via a real git index at the
+    /// target.
+    VirtualCheckout,
     /// A managed block injected into an existing (possibly foreign) file,
     /// delimited by marker lines unique to `marker` (#66). The first intent
     /// to ever produce [`EntryKind::File`]: unlike every other intent, the
@@ -65,9 +77,9 @@ impl MaterializationIntent {
     /// The [`EntryKind`] this intent results in on disk.
     pub fn kind(&self) -> EntryKind {
         match self {
-            MaterializationIntent::Directory | MaterializationIntent::Checkout => {
-                EntryKind::Directory
-            }
+            MaterializationIntent::Directory
+            | MaterializationIntent::Checkout
+            | MaterializationIntent::VirtualCheckout => EntryKind::Directory,
             MaterializationIntent::SymlinkFile { .. }
             | MaterializationIntent::SymlinkDirectory { .. } => EntryKind::Symlink,
             MaterializationIntent::PartialFile { .. } => EntryKind::File,
@@ -150,6 +162,14 @@ mod tests {
     #[test]
     fn checkout_intent_kind_is_directory() {
         assert_eq!(MaterializationIntent::Checkout.kind(), EntryKind::Directory);
+    }
+
+    #[test]
+    fn virtual_checkout_intent_kind_is_directory() {
+        assert_eq!(
+            MaterializationIntent::VirtualCheckout.kind(),
+            EntryKind::Directory
+        );
     }
 
     #[test]

@@ -36,7 +36,9 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 
 use crate::actions::partial::{self, BlockState};
-use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent};
+use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent, Provenance};
+use crate::materialize::virtual_checkout::git as vc_git;
+use crate::materialize::virtual_checkout::state as vc_state;
 use crate::plan::actual;
 use crate::plan::{ActualState, Operation, Plan};
 use crate::status::{self, Status};
@@ -67,6 +69,55 @@ pub enum Change {
     /// merge-rebase-cherry-pick in progress. Reuses [`status::Status`]
     /// verbatim: commit/merge mechanics are out of scope here (#110).
     Checkout(Status),
+    /// Virtual checkout state (#141): the same aggregate [`status::Status`]
+    /// `over status` reports, plus the specific file-level differences
+    /// underneath it (each with a content diff when the file was modified,
+    /// not just added/deleted) — the "expose the relevant differences"
+    /// #141 asks for, computed against the checkout's recorded base
+    /// content rather than a real git index.
+    VirtualCheckout {
+        status: Status,
+        files: Vec<VirtualCheckoutFileChange>,
+    },
+}
+
+/// One file-level difference under a virtual checkout, paired with a
+/// content diff when meaningful (mirrors [`FileChangeKind`](vc_git::FileChangeKind),
+/// re-exposed here since that type is crate-private plumbing).
+#[derive(Debug, Clone)]
+pub struct VirtualCheckoutFileChange {
+    pub path: std::path::PathBuf,
+    pub kind: VirtualCheckoutFileKind,
+    /// `Some` for [`VirtualCheckoutFileKind::Modified`] (base content vs.
+    /// on-disk content); `None` for `Added`/`Deleted`, where there's no
+    /// "other side" to line-diff against.
+    pub diff: Option<ContentDiff>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirtualCheckoutFileKind {
+    Added,
+    Modified,
+    Deleted,
+}
+
+impl fmt::Display for VirtualCheckoutFileChange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let path = self.path.display();
+        match self.kind {
+            VirtualCheckoutFileKind::Added => write!(f, "  {} added: {path}", emojis::CHECKMARK),
+            VirtualCheckoutFileKind::Deleted => {
+                write!(f, "  {} deleted: {path}", emojis::CROSSMARK)
+            }
+            VirtualCheckoutFileKind::Modified => {
+                writeln!(f, "  {} modified: {path}", emojis::WARNING)?;
+                if let Some(diff) = &self.diff {
+                    write!(f, "{diff}")?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 /// One [`DesiredEntry`] paired with what differs about it.
@@ -138,6 +189,20 @@ impl fmt::Display for DiffEntry {
                 };
                 write!(f, "{entry_status}")
             }
+            Change::VirtualCheckout { status, files } => {
+                let entry_status = status::EntryStatus {
+                    entry: self.entry.clone(),
+                    status: status.clone(),
+                };
+                writeln!(f, "{entry_status}")?;
+                for (i, file) in files.iter().enumerate() {
+                    if i > 0 {
+                        writeln!(f)?;
+                    }
+                    write!(f, "{file}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -158,6 +223,8 @@ impl Report {
         for step in plan.steps() {
             let change = if matches!(step.entry.intent, MaterializationIntent::Checkout) {
                 classify_checkout(&step.entry)?
+            } else if matches!(step.entry.intent, MaterializationIntent::VirtualCheckout) {
+                classify_virtual_checkout(&step.entry)?
             } else {
                 classify_fs(&step.entry, &step.operation)?
             };
@@ -292,6 +359,101 @@ fn classify_checkout(entry: &DesiredEntry) -> Result<Change> {
         Status::Broken => Change::Broken,
         other => Change::Checkout(other),
     })
+}
+
+/// Classify a `MaterializationIntent::VirtualCheckout` entry (#141):
+/// reuses `status::virtual_checkout::inspect` for the aggregate status,
+/// then — when there's something worth showing — builds a content diff
+/// per modified file against the checkout's recorded base content.
+fn classify_virtual_checkout(entry: &DesiredEntry) -> Result<Change> {
+    let status = status::virtual_checkout::inspect(entry)?;
+    match status {
+        Status::Applied => return Ok(Change::Unchanged),
+        Status::Missing => return Ok(Change::Missing),
+        Status::Broken => return Ok(Change::Broken),
+        _ => {}
+    }
+
+    let file_changes = status::virtual_checkout::file_changes(entry)?;
+    let files = if file_changes.is_empty() {
+        Vec::new()
+    } else {
+        build_virtual_checkout_file_diffs(entry, &file_changes)?
+    };
+    Ok(Change::VirtualCheckout { status, files })
+}
+
+/// Attach a [`ContentDiff`] to each modified file change (base blob
+/// content vs. current on-disk content) — added/deleted files have no
+/// "other side" to line-diff against, so their diff stays `None`.
+fn build_virtual_checkout_file_diffs(
+    entry: &DesiredEntry,
+    file_changes: &[vc_git::FileChange],
+) -> Result<Vec<VirtualCheckoutFileChange>> {
+    let Provenance::Overlay { source, .. } = &entry.provenance else {
+        unreachable!(
+            "VirtualCheckout entries only ever carry Provenance::Overlay \
+             (see desired::tree::{{collect_own_entries,walk_overlay_tree}})"
+        );
+    };
+    let record = vc_state::record_for_blocking(&entry.target)?;
+
+    // Only needed for `Modified` files (base blob content); resolved
+    // lazily so a checkout with only added/deleted files never has to
+    // discover the source repository at all.
+    let mut base_blobs: Option<(
+        git2::Repository,
+        std::collections::BTreeMap<std::path::PathBuf, git2::Oid>,
+    )> = None;
+
+    let mut result = Vec::with_capacity(file_changes.len());
+    for change in file_changes {
+        let kind = match change.kind {
+            vc_git::FileChangeKind::Added => VirtualCheckoutFileKind::Added,
+            vc_git::FileChangeKind::Modified => VirtualCheckoutFileKind::Modified,
+            vc_git::FileChangeKind::Deleted => VirtualCheckoutFileKind::Deleted,
+        };
+
+        let diff = if change.kind == vc_git::FileChangeKind::Modified {
+            if base_blobs.is_none() {
+                let record = record
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("no recorded virtual checkout association"))?;
+                let (repo, managed_path) = vc_git::discover_source(source)?;
+                let blobs = {
+                    let tree = vc_git::base_tree(&repo, Some(&record.base_oid))?;
+                    let subtree = vc_git::managed_subtree(&repo, &tree, &managed_path)?;
+                    vc_git::tracked_blobs(&subtree)?
+                };
+                base_blobs = Some((repo, blobs));
+            }
+            let (repo, blobs) = base_blobs.as_ref().expect("just populated above");
+            match blobs.get(&change.path) {
+                Some(oid) => {
+                    let base_content = vc_git::read_blob(repo, *oid)?;
+                    let on_disk = entry.target.join(&change.path);
+                    let actual = fs::read(&on_disk)
+                        .with_context(|| format!("failed to read {}", on_disk.display()))?;
+                    Some(
+                        match (String::from_utf8(base_content), String::from_utf8(actual)) {
+                            (Ok(old), Ok(new)) => ContentDiff::from_texts(&old, &new),
+                            _ => ContentDiff::binary(),
+                        },
+                    )
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+
+        result.push(VirtualCheckoutFileChange {
+            path: change.path.clone(),
+            kind,
+            diff,
+        });
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -913,6 +1075,132 @@ mod tests {
 
         let change = classify_checkout(&entry).unwrap();
         assert!(matches!(change, Change::Unchanged));
+    }
+
+    fn init_committed_repo(path: &std::path::Path) -> git2::Repository {
+        let repo = git2::Repository::init(path).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+        drop(cfg);
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        {
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+        }
+        repo
+    }
+
+    fn virtual_checkout_entry(
+        target: std::path::PathBuf,
+        source: std::path::PathBuf,
+    ) -> DesiredEntry {
+        DesiredEntry {
+            target,
+            provenance: crate::desired::Provenance::Overlay {
+                overlay: "ov".to_string(),
+                source,
+            },
+            intent: MaterializationIntent::VirtualCheckout,
+            permissions: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_clean_reports_unchanged() {
+        let td = TempDir::new().unwrap();
+        td.child("a.txt").write_str("a").unwrap();
+        let repo = init_committed_repo(td.path());
+        let target = td.child("target");
+        fs::create_dir_all(target.path()).unwrap();
+        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
+        crate::materialize::virtual_checkout::git::checkout_subtree(
+            &repo,
+            &head_tree,
+            target.path(),
+        )
+        .unwrap();
+        let base_oid = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        crate::materialize::virtual_checkout::state::persist(
+            target.path(),
+            crate::materialize::virtual_checkout::state::VirtualCheckoutRecord {
+                overlay: "ov".to_string(),
+                managed_path: std::path::PathBuf::new(),
+                base_oid,
+                created_at: 0,
+                last_commit_at: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let entry = virtual_checkout_entry(target.path().to_path_buf(), td.path().to_path_buf());
+        let change = classify_virtual_checkout(&entry).unwrap();
+        assert!(matches!(change, Change::Unchanged));
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_modified_file_produces_content_diff() {
+        let td = TempDir::new().unwrap();
+        td.child("a.txt").write_str("original\n").unwrap();
+        let repo = init_committed_repo(td.path());
+        let target = td.child("target");
+        fs::create_dir_all(target.path()).unwrap();
+        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
+        crate::materialize::virtual_checkout::git::checkout_subtree(
+            &repo,
+            &head_tree,
+            target.path(),
+        )
+        .unwrap();
+        let base_oid = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        crate::materialize::virtual_checkout::state::persist(
+            target.path(),
+            crate::materialize::virtual_checkout::state::VirtualCheckoutRecord {
+                overlay: "ov".to_string(),
+                managed_path: std::path::PathBuf::new(),
+                base_oid,
+                created_at: 0,
+                last_commit_at: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        fs::write(target.path().join("a.txt"), "edited locally\n").unwrap();
+
+        let entry = virtual_checkout_entry(target.path().to_path_buf(), td.path().to_path_buf());
+        let change = classify_virtual_checkout(&entry).unwrap();
+        match change {
+            Change::VirtualCheckout { status, files } => {
+                assert_eq!(status, Status::Modified);
+                assert_eq!(files.len(), 1);
+                assert_eq!(files[0].kind, VirtualCheckoutFileKind::Modified);
+                let diff_text = format!("{}", files[0].diff.as_ref().unwrap());
+                assert!(diff_text.contains("original"));
+                assert!(diff_text.contains("edited locally"));
+            }
+            other => panic!("expected VirtualCheckout, got {other:?}"),
+        }
     }
 
     #[test]

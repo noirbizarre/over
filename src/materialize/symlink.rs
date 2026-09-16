@@ -34,7 +34,9 @@ impl Materializer for SymlinkMaterializer {
     fn handles(&self, intent: &MaterializationIntent) -> bool {
         !matches!(
             intent,
-            MaterializationIntent::Checkout | MaterializationIntent::PartialFile { .. }
+            MaterializationIntent::Checkout
+                | MaterializationIntent::VirtualCheckout
+                | MaterializationIntent::PartialFile { .. }
         )
     }
 
@@ -115,6 +117,9 @@ impl Materializer for SymlinkMaterializer {
                         if let Some(op) = checkout_migration(entry)? {
                             return Ok(op);
                         }
+                        if let Some(op) = virtual_checkout_migration(entry)? {
+                            return Ok(op);
+                        }
                         if directory_is_symlink_mirror(&entry.target, source)? {
                             return Ok(Operation::Migrate {
                                 from: MaterializationIntent::Directory,
@@ -129,7 +134,9 @@ impl Materializer for SymlinkMaterializer {
                     other => Ok(Operation::Conflict { current: other }),
                 }
             }
-            MaterializationIntent::Checkout | MaterializationIntent::PartialFile { .. } => {
+            MaterializationIntent::Checkout
+            | MaterializationIntent::VirtualCheckout
+            | MaterializationIntent::PartialFile { .. } => {
                 unreachable!("MaterializerRegistry only calls classify() after handles() passed")
             }
         }
@@ -198,6 +205,35 @@ fn checkout_migration(entry: &DesiredEntry) -> Result<Option<Operation>> {
     })
 }
 
+/// `entry.target` already exists as a real directory. If it's actually a
+/// virtual checkout (#141) — has a recorded XDG association — return the
+/// [`Operation::Migrate`] reconciling it to `entry.intent`: safe
+/// (`blocked: None`) only when fully clean (`Status::Applied`, no local
+/// edits and not behind the source repository), blocked otherwise. Mirrors
+/// [`checkout_migration`] exactly, for the same reason: never silently
+/// discard uncommitted virtual-checkout content, never route it through
+/// force/no_prompt/absorb-diff. `None` when `entry.target` isn't a
+/// recognized virtual checkout at all.
+fn virtual_checkout_migration(entry: &DesiredEntry) -> Result<Option<Operation>> {
+    use crate::materialize::virtual_checkout::state;
+
+    if state::record_for_blocking(&entry.target)?.is_none() {
+        return Ok(None);
+    }
+    Ok(match status::virtual_checkout::inspect(entry)? {
+        Status::Applied => Some(Operation::Migrate {
+            from: MaterializationIntent::VirtualCheckout,
+            to: entry.intent.clone(),
+            blocked: None,
+        }),
+        unsafe_status => Some(Operation::Migrate {
+            from: MaterializationIntent::VirtualCheckout,
+            to: entry.intent.clone(),
+            blocked: Some(status::describe(&unsafe_status)),
+        }),
+    })
+}
+
 /// Recursively confirm every entry under `target` is exactly the symlink
 /// the overlay would itself create for it under `source` — a directory
 /// "fully owned" by the overlay, nothing foreign, nothing real. Lets a
@@ -257,6 +293,23 @@ async fn materialize_migration(
             }
         }
     }
+    if matches!(from, MaterializationIntent::VirtualCheckout) {
+        match status::virtual_checkout::inspect(entry)? {
+            Status::Applied => {}
+            other => {
+                return Err(anyhow!(
+                    "refusing to migrate '{}': virtual checkout {} since it was classified — rerun to re-evaluate",
+                    entry.target.display(),
+                    status::describe(&other),
+                ));
+            }
+        }
+        // The target is about to be removed and replaced by a symlink —
+        // the XDG association would otherwise dangle (and could
+        // misattribute a future virtual checkout re-materialized at the
+        // same path to this stale `base_oid`).
+        crate::materialize::virtual_checkout::state::remove(&entry.target).await?;
+    }
 
     let target = entry.target.clone();
     spawn_blocking(move || remove_target(&target)).await??;
@@ -307,8 +360,12 @@ fn build_action(ctx: Ctx, entry: &DesiredEntry) -> Box<dyn Action> {
                 ))
             }
         }
-        MaterializationIntent::Checkout | MaterializationIntent::PartialFile { .. } => {
-            unreachable!("SymlinkMaterializer::handles filters out Checkout/PartialFile entries")
+        MaterializationIntent::Checkout
+        | MaterializationIntent::VirtualCheckout
+        | MaterializationIntent::PartialFile { .. } => {
+            unreachable!(
+                "SymlinkMaterializer::handles filters out Checkout/VirtualCheckout/PartialFile entries"
+            )
         }
     }
 }

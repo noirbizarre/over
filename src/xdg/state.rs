@@ -94,20 +94,32 @@ where
     pub async fn load(&self) -> Result<T> {
         let path = self.path.clone();
         let lock_path = self.lock_path();
-        spawn_blocking(move || {
-            // A shared lock is defense-in-depth beyond the atomic-rename
-            // guarantee (helps on filesystems without atomic rename, e.g.
-            // some network filesystems) and serializes with concurrent
-            // `update()`/`save()` calls.
-            let lock_file = Self::open_lock_file(&lock_path)?;
-            lock_file
-                .lock_shared()
-                .with_context(|| format!("failed to lock {}", lock_path.display()))?;
-            let state = Self::read(&path)?;
-            lock_file.unlock().ok();
-            Ok(state)
-        })
-        .await?
+        spawn_blocking(move || Self::load_blocking_at(&path, &lock_path)).await?
+    }
+
+    /// Synchronous equivalent of [`Self::load`], for callers that can't be
+    /// `async` (e.g. [`crate::materialize::Materializer::classify`], which
+    /// is deliberately sync across every backend). Performs the exact same
+    /// locked read, just without the `spawn_blocking` wrapper — acceptable
+    /// here since it's a small, local file read, and `classify()`
+    /// implementations already do blocking I/O directly (filesystem
+    /// `symlink_metadata`, `git2` calls) for the same reason.
+    pub fn load_blocking(&self) -> Result<T> {
+        Self::load_blocking_at(&self.path, &self.lock_path())
+    }
+
+    fn load_blocking_at(path: &std::path::Path, lock_path: &std::path::Path) -> Result<T> {
+        // A shared lock is defense-in-depth beyond the atomic-rename
+        // guarantee (helps on filesystems without atomic rename, e.g.
+        // some network filesystems) and serializes with concurrent
+        // `update()`/`save()` calls.
+        let lock_file = Self::open_lock_file(lock_path)?;
+        lock_file
+            .lock_shared()
+            .with_context(|| format!("failed to lock {}", lock_path.display()))?;
+        let state = Self::read(path)?;
+        lock_file.unlock().ok();
+        Ok(state)
     }
 
     /// Whole-document overwrite, written atomically.
@@ -266,6 +278,21 @@ mod tests {
         let value = state_file.load().await.unwrap();
 
         assert_eq!(value, Counter::default());
+    }
+
+    #[test]
+    fn load_blocking_returns_default_when_file_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_file: StateFile<Counter> = StateFile::new(tmp.path().join("state.toml"));
+        assert_eq!(state_file.load_blocking().unwrap(), Counter::default());
+    }
+
+    #[tokio::test]
+    async fn load_blocking_sees_what_async_save_wrote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_file: StateFile<Counter> = StateFile::new(tmp.path().join("state.toml"));
+        state_file.save(Counter { count: 7 }).await.unwrap();
+        assert_eq!(state_file.load_blocking().unwrap(), Counter { count: 7 });
     }
 
     #[tokio::test]

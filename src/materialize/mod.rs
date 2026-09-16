@@ -18,15 +18,22 @@
 //! Materializer::materialize   — concrete filesystem/Git changes
 //! ```
 //!
-//! [`MaterializerRegistry`] registers three backends: [`PartialFileMaterializer`]
+//! [`MaterializerRegistry`] registers four backends: [`PartialFileMaterializer`]
 //! (#66, [`MaterializationIntent::PartialFile`](crate::desired::MaterializationIntent::PartialFile)),
-//! [`SymlinkMaterializer`] (every remaining intent except `Checkout`), and
-//! [`CheckoutMaterializer`] (#110), which owns
+//! [`SymlinkMaterializer`] (every remaining intent except `Checkout`/
+//! `VirtualCheckout`), [`CheckoutMaterializer`] (#110), which owns
 //! [`MaterializationIntent::Checkout`](crate::desired::MaterializationIntent::Checkout) —
 //! ensuring a git checkout/worktree is present and configured, exactly like
-//! `actions::git::clone_repositories` already does. It does *not* implement
-//! content-level bidirectional sync (fetch/merge/push): that's `over sync`
-//! (`crate::sync`), a separate, explicit operation — see
+//! `actions::git::clone_repositories` already does — and
+//! [`VirtualCheckoutMaterializer`] (#141), which owns
+//! [`MaterializationIntent::VirtualCheckout`](crate::desired::MaterializationIntent::VirtualCheckout):
+//! an overlay's own tracked files materialized with no `.git` at the
+//! target, backed by the overlay's own source repository (see
+//! [`virtual_checkout`]'s module doc and ADR-022 for how this differs from
+//! `Checkout`). Neither `Checkout` nor `VirtualCheckout` implements
+//! content-level bidirectional sync (fetch/merge/push, or local commit)
+//! here: that's `over sync`/`over commit` (`crate::sync`, `crate::commit`),
+//! separate, explicit operations — see
 //! [ADR-014](https://github.com/noirbizarre/over/blob/main/docs/adr/014-bidirectional-checkout-synchronization.md).
 //! #113's rule-migration semantics are a later extension of the same
 //! registry.
@@ -34,6 +41,7 @@
 mod checkout;
 mod partial;
 mod symlink;
+pub mod virtual_checkout;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -45,6 +53,7 @@ use crate::plan::{Operation, PlanStep};
 pub use checkout::CheckoutMaterializer;
 pub use partial::PartialFileMaterializer;
 pub use symlink::SymlinkMaterializer;
+pub use virtual_checkout::VirtualCheckoutMaterializer;
 
 /// A materialization backend: owns both read-only actual-state inspection
 /// and execution for the [`MaterializationIntent`] variants it
@@ -88,6 +97,7 @@ impl Default for MaterializerRegistry {
                 Box::new(PartialFileMaterializer),
                 Box::new(SymlinkMaterializer),
                 Box::new(CheckoutMaterializer),
+                Box::new(VirtualCheckoutMaterializer),
             ],
         }
     }

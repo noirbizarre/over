@@ -3,14 +3,21 @@
 //! encountered while walking an overlay's tree (#126, part of #113).
 //!
 //! This module only decides *whether* a directory should be recursed into
-//! (and its files symlinked individually) or symlinked as a single unit —
-//! it has no notion of `source`/`link_type`/`Checkout`, which live on
+//! (and its files symlinked individually), symlinked as a single unit, or
+//! materialized as a virtual checkout — it has no notion of
+//! `source`/`link_type`, which live on
 //! [`crate::desired::MaterializationIntent`] once [`crate::desired::tree`]
-//! has resolved concrete filesystem paths. `checkout` is deliberately not a
-//! valid `materialization` value here: that intent stays driven by
-//! `overlay.git` (see ADR-017). Assigning an arbitrary subtree to a
-//! checkout, or migrating an already-symlinked path to one, is rule-change
-//! *migration* territory, tracked separately (#129).
+//! has resolved concrete filesystem paths.
+//!
+//! `MaterializationKind::Checkout` (#141) is unrelated to `overlay.git`'s
+//! `MaterializationIntent::Checkout` (a real `git clone` of a declared
+//! repository, ADR-014): this rule value drives
+//! [`crate::desired::MaterializationIntent::VirtualCheckout`] instead — an
+//! overlay's own tracked files materialized as ordinary files with no
+//! `.git` at the target, backed by the overlay's own source repository. See
+//! ADR-022 for the full distinction. ADR-017's original exclusion of
+//! `checkout` from this enum was about the `overlay.git` concept only, not
+//! a permanent ban on ever adding a value with that name.
 
 use std::fmt;
 use std::path::Path;
@@ -33,6 +40,11 @@ pub enum MaterializationKind {
     /// Symlink the directory as a single unit; its contents are not
     /// separately enumerated (equivalent to a `link_dirs` match).
     SymlinkDirectory,
+    /// Materialize the directory as a virtual checkout (#141): ordinary,
+    /// directly editable files with no `.git` at the target, backed by the
+    /// overlay's own source repository. See the module doc for how this
+    /// differs from `overlay.git`'s unrelated `Checkout` concept.
+    Checkout,
 }
 
 impl fmt::Display for MaterializationKind {
@@ -40,6 +52,7 @@ impl fmt::Display for MaterializationKind {
         match self {
             MaterializationKind::Symlink => write!(f, "symlink"),
             MaterializationKind::SymlinkDirectory => write!(f, "symlink-directory"),
+            MaterializationKind::Checkout => write!(f, "checkout"),
         }
     }
 }
@@ -74,7 +87,15 @@ impl MaterializationRule {
     /// Whether `rel_path` matches this rule's `path` glob. A malformed
     /// glob never matches — `over lint` is where invalid patterns are
     /// reported, not a panic/error here (mirrors `Overlay::is_excluded`).
+    ///
+    /// `path = "."` is a special case matching the overlay's own root
+    /// (`rel_path == ""`, #141's whole-overlay virtual checkout case) —
+    /// globs can't otherwise express "the empty path", so this is the
+    /// documented convention for a root-only override.
     fn matches(&self, rel_path: &Path) -> bool {
+        if rel_path.as_os_str().is_empty() {
+            return self.path == ".";
+        }
         GlobBuilder::new(&self.path)
             .literal_separator(true)
             .build()
@@ -168,6 +189,7 @@ mod tests {
     #[rstest]
     #[case(MaterializationKind::Symlink, "symlink")]
     #[case(MaterializationKind::SymlinkDirectory, "symlink-directory")]
+    #[case(MaterializationKind::Checkout, "checkout")]
     fn display_matches_the_kebab_case_config_value(
         #[case] kind: MaterializationKind,
         #[case] expected: &str,
@@ -254,6 +276,52 @@ materialization = "symlink-directory"
         );
         assert_eq!(
             resolve(&overlay, Path::new(".config/other")),
+            MaterializationKind::Symlink
+        );
+    }
+
+    #[rstest]
+    fn a_rule_can_resolve_to_checkout() {
+        let overlay = setup_overlay(
+            r#"
+target = "~"
+[[rules]]
+path = "vault"
+materialization = "checkout"
+"#,
+        );
+        assert_eq!(
+            resolve(&overlay, Path::new("vault")),
+            MaterializationKind::Checkout
+        );
+    }
+
+    #[rstest]
+    fn defaults_can_resolve_the_overlay_root_itself_to_checkout() {
+        let overlay = setup_overlay("target = \"~\"\n[defaults]\nmaterialization = \"checkout\"");
+        assert_eq!(
+            resolve(&overlay, Path::new("")),
+            MaterializationKind::Checkout
+        );
+    }
+
+    #[rstest]
+    fn a_dot_path_rule_matches_only_the_overlay_root() {
+        let overlay = setup_overlay(
+            r#"
+target = "~"
+[[rules]]
+path = "."
+materialization = "checkout"
+"#,
+        );
+        assert_eq!(
+            resolve(&overlay, Path::new("")),
+            MaterializationKind::Checkout
+        );
+        // A root-only rule must not leak into subdirectories.
+        assert_eq!(
+            resolve(&overlay, Path::new("sub")),
             MaterializationKind::Symlink
         );
     }

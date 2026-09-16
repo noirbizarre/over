@@ -68,6 +68,7 @@ fn intent_label(intent: &MaterializationIntent) -> &'static str {
         MaterializationIntent::SymlinkFile { .. } => "symlink",
         MaterializationIntent::SymlinkDirectory { .. } => "directory symlink",
         MaterializationIntent::Checkout => "checkout",
+        MaterializationIntent::VirtualCheckout => "virtual checkout",
         MaterializationIntent::PartialFile { .. } => "partial file",
     }
 }
@@ -167,6 +168,35 @@ impl fmt::Display for PlanStep {
             // resolution) — unreachable in practice, but a clear fallback
             // beats a silently wrong line.
             (MaterializationIntent::Checkout, Operation::Conflict { current }) => write!(
+                f,
+                "{} {} {} ({})",
+                emojis::WARNING,
+                style::yellow("conflict:"),
+                target,
+                current,
+            ),
+            (MaterializationIntent::VirtualCheckout, Operation::Create) => write!(
+                f,
+                "{} {} {}",
+                emojis::THREAD,
+                style::white("checkout:"),
+                target,
+            ),
+            (MaterializationIntent::VirtualCheckout, Operation::Noop) => write!(
+                f,
+                "{} {} {} ({})",
+                emojis::CHECKMARK,
+                style::white("checkout:"),
+                target,
+                style::white("present (use `over status`/`over sync` for details)"),
+            ),
+            // `VirtualCheckoutMaterializer::classify` never returns
+            // `Conflict` for a *known* virtual checkout (dirty/behind/
+            // conflict states are surfaced by `over status`/`over diff`/
+            // `over sync` instead) — only for genuinely foreign content at
+            // the target with no recorded association. Kept for
+            // completeness, same reasoning as the `Checkout` arm above.
+            (MaterializationIntent::VirtualCheckout, Operation::Conflict { current }) => write!(
                 f,
                 "{} {} {} ({})",
                 emojis::WARNING,

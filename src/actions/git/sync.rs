@@ -182,14 +182,16 @@ pub(crate) fn push_branch(repo: &Repository, branch: &str) -> Result<()> {
     Ok(())
 }
 
-/// The signature used for merge commits `over sync` creates. Prefers the
-/// checkout's own configured `user.name`/`user.email` (`repo.signature()`,
-/// which fails if neither is set) so authorship matches what the user
-/// would get from a manual `git merge`; falls back to an `over`-authored
-/// identity rather than erroring, since refusing to sync over a missing
-/// git identity would be a surprising, easily-hit failure mode for a tool
-/// managing the checkout on the user's behalf.
-fn signature(repo: &Repository) -> Result<Signature<'static>> {
+/// The signature used for merge commits `over sync` creates (and, via
+/// `crate::commit`, `over commit`'s virtual-checkout commits — #141).
+/// Prefers the checkout's own configured `user.name`/`user.email`
+/// (`repo.signature()`, which fails if neither is set) so authorship
+/// matches what the user would get from a manual `git merge`/`git commit`;
+/// falls back to an `over`-authored identity rather than erroring, since
+/// refusing to act over a missing git identity would be a surprising,
+/// easily-hit failure mode for a tool managing the checkout on the user's
+/// behalf.
+pub(crate) fn signature(repo: &Repository) -> Result<Signature<'static>> {
     match repo.signature() {
         Ok(sig) => Ok(sig),
         Err(_) => Signature::now("over", "over@localhost")
