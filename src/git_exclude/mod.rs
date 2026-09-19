@@ -13,8 +13,10 @@
 //!
 //! Reconciliation always recomputes the expected block content from
 //! scratch from the live `DesiredTree` — no separate state file — matching
-//! `unapply`'s "never trust persisted state" philosophy. Removing exclude
-//! entries on `over unapply`, and `over status` diagnostics, are tracked
+//! `unapply`'s "never trust persisted state" philosophy. [`unreconcile`]
+//! (#147) covers the reverse: unconditionally dropping an overlay's whole
+//! block on `over unapply`, regardless of which individual entries were
+//! actually removed from disk. `over status` diagnostics are tracked
 //! separately (out of scope here).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -186,16 +188,23 @@ fn to_gitignore_pattern(relative: &Path) -> String {
     format!("/{joined}")
 }
 
-/// Reconcile `.git/info/exclude` blocks for `targets`, one block per
-/// (enclosing repository, overlay) pair — so multiple overlays targeting
-/// the same repository each own an independent block, and reconciling one
-/// never touches another's.
-pub fn reconcile(targets: &[ManagedTarget]) -> Result<ExcludeReport> {
-    let mut report = ExcludeReport::default();
+/// Discovered repository handles, cached by `.git` dir identity, alongside
+/// the (repo identity, overlay) -> targets groups derived from them. See
+/// [`discover_groups`].
+type DiscoveredGroups = (
+    HashMap<PathBuf, Repository>,
+    BTreeMap<(PathBuf, String), BTreeSet<PathBuf>>,
+);
 
-    // git2::Repository isn't Clone — cache discovered handles by their
-    // `.git` dir identity so a repo shared by multiple targets/overlays is
-    // only ever discovered once.
+/// Discover the enclosing repository for each target and group targets by
+/// `(repo identity, overlay)` — shared by [`reconcile`] and [`unreconcile`]
+/// so both use identical discovery/grouping semantics; only what happens
+/// per group differs.
+///
+/// git2::Repository isn't Clone — discovered handles are cached by their
+/// `.git` dir identity so a repo shared by multiple targets/overlays is
+/// only ever discovered once.
+fn discover_groups(targets: &[ManagedTarget]) -> Result<DiscoveredGroups> {
     let mut repos: HashMap<PathBuf, Repository> = HashMap::new();
     let mut groups: BTreeMap<(PathBuf, String), BTreeSet<PathBuf>> = BTreeMap::new();
 
@@ -211,11 +220,53 @@ pub fn reconcile(targets: &[ManagedTarget]) -> Result<ExcludeReport> {
         repos.entry(key).or_insert(repo);
     }
 
+    Ok((repos, groups))
+}
+
+/// Reconcile `.git/info/exclude` blocks for `targets`, one block per
+/// (enclosing repository, overlay) pair — so multiple overlays targeting
+/// the same repository each own an independent block, and reconciling one
+/// never touches another's.
+pub fn reconcile(targets: &[ManagedTarget]) -> Result<ExcludeReport> {
+    let mut report = ExcludeReport::default();
+    let (repos, groups) = discover_groups(targets)?;
+
     for ((repo_key, overlay), abs_targets) in &groups {
         let repo = repos
             .get(repo_key)
             .expect("every group key was inserted alongside its repo handle above");
         reconcile_group(repo, overlay, abs_targets, &mut report)?;
+    }
+
+    Ok(report)
+}
+
+/// Remove this overlay's exclude block from every repository its (now
+/// unapplied) targets used to belong to — `over unapply` (#147).
+///
+/// Unlike [`reconcile`], this never computes expected content: unapply
+/// treats an entry as no longer "managed" once unapply has run over it,
+/// regardless of whether it was actually removed from disk
+/// (`Outcome::NotOwned`/`CheckoutNotClean` leave files in place) — so the
+/// whole block is dropped unconditionally per (repo, overlay) group.
+/// `partial::remove_block` is already a no-op if the marker is absent, so
+/// calling this twice, or on an overlay that was never excluded, is
+/// harmless.
+///
+/// `targets` should be the same [`ManagedTarget`]s the overlay used to
+/// manage (built from its `DesiredTree` *before* unapply removed the
+/// files) — repo discovery tolerates a target that no longer exists on
+/// disk by walking up to the nearest existing ancestor, so this works
+/// whether it's called before or after the files are actually gone.
+pub fn unreconcile(targets: &[ManagedTarget]) -> Result<ExcludeReport> {
+    let mut report = ExcludeReport::default();
+    let (repos, groups) = discover_groups(targets)?;
+
+    for (repo_key, overlay) in groups.keys() {
+        let repo = repos
+            .get(repo_key)
+            .expect("every group key was inserted alongside its repo handle above");
+        remove_group_block(repo, overlay, &mut report)?;
     }
 
     Ok(report)
@@ -311,6 +362,43 @@ fn reconcile_group(
     }
 
     Ok(())
+}
+
+/// Unconditionally remove `overlay`'s exclude block from `repo`'s
+/// `.git/info/exclude` — a no-op if the marker is already absent. Never
+/// computes or compares expected content (unlike [`reconcile_group`]):
+/// [`unreconcile`] calls this once per (repo, overlay) group without
+/// caring which individual targets survived unapply.
+fn remove_group_block(repo: &Repository, overlay: &str, report: &mut ExcludeReport) -> Result<()> {
+    let marker = format!("exclude:{overlay}");
+    let exclude_path = repo.commondir().join("info").join("exclude");
+
+    if !exclude_path.exists() {
+        return Ok(());
+    }
+    let current = fs::read_to_string(&exclude_path)
+        .with_context(|| format!("failed to read '{}'", exclude_path.display()))?;
+
+    match partial::find_block(&current, &marker) {
+        BlockState::Absent => Ok(()),
+        BlockState::Malformed => {
+            report.malformed.push(exclude_path.clone());
+            ui::warn(format!(
+                "'{}' has a malformed 'over: {}' exclude block (stray begin/end marker) — left \
+                 untouched",
+                exclude_path.display(),
+                marker,
+            ))
+            .ok();
+            Ok(())
+        }
+        BlockState::Found(_) => {
+            fs::write(&exclude_path, partial::remove_block(&current, &marker))
+                .with_context(|| format!("failed to write '{}'", exclude_path.display()))?;
+            report.updated.push(exclude_path);
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -709,5 +797,128 @@ mod tests {
             "the symlink's own in-repo path must be excluded, not resolved through to its \
              (out-of-repo) destination:\n{content}"
         );
+    }
+
+    // ── unreconcile: over unapply (#147) ──────────────────────────────────
+
+    #[test]
+    fn unreconcile_removes_the_overlay_block() {
+        let (td, repo) = temp_git_repo();
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+
+        let targets = [ManagedTarget {
+            target: a,
+            overlay: "demo".into(),
+        }];
+        reconcile(&targets).unwrap();
+        assert!(exclude_content(&repo).contains("exclude:demo"));
+
+        let report = unreconcile(&targets).unwrap();
+        assert_eq!(report.updated.len(), 1);
+        assert!(!exclude_content(&repo).contains("exclude:demo"));
+    }
+
+    #[test]
+    fn unreconcile_still_finds_the_repo_when_the_target_was_already_removed() {
+        // Mirrors real `over unapply` ordering: files are already gone from
+        // disk by the time the exclude block is reconciled away, but their
+        // parent directory (and thus the repo) still exists.
+        let (td, repo) = temp_git_repo();
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+
+        let targets = [ManagedTarget {
+            target: a.clone(),
+            overlay: "demo".into(),
+        }];
+        reconcile(&targets).unwrap();
+        assert!(exclude_content(&repo).contains("exclude:demo"));
+
+        std::fs::remove_file(&a).unwrap();
+        let report = unreconcile(&targets).unwrap();
+        assert_eq!(report.updated.len(), 1);
+        assert!(!exclude_content(&repo).contains("exclude:demo"));
+    }
+
+    #[test]
+    fn unreconcile_leaves_another_overlays_block_and_hand_written_content_intact() {
+        let (td, repo) = temp_git_repo();
+        let exclude_path = repo.commondir().join("info").join("exclude");
+        std::fs::create_dir_all(exclude_path.parent().unwrap()).unwrap();
+        std::fs::write(&exclude_path, "*.bak\n").unwrap();
+
+        let a = td.path().join("a");
+        let b = td.path().join("b");
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+
+        reconcile(&[ManagedTarget {
+            target: a.clone(),
+            overlay: "one".into(),
+        }])
+        .unwrap();
+        reconcile(&[ManagedTarget {
+            target: b,
+            overlay: "two".into(),
+        }])
+        .unwrap();
+
+        unreconcile(&[ManagedTarget {
+            target: a,
+            overlay: "one".into(),
+        }])
+        .unwrap();
+
+        let content = exclude_content(&repo);
+        assert!(!content.contains("exclude:one"));
+        assert!(content.contains("*.bak"));
+        assert!(content.contains("# >>> over: exclude:two >>>"));
+        assert!(content.contains("/b"));
+    }
+
+    #[test]
+    fn unreconcile_is_a_noop_when_the_marker_is_absent() {
+        let (td, repo) = temp_git_repo();
+        // `git init` pre-populates `info/exclude` with a commented
+        // template — capture it so we can assert it's byte-for-byte
+        // untouched, rather than asserting emptiness (a false negative).
+        let before = exclude_content(&repo);
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+
+        // Never excluded (or already unapplied once) — must not error or
+        // write anything.
+        let report = unreconcile(&[ManagedTarget {
+            target: a,
+            overlay: "demo".into(),
+        }])
+        .unwrap();
+
+        assert!(report.updated.is_empty());
+        assert!(!exclude_content(&repo).contains("exclude:demo"));
+        assert_eq!(exclude_content(&repo), before);
+    }
+
+    #[test]
+    fn unreconcile_reports_a_malformed_block_and_leaves_it_untouched() {
+        let (td, repo) = temp_git_repo();
+        let exclude_path = repo.commondir().join("info").join("exclude");
+        std::fs::create_dir_all(exclude_path.parent().unwrap()).unwrap();
+        std::fs::write(&exclude_path, "# >>> over: exclude:demo >>>\n/stray\n").unwrap();
+
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+
+        let report = unreconcile(&[ManagedTarget {
+            target: a,
+            overlay: "demo".into(),
+        }])
+        .unwrap();
+
+        assert_eq!(report.malformed.len(), 1);
+        assert!(report.updated.is_empty());
+        let content = exclude_content(&repo);
+        assert_eq!(content, "# >>> over: exclude:demo >>>\n/stray\n");
     }
 }

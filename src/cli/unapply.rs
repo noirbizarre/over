@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context as AnyhowContext, Result, anyhow};
 use clap::Args;
 use dirs::home_dir;
 
@@ -8,6 +8,7 @@ use crate::cli::CLI;
 use crate::cli::common::select_overlay;
 use crate::desired::DesiredTree;
 use crate::exec::Context;
+use crate::git_exclude;
 use crate::overlays::Repository;
 use crate::ui;
 use crate::ui::{emojis, style};
@@ -90,7 +91,26 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
     ui::info("").ok();
 
-    report.execute(ctx).await?;
+    report.execute(ctx.clone()).await?;
+
+    // #147: this overlay's own entries are unapplied — remove its exclude
+    // block from every repo `desired` says it touched, reusing the same
+    // `desired` tree `Report::build` used above. Unconditional: even when
+    // some entries were left in place (`Outcome::NotOwned`/
+    // `CheckoutNotClean`, checked below), nothing in this overlay's block
+    // is "managed" by `over` any more once unapply has run over it. Skipped
+    // under `--dry-run` (nothing was actually removed to unexclude).
+    if !ctx.dry_run {
+        let managed = git_exclude::managed_targets(&desired);
+        if !managed.is_empty() {
+            git_exclude::unreconcile(&managed).with_context(|| {
+                format!(
+                    "failed to remove git excludes for overlay '{}'",
+                    overlay.name
+                )
+            })?;
+        }
+    }
 
     if report.needs_attention() {
         return Err(anyhow!(
@@ -243,6 +263,70 @@ mod tests {
         assert_eq!(
             fs::read_to_string(root.path().join("file.txt")).unwrap(),
             "existing"
+        );
+    }
+
+    /// The `.git/info/exclude` block content for `myoverlay` written by
+    /// `over apply`'s own git-exclude wiring (#146) when `root` is itself a
+    /// git repository.
+    fn exclude_content(root: &std::path::Path) -> String {
+        fs::read_to_string(root.join(".git/info/exclude")).unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn unapply_removes_the_overlays_exclude_block() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.child("root");
+        root.create_dir_all().unwrap();
+        git2::Repository::init(root.path()).unwrap();
+        let ov = tmp.path().join("myoverlay");
+        fs::create_dir_all(&ov).unwrap();
+        fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
+        fs::write(ov.join("file.txt"), "content").unwrap();
+
+        apply_overlay(tmp.path(), root.path(), "myoverlay").await;
+        assert!(
+            exclude_content(root.path()).contains("exclude:myoverlay"),
+            "apply should have excluded the symlink from this repo's git status"
+        );
+
+        let cli = make_cli(tmp.path().to_path_buf());
+        let result = execute(
+            &cli,
+            &params(Some("myoverlay"), root.path().to_path_buf(), false),
+        )
+        .await;
+        assert!(result.is_ok(), "unapply should succeed: {:?}", result.err());
+        assert!(
+            !exclude_content(root.path()).contains("exclude:myoverlay"),
+            "unapply should have removed this overlay's exclude block"
+        );
+    }
+
+    #[tokio::test]
+    async fn unapply_dry_run_does_not_touch_the_exclude_file() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.child("root");
+        root.create_dir_all().unwrap();
+        git2::Repository::init(root.path()).unwrap();
+        let ov = tmp.path().join("myoverlay");
+        fs::create_dir_all(&ov).unwrap();
+        fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
+        fs::write(ov.join("file.txt"), "content").unwrap();
+
+        apply_overlay(tmp.path(), root.path(), "myoverlay").await;
+        assert!(exclude_content(root.path()).contains("exclude:myoverlay"));
+
+        let cli = make_cli(tmp.path().to_path_buf());
+        let result = execute(
+            &cli,
+            &params(Some("myoverlay"), root.path().to_path_buf(), true),
+        )
+        .await;
+        assert!(result.is_ok());
+        assert!(
+            exclude_content(root.path()).contains("exclude:myoverlay"),
+            "dry-run must not touch the exclude block"
         );
     }
 }
