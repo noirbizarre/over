@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
@@ -89,36 +88,6 @@ pub fn set_overlay_config(repo: &git2::Repository, name: &str) -> Result<()> {
     config
         .set_str("over.overlay", name)
         .map_err(|e| anyhow!("failed to write over.overlay to git config: {}", e))
-}
-
-/// Append paths to `.git/info/exclude` idempotently.
-pub fn exclude_paths(repo: &git2::Repository, paths: &[&str]) -> Result<()> {
-    let git_dir = repo.path(); // .git/ directory
-    let exclude_dir = git_dir.join("info");
-    std::fs::create_dir_all(&exclude_dir)?;
-    let exclude_path = exclude_dir.join("exclude");
-
-    // Read existing content
-    let existing = if exclude_path.exists() {
-        std::fs::read_to_string(&exclude_path)?
-    } else {
-        String::new()
-    };
-
-    let existing_lines: std::collections::HashSet<&str> = existing.lines().collect();
-
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&exclude_path)?;
-
-    for path in paths {
-        if !existing_lines.contains(path) {
-            writeln!(file, "{}", path)?;
-        }
-    }
-
-    Ok(())
 }
 
 /// Compute the relative path from the overlay's resolved target to the repo working directory.
@@ -248,41 +217,6 @@ mod tests {
         set_overlay_config(&repo, "second").unwrap();
         let cfg = get_overlay_config(&repo).unwrap();
         assert_eq!(cfg, Some("second".into()));
-    }
-
-    #[test]
-    fn test_exclude_paths_creates_file() {
-        let (_td, repo) = temp_git_repo();
-        exclude_paths(&repo, &["/overlay", "*.bak"]).unwrap();
-
-        let exclude_path = repo.path().join("info").join("exclude");
-        let content = fs::read_to_string(&exclude_path).unwrap();
-        assert!(content.contains("/overlay"));
-        assert!(content.contains("*.bak"));
-    }
-
-    #[test]
-    fn test_exclude_paths_idempotent() {
-        let (_td, repo) = temp_git_repo();
-        exclude_paths(&repo, &["/overlay"]).unwrap();
-        exclude_paths(&repo, &["/overlay"]).unwrap();
-
-        let exclude_path = repo.path().join("info").join("exclude");
-        let content = fs::read_to_string(&exclude_path).unwrap();
-        let count = content.matches("/overlay").count();
-        assert_eq!(count, 1, "path should appear only once");
-    }
-
-    #[test]
-    fn test_exclude_paths_appends_new() {
-        let (_td, repo) = temp_git_repo();
-        exclude_paths(&repo, &["/first"]).unwrap();
-        exclude_paths(&repo, &["/second"]).unwrap();
-
-        let exclude_path = repo.path().join("info").join("exclude");
-        let content = fs::read_to_string(&exclude_path).unwrap();
-        assert!(content.contains("/first"));
-        assert!(content.contains("/second"));
     }
 
     #[test]

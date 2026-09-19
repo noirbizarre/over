@@ -9,6 +9,7 @@ pub mod commit;
 pub mod desired;
 pub mod diff;
 pub mod exec;
+pub mod git_exclude;
 pub mod lint;
 pub mod materialize;
 pub mod overlays;

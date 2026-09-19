@@ -4,14 +4,13 @@ use dirs::home_dir;
 
 use crate::cli::common::resolve_inputs;
 use crate::exec::Context;
+use crate::git_exclude;
 use crate::overlays::Repository;
 use crate::ui;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
-use super::{
-    CLI, discover_repo, exclude_paths, main_repo_root, repo_relative_path, resolve_overlay,
-};
+use super::{CLI, discover_repo, main_repo_root, repo_relative_path, resolve_overlay};
 
 #[derive(Args, Debug)]
 pub struct Params {
@@ -93,27 +92,31 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         ));
     })?;
 
-    // Compute relative paths from the repo root for .git/info/exclude
-    let exclude_entries: Vec<String> = resolved
-        .iter()
-        .filter_map(|abs_path| {
-            abs_path
-                .strip_prefix(&workdir)
-                .ok()
-                .map(|rel| format!("/{}", rel.display()))
-        })
-        .collect();
+    // Exclude the newly added files from this repo's `git status`, via the
+    // same per-overlay `.git/info/exclude` block `over apply` maintains
+    // (#146) — so a path is never managed by two different exclude
+    // conventions.
+    if !resolved.is_empty() && !args.dry_run {
+        let targets: Vec<git_exclude::ManagedTarget> = resolved
+            .iter()
+            .map(|p| git_exclude::ManagedTarget {
+                target: p.clone(),
+                overlay: overlay.name.clone(),
+            })
+            .collect();
+        let report = git_exclude::reconcile(&targets)?;
 
-    if !exclude_entries.is_empty() && !args.dry_run {
-        let refs: Vec<&str> = exclude_entries.iter().map(|s| s.as_str()).collect();
-        exclude_paths(&git_repo, &refs)?;
-
-        if cli.verbose {
+        if cli.verbose && !report.updated.is_empty() {
+            let updated: Vec<String> = report
+                .updated
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
             ui::info(format!(
                 "{} {} {}",
                 emojis::CHECKMARK,
-                style::white("Added to .git/info/exclude:"),
-                style::cyan(&exclude_entries.join(", ")),
+                style::white("Updated git exclude:"),
+                style::cyan(&updated.join(", ")),
             ))
             .ok();
         }
