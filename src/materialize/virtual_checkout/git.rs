@@ -142,6 +142,17 @@ pub(crate) fn checkout_subtree(repo: &Repository, tree: &Tree, target: &Path) ->
     co.target_dir(&absolute_target);
     co.force();
     co.remove_untracked(true);
+    // Every content comparison in this module (`hash_file`,
+    // `diff_target_against_tree`) hashes the target's raw on-disk bytes
+    // against the tree's recorded blob oid directly — there is no
+    // git index at the target to apply a matching clean filter on the
+    // way back in via `over commit`. A smudge filter here (most notably
+    // `core.autocrlf` converting LF to CRLF, the platform default on
+    // Windows) would make a freshly materialized, untouched checkout
+    // immediately hash as "modified" — disable filters so what's on disk
+    // always matches the blob byte-for-byte, matching `apply_tree_diff`'s
+    // own filter-free `fs::write`.
+    co.disable_filters(true);
     repo.checkout_tree(tree.as_object(), Some(&mut co))
         .with_context(|| format!("failed to checkout into '{}'", target.display()))
 }
