@@ -1108,6 +1108,173 @@ mod tests {
         assert!(matches!(outcomes[0], SyncOutcome::Blocked { .. }));
     }
 
+    #[tokio::test]
+    async fn virtual_checkout_malformed_base_oid_errors_rather_than_misreporting() {
+        let source_td = TempDir::new().unwrap();
+        source_td.child("a.txt").write_str("a").unwrap();
+        init_committed_repo(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        materialize_virtual_checkout(source_td.path(), target_td.path()).await;
+        // Corrupt the recorded association so `inspect` can't resolve a
+        // base tree from it.
+        vc_state::persist(
+            target_td.path(),
+            crate::materialize::virtual_checkout::state::VirtualCheckoutRecord {
+                overlay: "ov".to_string(),
+                managed_path: PathBuf::new(),
+                base_oid: "not-a-real-oid".to_string(),
+                created_at: 0,
+                last_commit_at: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let entry = virtual_checkout_entry(
+            target_td.path().to_path_buf(),
+            source_td.path().to_path_buf(),
+        );
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let result = sync(&desired, &SyncOptions::default()).await;
+        // `inspect` propagates the malformed-oid error rather than
+        // silently misreporting status.
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_broken_with_no_recorded_association_is_blocked() {
+        let source_td = TempDir::new().unwrap();
+        source_td.child("a.txt").write_str("a").unwrap();
+        init_committed_repo(source_td.path());
+        // A real directory exists at the target, but no XDG association
+        // was ever recorded for it (e.g. the state file was lost) —
+        // `Status::Broken`, mapped to a `Blocked` sync outcome rather than
+        // guessed at.
+        let target_td = TempDir::new().unwrap();
+        fs::create_dir_all(target_td.path().join("checkout")).unwrap();
+        let target = target_td.path().join("checkout");
+
+        let entry = virtual_checkout_entry(target, source_td.path().to_path_buf());
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let outcomes = sync(&desired, &SyncOptions::default()).await.unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(outcomes[0], SyncOutcome::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_pull_only_disabled_leaves_behind_status_untouched() {
+        let source_td = TempDir::new().unwrap();
+        source_td.child("a.txt").write_str("a").unwrap();
+        let source_repo = init_committed_repo_ret(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        materialize_virtual_checkout(source_td.path(), target_td.path()).await;
+
+        fs::write(source_td.path().join("a.txt"), "advanced").unwrap();
+        commit_all(&source_repo, "advance");
+
+        let entry = virtual_checkout_entry(
+            target_td.path().to_path_buf(),
+            source_td.path().to_path_buf(),
+        );
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let opts = SyncOptions {
+            pull: false,
+            ..SyncOptions::default()
+        };
+        let outcomes = sync(&desired, &opts).await.unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(
+            outcomes[0],
+            SyncOutcome::UpToDate {
+                path: target_td.path().to_path_buf()
+            }
+        );
+        // Never fast-forwarded: `--push-only` means the pull direction is
+        // disabled entirely, not just gated on dry-run.
+        assert_eq!(
+            fs::read_to_string(target_td.path().join("a.txt")).unwrap(),
+            "a"
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_dry_run_modified_reports_blocked_without_prompting() {
+        let source_td = TempDir::new().unwrap();
+        source_td.child("a.txt").write_str("a").unwrap();
+        init_committed_repo(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        materialize_virtual_checkout(source_td.path(), target_td.path()).await;
+
+        fs::write(target_td.path().join("a.txt"), "local edit").unwrap();
+
+        let entry = virtual_checkout_entry(
+            target_td.path().to_path_buf(),
+            source_td.path().to_path_buf(),
+        );
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let opts = SyncOptions {
+            dry_run: true,
+            ..SyncOptions::default()
+        };
+        let outcomes = sync(&desired, &opts).await.unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(outcomes[0], SyncOutcome::Blocked { .. }));
+        // Never mutated, and no interactive prompt was ever reached.
+        assert_eq!(
+            fs::read_to_string(target_td.path().join("a.txt")).unwrap(),
+            "local edit"
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_diverged_non_overlapping_changes_reports_conflict() {
+        // Different files changed on each side (no per-file overlap) is
+        // still surfaced as a sync-blocking `Conflict` — `over sync` never
+        // auto-merges even the "safe-looking" diverged case.
+        let source_td = TempDir::new().unwrap();
+        source_td.child("a.txt").write_str("a").unwrap();
+        source_td.child("b.txt").write_str("b").unwrap();
+        let source_repo = init_committed_repo_ret(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        materialize_virtual_checkout(source_td.path(), target_td.path()).await;
+
+        fs::write(target_td.path().join("a.txt"), "local edit").unwrap();
+        fs::write(source_td.path().join("b.txt"), "source edit").unwrap();
+        commit_all(&source_repo, "advance b only");
+
+        let entry = virtual_checkout_entry(
+            target_td.path().to_path_buf(),
+            source_td.path().to_path_buf(),
+        );
+        let desired = DesiredTree::from_entries(vec![entry]);
+        let outcomes = sync(&desired, &SyncOptions::default()).await.unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(outcomes[0], SyncOutcome::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn fast_forward_virtual_checkout_errors_without_a_recorded_association() {
+        let source_td = TempDir::new().unwrap();
+        source_td.child("a.txt").write_str("a").unwrap();
+        let source_repo = init_committed_repo_ret(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        // Materialized on disk, but never recorded in the XDG state file —
+        // a corrupted/lost-state scenario `fast_forward_virtual_checkout`
+        // must refuse outright rather than guessing a base.
+        fs::create_dir_all(target_td.path()).unwrap();
+        let head_tree = source_repo.head().unwrap().peel_to_tree().unwrap();
+        vc_git::checkout_subtree(&source_repo, &head_tree, target_td.path()).unwrap();
+        fs::write(source_td.path().join("a.txt"), "advanced").unwrap();
+        commit_all(&source_repo, "advance");
+
+        let entry = virtual_checkout_entry(
+            target_td.path().to_path_buf(),
+            source_td.path().to_path_buf(),
+        );
+        let result = fast_forward_virtual_checkout(&entry).await;
+        assert!(result.is_err());
+    }
+
     // ── test-only helpers duplicated from `actions::git::sync`'s test
     // module (kept local rather than shared across `#[cfg(test)]` boundaries) ──
 

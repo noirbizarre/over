@@ -583,6 +583,56 @@ mod tests {
     }
 
     #[test]
+    fn discover_source_errors_for_a_bare_repository() {
+        let td = TempDir::new().unwrap();
+        Repository::init_bare(td.path()).unwrap();
+        let err = discover_source(td.path()).map(|_| ()).unwrap_err();
+        assert!(err.to_string().contains("no working directory"));
+    }
+
+    #[test]
+    fn base_tree_errors_for_an_unknown_oid() {
+        let td = TempDir::new().unwrap();
+        td.child("a.txt").write_str("a").unwrap();
+        let repo = init_committed_repo(td.path());
+        let bogus = "0".repeat(40);
+        let err = base_tree(&repo, Some(&bogus)).unwrap_err();
+        assert!(err.to_string().contains("no longer exists"));
+    }
+
+    #[test]
+    fn base_tree_errors_for_a_malformed_oid() {
+        let td = TempDir::new().unwrap();
+        td.child("a.txt").write_str("a").unwrap();
+        let repo = init_committed_repo(td.path());
+        let err = base_tree(&repo, Some("not-an-oid")).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("invalid stored virtual checkout base oid")
+        );
+    }
+
+    #[test]
+    fn managed_subtree_errors_for_a_path_not_in_the_tree() {
+        let td = TempDir::new().unwrap();
+        td.child("a.txt").write_str("a").unwrap();
+        let repo = init_committed_repo(td.path());
+        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
+        let err = managed_subtree(&repo, &head_tree, Path::new("does-not-exist")).unwrap_err();
+        assert!(err.to_string().contains("not found in the source tree"));
+    }
+
+    #[test]
+    fn managed_subtree_errors_when_the_path_is_a_file_not_a_directory() {
+        let td = TempDir::new().unwrap();
+        td.child("a.txt").write_str("a").unwrap();
+        let repo = init_committed_repo(td.path());
+        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
+        let err = managed_subtree(&repo, &head_tree, Path::new("a.txt")).unwrap_err();
+        assert!(err.to_string().contains("is not a directory"));
+    }
+
+    #[test]
     fn checkout_subtree_produces_no_git_directory() {
         let src_td = TempDir::new().unwrap();
         src_td.child("sub/file.txt").write_str("hello").unwrap();
@@ -726,6 +776,119 @@ mod tests {
 
         assert!(!target_td.path().join("b.txt").exists());
         assert!(target_td.path().join("a.txt").exists());
+    }
+
+    #[test]
+    fn apply_tree_diff_removing_an_already_missing_file_is_a_no_op() {
+        // The `NotFound` arm: a file the tree says should disappear but
+        // that's already gone from `target` (e.g. the user deleted it
+        // themselves) must never be treated as an error.
+        let src_td = TempDir::new().unwrap();
+        src_td.child("a.txt").write_str("a").unwrap();
+        src_td.child("b.txt").write_str("b").unwrap();
+        let repo = init_committed_repo(src_td.path());
+        let from_tree = repo.head().unwrap().peel_to_tree().unwrap();
+
+        std::fs::remove_file(src_td.path().join("b.txt")).unwrap();
+        {
+            let sig = Signature::now("Test", "test@test.com").unwrap();
+            let mut index = repo.index().unwrap();
+            index.remove_all(["b.txt"].iter(), None).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let parent = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "remove b", &tree, &[&parent])
+                .unwrap();
+        }
+        let to_tree = repo.head().unwrap().peel_to_tree().unwrap();
+
+        let target_td = TempDir::new().unwrap();
+        checkout_subtree(&repo, &from_tree, target_td.path()).unwrap();
+        // Already gone at `target` before `apply_tree_diff` even runs.
+        std::fs::remove_file(target_td.path().join("b.txt")).unwrap();
+
+        apply_tree_diff(&repo, target_td.path(), &from_tree, &to_tree).unwrap();
+
+        assert!(target_td.path().join("a.txt").exists());
+    }
+
+    #[test]
+    fn diff_target_against_tree_reports_everything_deleted_when_target_is_entirely_missing() {
+        let src_td = TempDir::new().unwrap();
+        src_td.child("a.txt").write_str("a").unwrap();
+        let repo = init_committed_repo(src_td.path());
+        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
+        let tracked = tracked_blobs(&head_tree).unwrap();
+
+        let dst_td = TempDir::new().unwrap();
+        let missing_target = dst_td.path().join("does-not-exist");
+
+        let changes = diff_target_against_tree(&missing_target, &tracked).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].kind, FileChangeKind::Deleted);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commit_changes_preserves_an_executable_bit_for_a_newly_added_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let src_td = TempDir::new().unwrap();
+        src_td.child("a.txt").write_str("a").unwrap();
+        let repo = init_committed_repo(src_td.path());
+
+        let target_td = TempDir::new().unwrap();
+        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
+        checkout_subtree(&repo, &head_tree, target_td.path()).unwrap();
+        let script = target_td.path().join("run.sh");
+        std::fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let changes = vec![FileChange {
+            path: PathBuf::from("run.sh"),
+            kind: FileChangeKind::Added,
+            local_oid: Some(hash_file(&script).unwrap()),
+        }];
+        let commit_oid = commit_changes(
+            &repo,
+            Path::new(""),
+            target_td.path(),
+            &changes,
+            "add script",
+        )
+        .unwrap();
+
+        let commit = repo.find_commit(commit_oid).unwrap();
+        let tree = commit.tree().unwrap();
+        let entry = tree.get_path(Path::new("run.sh")).unwrap();
+        assert_eq!(entry.filemode(), i32::from(git2::FileMode::BlobExecutable));
+    }
+
+    #[test]
+    fn commit_changes_removes_a_locally_deleted_file() {
+        let src_td = TempDir::new().unwrap();
+        src_td.child("a.txt").write_str("a").unwrap();
+        src_td.child("b.txt").write_str("b").unwrap();
+        let repo = init_committed_repo(src_td.path());
+
+        let target_td = TempDir::new().unwrap();
+        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
+        checkout_subtree(&repo, &head_tree, target_td.path()).unwrap();
+        std::fs::remove_file(target_td.path().join("b.txt")).unwrap();
+
+        let changes = vec![FileChange {
+            path: PathBuf::from("b.txt"),
+            kind: FileChangeKind::Deleted,
+            local_oid: None,
+        }];
+        let commit_oid =
+            commit_changes(&repo, Path::new(""), target_td.path(), &changes, "remove b").unwrap();
+
+        let commit = repo.find_commit(commit_oid).unwrap();
+        let tree = commit.tree().unwrap();
+        assert!(tree.get_path(Path::new("b.txt")).is_err());
+        assert!(tree.get_path(Path::new("a.txt")).is_ok());
     }
 
     #[test]

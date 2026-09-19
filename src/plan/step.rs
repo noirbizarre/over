@@ -407,6 +407,87 @@ mod tests {
     }
 
     #[test]
+    fn create_virtual_checkout_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::VirtualCheckout),
+            operation: Operation::Create,
+        };
+        let s = format!("{step}");
+        assert!(s.contains("checkout:"));
+    }
+
+    #[test]
+    fn noop_virtual_checkout_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::VirtualCheckout),
+            operation: Operation::Noop,
+        };
+        let s = format!("{step}");
+        assert!(s.contains("checkout:"));
+        assert!(s.contains("over status"));
+    }
+
+    #[test]
+    fn conflict_virtual_checkout_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::VirtualCheckout),
+            operation: Operation::Conflict {
+                current: ActualState::Directory,
+            },
+        };
+        let s = format!("{step}");
+        assert!(s.contains("conflict:"));
+        assert!(s.contains("a directory"));
+    }
+
+    #[test]
+    fn migrate_labels_cover_every_intent_kind() {
+        // `intent_label` is only ever exercised through `Migrate`'s own
+        // `Display` — a direct assertion per intent, rather than relying
+        // on incidentally hitting each one through unrelated fixtures.
+        for (intent, label) in [
+            (MaterializationIntent::Directory, "directory"),
+            (
+                MaterializationIntent::SymlinkFile {
+                    source: PathBuf::from("/src"),
+                    link_type: LinkType::Soft,
+                },
+                "symlink",
+            ),
+            (
+                MaterializationIntent::SymlinkDirectory {
+                    source: PathBuf::from("/src"),
+                    link_type: LinkType::Soft,
+                },
+                "directory symlink",
+            ),
+            (MaterializationIntent::Checkout, "checkout"),
+            (MaterializationIntent::VirtualCheckout, "virtual checkout"),
+            (
+                MaterializationIntent::PartialFile {
+                    content: "x".to_string(),
+                    marker: "m".to_string(),
+                },
+                "partial file",
+            ),
+        ] {
+            let step = PlanStep {
+                entry: entry(MaterializationIntent::Directory),
+                operation: Operation::Migrate {
+                    from: intent.clone(),
+                    to: intent,
+                    blocked: None,
+                },
+            };
+            let s = format!("{step}");
+            assert!(
+                s.contains(label),
+                "expected label '{label}' in migrate display: {s}"
+            );
+        }
+    }
+
+    #[test]
     fn create_partial_file_display() {
         let step = PlanStep {
             entry: entry(MaterializationIntent::PartialFile {

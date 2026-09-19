@@ -567,6 +567,98 @@ mod tests {
         }
     }
 
+    /// Materializes a whole-repository virtual checkout at `target` and
+    /// persists its XDG association — the shared setup for the
+    /// `virtual_checkout_migration` tests below.
+    async fn setup_virtual_checkout(source_root: &std::path::Path, target: &std::path::Path) {
+        let repo = git2::Repository::open(source_root).unwrap();
+        std::fs::create_dir_all(target).unwrap();
+        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
+        crate::materialize::virtual_checkout::git::checkout_subtree(&repo, &head_tree, target)
+            .unwrap();
+        let base_oid = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        crate::materialize::virtual_checkout::state::persist(
+            target,
+            crate::materialize::virtual_checkout::state::VirtualCheckoutRecord {
+                overlay: "ov".to_string(),
+                managed_path: PathBuf::new(),
+                base_oid,
+                created_at: 0,
+                last_commit_at: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn classify_clean_virtual_checkout_is_migrate_to_symlink_directory() {
+        let td = TempDir::new().unwrap();
+        init_committed_repo(td.path());
+        let target = td.child("checkout");
+        setup_virtual_checkout(td.path(), target.path()).await;
+
+        let m = SymlinkMaterializer;
+        let e = DesiredEntry {
+            target: target.path().to_path_buf(),
+            provenance: Provenance::Overlay {
+                overlay: "ov".to_string(),
+                source: td.path().to_path_buf(),
+            },
+            ..entry(MaterializationIntent::SymlinkDirectory {
+                source: PathBuf::from("/repo/ov"),
+                link_type: LinkType::Soft,
+            })
+        };
+        match m.classify(&e).unwrap() {
+            Operation::Migrate { from, to, blocked } => {
+                assert!(matches!(from, MaterializationIntent::VirtualCheckout));
+                assert!(matches!(to, MaterializationIntent::SymlinkDirectory { .. }));
+                assert!(blocked.is_none());
+            }
+            other => panic!("expected Migrate, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn classify_dirty_virtual_checkout_is_migrate_blocked_not_conflict() {
+        let td = TempDir::new().unwrap();
+        init_committed_repo(td.path());
+        let target = td.child("checkout");
+        setup_virtual_checkout(td.path(), target.path()).await;
+        fs::write(target.path().join("README.md"), "changed").unwrap();
+
+        let m = SymlinkMaterializer;
+        let e = DesiredEntry {
+            target: target.path().to_path_buf(),
+            provenance: Provenance::Overlay {
+                overlay: "ov".to_string(),
+                source: td.path().to_path_buf(),
+            },
+            ..entry(MaterializationIntent::SymlinkDirectory {
+                source: PathBuf::from("/repo/ov"),
+                link_type: LinkType::Soft,
+            })
+        };
+        match m.classify(&e).unwrap() {
+            Operation::Migrate {
+                from,
+                blocked: Some(reason),
+                ..
+            } => {
+                assert!(matches!(from, MaterializationIntent::VirtualCheckout));
+                assert!(reason.contains("uncommitted"));
+            }
+            other => panic!("expected blocked Migrate, got {other:?}"),
+        }
+    }
+
     #[test]
     fn classify_directory_symlink_matching_source_is_migrate_to_directory() {
         let td = TempDir::new().unwrap();
@@ -738,6 +830,113 @@ mod tests {
             "checkout should be gone, replaced by a symlink"
         );
         assert_eq!(fs::read_link(&target).unwrap(), source.path());
+    }
+
+    #[tokio::test]
+    async fn materialize_migrate_virtual_checkout_to_symlink_replaces_directory_and_drops_state() {
+        let td = TempDir::new().unwrap();
+        init_committed_repo(td.path());
+        let checkout_dir = td.child("checkout");
+        setup_virtual_checkout(td.path(), checkout_dir.path()).await;
+
+        let source = td.child("elsewhere");
+        source.create_dir_all().unwrap();
+
+        let m = SymlinkMaterializer;
+        let target = checkout_dir.path().to_path_buf();
+        let e = DesiredEntry {
+            target: target.clone(),
+            // The real, discoverable source repository — needed for
+            // `status::virtual_checkout::inspect`'s safety re-check right
+            // before deleting; independent of where the *new* symlink
+            // below points.
+            provenance: Provenance::Overlay {
+                overlay: "ov".to_string(),
+                source: td.path().to_path_buf(),
+            },
+            intent: MaterializationIntent::SymlinkDirectory {
+                source: source.path().to_path_buf(),
+                link_type: LinkType::Soft,
+            },
+            permissions: None,
+        };
+        let step = PlanStep {
+            entry: e,
+            operation: Operation::Migrate {
+                from: MaterializationIntent::VirtualCheckout,
+                to: MaterializationIntent::SymlinkDirectory {
+                    source: source.path().to_path_buf(),
+                    link_type: LinkType::Soft,
+                },
+                blocked: None,
+            },
+        };
+        let ctx = Context::builder().build();
+        m.materialize(ctx, &step).await.unwrap();
+
+        assert!(
+            target.is_symlink(),
+            "virtual checkout should be gone, replaced by a symlink"
+        );
+        assert_eq!(fs::read_link(&target).unwrap(), source.path());
+        // The XDG association must be dropped too, so a virtual checkout
+        // later re-materialized at the same path never gets misattributed
+        // to this stale `base_oid`.
+        assert!(
+            crate::materialize::virtual_checkout::state::record_for_blocking(&target)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn materialize_migrate_dirty_virtual_checkout_refuses_even_if_invoked_directly() {
+        // `Plan::execute`'s `is_actionable` never calls `materialize` for a
+        // blocked migration, but `materialize_migration` re-verifies
+        // safety right before deleting regardless — classify -> execute
+        // isn't atomic, and dirty virtual-checkout content must never be
+        // discarded even if this were ever invoked directly.
+        let td = TempDir::new().unwrap();
+        init_committed_repo(td.path());
+        let checkout_dir = td.child("checkout");
+        setup_virtual_checkout(td.path(), checkout_dir.path()).await;
+        fs::write(checkout_dir.path().join("README.md"), "changed").unwrap();
+
+        let symlink_target = PathBuf::from("/repo/ov/somewhere");
+        let m = SymlinkMaterializer;
+        let target = checkout_dir.path().to_path_buf();
+        let e = DesiredEntry {
+            target: target.clone(),
+            provenance: Provenance::Overlay {
+                overlay: "ov".to_string(),
+                source: td.path().to_path_buf(),
+            },
+            intent: MaterializationIntent::SymlinkDirectory {
+                source: symlink_target.clone(),
+                link_type: LinkType::Soft,
+            },
+            permissions: None,
+        };
+        let step = PlanStep {
+            entry: e,
+            operation: Operation::Migrate {
+                from: MaterializationIntent::VirtualCheckout,
+                to: MaterializationIntent::SymlinkDirectory {
+                    source: symlink_target,
+                    link_type: LinkType::Soft,
+                },
+                blocked: None,
+            },
+        };
+        let ctx = Context::builder().build();
+        let result = m.materialize(ctx, &step).await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(target.join("README.md")).unwrap(),
+            "changed",
+            "uncommitted change must remain"
+        );
     }
 
     #[tokio::test]

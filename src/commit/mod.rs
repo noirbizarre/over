@@ -384,4 +384,74 @@ mod tests {
             .unwrap();
         assert_eq!(sibling.as_blob().unwrap().content(), b"sibling");
     }
+
+    #[tokio::test]
+    async fn commit_blocked_on_a_conflicting_file() {
+        let td = TempDir::new().unwrap();
+        td.child("a.txt").write_str("a").unwrap();
+        let repo = init_committed_repo(td.path());
+        let target = td.child("target");
+        materialize_and_record(td.path(), target.path()).await;
+
+        fs::write(target.path().join("a.txt"), "local edit").unwrap();
+        fs::write(td.path().join("a.txt"), "source edit").unwrap();
+        {
+            let sig = Signature::now("Test", "test@test.com").unwrap();
+            let mut index = repo.index().unwrap();
+            index
+                .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+                .unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let parent = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "advance differently",
+                &tree,
+                &[&parent],
+            )
+            .unwrap();
+        }
+
+        let e = entry(target.path().to_path_buf(), td.path().to_path_buf());
+        let outcome = commit(&e, &CommitOptions::default()).await.unwrap();
+        assert!(outcome.needs_attention());
+        match outcome {
+            CommitOutcome::Blocked { conflicting_files } => {
+                assert_eq!(conflicting_files, vec![PathBuf::from("a.txt")]);
+            }
+            other => panic!("expected Blocked, got {other:?}"),
+        }
+        // Never touched: the target still has the local edit, and the
+        // source repository never received a new commit for it.
+        assert_eq!(
+            fs::read_to_string(target.path().join("a.txt")).unwrap(),
+            "local edit"
+        );
+    }
+
+    #[test]
+    fn commit_outcome_display_covers_every_variant() {
+        assert!(format!("{}", CommitOutcome::NotVirtualCheckout).contains("not checkout"));
+        assert!(format!("{}", CommitOutcome::NothingToCommit).contains("nothing to commit"));
+        assert!(!CommitOutcome::NothingToCommit.needs_attention());
+        let blocked = CommitOutcome::Blocked {
+            conflicting_files: vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")],
+        };
+        let s = format!("{blocked}");
+        assert!(s.contains("a.txt"));
+        assert!(s.contains("b.txt"));
+        assert!(blocked.needs_attention());
+        let committed = CommitOutcome::Committed {
+            oid: "deadbeefdeadbeefdeadbeef".to_string(),
+            files: 3,
+        };
+        let s = format!("{committed}");
+        assert!(s.contains("3 files"));
+        assert!(s.contains("deadbeefde"));
+        assert!(!committed.needs_attention());
+    }
 }

@@ -304,4 +304,111 @@ mod tests {
         .await;
         assert!(result.is_ok());
     }
+
+    #[tokio::test]
+    async fn commit_no_prompt_with_no_message_uses_an_auto_generated_message() {
+        let tmp = TempDir::new().unwrap();
+        let ov = tmp.path().join("dotfiles");
+        fs::create_dir_all(&ov).unwrap();
+        fs::write(
+            ov.join("over.toml"),
+            "target = \"~\"\n[defaults]\nmaterialization = \"checkout\"",
+        )
+        .unwrap();
+        fs::write(ov.join("a.txt"), "original\n").unwrap();
+        init_committed_repo(&ov);
+
+        let root = tmp.child("root");
+        root.create_dir_all().unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let overlay = repo.get("dotfiles").unwrap();
+        let ctx = Context::builder()
+            .root(root.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .build();
+        overlay.apply(&ctx).await.unwrap();
+
+        // A real local change, but no `--message` and `--no-prompt` set —
+        // must fall through to `commit::default_message` rather than
+        // reaching the interactive prompt.
+        fs::write(root.path().join("a.txt"), "edited\n").unwrap();
+
+        let cli = make_cli(tmp.path().to_path_buf());
+        let result = execute(
+            &cli,
+            &params(Some("dotfiles"), root.path().to_path_buf(), None),
+        )
+        .await;
+        assert!(result.is_ok(), "commit should succeed: {:?}", result.err());
+
+        let source_repo = git2::Repository::open(&ov).unwrap();
+        let head = source_repo.head().unwrap().peel_to_commit().unwrap();
+        // `commit::default_message`'s own wording — asserting the exact
+        // text here would couple this test too tightly to that module's
+        // implementation detail, so just confirm *a* message landed.
+        assert!(head.message().unwrap_or_default().contains("file"));
+    }
+
+    #[tokio::test]
+    async fn commit_with_a_conflicting_file_fails_and_leaves_it_untouched() {
+        let tmp = TempDir::new().unwrap();
+        let ov = tmp.path().join("dotfiles");
+        fs::create_dir_all(&ov).unwrap();
+        fs::write(
+            ov.join("over.toml"),
+            "target = \"~\"\n[defaults]\nmaterialization = \"checkout\"",
+        )
+        .unwrap();
+        fs::write(ov.join("a.txt"), "original\n").unwrap();
+        init_committed_repo(&ov);
+
+        let root = tmp.child("root");
+        root.create_dir_all().unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let overlay = repo.get("dotfiles").unwrap();
+        let ctx = Context::builder()
+            .root(root.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .build();
+        overlay.apply(&ctx).await.unwrap();
+
+        // The same file changed on both sides, to different content.
+        fs::write(root.path().join("a.txt"), "local edit\n").unwrap();
+        fs::write(ov.join("a.txt"), "source edit\n").unwrap();
+        let source_repo = git2::Repository::open(&ov).unwrap();
+        let sig = Signature::now("Test", "test@test.com").unwrap();
+        let mut index = source_repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = source_repo.find_tree(tree_id).unwrap();
+        let parent = source_repo.head().unwrap().peel_to_commit().unwrap();
+        source_repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "advance differently",
+                &tree,
+                &[&parent],
+            )
+            .unwrap();
+
+        let cli = make_cli(tmp.path().to_path_buf());
+        let result = execute(
+            &cli,
+            &params(Some("dotfiles"), root.path().to_path_buf(), Some("attempt")),
+        )
+        .await;
+        assert!(result.is_err());
+        // Untouched: still exactly the local content, never overwritten.
+        assert_eq!(
+            fs::read_to_string(root.path().join("a.txt")).unwrap(),
+            "local edit\n"
+        );
+    }
 }

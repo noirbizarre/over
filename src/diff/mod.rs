@@ -1113,20 +1113,15 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn virtual_checkout_clean_reports_unchanged() {
-        let td = TempDir::new().unwrap();
-        td.child("a.txt").write_str("a").unwrap();
-        let repo = init_committed_repo(td.path());
-        let target = td.child("target");
-        fs::create_dir_all(target.path()).unwrap();
+    async fn materialize_and_record_virtual_checkout(
+        source_root: &std::path::Path,
+        target: &std::path::Path,
+    ) {
+        let repo = git2::Repository::open(source_root).unwrap();
+        fs::create_dir_all(target).unwrap();
         let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
-        crate::materialize::virtual_checkout::git::checkout_subtree(
-            &repo,
-            &head_tree,
-            target.path(),
-        )
-        .unwrap();
+        crate::materialize::virtual_checkout::git::checkout_subtree(&repo, &head_tree, target)
+            .unwrap();
         let base_oid = repo
             .head()
             .unwrap()
@@ -1135,7 +1130,7 @@ mod tests {
             .id()
             .to_string();
         crate::materialize::virtual_checkout::state::persist(
-            target.path(),
+            target,
             crate::materialize::virtual_checkout::state::VirtualCheckoutRecord {
                 overlay: "ov".to_string(),
                 managed_path: std::path::PathBuf::new(),
@@ -1146,45 +1141,54 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_clean_reports_unchanged() {
+        let td = TempDir::new().unwrap();
+        td.child("a.txt").write_str("a").unwrap();
+        init_committed_repo(td.path());
+        let target = td.child("target");
+        materialize_and_record_virtual_checkout(td.path(), target.path()).await;
 
         let entry = virtual_checkout_entry(target.path().to_path_buf(), td.path().to_path_buf());
         let change = classify_virtual_checkout(&entry).unwrap();
         assert!(matches!(change, Change::Unchanged));
     }
 
+    #[test]
+    fn virtual_checkout_missing_reports_missing() {
+        let td = TempDir::new().unwrap();
+        td.child("a.txt").write_str("a").unwrap();
+        init_committed_repo(td.path());
+
+        let entry =
+            virtual_checkout_entry(td.path().join("does-not-exist"), td.path().to_path_buf());
+        let change = classify_virtual_checkout(&entry).unwrap();
+        assert!(matches!(change, Change::Missing));
+    }
+
+    #[test]
+    fn virtual_checkout_broken_reports_broken() {
+        let td = TempDir::new().unwrap();
+        td.child("a.txt").write_str("a").unwrap();
+        init_committed_repo(td.path());
+        // A real directory with no recorded XDG association.
+        let target = td.child("target");
+        target.create_dir_all().unwrap();
+
+        let entry = virtual_checkout_entry(target.path().to_path_buf(), td.path().to_path_buf());
+        let change = classify_virtual_checkout(&entry).unwrap();
+        assert!(matches!(change, Change::Broken));
+    }
+
     #[tokio::test]
     async fn virtual_checkout_modified_file_produces_content_diff() {
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("original\n").unwrap();
-        let repo = init_committed_repo(td.path());
+        init_committed_repo(td.path());
         let target = td.child("target");
-        fs::create_dir_all(target.path()).unwrap();
-        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
-        crate::materialize::virtual_checkout::git::checkout_subtree(
-            &repo,
-            &head_tree,
-            target.path(),
-        )
-        .unwrap();
-        let base_oid = repo
-            .head()
-            .unwrap()
-            .peel_to_commit()
-            .unwrap()
-            .id()
-            .to_string();
-        crate::materialize::virtual_checkout::state::persist(
-            target.path(),
-            crate::materialize::virtual_checkout::state::VirtualCheckoutRecord {
-                overlay: "ov".to_string(),
-                managed_path: std::path::PathBuf::new(),
-                base_oid,
-                created_at: 0,
-                last_commit_at: None,
-            },
-        )
-        .await
-        .unwrap();
+        materialize_and_record_virtual_checkout(td.path(), target.path()).await;
 
         fs::write(target.path().join("a.txt"), "edited locally\n").unwrap();
 
@@ -1198,6 +1202,72 @@ mod tests {
                 let diff_text = format!("{}", files[0].diff.as_ref().unwrap());
                 assert!(diff_text.contains("original"));
                 assert!(diff_text.contains("edited locally"));
+            }
+            other => panic!("expected VirtualCheckout, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_added_and_deleted_files_have_no_diff() {
+        let td = TempDir::new().unwrap();
+        td.child("a.txt").write_str("a").unwrap();
+        td.child("b.txt").write_str("b").unwrap();
+        init_committed_repo(td.path());
+        let target = td.child("target");
+        materialize_and_record_virtual_checkout(td.path(), target.path()).await;
+
+        fs::remove_file(target.path().join("b.txt")).unwrap();
+        fs::write(target.path().join("new.txt"), "new").unwrap();
+
+        let entry = virtual_checkout_entry(target.path().to_path_buf(), td.path().to_path_buf());
+        let change = classify_virtual_checkout(&entry).unwrap();
+        match change {
+            Change::VirtualCheckout { files, .. } => {
+                assert_eq!(files.len(), 2);
+                let added = files
+                    .iter()
+                    .find(|f| f.kind == VirtualCheckoutFileKind::Added)
+                    .unwrap();
+                assert!(added.diff.is_none());
+                let deleted = files
+                    .iter()
+                    .find(|f| f.kind == VirtualCheckoutFileKind::Deleted)
+                    .unwrap();
+                assert!(deleted.diff.is_none());
+
+                // Both `Display` arms, and the multi-entry separator
+                // (`i > 0`) in `DiffEntry`'s own `Display`.
+                let diff_entry = DiffEntry {
+                    entry: entry.clone(),
+                    change: Change::VirtualCheckout {
+                        status: Status::Modified,
+                        files,
+                    },
+                };
+                let s = format!("{diff_entry}");
+                assert!(s.contains("added:"));
+                assert!(s.contains("deleted:"));
+            }
+            other => panic!("expected VirtualCheckout, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_binary_modification_falls_back_to_binary_diff() {
+        let td = TempDir::new().unwrap();
+        fs::write(td.path().join("bin.dat"), [0xff_u8, 0xfe, 0x00]).unwrap();
+        init_committed_repo(td.path());
+        let target = td.child("target");
+        materialize_and_record_virtual_checkout(td.path(), target.path()).await;
+
+        fs::write(target.path().join("bin.dat"), [0x00_u8, 0xff, 0xfe]).unwrap();
+
+        let entry = virtual_checkout_entry(target.path().to_path_buf(), td.path().to_path_buf());
+        let change = classify_virtual_checkout(&entry).unwrap();
+        match change {
+            Change::VirtualCheckout { files, .. } => {
+                assert_eq!(files.len(), 1);
+                assert!(files[0].diff.as_ref().unwrap().lines.is_none());
             }
             other => panic!("expected VirtualCheckout, got {other:?}"),
         }

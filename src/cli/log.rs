@@ -281,10 +281,14 @@ mod tests {
     }
 
     fn params(name: Option<&str>, root: PathBuf) -> Params {
+        params_with_limit(name, root, 20)
+    }
+
+    fn params_with_limit(name: Option<&str>, root: PathBuf, limit: usize) -> Params {
         Params {
             name: name.map(String::from),
             root: Some(root),
-            limit: 20,
+            limit,
         }
     }
 
@@ -380,5 +384,101 @@ mod tests {
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
         assert!(result.is_ok(), "log should succeed: {:?}", result.err());
+    }
+
+    /// The git repository sits at `tmp` (not at the overlay's own
+    /// directory), with the overlay as a subdirectory — lets a test add
+    /// commits that don't touch the overlay's own managed path at all,
+    /// exercising `commit_touches_path`'s filtering.
+    fn setup_nested_checkout_overlay(tmp: &std::path::Path) -> (GitRepository, PathBuf) {
+        let ov = tmp.join("dotfiles");
+        fs::create_dir_all(&ov).unwrap();
+        fs::write(
+            ov.join("over.toml"),
+            "target = \"~\"\n[defaults]\nmaterialization = \"checkout\"",
+        )
+        .unwrap();
+        fs::write(ov.join("a.txt"), "content").unwrap();
+        let repo = init_repo(tmp);
+        commit_all(&repo, "initial");
+        (repo, ov)
+    }
+
+    #[test]
+    fn log_skips_commits_that_never_touch_the_managed_path() {
+        let tmp = TempDir::new().unwrap();
+        let (repo, ov) = setup_nested_checkout_overlay(tmp.path());
+
+        // Unrelated to the overlay: a sibling file outside `dotfiles/`.
+        fs::write(tmp.path().join("unrelated.txt"), "unrelated").unwrap();
+        commit_all(&repo, "unrelated change");
+
+        fs::write(ov.join("a.txt"), "changed").unwrap();
+        commit_all(&repo, "overlay change");
+
+        let entries = log_entries(&repo, Path::new("dotfiles"), 20).unwrap();
+        let summaries: Vec<_> = entries.iter().map(|e| e.summary.clone()).collect();
+        assert!(summaries.contains(&"overlay change".to_string()));
+        assert!(summaries.contains(&"initial".to_string()));
+        assert!(!summaries.contains(&"unrelated change".to_string()));
+    }
+
+    #[test]
+    fn log_limit_caps_the_number_of_commits_shown() {
+        let tmp = TempDir::new().unwrap();
+        let (repo, ov) = setup_nested_checkout_overlay(tmp.path());
+        fs::write(ov.join("a.txt"), "changed").unwrap();
+        commit_all(&repo, "second commit");
+
+        let entries = log_entries(&repo, Path::new("dotfiles"), 1).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].summary, "second commit");
+    }
+
+    #[tokio::test]
+    async fn log_limit_flag_is_honored_end_to_end() {
+        let tmp = TempDir::new().unwrap();
+        let (repo, ov) = setup_nested_checkout_overlay(tmp.path());
+        fs::write(ov.join("a.txt"), "changed").unwrap();
+        commit_all(&repo, "second commit");
+
+        let root = tmp.child("root");
+        root.create_dir_all().unwrap();
+
+        let cli = make_cli(tmp.path().to_path_buf());
+        let result = execute(
+            &cli,
+            &params_with_limit(Some("dotfiles"), root.path().to_path_buf(), 1),
+        )
+        .await;
+        assert!(result.is_ok(), "log should succeed: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn log_no_name_guesses_the_overlay_from_the_current_directory() {
+        let tmp = TempDir::new().unwrap();
+        let (_, ov) = setup_nested_checkout_overlay(tmp.path());
+
+        let root = tmp.child("root");
+        root.create_dir_all().unwrap();
+        // Materialize the virtual checkout so a real target directory
+        // exists to `cd` into.
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let overlay = repo.get("dotfiles").unwrap();
+        let ctx = crate::exec::Context::builder()
+            .root(root.path().to_path_buf())
+            .repository(repo)
+            .overlay(overlay.clone())
+            .build();
+        overlay.apply(&ctx).await.unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(root.path()).unwrap();
+        let cli = make_cli(tmp.path().to_path_buf());
+        let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
+        std::env::set_current_dir(original_cwd).unwrap();
+
+        assert!(result.is_ok(), "log should succeed: {:?}", result.err());
+        let _ = ov;
     }
 }
