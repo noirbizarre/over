@@ -157,6 +157,57 @@ pub(crate) fn read_blob(repo: &Repository, oid: Oid) -> Result<Vec<u8>> {
         .to_vec())
 }
 
+/// Update `target` in place to reflect `to_tree` instead of `from_tree`,
+/// writing/removing only the paths that actually differ between the two —
+/// used by `over sync`'s fast-forward (never called unless the caller
+/// already confirmed there's nothing local to lose for those exact
+/// paths). Deliberately bypasses [`checkout_subtree`]/`git2::checkout_tree`
+/// here: that API's own "does this file already look up to date"
+/// comparison against an *existing* target file is unreliable for a
+/// `target_dir`-redirected checkout (observed directly: a file already
+/// present at `target` with different content was sometimes left
+/// untouched even under `force()`/`remove_untracked()`). Reading blobs and
+/// writing them with plain `std::fs` sidesteps that comparison entirely —
+/// there is nothing to "look already up to date" against.
+pub(crate) fn apply_tree_diff(
+    repo: &Repository,
+    target: &Path,
+    from_tree: &Tree,
+    to_tree: &Tree,
+) -> Result<()> {
+    let from_entries = tracked_entries(from_tree)?;
+    let to_entries = tracked_entries(to_tree)?;
+
+    for (path, (oid, _mode)) in &to_entries {
+        if from_entries.get(path).map(|(from_oid, _)| from_oid) != Some(oid) {
+            let on_disk = target.join(path);
+            if let Some(parent) = on_disk.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create '{}'", parent.display()))?;
+            }
+            let content = read_blob(repo, *oid)?;
+            fs::write(&on_disk, content)
+                .with_context(|| format!("failed to write '{}'", on_disk.display()))?;
+        }
+    }
+
+    for path in from_entries.keys() {
+        if !to_entries.contains_key(path) {
+            let on_disk = target.join(path);
+            match fs::remove_file(&on_disk) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e)
+                        .with_context(|| format!("failed to remove '{}'", on_disk.display()));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Git-blob hash of the file currently on disk at `path` — the same `Oid`
 /// it would have if committed as-is, letting content be compared against a
 /// tree's recorded blob oid without needing a real git index at `target`.
@@ -582,6 +633,88 @@ mod tests {
         assert_eq!(blobs.len(), 2);
         assert!(blobs.contains_key(&PathBuf::from("a.txt")));
         assert!(blobs.contains_key(&PathBuf::from("nested/b.txt")));
+    }
+
+    #[test]
+    fn apply_tree_diff_overwrites_a_file_already_present_with_different_content() {
+        // The scenario `over sync`'s fast-forward hits: `target` already
+        // has the file from an earlier materialization, and the source
+        // moved it to different content — this must always win, unlike
+        // `checkout_subtree`'s own `git2::checkout_tree`-based approach,
+        // which proved unreliable at overwriting an already-present file
+        // (see this function's own doc comment).
+        let src_td = TempDir::new().unwrap();
+        src_td.child("a.txt").write_str("original").unwrap();
+        let repo = init_committed_repo(src_td.path());
+        let from_tree = repo.head().unwrap().peel_to_tree().unwrap();
+
+        std::fs::write(src_td.path().join("a.txt"), "advanced").unwrap();
+        std::fs::write(src_td.path().join("b.txt"), "new file").unwrap();
+        {
+            let sig = Signature::now("Test", "test@test.com").unwrap();
+            let mut index = repo.index().unwrap();
+            index
+                .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+                .unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let parent = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "advance", &tree, &[&parent])
+                .unwrap();
+        }
+        let to_tree = repo.head().unwrap().peel_to_tree().unwrap();
+
+        // `target` already has the pre-advance content materialized.
+        let target_td = TempDir::new().unwrap();
+        checkout_subtree(&repo, &from_tree, target_td.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(target_td.path().join("a.txt")).unwrap(),
+            "original"
+        );
+
+        apply_tree_diff(&repo, target_td.path(), &from_tree, &to_tree).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(target_td.path().join("a.txt")).unwrap(),
+            "advanced"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target_td.path().join("b.txt")).unwrap(),
+            "new file"
+        );
+    }
+
+    #[test]
+    fn apply_tree_diff_removes_a_file_deleted_upstream() {
+        let src_td = TempDir::new().unwrap();
+        src_td.child("a.txt").write_str("a").unwrap();
+        src_td.child("b.txt").write_str("b").unwrap();
+        let repo = init_committed_repo(src_td.path());
+        let from_tree = repo.head().unwrap().peel_to_tree().unwrap();
+
+        std::fs::remove_file(src_td.path().join("b.txt")).unwrap();
+        {
+            let sig = Signature::now("Test", "test@test.com").unwrap();
+            let mut index = repo.index().unwrap();
+            index.remove_all(["b.txt"].iter(), None).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let parent = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "remove b", &tree, &[&parent])
+                .unwrap();
+        }
+        let to_tree = repo.head().unwrap().peel_to_tree().unwrap();
+
+        let target_td = TempDir::new().unwrap();
+        checkout_subtree(&repo, &from_tree, target_td.path()).unwrap();
+        assert!(target_td.path().join("b.txt").exists());
+
+        apply_tree_diff(&repo, target_td.path(), &from_tree, &to_tree).unwrap();
+
+        assert!(!target_td.path().join("b.txt").exists());
+        assert!(target_td.path().join("a.txt").exists());
     }
 
     #[test]

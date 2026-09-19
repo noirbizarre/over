@@ -560,11 +560,20 @@ async fn commit_virtual_checkout_interactively(
     }
 }
 
-/// Re-checkout `entry`'s managed subtree from the source repository's
-/// current `HEAD` and advance the recorded `base_oid` — safe only because
-/// [`sync_virtual_checkout`] only calls this for [`Status::Behind`]
-/// (confirmed no local changes to lose). All git2/filesystem work is
-/// synchronous, hence `spawn_blocking`.
+/// Update `entry`'s managed subtree in place to reflect the source
+/// repository's current `HEAD` (writing/removing only the paths that
+/// actually drifted since the recorded `base_oid`) and advance that
+/// `base_oid` — safe only because [`sync_virtual_checkout`] only calls
+/// this for [`Status::Behind`] (confirmed no local changes to lose). All
+/// git2/filesystem work is synchronous, hence `spawn_blocking`.
+///
+/// Deliberately does *not* use [`vc_git::checkout_subtree`] here (unlike
+/// the materializer's own first-time `Create` path): re-checking out the
+/// *whole* subtree via `git2::checkout_tree` proved unreliable at
+/// overwriting a file that already exists at `target` with different
+/// content (observed directly in CI, not reproducible locally — see
+/// `vc_git::apply_tree_diff`'s own doc). Reading/writing only the
+/// changed blobs with plain `std::fs` avoids that entirely.
 async fn fast_forward_virtual_checkout(entry: &DesiredEntry) -> Result<()> {
     let Provenance::Overlay { source, .. } = &entry.provenance else {
         unreachable!(
@@ -581,12 +590,14 @@ async fn fast_forward_virtual_checkout(entry: &DesiredEntry) -> Result<()> {
 
     let target = entry.target.clone();
     let source = source.clone();
+    let base_oid = record.base_oid.clone();
     let new_base_oid = tokio::task::spawn_blocking(move || {
         let (repo, managed_path) = vc_git::discover_source(&source)?;
-        let head_tree = vc_git::base_tree(&repo, None)?;
-        let subtree = vc_git::managed_subtree(&repo, &head_tree, &managed_path)?;
-        let content_tree = vc_git::managed_content_tree(&repo, &subtree)?;
-        vc_git::checkout_subtree(&repo, &content_tree, &target)?;
+        let from_tree = vc_git::base_tree(&repo, Some(&base_oid))?;
+        let from_subtree = vc_git::managed_subtree(&repo, &from_tree, &managed_path)?;
+        let to_tree = vc_git::base_tree(&repo, None)?;
+        let to_subtree = vc_git::managed_subtree(&repo, &to_tree, &managed_path)?;
+        vc_git::apply_tree_diff(&repo, &target, &from_subtree, &to_subtree)?;
         anyhow::Ok(repo.head()?.peel_to_commit()?.id().to_string())
     })
     .await??;

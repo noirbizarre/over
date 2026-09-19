@@ -57,8 +57,32 @@ pub(crate) fn state_file() -> Result<StateFile<VirtualCheckoutState>> {
     ))
 }
 
+/// The state map's key for `target` — canonicalized (resolves symlinks/
+/// `.`/`..`, matching `super::git::checkout_subtree`'s own
+/// canonicalization before the actual git2 checkout call) so that two
+/// `over` invocations naming the *same* directory via different relative
+/// paths (or a different current directory) always map to the same
+/// record. Without this, e.g. two different overlays both applied with a
+/// relative `--root .` from different working directories would collide
+/// on the literal string `"."`, silently reading/overwriting each
+/// other's association — observed directly, not just theoretical.
+///
+/// Falls back to an absolute (but not symlink-resolved) path if
+/// canonicalization fails — every call site here only ever looks this up
+/// for a target that has just been materialized (so it exists), but
+/// there's no reason to make this key computation itself fallible for a
+/// clearly non-fatal, best-effort concern.
 fn key_for(target: &Path) -> String {
-    target.to_string_lossy().to_string()
+    let resolved = target.canonicalize().unwrap_or_else(|_| {
+        if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(target))
+                .unwrap_or_else(|_| target.to_path_buf())
+        }
+    });
+    resolved.to_string_lossy().to_string()
 }
 
 /// Synchronous read, for use from [`crate::materialize::Materializer::classify`]
@@ -161,5 +185,47 @@ mod tests {
 
         remove_in(&state_file, &target).await.unwrap();
         assert!(record_for_in(&state_file, &target).await.unwrap().is_none());
+    }
+
+    #[test]
+    fn key_for_resolves_relative_paths_against_the_current_directory() {
+        // Two different real directories that happen to share the exact
+        // same relative path string ("target") must never collide —
+        // this is the scenario `over` hit directly: the same relative
+        // `--root` value used from two different working directories.
+        let tmp_a = tempfile::tempdir().unwrap();
+        let tmp_b = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp_a.path().join("target")).unwrap();
+        std::fs::create_dir_all(tmp_b.path().join("target")).unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+
+        std::env::set_current_dir(tmp_a.path()).unwrap();
+        let key_a = key_for(Path::new("target"));
+
+        std::env::set_current_dir(tmp_b.path()).unwrap();
+        let key_b = key_for(Path::new("target"));
+
+        std::env::set_current_dir(original_cwd).unwrap();
+
+        assert_ne!(key_a, key_b);
+        assert_eq!(
+            key_a,
+            tmp_a
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("target")
+                .to_string_lossy()
+        );
+        assert_eq!(
+            key_b,
+            tmp_b
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("target")
+                .to_string_lossy()
+        );
     }
 }
