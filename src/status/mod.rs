@@ -1,7 +1,10 @@
 //! Overlay status (#12): derives per-entry reconciliation status from the
 //! same [`DesiredTree`]/[`Plan`] model [`crate::overlays::Overlay::apply`]
 //! uses (#107/#13), plus git working-tree state for
-//! [`MaterializationIntent::Checkout`] entries (see [`git`]).
+//! [`MaterializationIntent::Checkout`] entries (see [`git`]) and virtual
+//! checkout blob-hash comparison for
+//! [`MaterializationIntent::VirtualCheckout`] entries (#141, see
+//! [`virtual_checkout`]).
 //!
 //! Deliberately read-only: building a [`Report`] never mutates the
 //! filesystem or any git repository, exactly like [`Plan::build`].
@@ -10,6 +13,7 @@
 //! issue's own requirement.
 
 pub mod git;
+pub(crate) mod virtual_checkout;
 
 use std::fmt;
 
@@ -81,35 +85,35 @@ impl fmt::Display for EntryStatus {
                 emojis::CHECKMARK,
                 style::white("applied:"),
                 target
-            ),
+            )?,
             Status::Missing => write!(
                 f,
                 "{} {} {}",
                 emojis::CROSSMARK,
                 style::white("missing:"),
                 target
-            ),
+            )?,
             Status::Modified => write!(
                 f,
                 "{} {} {}",
                 emojis::WARNING,
                 style::yellow("modified:"),
                 target
-            ),
+            )?,
             Status::Broken => write!(
                 f,
                 "{} {} {}",
                 emojis::WARNING,
                 style::yellow("broken:"),
                 target
-            ),
+            )?,
             Status::Conflict => write!(
                 f,
                 "{} {} {}",
                 emojis::WARNING,
                 style::yellow("conflict:"),
                 target
-            ),
+            )?,
             Status::Ahead(n) => write!(
                 f,
                 "{} {} {} ({} commit{} ahead)",
@@ -118,7 +122,7 @@ impl fmt::Display for EntryStatus {
                 target,
                 n,
                 if *n == 1 { "" } else { "s" },
-            ),
+            )?,
             Status::Behind(n) => write!(
                 f,
                 "{} {} {} ({} commit{} behind)",
@@ -127,15 +131,54 @@ impl fmt::Display for EntryStatus {
                 target,
                 n,
                 if *n == 1 { "" } else { "s" },
-            ),
+            )?,
             Status::Diverged { ahead, behind } => write!(
                 f,
                 "{} {} {} ({ahead} ahead, {behind} behind)",
                 emojis::WARNING,
                 style::yellow("diverged:"),
                 target,
-            ),
+            )?,
         }
+
+        // #141: list the specific added/modified/deleted files underneath
+        // a virtual checkout's aggregate line — the per-file detail
+        // `over status` needs beyond a single status word. Best-effort:
+        // a lookup failure here just means one less line of detail, never
+        // a panic from `Display` (which can't propagate a `Result`).
+        if matches!(self.entry.intent, MaterializationIntent::VirtualCheckout)
+            && matches!(
+                self.status,
+                Status::Modified | Status::Diverged { .. } | Status::Conflict
+            )
+            && let Ok(changes) = virtual_checkout::file_changes(&self.entry)
+        {
+            for change in changes {
+                write!(
+                    f,
+                    "\n    {} {}",
+                    file_change_symbol(change.kind),
+                    change.path.display()
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// One-character-ish marker for a virtual checkout's per-file change kind
+/// in `over status`'s listing — mirrors `git status --short`'s single-
+/// letter convention (`A`/`M`/`D`) rather than a full word, since these
+/// lines are already indented under a labeled aggregate status line.
+fn file_change_symbol(
+    kind: crate::materialize::virtual_checkout::git::FileChangeKind,
+) -> &'static str {
+    use crate::materialize::virtual_checkout::git::FileChangeKind;
+    match kind {
+        FileChangeKind::Added => "A",
+        FileChangeKind::Modified => "M",
+        FileChangeKind::Deleted => "D",
     }
 }
 
@@ -181,16 +224,23 @@ pub struct Report {
 impl Report {
     /// Classify every entry in `desired` — [`Plan::build`] handles
     /// directories/symlinks (never touching the filesystem beyond
-    /// read-only inspection), and [`git::inspect`] handles
-    /// [`MaterializationIntent::Checkout`] entries (the only ones `Plan`
-    /// leaves as [`Operation::Deferred`], since no
-    /// [`crate::materialize::Materializer`] claims that intent yet).
+    /// read-only inspection), while [`git::inspect`] and
+    /// [`virtual_checkout::inspect`] recompute their own, richer status
+    /// directly rather than trusting `Plan`'s coarse `Noop`/`Create` for
+    /// [`MaterializationIntent::Checkout`]/[`MaterializationIntent::VirtualCheckout`]
+    /// entries (both backends deliberately collapse anything but `Missing`
+    /// to `Noop`, deferring dirty/ahead/behind/conflict reporting to this
+    /// module instead — see `CheckoutMaterializer`/`VirtualCheckoutMaterializer`'s
+    /// own docs).
     pub fn build(desired: &DesiredTree) -> Result<Self> {
         let plan = Plan::build(desired)?;
         let mut entries = Vec::with_capacity(plan.len());
         for step in plan.steps() {
             let status = match (&step.entry.intent, &step.operation) {
                 (MaterializationIntent::Checkout, _) => git::inspect(&step.entry)?,
+                (MaterializationIntent::VirtualCheckout, _) => {
+                    virtual_checkout::inspect(&step.entry)?
+                }
                 (_, Operation::Create) => Status::Missing,
                 (_, Operation::Conflict { .. }) => Status::Conflict,
                 (intent, Operation::Noop) => classify_noop(intent),
@@ -587,6 +637,76 @@ mod tests {
             .find(|e| matches!(e.entry.intent, MaterializationIntent::Checkout))
             .unwrap();
         assert_eq!(checkout_status.status, Status::Missing);
+    }
+
+    #[tokio::test]
+    async fn virtual_checkout_modified_display_lists_the_changed_file() {
+        use crate::materialize::virtual_checkout::{git as vc_git, state as vc_state};
+
+        let td = TempDir::new().unwrap();
+        td.child("a.txt").write_str("original\n").unwrap();
+        let source_repo = git2::Repository::init(td.path()).unwrap();
+        let mut cfg = source_repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+        drop(cfg);
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let mut index = source_repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        {
+            let tree = source_repo.find_tree(tree_id).unwrap();
+            source_repo
+                .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+        }
+
+        let target = td.child("target");
+        fs::create_dir_all(target.path()).unwrap();
+        let head_tree = source_repo.head().unwrap().peel_to_tree().unwrap();
+        vc_git::checkout_subtree(&source_repo, &head_tree, target.path()).unwrap();
+        let base_oid = source_repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        vc_state::persist(
+            target.path(),
+            crate::materialize::virtual_checkout::state::VirtualCheckoutRecord {
+                overlay: "ov".to_string(),
+                managed_path: std::path::PathBuf::new(),
+                base_oid,
+                created_at: 0,
+                last_commit_at: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        fs::write(target.path().join("a.txt"), "edited\n").unwrap();
+
+        let entry = DesiredEntry {
+            target: target.path().to_path_buf(),
+            provenance: crate::desired::Provenance::Overlay {
+                overlay: "ov".to_string(),
+                source: td.path().to_path_buf(),
+            },
+            intent: MaterializationIntent::VirtualCheckout,
+            permissions: None,
+        };
+        let entry_status = EntryStatus {
+            entry: entry.clone(),
+            status: virtual_checkout::inspect(&entry).unwrap(),
+        };
+        assert_eq!(entry_status.status, Status::Modified);
+        let display = format!("{entry_status}");
+        assert!(display.contains("modified:"));
+        assert!(display.contains("M a.txt"));
     }
 
     #[test]

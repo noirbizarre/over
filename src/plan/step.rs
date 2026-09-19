@@ -68,6 +68,7 @@ fn intent_label(intent: &MaterializationIntent) -> &'static str {
         MaterializationIntent::SymlinkFile { .. } => "symlink",
         MaterializationIntent::SymlinkDirectory { .. } => "directory symlink",
         MaterializationIntent::Checkout => "checkout",
+        MaterializationIntent::VirtualCheckout => "virtual checkout",
         MaterializationIntent::PartialFile { .. } => "partial file",
     }
 }
@@ -167,6 +168,35 @@ impl fmt::Display for PlanStep {
             // resolution) — unreachable in practice, but a clear fallback
             // beats a silently wrong line.
             (MaterializationIntent::Checkout, Operation::Conflict { current }) => write!(
+                f,
+                "{} {} {} ({})",
+                emojis::WARNING,
+                style::yellow("conflict:"),
+                target,
+                current,
+            ),
+            (MaterializationIntent::VirtualCheckout, Operation::Create) => write!(
+                f,
+                "{} {} {}",
+                emojis::THREAD,
+                style::white("checkout:"),
+                target,
+            ),
+            (MaterializationIntent::VirtualCheckout, Operation::Noop) => write!(
+                f,
+                "{} {} {} ({})",
+                emojis::CHECKMARK,
+                style::white("checkout:"),
+                target,
+                style::white("present (use `over status`/`over sync` for details)"),
+            ),
+            // `VirtualCheckoutMaterializer::classify` never returns
+            // `Conflict` for a *known* virtual checkout (dirty/behind/
+            // conflict states are surfaced by `over status`/`over diff`/
+            // `over sync` instead) — only for genuinely foreign content at
+            // the target with no recorded association. Kept for
+            // completeness, same reasoning as the `Checkout` arm above.
+            (MaterializationIntent::VirtualCheckout, Operation::Conflict { current }) => write!(
                 f,
                 "{} {} {} ({})",
                 emojis::WARNING,
@@ -374,6 +404,87 @@ mod tests {
         let s = format!("{step}");
         assert!(s.contains("checkout:"));
         assert!(s.contains("over sync"));
+    }
+
+    #[test]
+    fn create_virtual_checkout_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::VirtualCheckout),
+            operation: Operation::Create,
+        };
+        let s = format!("{step}");
+        assert!(s.contains("checkout:"));
+    }
+
+    #[test]
+    fn noop_virtual_checkout_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::VirtualCheckout),
+            operation: Operation::Noop,
+        };
+        let s = format!("{step}");
+        assert!(s.contains("checkout:"));
+        assert!(s.contains("over status"));
+    }
+
+    #[test]
+    fn conflict_virtual_checkout_display() {
+        let step = PlanStep {
+            entry: entry(MaterializationIntent::VirtualCheckout),
+            operation: Operation::Conflict {
+                current: ActualState::Directory,
+            },
+        };
+        let s = format!("{step}");
+        assert!(s.contains("conflict:"));
+        assert!(s.contains("a directory"));
+    }
+
+    #[test]
+    fn migrate_labels_cover_every_intent_kind() {
+        // `intent_label` is only ever exercised through `Migrate`'s own
+        // `Display` — a direct assertion per intent, rather than relying
+        // on incidentally hitting each one through unrelated fixtures.
+        for (intent, label) in [
+            (MaterializationIntent::Directory, "directory"),
+            (
+                MaterializationIntent::SymlinkFile {
+                    source: PathBuf::from("/src"),
+                    link_type: LinkType::Soft,
+                },
+                "symlink",
+            ),
+            (
+                MaterializationIntent::SymlinkDirectory {
+                    source: PathBuf::from("/src"),
+                    link_type: LinkType::Soft,
+                },
+                "directory symlink",
+            ),
+            (MaterializationIntent::Checkout, "checkout"),
+            (MaterializationIntent::VirtualCheckout, "virtual checkout"),
+            (
+                MaterializationIntent::PartialFile {
+                    content: "x".to_string(),
+                    marker: "m".to_string(),
+                },
+                "partial file",
+            ),
+        ] {
+            let step = PlanStep {
+                entry: entry(MaterializationIntent::Directory),
+                operation: Operation::Migrate {
+                    from: intent.clone(),
+                    to: intent,
+                    blocked: None,
+                },
+            };
+            let s = format!("{step}");
+            assert!(
+                s.contains(label),
+                "expected label '{label}' in migrate display: {s}"
+            );
+        }
     }
 
     #[test]

@@ -57,3 +57,28 @@ isn't something `over` manages. If its declared configuration itself
 changes (e.g. its `url`), it's reported `Conflict` until the next `over
 apply` reconciles it. See
 [ADR-021](../adr/021-declared-git-repositories-report-provisioning-not-content-status.md).
+
+## Virtual checkouts (`materialization = "checkout"`)
+
+A subtree (or the whole overlay, via `defaults.materialization =
+"checkout"` or a `path = "."` rule) can be materialized as a **virtual
+checkout**: ordinary, directly editable files at the target, with no
+`.git` there at all, backed by the overlay's own source repository. See
+[ADR-022](../adr/022-virtual-checkout-materialization.md) for how this
+differs from a declared `git` repository above.
+
+Its status is computed against the checkout's recorded base revision —
+not by inspecting a real git working tree, since there isn't one at the
+target:
+
+| Status | Meaning |
+|--------|---------|
+| `Applied` | No local edits, and the source repository hasn't moved since the checkout was last materialized/synced/committed. |
+| `Modified` | One or more files were edited/added/deleted locally, and the source repository hasn't moved. Run `over commit`. |
+| `Behind` | The source repository has new commits touching the managed path; nothing local to lose — `over sync` fast-forwards it automatically. |
+| `Diverged` | Local edits *and* unrelated source-side changes, to different files — resolved by `over commit` (local) then `over sync` (source), in either order. |
+| `Conflict` | The *same* file changed both locally and in the source repository, to different content — resolve manually, then re-run. |
+| `Missing` / `Broken` | Not materialized yet, or its recorded association is gone — run `over apply`. |
+
+`--verbose` also lists the specific added/modified/deleted files
+underneath a virtual checkout's aggregate status line.

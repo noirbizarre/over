@@ -2315,3 +2315,303 @@ fn completion_invalid_shell() -> TestResult {
     cmd.assert().failure();
     Ok(())
 }
+
+// ── virtual checkout integration tests (#141) ──────────────────────────────
+
+/// An overlay resolving to a whole-overlay virtual checkout
+/// (`defaults.materialization = "checkout"`), inside a `home` that is
+/// itself the git repository `over` discovers as the checkout's source —
+/// unlike `setup_git_overlay`'s `overlay.git` (a real clone of a separate
+/// `origin`), there is no separate remote here at all.
+fn setup_checkout_overlay(home: &Path, name: &str) -> PathBuf {
+    let ov = home.join(name);
+    fs::create_dir_all(&ov).unwrap();
+    fs::write(
+        ov.join("over.toml"),
+        "target = \"~\"\n[defaults]\nmaterialization = \"checkout\"\n",
+    )
+    .unwrap();
+    fs::write(ov.join("file.txt"), "original\n").unwrap();
+    ov
+}
+
+fn commit_all(dir: &Path, message: &str) {
+    git(dir, &["add", "-A"]);
+    git(
+        dir,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            message,
+        ],
+    );
+}
+
+#[test]
+fn virtual_checkout_apply_materializes_files_with_no_git_directory() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    setup_checkout_overlay(&canonical_tmp, "dotfiles");
+    git(&canonical_tmp, &["init"]);
+    commit_all(&canonical_tmp, "initial");
+
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["apply", "dotfiles", "--root"])
+        .arg(root.path())
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read_to_string(root.path().join("file.txt"))?,
+        "original\n"
+    );
+    assert!(!root.path().join(".git").exists());
+    // The overlay's own descriptor must never be materialized as content.
+    assert!(!root.path().join("over.toml").exists());
+    Ok(())
+}
+
+#[test]
+fn virtual_checkout_status_and_diff_report_local_modification() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    setup_checkout_overlay(&canonical_tmp, "dotfiles");
+    git(&canonical_tmp, &["init"]);
+    commit_all(&canonical_tmp, "initial");
+
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["apply", "dotfiles", "--root"])
+        .arg(root.path())
+        .assert()
+        .success();
+
+    fs::write(root.path().join("file.txt"), "edited\n")?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["status", "dotfiles", "--verbose", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("modified"))
+        .stdout(contains("M file.txt"));
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["diff", "dotfiles", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("original"))
+        .stdout(contains("edited"));
+    Ok(())
+}
+
+#[test]
+fn virtual_checkout_commit_records_a_commit_in_the_source_repository() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let ov = setup_checkout_overlay(&canonical_tmp, "dotfiles");
+    git(&canonical_tmp, &["init"]);
+    commit_all(&canonical_tmp, "initial");
+
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["apply", "dotfiles", "--root"])
+        .arg(root.path())
+        .assert()
+        .success();
+
+    fs::write(root.path().join("file.txt"), "edited\n")?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args([
+            "commit",
+            "dotfiles",
+            "--no-prompt",
+            "--message",
+            "edit file.txt",
+            "--root",
+        ])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("committed"));
+
+    // A normal, inspectable commit landed in the source repository.
+    let output = std::process::Command::new("git")
+        .args(["log", "--oneline", "-1"])
+        .current_dir(&ov)
+        .output()?;
+    assert!(String::from_utf8_lossy(&output.stdout).contains("edit file.txt"));
+
+    // Nothing left to commit now, and status reports clean again.
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["status", "dotfiles", "--root"])
+        .arg(root.path())
+        .assert()
+        .success();
+    Ok(())
+}
+
+#[test]
+fn virtual_checkout_sync_fast_forwards_from_the_source_repository() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let ov = setup_checkout_overlay(&canonical_tmp, "dotfiles");
+    git(&canonical_tmp, &["init"]);
+    commit_all(&canonical_tmp, "initial");
+
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["apply", "dotfiles", "--root"])
+        .arg(root.path())
+        .assert()
+        .success();
+
+    // The source repository advances directly (e.g. a `git pull` the user
+    // ran themselves), with nothing changed at the target.
+    fs::write(ov.join("file.txt"), "advanced\n")?;
+    commit_all(&canonical_tmp, "advance");
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["sync", "dotfiles", "--no-prompt", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("fast-forwarded"));
+
+    assert_eq!(
+        fs::read_to_string(root.path().join("file.txt"))?,
+        "advanced\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn virtual_checkout_sync_reports_conflict_without_mutating_either_side() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let ov = setup_checkout_overlay(&canonical_tmp, "dotfiles");
+    git(&canonical_tmp, &["init"]);
+    commit_all(&canonical_tmp, "initial");
+
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["apply", "dotfiles", "--root"])
+        .arg(root.path())
+        .assert()
+        .success();
+
+    fs::write(root.path().join("file.txt"), "local change\n")?;
+    fs::write(ov.join("file.txt"), "source change\n")?;
+    commit_all(&canonical_tmp, "advance differently");
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["sync", "dotfiles", "--no-prompt", "--root"])
+        .arg(root.path())
+        .assert()
+        .failure()
+        .stdout(contains("conflict"));
+
+    assert_eq!(
+        fs::read_to_string(root.path().join("file.txt"))?,
+        "local change\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn virtual_checkout_log_lists_commits_scoped_to_the_overlay() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    setup_checkout_overlay(&canonical_tmp, "dotfiles");
+    git(&canonical_tmp, &["init"]);
+    commit_all(&canonical_tmp, "initial commit for dotfiles");
+
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["apply", "dotfiles", "--root"])
+        .arg(root.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["log", "dotfiles", "--root"])
+        .arg(root.path())
+        .assert()
+        .success()
+        .stdout(contains("initial commit for dotfiles"));
+    Ok(())
+}
+
+#[test]
+fn virtual_checkout_unapply_removes_only_when_clean() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    setup_checkout_overlay(&canonical_tmp, "dotfiles");
+    git(&canonical_tmp, &["init"]);
+    commit_all(&canonical_tmp, "initial");
+
+    let root = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["apply", "dotfiles", "--root"])
+        .arg(root.path())
+        .assert()
+        .success();
+
+    // Dirty: must be left untouched.
+    fs::write(root.path().join("file.txt"), "dirty\n")?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["unapply", "dotfiles", "--root"])
+        .arg(root.path())
+        .assert()
+        .failure();
+    assert!(root.path().join("file.txt").exists());
+
+    // Clean again: safe to remove.
+    fs::write(root.path().join("file.txt"), "original\n")?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["unapply", "dotfiles", "--root"])
+        .arg(root.path())
+        .assert()
+        .success();
+    assert!(!root.path().join("file.txt").exists());
+    Ok(())
+}

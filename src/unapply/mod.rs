@@ -213,6 +213,21 @@ impl Report {
                         other => Outcome::CheckoutNotClean { status: other },
                     }
                 }
+                // Same strict "only ever remove when fully clean" gate as
+                // `Checkout` above — a virtual checkout's own `inspect`
+                // already only ever reports `Applied` when there's nothing
+                // uncommitted locally and nothing the source repository
+                // has moved ahead by (#141); no separate "content vs
+                // declared" split exists for it the way #140 introduced
+                // for `Checkout` (a virtual checkout is never a
+                // provisioning-only resource).
+                (MaterializationIntent::VirtualCheckout, _) => {
+                    match status::virtual_checkout::inspect(&step.entry)? {
+                        Status::Missing => Outcome::AlreadyAbsent,
+                        Status::Applied => Outcome::Removed,
+                        other => Outcome::CheckoutNotClean { status: other },
+                    }
+                }
                 (_, Operation::Create) => Outcome::AlreadyAbsent,
                 // A permission-only drift (#65) doesn't change ownership:
                 // the content is still exactly what this overlay put
@@ -316,6 +331,9 @@ async fn dematerialize(entry: &DesiredEntry) -> Result<()> {
             remove_symlink_if_unchanged(entry.target.clone(), source.clone()).await
         }
         MaterializationIntent::Checkout => remove_checkout_if_clean(entry.clone()).await,
+        MaterializationIntent::VirtualCheckout => {
+            remove_virtual_checkout_if_clean(entry.clone()).await
+        }
         MaterializationIntent::PartialFile { content, marker } => {
             remove_partial_block_if_unchanged(entry.target.clone(), marker.clone(), content.clone())
                 .await
@@ -424,6 +442,31 @@ async fn remove_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
         Ok(())
     })
     .await?
+}
+
+/// Remove a virtual checkout's whole target directory, only if
+/// [`status::virtual_checkout::inspect`] still reports [`Status::Applied`]
+/// right now — same re-check-before-destroying reasoning as
+/// [`remove_checkout_if_clean`]. Also drops the XDG association record
+/// (#141): once the target is gone, the record would otherwise dangle,
+/// and a future virtual checkout re-materialized at the same path must not
+/// be misread as already having history against a `base_oid` it never
+/// actually started from.
+async fn remove_virtual_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
+    let inspect_entry = entry.clone();
+    let is_clean = spawn_blocking(move || {
+        anyhow::Ok(matches!(
+            status::virtual_checkout::inspect(&inspect_entry)?,
+            Status::Applied
+        ))
+    })
+    .await??;
+    if !is_clean {
+        return Ok(());
+    }
+    let target = entry.target.clone();
+    spawn_blocking(move || fs::remove_dir_all(&target)).await??;
+    crate::materialize::virtual_checkout::state::remove(&entry.target).await
 }
 
 #[cfg(test)]

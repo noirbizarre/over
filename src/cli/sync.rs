@@ -65,6 +65,12 @@ pub struct Params {
 
     #[clap(long, short = 'n', help = "Report what would happen without syncing")]
     dry_run: bool,
+
+    #[clap(
+        long,
+        help = "Never prompt to commit a virtual checkout's local changes; report them as blocked instead"
+    )]
+    no_prompt: bool,
 }
 
 impl Params {
@@ -74,6 +80,7 @@ impl Params {
             push: !self.pull_only,
             abort: self.abort,
             dry_run: self.dry_run,
+            no_prompt: self.no_prompt,
         }
     }
 }
@@ -195,6 +202,7 @@ fn summarize(outcomes: &[SyncOutcome]) -> String {
         ("fast-forwarded", 0),
         ("merged", 0),
         ("pushed", 0),
+        ("committed", 0),
         ("conflict(s)", 0),
         ("blocked", 0),
         ("aborted", 0),
@@ -205,9 +213,10 @@ fn summarize(outcomes: &[SyncOutcome]) -> String {
             SyncOutcome::FastForwarded { .. } => 1,
             SyncOutcome::Merged { .. } => 2,
             SyncOutcome::Pushed { .. } => 3,
-            SyncOutcome::Conflict { .. } => 4,
-            SyncOutcome::Blocked { .. } => 5,
-            SyncOutcome::Aborted { .. } => 6,
+            SyncOutcome::Committed { .. } => 4,
+            SyncOutcome::Conflict { .. } => 5,
+            SyncOutcome::Blocked { .. } => 6,
+            SyncOutcome::Aborted { .. } => 7,
         };
         counts[idx].1 += 1;
     }
@@ -243,6 +252,7 @@ mod tests {
             continue_: false,
             abort: false,
             dry_run: false,
+            no_prompt: false,
         }
     }
 

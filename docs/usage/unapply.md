@@ -46,6 +46,12 @@ materialize there right now:
   uncommitted changes, no unpushed commits, no merge/rebase in progress.
   Anything else is left untouched — resolve with `over sync` or plain git
   first.
+- A [virtual checkout](../adr/022-virtual-checkout-materialization.md) is
+  removed only when it's fully applied: no local edits, and not behind the
+  source repository. Anything else is left untouched — resolve with `over
+  commit`/`over sync` first. Its recorded XDG association is dropped
+  alongside it, so a virtual checkout later re-materialized at the same
+  path starts fresh rather than being misread against stale history.
 
 Removal proceeds deepest-target-first, so a directory that only ever held
 overlay-managed content becomes empty (and is then removed) once its

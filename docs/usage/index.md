@@ -20,6 +20,8 @@ integrates the same overlay model with git workflows — Git resolves
 | [`over diff`](diff.md) | Show differences between desired and actual overlay state |
 | [`over sync`](sync.md) | Reconcile a checkout-materialized overlay with its git source |
 | [`over unapply`](unapply.md) | Remove a given overlay's own entries from the target |
+| [`over commit`](commit.md) | Commit local changes in a checkout-materialized overlay back to its source repository |
+| [`over log`](log.md) | Show the git history behind a checkout-materialized overlay |
 
 ## `git-over`
 
