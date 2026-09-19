@@ -1,9 +1,9 @@
-# `git over status`
+# `over git status`
 
 Show overlay status for the current git repository.
 
 ```
-Usage: git-over status [OPTIONS]
+Usage: over git status [OPTIONS]
 
 Options:
   -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]

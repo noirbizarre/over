@@ -1,6 +1,6 @@
 # ADR-001: Two binaries, one crate
 
-**Status:** accepted
+**Status:** superseded by ADR-023
 
 ## Context
 

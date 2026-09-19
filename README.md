@@ -57,13 +57,13 @@ over --help
 | `over sync` | Reconcile a checkout-materialized overlay with its git source |
 | `over unapply` | Remove a given overlay's own entries from the target |
 
-A companion binary `git-over` integrates with git workflows:
+`over`'s `git` subcommand group integrates with git workflows:
 
 | Command | Description |
 |---------|-------------|
-| `git over mount` | Mount the current git repository to an overlay |
-| `git over add` | Add files from the current git repository to an overlay |
-| `git over status` | Show overlay status for the current git repository |
+| `over git mount` | Mount the current git repository to an overlay |
+| `over git add` | Add files from the current git repository to an overlay |
+| `over git status` | Show overlay status for the current git repository |
 
 See the [documentation](https://noirbizarre.github.io/over/) for the full
 command reference, configuration format, and install-manager reference

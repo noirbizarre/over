@@ -139,7 +139,7 @@ raw_args = true
 run = "cargo run --bin over --"
 
 [tasks.setup]
-description = "Install over and git-over locally, into ~/.cargo/bin"
+description = "Install over locally, into ~/.cargo/bin"
 run = "cargo install --path . --force"
 
 # --- Documentation ----------------------------------------------------------
@@ -226,10 +226,3 @@ git tpl diff --exit-code --stat
 #
 # Artwork tasks belong here rather than in `default` or `check`: they rewrite
 # committed binaries, so a routine run would dirty the working tree every time.
-
-# `over` has a second binary the template's [tasks.cli] does not know about —
-# `git-over` is a git subcommand, not a frontend to the same engine's `--help`.
-[tasks.git-over]
-description = "Run git-over from source"
-raw_args = true
-run = "cargo run --bin git-over --"

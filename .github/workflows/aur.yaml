@@ -151,17 +151,16 @@ jobs:
             exit 1
           fi
 
-      # Through `git`, not the binary directly: Git resolves `git over` only
-      # via an executable named exactly `git-over` on PATH, and a rename
-      # inside the archive is the one failure that would otherwise pass
-      # unnoticed.
+      # A rename inside the archive (the binary is no longer named `over`, or
+      # the `git` subcommand group stops being wired up) is the one failure
+      # that would otherwise pass unnoticed.
       - name: Verify the installed package
         working-directory: build
         run: |
           set -euo pipefail
           pacman -U --noconfirm ./*.pkg.tar.zst
           over --version
-          git over --version
+          over git --help
 
       - name: Generate .SRCINFO
         working-directory: build

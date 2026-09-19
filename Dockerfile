@@ -34,6 +34,5 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM gcr.io/distroless/cc-debian12
 
 COPY --from=builder /app/target/release/over /usr/local/bin/over
-COPY --from=builder /app/target/release/git-over /usr/local/bin/git-over
 
 ENTRYPOINT ["over"]

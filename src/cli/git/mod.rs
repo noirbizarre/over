@@ -2,44 +2,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
 
+use crate::cli::CLI;
 use crate::overlays::{Overlay, Repository};
-use crate::ui::style::{DialogTheme, clap_styles};
+use crate::ui::style::DialogTheme;
 
 mod add;
 mod mount;
 mod status;
-
-#[derive(Parser, Debug)]
-#[clap(
-    author,
-    version,
-    about = "Manage git repository overlays",
-    name = "git-over",
-    long_about = None,
-    styles = clap_styles(),
-)]
-pub struct CLI {
-    #[clap(
-        long,
-        short = 'H',
-        global = true,
-        required = false,
-        env = "OVER_HOME",
-        help = "Configuration and overlays root"
-    )]
-    home: Option<PathBuf>,
-
-    #[clap(long, short, global = true, help = "Toggle debug traces")]
-    debug: bool,
-
-    #[clap(long, short, global = true, help = "Toggle verbose output")]
-    verbose: bool,
-
-    #[clap(subcommand)]
-    cmd: Commands,
-}
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
@@ -53,24 +24,13 @@ pub enum Commands {
     Status,
 }
 
-impl CLI {
-    /// Resolve the over home directory: flag/env > default (~/.over)
-    pub fn resolve_home(&self) -> Result<PathBuf> {
-        crate::utils::resolve_home(self.home.as_ref())
+/// Dispatch a `over git <subcommand>` invocation.
+pub async fn execute(cli: &CLI, cmd: &Commands) -> Result<()> {
+    match cmd {
+        Commands::Mount(opt) => mount::execute(cli, opt).await,
+        Commands::Add(opt) => add::execute(cli, opt).await,
+        Commands::Status => status::execute(cli).await,
     }
-}
-
-pub async fn main() -> Result<()> {
-    let args = CLI::parse();
-
-    crate::ui::init_tracing(args.verbose, args.debug);
-
-    match &args.cmd {
-        Commands::Mount(opt) => mount::execute(&args, opt).await?,
-        Commands::Add(opt) => add::execute(&args, opt).await?,
-        Commands::Status => status::execute(&args).await?,
-    }
-    Ok(())
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────

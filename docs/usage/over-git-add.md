@@ -1,11 +1,11 @@
-# `git over add`
+# `over git add`
 
-Add files from the current git repository to an overlay — the `git-over`
+Add files from the current git repository to an overlay — the `over git`
 equivalent of [`over add`](add.md), resolved from inside the repository
-mounted with [`git over mount`](git-over-mount.md).
+mounted with [`over git mount`](over-git-mount.md).
 
 ```
-Usage: git-over add [OPTIONS] <FILES>...
+Usage: over git add [OPTIONS] <FILES>...
 
 Arguments:
   <FILES>...  Files, directories, or glob patterns to add

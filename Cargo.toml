@@ -1,9 +1,9 @@
 # over — A git-based file overlay manager (dotfiles as overlays)
 #
-# Two binaries, one crate: `over` is the standalone CLI, `git-over` is a git
-# subcommand (resolved by Git through an executable named exactly `git-over`
-# on PATH). Both share the library's domain types (`Overlay`, `Repository`)
-# and `utils::resolve_home`. See docs/adr/001-two-binaries-one-crate.md.
+# One binary: `over`. Git repository overlays are a nested subcommand group
+# (`over git mount`/`add`/`status`, see src/cli/git/mod.rs) rather than a
+# second `[[bin]]` resolved through Git's own `git-<verb>` PATH mechanism.
+# See docs/adr/023-merge-git-over-into-over.md (supersedes ADR-001).
 
 [package]
 name = "dot-over"
@@ -27,14 +27,10 @@ categories = ["command-line-utilities", "filesystem", "development-tools"]
 name = "over"
 path = "src/main.rs"
 
-[[bin]]
-name = "git-over"
-path = "src/bin/git-over.rs"
-
 # No explicit [lib] table: Cargo infers the library target's name from the
-# package name (`dot_over`), which is what `use dot_over::...` in both binaries
-# already expects (src/main.rs, src/bin/git-over.rs). An explicit `name = "over"`
-# here would rename the lib crate and break both of them.
+# package name (`dot_over`), which is what `use dot_over::...` in src/main.rs
+# already expects. An explicit `name = "over"` here would rename the lib
+# crate and break that.
 
 [profile.release]
 # Release binaries are cross-compiled once per tag and downloaded many times, so
