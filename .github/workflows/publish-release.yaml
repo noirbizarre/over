@@ -74,24 +74,22 @@ jobs:
             cargo build --release --locked --target ${{ matrix.target }} --features vendored
           fi
 
-      # Both binaries land in every archive: `git-over` is a companion to
-      # `over`, not an alternative, and Homebrew/AUR install both from one
-      # package. The base template ships a single bare binary as the asset —
-      # that only works for a one-binary project, so this project archives
-      # instead, the same way git-tpl's own customisation does.
+      # The base template ships a single bare binary as the asset, but
+      # Homebrew/AUR (packaging/) and the docs already expect a
+      # `.tar.gz`/`.zip` archive at `over_<version>_<asset>` — kept as an
+      # archive rather than reverted to a bare binary so those stay valid.
       - name: Stage the asset
         shell: bash
         run: |
           mkdir -p dist staging
           cp "target/${{ matrix.target }}/release/over${{ matrix.ext }}" staging/
-          cp "target/${{ matrix.target }}/release/git-over${{ matrix.ext }}" staging/
           name="over_${{ inputs.tag }}_${{ matrix.asset }}"
           if [ -n "${{ matrix.ext }}" ]; then
             # `zip` is absent from the Windows runners; 7-Zip is preinstalled.
             # `-tzip` because the default format would be .7z despite the name.
             (cd staging && 7z a -tzip "../dist/$name.zip" .)
           else
-            # `-C staging .` so the archive holds the binaries at its root
+            # `-C staging .` so the archive holds the binary at its root
             # rather than `staging/over`, which extractors would recreate.
             tar -C staging -czf "dist/$name.tar.gz" .
           fi

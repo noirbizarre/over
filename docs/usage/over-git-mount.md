@@ -1,11 +1,11 @@
-# `git over mount`
+# `over git mount`
 
 Mount the current git repository to an overlay: record the association in
-the repository's `.git/config` (`over.overlay`), so later `git over add`/
-`git over status` calls in this repository know which overlay to use.
+the repository's `.git/config` (`over.overlay`), so later `over git add`/
+`over git status` calls in this repository know which overlay to use.
 
 ```
-Usage: git-over mount [OPTIONS]
+Usage: over git mount [OPTIONS]
 
 Options:
   -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME]

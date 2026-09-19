@@ -1,9 +1,8 @@
 # Usage
 
-`over` is the standalone CLI. `git-over` is a companion binary that
-integrates the same overlay model with git workflows — Git resolves
-`git over <command>` to it because it is named exactly `git-over` and sits on
-`PATH`.
+`over` is the standalone CLI. Its `git` subcommand group (`over git
+mount`/`add`/`status`) integrates the same overlay model with git
+workflows.
 
 ## `over`
 
@@ -23,14 +22,14 @@ integrates the same overlay model with git workflows — Git resolves
 | [`over commit`](commit.md) | Commit local changes in a checkout-materialized overlay back to its source repository |
 | [`over log`](log.md) | Show the git history behind a checkout-materialized overlay |
 
-## `git-over`
+## `over git`
 
 | Command | Description |
 |---|---|
-| [`git over mount`](git-over-mount.md) | Mount the current git repository to an overlay |
-| [`git over add`](git-over-add.md) | Add files from the current git repository to an overlay |
-| [`git over status`](git-over-status.md) | Show overlay status for the current git repository |
+| [`over git mount`](over-git-mount.md) | Mount the current git repository to an overlay |
+| [`over git add`](over-git-add.md) | Add files from the current git repository to an overlay |
+| [`over git status`](over-git-status.md) | Show overlay status for the current git repository |
 
-Every `over` and `git-over` subcommand accepts `-H`/`--home` (or the
-`OVER_HOME` environment variable) to point at the overlays root, and
+Every `over` subcommand, including the `git` group, accepts `-H`/`--home`
+(or the `OVER_HOME` environment variable) to point at the overlays root, and
 `-d`/`--debug`, `-v`/`--verbose` for diagnostics.

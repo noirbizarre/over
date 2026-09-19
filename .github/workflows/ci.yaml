@@ -108,7 +108,7 @@ jobs:
       - name: Disable Windows Defender real-time scanning
         if: matrix.os.flag == 'windows'
         shell: pwsh
-        # This suite spawns many short-lived `git`/`over`/`git-over` processes
+        # This suite spawns many short-lived `git`/`over` processes
         # and writes just as many small files into fresh temp directories per
         # test. Defender's real-time protection inspects both, which is the
         # standard, documented reason this workload is dramatically slower on

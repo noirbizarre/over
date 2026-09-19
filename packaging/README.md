@@ -11,9 +11,8 @@ they bake in already resolve.
 | `aur/over-bin/` | AUR, prebuilt binary (x86_64, aarch64) | `.github/workflows/aur.yaml` |
 | `homebrew/over.rb` | `noirbizarre/homebrew-tap` | `.github/workflows/homebrew.yaml` |
 
-Both AUR packages and the Homebrew formula install **both** binaries —
-`over` and `git-over` — from the same source: `over` and `git-over` are not
-alternatives, `git-over` is a companion Git subcommand.
+Both AUR packages and the Homebrew formula install the single `over`
+binary from the same source.
 
 ## The placeholder contract
 
@@ -43,8 +42,8 @@ means adding both a placeholder and the substitution that fills it, and
 The templates address assets by name, so `.github/workflows/publish-
 release.yaml` and these files change together: each archive is
 `over_<version>_<asset>.<tar.gz|zip>`, produced by that workflow's "Stage
-the asset" step, and carries **no leading directory** — only `over` and
-`git-over` sit at its root today. The archive intentionally carries no man
+the asset" step, and carries **no leading directory** — only `over` sits at
+its root today. The archive intentionally carries no man
 pages or completions: completions are generated at install/package time by
 running the extracted binary, and there is no `man` subcommand to generate
 a page from yet.

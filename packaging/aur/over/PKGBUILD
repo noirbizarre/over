@@ -69,11 +69,7 @@ check() {
 
 package() {
 	cd "$pkgname-$pkgver"
-	# Both binaries: `git-over` is a companion to `over`, not an alternative —
-	# Git resolves `git over` only through an executable named exactly
-	# `git-over` on PATH.
 	install -Dm755 target/release/over "$pkgdir/usr/bin/over"
-	install -Dm755 target/release/git-over "$pkgdir/usr/bin/git-over"
 	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 	install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 

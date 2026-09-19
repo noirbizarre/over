@@ -11,7 +11,7 @@ mod commit;
 pub(crate) mod common;
 mod completion;
 mod diff;
-pub mod git_over;
+mod git;
 mod lint;
 mod list;
 mod log;
@@ -110,6 +110,9 @@ pub enum Commands {
         about = "Show the git history behind a checkout-materialized overlay"
     )]
     Log(log::Params),
+
+    #[clap(subcommand, about = "Manage git repository overlays")]
+    Git(git::Commands),
 }
 
 impl CLI {
@@ -165,6 +168,9 @@ pub async fn main() -> Result<()> {
         }
         Some(Commands::Log(ref opt)) => {
             log::execute(&args, opt).await?;
+        }
+        Some(Commands::Git(ref cmd)) => {
+            git::execute(&args, cmd).await?;
         }
         None => {
             use clap::CommandFactory;
@@ -308,6 +314,12 @@ mod tests {
     fn cli_log_subcommand_with_overlay_name() {
         let args = CLI::parse_from(["over", "log", "myoverlay"]);
         assert!(matches!(args.cmd, Some(Commands::Log(_))));
+    }
+
+    #[test]
+    fn cli_git_subcommand() {
+        let args = CLI::parse_from(["over", "git", "status"]);
+        assert!(matches!(args.cmd, Some(Commands::Git(_))));
     }
 
     #[test]

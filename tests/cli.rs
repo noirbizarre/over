@@ -1795,10 +1795,10 @@ apt = ["curl"]
     Ok(())
 }
 
-// ── git-over integration tests ────────────────────────────────────────────
+// ── over git integration tests ────────────────────────────────────────────
 
 #[test]
-fn git_over_add_dry_run() -> TestResult {
+fn over_git_add_dry_run() -> TestResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("gitov");
@@ -1816,9 +1816,10 @@ fn git_over_add_dry_run() -> TestResult {
         .current_dir(&repo_dir)
         .output()?;
 
-    Command::cargo_bin("git-over")?
+    Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
+        .arg("git")
         .arg("add")
         .arg(test_file.to_str().unwrap())
         .arg("-o")
@@ -1831,7 +1832,7 @@ fn git_over_add_dry_run() -> TestResult {
 }
 
 #[test]
-fn git_over_add_debug_output() -> TestResult {
+fn over_git_add_debug_output() -> TestResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("gitov_debug");
@@ -1847,10 +1848,11 @@ fn git_over_add_debug_output() -> TestResult {
         .current_dir(&repo_dir)
         .output()?;
 
-    Command::cargo_bin("git-over")?
+    Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
         .arg("--debug")
+        .arg("git")
         .arg("add")
         .arg(test_file.to_str().unwrap())
         .arg("-o")
@@ -1865,7 +1867,7 @@ fn git_over_add_debug_output() -> TestResult {
 }
 
 #[test]
-fn git_over_add_debug_output_bare_repo() -> TestResult {
+fn over_git_add_debug_output_bare_repo() -> TestResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let repo_dir = canonical_tmp.join("repo");
@@ -1879,10 +1881,11 @@ fn git_over_add_debug_output_bare_repo() -> TestResult {
     // Bare repo living at <repo_dir>/.git, mirroring `over`'s worktree-workspace convention.
     git2::Repository::init_bare(repo_dir.join(".git"))?;
 
-    Command::cargo_bin("git-over")?
+    Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
         .arg("--debug")
+        .arg("git")
         .arg("add")
         .arg(test_file.to_str().unwrap())
         .arg("-o")
@@ -1896,7 +1899,7 @@ fn git_over_add_debug_output_bare_repo() -> TestResult {
 }
 
 #[test]
-fn git_over_add_debug_output_linked_worktree() -> TestResult {
+fn over_git_add_debug_output_linked_worktree() -> TestResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let main_repo = canonical_tmp.join("main");
@@ -1921,7 +1924,7 @@ fn git_over_add_debug_output_linked_worktree() -> TestResult {
     // The overlay target must match the *main* repo root, not the worktree
     // path: `main_repo_root()` resolves worktrees back to the main repo
     // since overlay configs are keyed by the main repo path (see its doc
-    // comment in `src/cli/git_over/mod.rs`).
+    // comment in `src/cli/git/mod.rs`).
     let target_str = main_repo.to_string_lossy().replace('\\', "\\\\");
     let ov = canonical_tmp.join("gitov_worktree");
     fs::create_dir_all(&ov)?;
@@ -1931,10 +1934,11 @@ fn git_over_add_debug_output_linked_worktree() -> TestResult {
     let test_file = main_repo.join("test.txt");
     fs::write(&test_file, b"content")?;
 
-    Command::cargo_bin("git-over")?
+    Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
         .arg("--debug")
+        .arg("git")
         .arg("add")
         .arg(test_file.to_str().unwrap())
         .arg("-o")
@@ -1948,7 +1952,7 @@ fn git_over_add_debug_output_linked_worktree() -> TestResult {
 }
 
 #[test]
-fn git_over_mount_debug_output() -> TestResult {
+fn over_git_mount_debug_output() -> TestResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("gitov_mount");
@@ -1966,10 +1970,11 @@ fn git_over_mount_debug_output() -> TestResult {
     // exercised regardless of whether the platform's terminal detection
     // causes the (unrelated) property-export prompt to succeed or fail
     // when run with non-interactive stdin in CI.
-    Command::cargo_bin("git-over")?
+    Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
         .arg("--debug")
+        .arg("git")
         .arg("mount")
         .arg("-o")
         .arg("gitov_mount")
@@ -1985,7 +1990,7 @@ fn git_over_mount_debug_output() -> TestResult {
 }
 
 #[test]
-fn git_over_mount_debug_output_with_git_properties() -> TestResult {
+fn over_git_mount_debug_output_with_git_properties() -> TestResult {
     // Exercise the local-repo property inspection (origin remote, current
     // branch, non-origin remotes, and linked-worktree detection) so it is
     // actually run instead of short-circuiting on an empty repo. The
@@ -2033,10 +2038,11 @@ fn git_over_mount_debug_output_with_git_properties() -> TestResult {
 
     // Run from the linked worktree so `is_worktree()` is true and the
     // named-worktree detection/resolution path also runs.
-    Command::cargo_bin("git-over")?
+    Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
         .arg("--debug")
+        .arg("git")
         .arg("mount")
         .arg("-o")
         .arg("gitov_mount_props")
@@ -2048,7 +2054,7 @@ fn git_over_mount_debug_output_with_git_properties() -> TestResult {
 }
 
 #[test]
-fn git_over_status_no_overlay_configured() -> TestResult {
+fn over_git_status_no_overlay_configured() -> TestResult {
     let tmp = TempDir::new()?;
     let ov = tmp.path().join("statusov");
     fs::create_dir_all(&ov)?;
@@ -2060,9 +2066,10 @@ fn git_over_status_no_overlay_configured() -> TestResult {
         .current_dir(&repo_dir)
         .output()?;
 
-    Command::cargo_bin("git-over")?
+    Command::cargo_bin("over")?
         .arg("--home")
         .arg(tmp.path())
+        .arg("git")
         .arg("status")
         .current_dir(&repo_dir)
         .assert()
@@ -2072,7 +2079,7 @@ fn git_over_status_no_overlay_configured() -> TestResult {
 }
 
 #[test]
-fn git_over_status_with_overlay_configured() -> TestResult {
+fn over_git_status_with_overlay_configured() -> TestResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("statusov2");
@@ -2092,9 +2099,10 @@ fn git_over_status_with_overlay_configured() -> TestResult {
         .current_dir(&repo_dir)
         .output()?;
 
-    Command::cargo_bin("git-over")?
+    Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
+        .arg("git")
         .arg("status")
         .current_dir(&repo_dir)
         .assert()
@@ -2104,7 +2112,7 @@ fn git_over_status_with_overlay_configured() -> TestResult {
 }
 
 #[test]
-fn git_over_add_multiple_files_dry_run() -> TestResult {
+fn over_git_add_multiple_files_dry_run() -> TestResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("gitov_multi");
@@ -2124,9 +2132,10 @@ fn git_over_add_multiple_files_dry_run() -> TestResult {
         .current_dir(&repo_dir)
         .output()?;
 
-    Command::cargo_bin("git-over")?
+    Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
+        .arg("git")
         .arg("add")
         .arg(file_a.to_str().unwrap())
         .arg(file_b.to_str().unwrap())
@@ -2140,7 +2149,7 @@ fn git_over_add_multiple_files_dry_run() -> TestResult {
 }
 
 #[test]
-fn git_over_add_directory_dry_run() -> TestResult {
+fn over_git_add_directory_dry_run() -> TestResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("gitov_dir");
@@ -2159,9 +2168,10 @@ fn git_over_add_directory_dry_run() -> TestResult {
         .current_dir(&repo_dir)
         .output()?;
 
-    Command::cargo_bin("git-over")?
+    Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
+        .arg("git")
         .arg("add")
         .arg(dir.to_str().unwrap())
         .arg("-o")
@@ -2174,7 +2184,7 @@ fn git_over_add_directory_dry_run() -> TestResult {
 }
 
 #[test]
-fn git_over_add_nonexistent_file_fails() -> TestResult {
+fn over_git_add_nonexistent_file_fails() -> TestResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("gitov_err");
@@ -2190,9 +2200,10 @@ fn git_over_add_nonexistent_file_fails() -> TestResult {
         .current_dir(&repo_dir)
         .output()?;
 
-    Command::cargo_bin("git-over")?
+    Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
+        .arg("git")
         .arg("add")
         .arg("nonexistent_file.txt")
         .arg("-o")

@@ -5,9 +5,9 @@ Notes for anyone — human or otherwise — changing this repository.
 ## What this project is
 
 A git-based file overlay manager (dotfiles as overlays). `over` is the
-standalone CLI; `git-over` is a companion binary that integrates with git
-workflows (`git over mount`, `git over add`, `git over status`). Keep changes
-minimal and focused.
+standalone CLI; its `git` subcommand group integrates with git workflows
+(`over git mount`, `over git add`, `over git status`). Keep changes minimal
+and focused.
 
 ## Layout
 
@@ -15,9 +15,8 @@ minimal and focused.
 src/
 ├── lib.rs        the library surface
 ├── main.rs       the `over` binary
-├── bin/git-over.rs  the `git-over` binary
 ├── actions/      filesystem, symlink, install and git side effects
-├── cli/          argument types for both binaries
+├── cli/          argument types for the CLI (cli/git/ is the `over git` group)
 ├── desired/      the DesiredTree/DesiredEntry desired-state model
 ├── diff/         `over diff` desired-vs-actual comparison
 ├── exec/         execution context and templating

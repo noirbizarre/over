@@ -62,8 +62,8 @@ Releases are run by [gh-ship](https://github.com/noirbizarre/gh-ship).
 3. gh-ship opens (or updates) the Release PR from `release/next`. Review it.
 4. Merging it triggers 🚢 Ship again, which runs `gh ship release`: it tags the
    merge commit, creates a draft release, dispatches 📦 Publish Release to
-   attach both binaries (`over` and `git-over`) and publish `dot-over` to
-   crates.io, then makes the release public.
+   attach the `over` binary and publish `dot-over` to crates.io, then makes
+   the release public.
 
 Nothing to release is the normal case for step 1, and costs one workflow run
 reporting `changed: false`.

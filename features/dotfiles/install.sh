@@ -47,16 +47,15 @@ install_from_image() {
     local tag="${VERSION}"
     local image="${OVER_IMAGE}:${tag}"
 
-    echo "Extracting over binaries from ${image} (${arch})..."
+    echo "Extracting over binary from ${image} (${arch})..."
 
     local tmp
     tmp="$(mktemp -d)"
 
-    # Export the image filesystem and extract the binaries
+    # Export the image filesystem and extract the binary
     crane export --platform "linux/${arch}" "${image}" - \
         | tar -xf - -C "${tmp}" \
             usr/local/bin/over \
-            usr/local/bin/git-over \
         2>/dev/null || true
 
     if [ -f "${tmp}/usr/local/bin/over" ]; then
@@ -67,12 +66,6 @@ install_from_image() {
         echo "ERROR: Failed to extract over binary from image" >&2
         rm -rf "${tmp}"
         return 1
-    fi
-
-    if [ -f "${tmp}/usr/local/bin/git-over" ]; then
-        mv "${tmp}/usr/local/bin/git-over" "${INSTALL_DIR}/git-over"
-        chmod +x "${INSTALL_DIR}/git-over"
-        echo "Installed git-over to ${INSTALL_DIR}/git-over"
     fi
 
     rm -rf "${tmp}"

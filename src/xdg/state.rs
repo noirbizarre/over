@@ -11,7 +11,7 @@
 //! - writes are atomic (temp file + rename), so a crash mid-write can never
 //!   leave a half-written document behind;
 //! - reads and writes are serialized through an advisory file lock, so two
-//!   concurrent `over`/`git-over` invocations can't corrupt the same file.
+//!   concurrent `over` invocations can't corrupt the same file.
 
 use std::fs::OpenOptions;
 use std::path::PathBuf;
