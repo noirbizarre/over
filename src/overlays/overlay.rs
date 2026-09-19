@@ -13,6 +13,7 @@ use crate::actions::git::config::{GitRepoConfig, deserialize_git_field};
 use crate::actions::install::InstallConfig;
 use crate::desired::DesiredTree;
 use crate::exec::{self, Ctx};
+use crate::git_exclude;
 use crate::plan::Plan;
 use crate::ui;
 use crate::ui::{emojis, style};
@@ -336,6 +337,27 @@ impl Overlay {
                 ui::info(format!("{plan}")).ok();
             }
             plan.execute(ctx_with_target).await?;
+
+            // #146: exclude this overlay's managed paths (symlinks,
+            // checkouts) from any git repository they landed in, so a
+            // target repo's `git status` stops listing them as untracked.
+            // Skipped on `--dry-run` (nothing was actually materialized to
+            // exclude). Real I/O failures propagate like any other apply
+            // step; tracked-path conflicts and malformed blocks are
+            // reported as warnings by `reconcile` itself, never as errors —
+            // it only ever touches `over`'s own marker block, never the
+            // repo's tracked state.
+            if !ctx.dry_run {
+                let managed = git_exclude::managed_targets(&desired);
+                if !managed.is_empty() {
+                    git_exclude::reconcile(&managed).with_context(|| {
+                        format!(
+                            "failed to reconcile git excludes for overlay '{}'",
+                            self.name
+                        )
+                    })?;
+                }
+            }
 
             stack.pop();
             visited.insert(self.name.clone());

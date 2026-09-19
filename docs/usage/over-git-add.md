@@ -19,3 +19,6 @@ Options:
   -v, --verbose            Toggle verbose output
   -h, --help               Print help
 ```
+
+Added files are also excluded from this repository's `git status` via the
+same per-overlay `.git/info/exclude` block that `over apply` maintains.

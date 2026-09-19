@@ -37,3 +37,8 @@ Options:
   per entry: create/no-op/conflict) before executing it, rather than just
   reporting success or failure. See
   [ADR-011](../adr/011-plan-then-execute-reconciliation.md).
+- Symlinked files/directories and checkouts that land inside a git-tracked
+  target are added to that repository's `.git/info/exclude`, in a block
+  scoped to the applied overlay, so its own `git status` stops listing them
+  as untracked. Skipped on `--dry-run`; a path already tracked by that
+  repository is never excluded.
