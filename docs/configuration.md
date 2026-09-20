@@ -44,7 +44,8 @@ so it can resolve to a different overlay per machine:
 default_overlay = "hosts/{{ machine.hostname }}"
 ```
 
-Selection priority (highest to lowest) for `over apply`/`over unapply`:
+Selection priority (highest to lowest) for `over apply`/`over unapply`/
+`over commit`:
 
 1. An explicit `NAME` CLI argument.
 2. The resolved `default_overlay`.
