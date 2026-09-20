@@ -160,8 +160,12 @@ content = "alias ll='ls -la'\n"
 # marker = "aliases"   # optional; defaults to the sidecar's own stem
 ```
 
-- `target`: the file to modify. Templated the same way an overlay's own
-  `target` field is (`{{ env.* }}`, `{{ machine.* }}`, `{{ overlays[...] }}`).
+- `target`: the file to modify. Templated the same way a `.link.*` sidecar's
+  `target` is (`{{ env.* }}`, `{{ machine.* }}`, `{{ overlays[...] }}`) — not
+  the same context as an overlay's own `target` field, which currently only
+  exposes `{{ machine.* }}` and has no `env`/`overlays` maps. See
+  [ADR-010](adr/010-templating-is-scoped-to-path-strings.md) for the
+  templating design these two paths share.
 - `content`: the literal block body, used verbatim (not templated).
 - `marker`: identifies the block, so more than one sidecar can manage
   distinct blocks in the same target file. Defaults to the sidecar's stem.
