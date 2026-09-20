@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::{Context as _, Result};
 use globset::GlobBuilder;
 use walkdir::WalkDir;
 

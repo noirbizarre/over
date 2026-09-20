@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::LazyLock;
 
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::{Context as _, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::desired::DesiredTree;

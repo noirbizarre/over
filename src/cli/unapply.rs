@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{Context as AnyhowContext, Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use clap::Args;
 use dirs::home_dir;
 

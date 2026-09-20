@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashSet};
 use std::env::consts::OS;
 
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 use which::which;
 

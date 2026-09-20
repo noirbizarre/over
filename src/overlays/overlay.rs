@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::{Context as _, Result};
 use config::{Config, File, FileFormat, FileSourceFile};
 use globset::GlobBuilder;
 use serde::{Deserialize, Serialize};

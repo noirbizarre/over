@@ -3,7 +3,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 
 use noyalib::compat::serde_yaml as serde_yml;
