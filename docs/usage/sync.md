@@ -76,7 +76,7 @@ known locally.
   merge back to the pre-merge `HEAD`.
 
 `over sync` persists a small, informational-only checkpoint under
-$XDG_STATE_HOME/over` (overlay/checkout association, last synced commit
+`$XDG_STATE_HOME/over` (overlay/checkout association, last synced commit
 and outcome). It is never read back to decide correctness — git's own
 repository state remains authoritative — so deleting it is always
 harmless.

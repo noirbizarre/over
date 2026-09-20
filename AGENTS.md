@@ -43,13 +43,13 @@ Dependencies point inward. Nothing in the library knows a command exists.
 - Format: `cargo fmt --all` (or `mise run format`)
 - Lint: `cargo clippy --all-targets --all-features -- -Dclippy::all` (or `mise run lint`)
 - Test all: `cargo nextest run` (or `mise run test`)
-- Single test: `cargo nextest run --test <file> -- <name::path>` or fallback `cargo test <name>`
+- Single test: `cargo nextest run <name::path>` or fallback `cargo test <name>`
 - Coverage: `cargo llvm-cov nextest` (or `mise run cover`)
 
 ## Style
 
 - Edition 2024; use `anyhow::Result` for fallible public fns; prefer `?` and propagate errors; avoid `.unwrap()` outside tests unless guaranteed.
-- Imports: group std / external / crate; avoid wildcard; keep ordering lexical; re-export only intentional items (see `lib.rs`).
+- Imports: group std / external / crate; avoid wildcard; keep ordering lexical; re-export only intentional items (see `actions/mod.rs`).
 - Types: use explicit `PathBuf`, `Arc<Context>`; alias errors with `Result<T, anyhow::Error>`; prefer enums over strings for state.
 - Naming: snake_case for functions/vars, PascalCase for types/traits; modules concise (`fs`, `git`); constants UPPER_SNAKE; avoid abbreviations except well-known (`ctx`).
 - Async: traits with `#[async_trait]`; pass cloned `Arc` rather than &mut; avoid blocking in async (wrap with `spawn_blocking`).
