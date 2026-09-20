@@ -11,7 +11,7 @@ and focused.
 
 ## Layout
 
-```
+```text
 src/
 ├── lib.rs        the library surface
 ├── main.rs       the `over` binary
@@ -48,15 +48,25 @@ Dependencies point inward. Nothing in the library knows a command exists.
 
 ## Style
 
-- Edition 2024; use `anyhow::Result` for fallible public fns; prefer `?` and propagate errors; avoid `.unwrap()` outside tests unless guaranteed.
-- Imports: group std / external / crate; avoid wildcard; keep ordering lexical; re-export only intentional items (see `actions/mod.rs`).
-- Types: use explicit `PathBuf`, `Arc<Context>`; alias errors with `Result<T, anyhow::Error>`; prefer enums over strings for state.
-- Naming: snake_case for functions/vars, PascalCase for types/traits; modules concise (`fs`, `git`); constants UPPER_SNAKE; avoid abbreviations except well-known (`ctx`).
-- Async: traits with `#[async_trait]`; pass cloned `Arc` rather than &mut; avoid blocking in async (wrap with `spawn_blocking`).
-- Error handling: never silence errors; use context via `anyhow!(...)` or `.with_context(...)`; return early on invalid state.
-- CLI: derive `Parser`/`Subcommand`; keep help strings imperative; prefer explicit flags (`--dry-run`).
-- Formatting enforced by `cargo fmt`; do not hand-align; trailing spaces removed (prek).
-- Tests: use `rstest` for parametrization; assertions via `pretty_assertions` when readability matters; unit tests live beside code under `#[cfg(test)]`.
+- Edition 2024; use `anyhow::Result` for fallible public fns; prefer `?` and
+  propagate errors; avoid `.unwrap()` outside tests unless guaranteed.
+- Imports: group std / external / crate; avoid wildcard; keep ordering
+  lexical; re-export only intentional items (see `actions/mod.rs`).
+- Types: use explicit `PathBuf`, `Arc<Context>`; alias errors with
+  `Result<T, anyhow::Error>`; prefer enums over strings for state.
+- Naming: snake_case for functions/vars, PascalCase for types/traits; modules
+  concise (`fs`, `git`); constants UPPER_SNAKE; avoid abbreviations except
+  well-known (`ctx`).
+- Async: traits with `#[async_trait]`; pass cloned `Arc` rather than &mut;
+  avoid blocking in async (wrap with `spawn_blocking`).
+- Error handling: never silence errors; use context via `anyhow!(...)` or
+  `.with_context(...)`; return early on invalid state.
+- CLI: derive `Parser`/`Subcommand`; keep help strings imperative; prefer
+  explicit flags (`--dry-run`).
+- Formatting enforced by `cargo fmt`; do not hand-align; trailing spaces
+  removed (prek).
+- Tests: use `rstest` for parametrization; assertions via `pretty_assertions`
+  when readability matters; unit tests live beside code under `#[cfg(test)]`.
 
 **Every non-obvious line carries a comment saying why.** Not what — the code
 says what. Ideally naming the failure it prevents. A comment that restates the
@@ -83,8 +93,8 @@ derives the version from the commit history, `prepare-release` applies it, and
 mise run ci
 ```
 
-Formatting, Clippy, spelling, workflow linting, tests and the documentation
-build. Same as CI.
+Formatting, Clippy, spelling, workflow and Markdown linting, tests and the
+documentation build. Same as CI.
 
 ## This repository is generated from a template
 

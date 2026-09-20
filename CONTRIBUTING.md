@@ -27,6 +27,7 @@ components and cross-compilation targets.
 | `mise run format` | Format |
 | `mise run lint` | Clippy, warnings denied |
 | `mise run lint:actions` | actionlint over the workflows |
+| `mise run lint:md` | markdownlint over AGENTS.md, CONTRIBUTING.md, README.md and docs/ |
 | `mise run spell` | typos |
 | `mise run snapshots` | Review pending insta snapshots |
 | `mise run check` | Everything that does not modify the working tree |
@@ -77,7 +78,7 @@ default token cannot trigger workflows, so a Release PR it authored would show
 no CI results. That means the repository needs:
 
 - a `release` environment holding the variable `APP_CLIENT_ID` and the secret
-  `APP_PRIVATE_KEY`;
+  `APP_PRIVATE_KEY`.
 - squash-merge settings of `squash_merge_commit_title: PR_TITLE` and
   `squash_merge_commit_message: BLANK`, so the squash commit subject is the
   Conventional Commit title from `.github/ship.yml`.

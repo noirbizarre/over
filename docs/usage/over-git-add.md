@@ -4,7 +4,7 @@ Add files from the current git repository to an overlay — the `over git`
 equivalent of [`over add`](add.md), resolved from inside the repository
 mounted with [`over git mount`](over-git-mount.md).
 
-```
+```text
 Usage: over git add [OPTIONS] <FILES>...
 
 Arguments:

@@ -2,7 +2,7 @@
 
 Add files or directories to an overlay.
 
-```
+```text
 Usage: over add [OPTIONS] <FILES>...
 
 Arguments:

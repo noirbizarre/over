@@ -2,7 +2,7 @@
 
 Show overlay status for the current git repository.
 
-```
+```text
 Usage: over git status [OPTIONS]
 
 Options:

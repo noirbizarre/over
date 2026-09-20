@@ -6,7 +6,7 @@ overlay — including commits made via [`over commit`](commit.md) — without
 needing to `cd` into the overlay's source repository and run `git log`
 yourself.
 
-```
+```text
 Usage: over log [OPTIONS] [NAME]
 
 Arguments:

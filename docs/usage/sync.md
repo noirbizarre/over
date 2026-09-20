@@ -4,7 +4,7 @@ Reconcile a checkout-materialized overlay with its git source: pull
 upstream changes into the checkout, and push local commits made directly in
 the checkout back upstream.
 
-```
+```text
 Usage: over sync [OPTIONS] [NAME]
 
 Arguments:

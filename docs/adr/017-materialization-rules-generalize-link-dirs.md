@@ -12,7 +12,7 @@ outcome, with no way to declare a repository-wide default independent of any
 particular pattern, and no way to override that default for a specific
 subtree without also going back to enumerating `link_dirs` globs.
 
-#113 asks for a general `defaults`/`rules` model: a default materialization
+\#113 asks for a general `defaults`/`rules` model: a default materialization
 for an overlay, plus more specific path/subtree overrides, resolved
 hierarchically. `checkout` materialization (`overlay.git`) and rule-driven
 migration between materializations are both out of scope here — see #129 for

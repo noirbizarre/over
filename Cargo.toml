@@ -14,7 +14,10 @@ version = "0.0.1"
 # against; the two answer different questions.
 rust-version = "1.98"
 license = "MIT"
-authors = ["Axel H. <noirbizarre@gmail.com>"]
+# No `authors`: Cargo/crates.io stopped generating and reading it after the
+# 2021 edition — ownership on crates.io comes from the registry account that
+# published, not this field. `author` still feeds LICENSE and, when `aur` is
+# on, the PKGBUILD's `# Maintainer:` line.
 description = "A git-based file overlay manager (dotfiles as overlays)"
 repository = "https://github.com/noirbizarre/over"
 homepage = "https://noirbizarre.github.io/over/"
@@ -23,22 +26,60 @@ readme = "README.md"
 keywords = ["dotfiles", "overlay", "git", "symlink", "cli"]
 categories = ["command-line-utilities", "filesystem", "development-tools"]
 # Not published to crates.io. Distribution is through the release assets alone,
-# and `cargo install over` would create a second install path that nothing
-# tests and nobody updates.
+# and `cargo install over` would create a second install path that
+# nothing tests and nobody updates.
 publish = false
+
+# cargo-binstall otherwise derives an asset name from the target triple, and
+# the publish workflow's assets carry short platform suffixes instead (the
+# `asset` field of each entry in `data/targets.toml`). A wrong guess is not an
+# error: binstall silently falls back to compiling from source, which is the
+# slow path this exists to avoid. So every target the publish workflow builds
+# is mapped by hand, from that same catalogue — one override per selected
+# target, so this list never drifts from the publish matrix.
+#
+# `pkg-fmt = "tgz"`, not the template default of `"bin"`: unlike the
+# template's bare-binary default, this project's "Stage the asset" step in
+# publish-release.yaml always archives (`.tar.gz`/`.zip`), because
+# Homebrew/AUR (packaging/) and the docs already expect that shape. The
+# Windows leg overrides `pkg-fmt` to `"zip"` to match.
+[package.metadata.binstall]
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/{ version }/over_{ version }_linux-amd64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/{ version }/over_{ version }_linux-arm64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/{ version }/over_{ version }_linux-amd64-musl.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/{ version }/over_{ version }_darwin-amd64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/{ version }/over_{ version }_darwin-arm64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+pkg-url = "{ repo }/releases/download/{ version }/over_{ version }_windows-amd64.zip"
 
 [[bin]]
 name = "over"
 path = "src/main.rs"
 
-# No explicit [lib] table: Cargo infers the library target's name from the
-# package name (`over`), which is what `use over::...` in src/main.rs already
-# expects. An explicit `name = "over"` here would be redundant with that
-# inference.
+[lib]
+name = "over"
+path = "src/lib.rs"
 
 [profile.release]
 # Release binaries are cross-compiled once per tag and downloaded many times, so
 # the build cost is paid once and the size saving is paid forward.
+#
+# Cargo only reads [profile.*] from a workspace's root manifest, so this stays
+# unconditional: member crates inherit it whether or not this file also
+# defines a [package].
 lto = true
 codegen-units = 1
 strip = true
@@ -48,10 +89,10 @@ strip = true
 # Everything above this line is owned by the template and will keep updating.
 # Everything below is yours.
 #
-# The template seeds these two sections once, at `git tpl init`, and then leaves
-# them alone: Dependabot bumps versions here weekly, and a template that
-# propagated its own would open a conflict against every one of those PRs.
-# Resolve in favour of the project if `git tpl update` ever touches them.
+# The template seeds what follows once, at `git tpl init`, and then leaves it
+# alone: Dependabot bumps versions here weekly, and a template that propagated
+# its own would open a conflict against every one of those PRs. Resolve in
+# favour of the project if `git tpl update` ever touches it.
 
 [dependencies]
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }

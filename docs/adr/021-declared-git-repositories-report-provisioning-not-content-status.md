@@ -5,7 +5,7 @@
 ## Context
 
 ADR-014 already drew a conceptual line through `overlay.git`: the root
-entry (`repo_key == `[`ROOT_PATH`](../../src/actions/git/config.rs), `"."`)
+entry (`repo_key ==` [`ROOT_PATH`](../../src/actions/git/config.rs), `"."`)
 is the overlay's own content, a genuine bidirectional sync surface; any
 other entry is a declared, opaque resource — e.g. a plugin manager's clone
 at a subpath — whose content `over` never synchronizes. That ADR only

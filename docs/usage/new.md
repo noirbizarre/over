@@ -2,7 +2,7 @@
 
 Create a new overlay.
 
-```
+```text
 Usage: over new [OPTIONS] [PATH] [TARGET]
 
 Arguments:

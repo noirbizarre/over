@@ -4,7 +4,7 @@ Record local changes made directly in a
 [virtual checkout](../adr/022-virtual-checkout-materialization.md) back
 into the overlay's own source repository, as a normal git commit.
 
-```
+```text
 Usage: over commit [OPTIONS] [NAME]
 
 Arguments:

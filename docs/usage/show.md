@@ -2,7 +2,7 @@
 
 Display details about an overlay.
 
-```
+```text
 Usage: over show [OPTIONS] <NAME>
 
 Arguments:
