@@ -884,6 +884,12 @@ fn setup_git_origin(path: &Path) {
             "user.name=Test",
             "-c",
             "user.email=test@example.com",
+            // Force off: an ambient `commit.gpgsign=true` + interactive
+            // signing agent (1Password SSH, locked GPG) would otherwise
+            // hang/fail this fixture commit for reasons unrelated to the
+            // test itself.
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "--allow-empty",
             "-m",
@@ -1064,6 +1070,9 @@ fn sync_pulls_and_fast_forwards_after_upstream_advances() -> TestResult {
             "user.name=Test",
             "-c",
             "user.email=test@example.com",
+            // See setup_git_origin: avoid inheriting ambient signing config.
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "-m",
             "advance",
@@ -2076,7 +2085,15 @@ fn setup_git_add_linked_worktree() -> GitAddSetupResult {
         .current_dir(&main_repo)
         .output()?;
     std::process::Command::new("git")
-        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+        // See setup_git_origin: avoid inheriting ambient signing config.
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .args(["commit", "--allow-empty", "-m", "init"])
         .current_dir(&main_repo)
         .output()?;
@@ -2176,7 +2193,15 @@ fn setup_git_mount_linked_worktree_with_remotes() -> GitMountSetupResult {
         .current_dir(&main_repo)
         .output()?;
     std::process::Command::new("git")
-        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+        // See setup_git_origin: avoid inheriting ambient signing config.
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .args(["commit", "--allow-empty", "-m", "init"])
         .current_dir(&main_repo)
         .output()?;
@@ -2542,6 +2567,9 @@ fn commit_all(dir: &Path, message: &str) {
             "user.name=Test",
             "-c",
             "user.email=test@example.com",
+            // See setup_git_origin: avoid inheriting ambient signing config.
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "-m",
             message,
