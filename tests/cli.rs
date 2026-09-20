@@ -4,6 +4,7 @@ use std::{error::Error, fs};
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
+use rstest::rstest;
 use tempfile::TempDir;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -50,20 +51,6 @@ fn list_overlays() -> TestResult {
 }
 
 #[test]
-fn list_overlays_debug_output() -> TestResult {
-    let repo = setup_overlay_repo();
-    Command::cargo_bin("over")?
-        .arg("--home")
-        .arg(repo.path())
-        .arg("--debug")
-        .arg("list")
-        .assert()
-        .success()
-        .stderr(contains("list command"));
-    Ok(())
-}
-
-#[test]
 fn show_overlay() -> TestResult {
     let repo = setup_overlay_repo();
     let mut cmd = Command::cargo_bin("over")?;
@@ -73,17 +60,25 @@ fn show_overlay() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn show_overlay_debug_output() -> TestResult {
+/// `--debug` traces each subcommand's own `"<name> command"` marker to
+/// stderr — exercised once per subcommand rather than duplicating the
+/// whole command/assert boilerplate per case.
+#[rstest]
+#[case::list(&["list"], "list command")]
+#[case::show(&["show", "dev"], "show command")]
+fn subcommand_debug_output_logs_command_name(
+    #[case] args: &[&str],
+    #[case] expected: &str,
+) -> TestResult {
     let repo = setup_overlay_repo();
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
         .arg("--debug")
-        .args(["show", "dev"])
+        .args(args)
         .assert()
         .success()
-        .stderr(contains("show command"));
+        .stderr(contains(expected.to_string()));
     Ok(())
 }
 
@@ -636,22 +631,6 @@ fn status_reports_conflict_for_existing_file() -> TestResult {
 }
 
 #[test]
-fn status_debug_output() -> TestResult {
-    let repo = setup_overlay_repo();
-    let root = TempDir::new()?;
-    Command::cargo_bin("over")?
-        .arg("--home")
-        .arg(repo.path())
-        .arg("--debug")
-        .args(["status", "dev", "--root"])
-        .arg(root.path())
-        .assert()
-        .success()
-        .stderr(contains("CLI args"));
-    Ok(())
-}
-
-#[test]
 fn status_unknown_overlay_fails() -> TestResult {
     let tmp = TempDir::new()?;
     Command::cargo_bin("over")?
@@ -789,15 +768,21 @@ fn diff_shows_content_diff_for_existing_file() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn diff_debug_output() -> TestResult {
+/// `status`/`diff`/`unapply` all log the same `"CLI args"` marker under
+/// `--debug` for an overlay-plus-root invocation — one parametrized test
+/// instead of three copies of the same command/assert boilerplate.
+#[rstest]
+#[case::status("status")]
+#[case::diff("diff")]
+#[case::unapply("unapply")]
+fn overlay_root_subcommand_debug_output_logs_cli_args(#[case] subcommand: &str) -> TestResult {
     let repo = setup_overlay_repo();
     let root = TempDir::new()?;
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
         .arg("--debug")
-        .args(["diff", "dev", "--root"])
+        .args([subcommand, "dev", "--root"])
         .arg(root.path())
         .assert()
         .success()
@@ -1417,22 +1402,6 @@ fn unapply_dry_run_reports_without_mutating() -> TestResult {
         .stdout(contains("remove:"));
 
     assert!(root.path().join("file.txt").is_symlink());
-    Ok(())
-}
-
-#[test]
-fn unapply_debug_output() -> TestResult {
-    let repo = setup_overlay_repo();
-    let root = TempDir::new()?;
-    Command::cargo_bin("over")?
-        .arg("--home")
-        .arg(repo.path())
-        .arg("--debug")
-        .args(["unapply", "dev", "--root"])
-        .arg(root.path())
-        .assert()
-        .success()
-        .stderr(contains("CLI args"));
     Ok(())
 }
 
@@ -2059,8 +2028,10 @@ fn over_git_add_dry_run() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn over_git_add_debug_output() -> TestResult {
+type GitAddSetupResult = Result<(TempDir, PathBuf, PathBuf, PathBuf, &'static str), Box<dyn Error>>;
+type GitAddSetup = fn() -> GitAddSetupResult;
+
+fn setup_git_add_plain_repo() -> GitAddSetupResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("gitov_debug");
@@ -2075,27 +2046,12 @@ fn over_git_add_debug_output() -> TestResult {
         .args(["init"])
         .current_dir(&repo_dir)
         .output()?;
-
-    Command::cargo_bin("over")?
-        .arg("--home")
-        .arg(&canonical_tmp)
-        .arg("--debug")
-        .arg("git")
-        .arg("add")
-        .arg(test_file.to_str().unwrap())
-        .arg("-o")
-        .arg("gitov_debug")
-        .arg("--dry-run")
-        .current_dir(&repo_dir)
-        .assert()
-        .success()
-        .stderr(contains("repository"))
-        .stderr(contains("resolved overlay"));
-    Ok(())
+    Ok((tmp, canonical_tmp, repo_dir, test_file, "gitov_debug"))
 }
 
-#[test]
-fn over_git_add_debug_output_bare_repo() -> TestResult {
+/// Bare repo living at `<repo_dir>/.git`, mirroring `over`'s
+/// worktree-workspace convention.
+fn setup_git_add_bare_repo() -> GitAddSetupResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let repo_dir = canonical_tmp.join("repo");
@@ -2106,28 +2062,11 @@ fn over_git_add_debug_output_bare_repo() -> TestResult {
     fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
     let test_file = repo_dir.join("test.txt");
     fs::write(&test_file, b"content")?;
-    // Bare repo living at <repo_dir>/.git, mirroring `over`'s worktree-workspace convention.
     git2::Repository::init_bare(repo_dir.join(".git"))?;
-
-    Command::cargo_bin("over")?
-        .arg("--home")
-        .arg(&canonical_tmp)
-        .arg("--debug")
-        .arg("git")
-        .arg("add")
-        .arg(test_file.to_str().unwrap())
-        .arg("-o")
-        .arg("gitov_bare")
-        .arg("--dry-run")
-        .current_dir(&repo_dir)
-        .assert()
-        .success()
-        .stderr(contains("worktree workspace (bare repo)"));
-    Ok(())
+    Ok((tmp, canonical_tmp, repo_dir, test_file, "gitov_bare"))
 }
 
-#[test]
-fn over_git_add_debug_output_linked_worktree() -> TestResult {
+fn setup_git_add_linked_worktree() -> GitAddSetupResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let main_repo = canonical_tmp.join("main");
@@ -2161,26 +2100,52 @@ fn over_git_add_debug_output_linked_worktree() -> TestResult {
     // even though the command runs from the linked worktree's directory.
     let test_file = main_repo.join("test.txt");
     fs::write(&test_file, b"content")?;
+    Ok((
+        tmp,
+        canonical_tmp,
+        worktree_dir,
+        test_file,
+        "gitov_worktree",
+    ))
+}
 
-    Command::cargo_bin("over")?
-        .arg("--home")
-        .arg(&canonical_tmp)
+/// `over git add --debug` prints its own `"repository"`/`"resolved
+/// overlay"` (or bare-repo/worktree-specific) debug lines across every repo
+/// topology it must handle — one parametrized test per topology instead of
+/// three near-identical copies of the same Command/assert boilerplate.
+#[rstest]
+#[case::plain_repo(setup_git_add_plain_repo as GitAddSetup, &["repository", "resolved overlay"][..])]
+#[case::bare_repo(setup_git_add_bare_repo as GitAddSetup, &["worktree workspace (bare repo)"][..])]
+#[case::linked_worktree(setup_git_add_linked_worktree as GitAddSetup, &["worktree"][..])]
+fn over_git_add_debug_output(
+    #[case] setup: GitAddSetup,
+    #[case] expected_stderr: &[&str],
+) -> TestResult {
+    let (_tmp, home, workdir, test_file, overlay_name) = setup()?;
+
+    let mut cmd = Command::cargo_bin("over")?;
+    cmd.arg("--home")
+        .arg(&home)
         .arg("--debug")
         .arg("git")
         .arg("add")
         .arg(test_file.to_str().unwrap())
         .arg("-o")
-        .arg("gitov_worktree")
+        .arg(overlay_name)
         .arg("--dry-run")
-        .current_dir(&worktree_dir)
-        .assert()
-        .success()
-        .stderr(contains("worktree"));
+        .current_dir(&workdir);
+
+    let mut assert = cmd.assert().success();
+    for expected in expected_stderr {
+        assert = assert.stderr(contains(*expected));
+    }
     Ok(())
 }
 
-#[test]
-fn over_git_mount_debug_output() -> TestResult {
+type GitMountSetupResult = Result<(TempDir, PathBuf, PathBuf, &'static str), Box<dyn Error>>;
+type GitMountSetup = fn() -> GitMountSetupResult;
+
+fn setup_git_mount_plain_repo() -> GitMountSetupResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = canonical_tmp.join("gitov_mount");
@@ -2193,38 +2158,15 @@ fn over_git_mount_debug_output() -> TestResult {
         .args(["init"])
         .current_dir(&repo_dir)
         .output()?;
-
-    // Debug output is printed before any interactive prompt, so it is
-    // exercised regardless of whether the platform's terminal detection
-    // causes the (unrelated) property-export prompt to succeed or fail
-    // when run with non-interactive stdin in CI.
-    Command::cargo_bin("over")?
-        .arg("--home")
-        .arg(&canonical_tmp)
-        .arg("--debug")
-        .arg("git")
-        .arg("mount")
-        .arg("-o")
-        .arg("gitov_mount")
-        .current_dir(&repo_dir)
-        .env("HOME", tmp.path())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env_remove("GIT_AUTHOR_NAME")
-        .env_remove("GIT_AUTHOR_EMAIL")
-        .assert()
-        .stderr(contains("repository"))
-        .stderr(contains("resolved overlay"));
-    Ok(())
+    Ok((tmp, canonical_tmp, repo_dir, "gitov_mount"))
 }
 
-#[test]
-fn over_git_mount_debug_output_with_git_properties() -> TestResult {
-    // Exercise the local-repo property inspection (origin remote, current
-    // branch, non-origin remotes, and linked-worktree detection) so it is
-    // actually run instead of short-circuiting on an empty repo. The
-    // subsequent interactive export-selection prompt still runs with a
-    // piped (immediately-closed) stdin, so it fails fast without hanging;
-    // we only assert on the debug output printed before that prompt.
+/// Exercises the local-repo property inspection (origin remote, current
+/// branch, non-origin remotes, and linked-worktree detection) so it
+/// actually runs instead of short-circuiting on an empty repo: two remotes
+/// configured, run from a linked worktree so `is_worktree()` is true and
+/// the named-worktree detection/resolution path also runs.
+fn setup_git_mount_linked_worktree_with_remotes() -> GitMountSetupResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let main_repo = canonical_tmp.join("main");
@@ -2263,18 +2205,35 @@ fn over_git_mount_debug_output_with_git_properties() -> TestResult {
     let ov = canonical_tmp.join("gitov_mount_props");
     fs::create_dir_all(&ov)?;
     fs::write(ov.join("over.toml"), format!("target = \"{}\"", target_str))?;
+    Ok((tmp, canonical_tmp, worktree_dir, "gitov_mount_props"))
+}
 
-    // Run from the linked worktree so `is_worktree()` is true and the
-    // named-worktree detection/resolution path also runs.
+/// `over git mount --debug` prints its own `"repository"`/`"resolved
+/// overlay"` debug lines before any interactive prompt — for both a plain
+/// repo and a linked worktree with remotes configured (exercising the
+/// property-inspection path) — one parametrized test instead of two. The
+/// subsequent interactive export-selection prompt still runs with a piped
+/// (immediately-closed) stdin, so it fails fast without hanging; only the
+/// debug output printed before that prompt is asserted on.
+#[rstest]
+#[case::plain_repo(setup_git_mount_plain_repo as GitMountSetup)]
+#[case::linked_worktree_with_remotes(setup_git_mount_linked_worktree_with_remotes as GitMountSetup)]
+fn over_git_mount_debug_output(#[case] setup: GitMountSetup) -> TestResult {
+    let (tmp, home, workdir, overlay_name) = setup()?;
+
     Command::cargo_bin("over")?
         .arg("--home")
-        .arg(&canonical_tmp)
+        .arg(&home)
         .arg("--debug")
         .arg("git")
         .arg("mount")
         .arg("-o")
-        .arg("gitov_mount_props")
-        .current_dir(&worktree_dir)
+        .arg(overlay_name)
+        .current_dir(&workdir)
+        .env("HOME", tmp.path())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
         .assert()
         .stderr(contains("repository"))
         .stderr(contains("resolved overlay"));
