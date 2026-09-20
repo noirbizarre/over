@@ -334,7 +334,7 @@ fn suggest_key(unknown: &str) -> Option<&'static str> {
         let dist = edit_distance(unknown, valid);
         // Only suggest if edit distance is at most 2 or ≤40% of the key length
         let threshold = 2.max(unknown.len() * 2 / 5);
-        if dist <= threshold && (best.is_none() || dist < best.unwrap().1) {
+        if dist <= threshold && best.is_none_or(|(_, best_dist)| dist < best_dist) {
             best = Some((valid, dist));
         }
     }
