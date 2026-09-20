@@ -419,7 +419,10 @@ mod tests {
     #[rstest]
     #[case("~", |root: &PathBuf| root.clone())]
     #[case("~/sub", |root: &PathBuf| root.join("sub"))]
-    fn test_resolve_target(#[case] target: &str, #[case] expected: fn(&PathBuf) -> PathBuf) {
+    fn tilde_target_resolves_relative_to_context_root(
+        #[case] target: &str,
+        #[case] expected: fn(&PathBuf) -> PathBuf,
+    ) {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov");
         overlay_dir.create_dir_all().unwrap();
@@ -435,7 +438,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_resolve_target_absolute() {
+    fn absolute_target_is_used_verbatim() {
         let (td, repo) = repo_and_root();
         let abs = td.child("abs_root");
         abs.create_dir_all().unwrap();
@@ -456,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_target_with_machine_os() {
+    fn resolve_target_renders_machine_os_template_variable() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov");
         overlay_dir.create_dir_all().unwrap();
@@ -472,7 +475,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_with_uses() {
+    async fn apply_also_applies_used_overlays() {
         let (td, repo) = repo_and_root();
         let child_dir = td.child("child");
         child_dir.create_dir_all().unwrap();
@@ -496,7 +499,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_add_file_success() {
+    async fn add_file_moves_file_into_overlay_and_symlinks_original_path() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_add");
         overlay_dir.create_dir_all().unwrap();
@@ -529,7 +532,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_add_file_outside_target_errors() {
+    async fn add_file_outside_overlay_target_root_errors() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_err");
         overlay_dir.create_dir_all().unwrap();
@@ -553,7 +556,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_is_link_dir_matches() {
+    fn is_link_dir_matches_configured_link_dirs_globs() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_ld");
         overlay_dir.create_dir_all().unwrap();
@@ -587,7 +590,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_is_link_dir_none() {
+    fn is_link_dir_is_false_without_link_dirs_configured() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_ld_none");
         overlay_dir.create_dir_all().unwrap();
@@ -602,7 +605,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_add_files_multiple() {
+    async fn add_files_moves_and_symlinks_every_given_file() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_multi");
         overlay_dir.create_dir_all().unwrap();
@@ -636,7 +639,7 @@ mod tests {
     /// Diamond dependency: A uses B and C, both B and C use D.
     /// D should only be applied once and no false cycle error should occur.
     #[tokio::test]
-    async fn test_apply_diamond_dependency() {
+    async fn diamond_shared_dependency_is_applied_only_once() {
         let (td, repo) = repo_and_root();
 
         // D: leaf overlay used by both B and C
@@ -681,7 +684,7 @@ mod tests {
 
     /// True cycle: A uses B, B uses A. Should produce a cycle error.
     #[tokio::test]
-    async fn test_apply_cycle_detected() {
+    async fn mutual_uses_cycle_errors_naming_the_cycling_overlay() {
         let (td, repo) = repo_and_root();
 
         let a = td.child("a_cycle");
@@ -718,7 +721,7 @@ mod tests {
     // ── git: <url> shorthand ─────────────────────────────────────────────
 
     #[test]
-    fn test_git_simple_url_toml() {
+    fn git_shorthand_url_string_resolves_under_dot_key() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_git_url");
         overlay_dir.create_dir_all().unwrap();
@@ -740,7 +743,7 @@ git = "https://github.com/user/repo.git"
     }
 
     #[test]
-    fn test_git_detailed_single_toml() {
+    fn git_detailed_table_parses_branch_and_submodules() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_git_det");
         overlay_dir.create_dir_all().unwrap();
@@ -767,7 +770,7 @@ recurse_submodules = true
     }
 
     #[test]
-    fn test_git_map_form_still_works_toml() {
+    fn git_map_form_configures_multiple_paths_independently() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_git_map");
         overlay_dir.create_dir_all().unwrap();
@@ -800,7 +803,7 @@ branch = "main"
     }
 
     #[test]
-    fn test_git_absent_remains_none() {
+    fn git_absent_from_config_stays_none() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_no_git");
         overlay_dir.create_dir_all().unwrap();
@@ -813,7 +816,7 @@ branch = "main"
     }
 
     #[tokio::test]
-    async fn test_apply_creates_symlinks() {
+    async fn apply_creates_symlink_from_link_sidecar_descriptor() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_symlink");
         overlay_dir.create_dir_all().unwrap();
@@ -847,7 +850,7 @@ branch = "main"
     }
 
     #[tokio::test]
-    async fn test_apply_symlinks_with_env_template() {
+    async fn apply_symlink_sidecar_filename_determines_target_name() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_sympl");
         overlay_dir.create_dir_all().unwrap();
@@ -883,7 +886,7 @@ branch = "main"
     // ── exclude: string or list deserialization ──────────────────────────
 
     #[rstest]
-    fn test_exclude_as_single_string() {
+    fn exclude_as_single_string_becomes_one_pattern() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_exc_str");
         overlay_dir.create_dir_all().unwrap();
@@ -898,7 +901,7 @@ branch = "main"
     }
 
     #[rstest]
-    fn test_exclude_as_list() {
+    fn exclude_as_list_preserves_every_pattern_in_order() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_exc_list");
         overlay_dir.create_dir_all().unwrap();
@@ -915,7 +918,7 @@ branch = "main"
     }
 
     #[rstest]
-    fn test_exclude_absent_is_none() {
+    fn exclude_absent_from_config_is_none() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_no_exc");
         overlay_dir.create_dir_all().unwrap();
@@ -928,7 +931,7 @@ branch = "main"
     }
 
     #[rstest]
-    fn test_exclude_empty_list_is_some_empty_vec() {
+    fn exclude_empty_list_is_some_of_empty_vec_not_none() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_empty_exc");
         overlay_dir.create_dir_all().unwrap();
@@ -944,7 +947,7 @@ branch = "main"
     // ── is_excluded method ───────────────────────────────────────────────
 
     #[rstest]
-    fn test_is_excluded_matches_single_pattern() {
+    fn is_excluded_matches_a_single_configured_pattern() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_is_exc");
         overlay_dir.create_dir_all().unwrap();
@@ -959,7 +962,7 @@ branch = "main"
     }
 
     #[rstest]
-    fn test_is_excluded_matches_nested_pattern() {
+    fn is_excluded_matches_pattern_in_nested_subdirectory() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_is_exc_nested");
         overlay_dir.create_dir_all().unwrap();
@@ -975,7 +978,7 @@ branch = "main"
     }
 
     #[rstest]
-    fn test_is_excluded_matches_multiple_patterns() {
+    fn is_excluded_matches_any_of_several_configured_patterns() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_is_exc_multi");
         overlay_dir.create_dir_all().unwrap();
@@ -994,7 +997,7 @@ branch = "main"
     }
 
     #[rstest]
-    fn test_is_excluded_none_returns_false() {
+    fn is_excluded_without_any_configured_patterns_returns_false() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_no_exc_is");
         overlay_dir.create_dir_all().unwrap();
@@ -1009,7 +1012,7 @@ branch = "main"
     }
 
     #[rstest]
-    fn test_is_excluded_directory_pattern() {
+    fn is_excluded_directory_pattern_also_matches_its_contents() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_dir_exc");
         overlay_dir.create_dir_all().unwrap();
@@ -1029,7 +1032,7 @@ branch = "main"
     // ── apply with exclude ───────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_apply_excludes_files() {
+    async fn apply_skips_files_matching_exclude_pattern() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_apply_exc");
         overlay_dir.create_dir_all().unwrap();
@@ -1057,7 +1060,7 @@ branch = "main"
     }
 
     #[tokio::test]
-    async fn test_apply_excludes_multiple_patterns() {
+    async fn apply_skips_files_and_directories_matching_any_exclude_pattern() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_apply_exc_multi");
         overlay_dir.create_dir_all().unwrap();
@@ -1095,7 +1098,7 @@ branch = "main"
     // ── add_dir with exclude ─────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_add_dir_excludes_files() {
+    async fn add_dir_skips_excluded_files_when_copying_into_overlay() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_add_exc");
         overlay_dir.create_dir_all().unwrap();
@@ -1126,7 +1129,7 @@ branch = "main"
     }
 
     #[tokio::test]
-    async fn test_add_dir_excludes_nested_files() {
+    async fn add_dir_skips_excluded_files_and_directories_when_nested() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_add_exc_nested");
         overlay_dir.create_dir_all().unwrap();

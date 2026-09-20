@@ -348,19 +348,19 @@ mod tests {
     // ── build_toml_descriptor ───────────────────────────────────────────
 
     #[test]
-    fn test_build_toml_descriptor_no_target() {
+    fn toml_descriptor_without_target_or_git_is_empty() {
         let content = build_toml_descriptor(None, &HashMap::new());
         assert_eq!(content, "");
     }
 
     #[test]
-    fn test_build_toml_descriptor_with_target() {
+    fn toml_descriptor_with_target_writes_target_line() {
         let content = build_toml_descriptor(Some("~/apps/myapp"), &HashMap::new());
         assert_eq!(content, "target = \"~/apps/myapp\"\n");
     }
 
     #[test]
-    fn test_build_toml_descriptor_with_git() {
+    fn toml_descriptor_with_git_writes_target_and_git_section() {
         let mut git = HashMap::new();
         git.insert(
             "myrepo".to_string(),
@@ -374,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_toml_descriptor_git_only() {
+    fn toml_descriptor_without_target_omits_target_key_but_keeps_sorted_git() {
         let mut git = HashMap::new();
         git.insert("zrepo".to_string(), "https://example.com/z.git".to_string());
         git.insert("arepo".to_string(), "https://example.com/a.git".to_string());
@@ -389,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_toml_descriptor_git_sorted() {
+    fn toml_descriptor_git_entries_are_sorted_alphabetically() {
         let mut git = HashMap::new();
         git.insert("zrepo".to_string(), "https://example.com/z.git".to_string());
         git.insert("arepo".to_string(), "https://example.com/a.git".to_string());
@@ -400,13 +400,13 @@ mod tests {
     }
 
     #[test]
-    fn test_build_toml_descriptor_absolute_target() {
+    fn toml_descriptor_accepts_absolute_target_path() {
         let content = build_toml_descriptor(Some("/opt/myapp"), &HashMap::new());
         assert_eq!(content, "target = \"/opt/myapp\"\n");
     }
 
     #[test]
-    fn test_build_toml_descriptor_multiple_git() {
+    fn toml_descriptor_lists_every_git_entry_provided() {
         let mut git = HashMap::new();
         git.insert("alpha".to_string(), "https://example.com/a.git".to_string());
         git.insert("beta".to_string(), "https://example.com/b.git".to_string());
@@ -421,19 +421,19 @@ mod tests {
     // ── build_yaml_descriptor ───────────────────────────────────────────
 
     #[test]
-    fn test_build_yaml_descriptor_no_target() {
+    fn yaml_descriptor_without_target_or_git_is_empty() {
         let content = build_yaml_descriptor(None, &HashMap::new());
         assert_eq!(content, "");
     }
 
     #[test]
-    fn test_build_yaml_descriptor_with_target() {
+    fn yaml_descriptor_with_target_writes_target_line() {
         let content = build_yaml_descriptor(Some("~/apps/myapp"), &HashMap::new());
         assert_eq!(content, "target: \"~/apps/myapp\"\n");
     }
 
     #[test]
-    fn test_build_yaml_descriptor_with_git() {
+    fn yaml_descriptor_with_git_writes_target_and_git_section() {
         let mut git = HashMap::new();
         git.insert(
             "myrepo".to_string(),
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_yaml_descriptor_git_sorted() {
+    fn yaml_descriptor_git_entries_are_sorted_alphabetically() {
         let mut git = HashMap::new();
         git.insert("zrepo".to_string(), "https://example.com/z.git".to_string());
         git.insert("arepo".to_string(), "https://example.com/a.git".to_string());
@@ -460,31 +460,31 @@ mod tests {
     // ── build_descriptor (dispatch) ─────────────────────────────────────
 
     #[test]
-    fn test_build_descriptor_dispatches_toml() {
+    fn build_descriptor_toml_format_delegates_to_toml_builder() {
         let content = build_descriptor(Some("~/test"), Format::Toml, &HashMap::new());
         assert!(content.starts_with("target = "));
     }
 
     #[test]
-    fn test_build_descriptor_dispatches_yaml() {
+    fn build_descriptor_yaml_format_delegates_to_yaml_builder() {
         let content = build_descriptor(Some("~/test"), Format::Yaml, &HashMap::new());
         assert!(content.starts_with("target: "));
     }
 
     #[test]
-    fn test_build_descriptor_no_target_toml() {
+    fn build_descriptor_toml_without_target_is_empty() {
         let content = build_descriptor(None, Format::Toml, &HashMap::new());
         assert_eq!(content, "");
     }
 
     #[test]
-    fn test_build_descriptor_no_target_yaml() {
+    fn build_descriptor_yaml_without_target_is_empty() {
         let content = build_descriptor(None, Format::Yaml, &HashMap::new());
         assert_eq!(content, "");
     }
 
     #[test]
-    fn test_build_descriptor_toml_with_git() {
+    fn build_descriptor_toml_with_git_includes_git_section() {
         let mut git = HashMap::new();
         git.insert("repo".to_string(), "https://example.com/r.git".to_string());
         let content = build_descriptor(Some("~/test"), Format::Toml, &git);
@@ -493,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_descriptor_yaml_with_git() {
+    fn build_descriptor_yaml_with_git_includes_git_section() {
         let mut git = HashMap::new();
         git.insert("repo".to_string(), "https://example.com/r.git".to_string());
         let content = build_descriptor(Some("~/test"), Format::Yaml, &git);
@@ -505,7 +505,7 @@ mod tests {
     // ── extract_git_remote ──────────────────────────────────────────────
 
     #[test]
-    fn test_extract_git_remote_valid_repo() {
+    fn extract_git_remote_reads_origin_name_and_url() {
         let tmp = TempDir::new().unwrap();
         let repo_path = tmp.path().join("myrepo");
         fs::create_dir_all(&repo_path).unwrap();
@@ -521,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_git_remote_no_origin() {
+    fn extract_git_remote_without_origin_remote_returns_none() {
         let tmp = TempDir::new().unwrap();
         let repo_path = tmp.path().join("norepo");
         fs::create_dir_all(&repo_path).unwrap();
@@ -533,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_git_remote_not_a_repo() {
+    fn extract_git_remote_on_non_git_directory_returns_none() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join("plaindir");
         fs::create_dir_all(&dir).unwrap();
@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_git_remote_nonexistent_path() {
+    fn extract_git_remote_on_nonexistent_path_returns_none() {
         let result = extract_git_remote(Path::new("/nonexistent/path/xyz"));
         assert!(result.is_none());
     }
@@ -551,7 +551,7 @@ mod tests {
     // ── resolve_inherited_target ────────────────────────────────────────
 
     #[test]
-    fn test_resolve_inherited_target_no_parent_configs() {
+    fn resolve_inherited_target_falls_back_to_default_without_ancestor_configs() {
         let tmp = TempDir::new().unwrap();
         let repo_root = tmp.path();
         let overlay_root = repo_root.join("myoverlay");
@@ -562,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_inherited_target_parent_defines_target() {
+    fn resolve_inherited_target_uses_target_defined_by_ancestor_config() {
         let tmp = TempDir::new().unwrap();
         let repo_root = tmp.path();
         fs::write(repo_root.join("over.toml"), "target = \"~/Documents\"").unwrap();
@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_inherited_target_parent_defines_default() {
+    fn resolve_inherited_target_returns_default_when_ancestor_config_matches_it() {
         let tmp = TempDir::new().unwrap();
         let repo_root = tmp.path();
         fs::write(repo_root.join("over.toml"), "target = \"~\"").unwrap();
@@ -586,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_inherited_target_nested_parent_wins() {
+    fn resolve_inherited_target_prefers_closest_ancestor_over_repo_root() {
         let tmp = TempDir::new().unwrap();
         let repo_root = tmp.path();
         // Root defines one target
@@ -604,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_inherited_target_overlay_at_repo_root() {
+    fn resolve_inherited_target_at_repo_root_ignores_repo_roots_own_config() {
         // Overlay is directly at the repo root — no parents to check
         let tmp = TempDir::new().unwrap();
         let repo_root = tmp.path();
@@ -618,7 +618,7 @@ mod tests {
     // ── format resolution logic ─────────────────────────────────────────
 
     #[test]
-    fn test_format_resolution_flag_wins() {
+    fn format_resolution_prefers_explicit_flag_over_config() {
         let flag = Some(Format::Yaml);
         let config = Some(Format::Toml);
         let result = flag.or(config).unwrap_or_default();
@@ -626,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_resolution_config_fallback() {
+    fn format_resolution_falls_back_to_config_when_flag_absent() {
         let flag: Option<Format> = None;
         let config = Some(Format::Yaml);
         let result = flag.or(config).unwrap_or_default();
@@ -634,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_resolution_default() {
+    fn format_resolution_defaults_to_toml_without_flag_or_config() {
         let flag: Option<Format> = None;
         let config: Option<Format> = None;
         let result = flag.or(config).unwrap_or_default();

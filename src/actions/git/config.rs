@@ -346,7 +346,7 @@ mod tests {
     // ── Simple form ──────────────────────────────────────────────────────
 
     #[test]
-    fn test_simple_string_form() {
+    fn bare_url_string_deserializes_with_all_optional_fields_defaulted() {
         let yaml = r#""https://github.com/user/repo.git""#;
         let cfg: GitRepoConfig = serde_yml::from_str(yaml).unwrap();
         assert_eq!(cfg.url, "https://github.com/user/repo.git");
@@ -379,7 +379,10 @@ branch = "main"
 recurse_submodules = true
 "#
     )]
-    fn test_detailed_form_branch(#[case] format: &str, #[case] input: &str) {
+    fn detailed_form_parses_branch_and_recurse_submodules(
+        #[case] format: &str,
+        #[case] input: &str,
+    ) {
         let cfg: GitRepoConfig = match format {
             "yaml" => serde_yml::from_str(input).unwrap(),
             "toml" => toml::from_str(input).unwrap(),
@@ -392,7 +395,7 @@ recurse_submodules = true
     }
 
     #[test]
-    fn test_detailed_form_tag() {
+    fn detailed_form_parses_tag() {
         let yaml = r#"
 url: "https://github.com/user/repo.git"
 tag: "v1.0.0"
@@ -402,7 +405,7 @@ tag: "v1.0.0"
     }
 
     #[test]
-    fn test_detailed_form_rev() {
+    fn detailed_form_parses_rev() {
         let yaml = r#"
 url: "https://github.com/user/repo.git"
 rev: "abc123"
@@ -414,7 +417,7 @@ rev: "abc123"
     // ── Worktree form ────────────────────────────────────────────────────
 
     #[test]
-    fn test_worktree_enabled() {
+    fn explicit_worktree_true_enables_worktree_without_named_worktrees() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 worktree: true
@@ -425,7 +428,7 @@ worktree: true
     }
 
     #[test]
-    fn test_worktree_with_named_worktrees() {
+    fn named_worktrees_auto_enable_worktree_and_per_worktree_config() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 worktrees:
@@ -443,7 +446,7 @@ worktrees:
     }
 
     #[test]
-    fn test_worktree_explicit_false_with_named_worktrees() {
+    fn explicit_worktree_false_overrides_auto_enable_from_named_worktrees() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 worktree: false
@@ -461,7 +464,7 @@ worktrees:
     // ── Remotes ──────────────────────────────────────────────────────────
 
     #[test]
-    fn test_remotes() {
+    fn remotes_parse_url_fetch_push_and_tagopt() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 remotes:
@@ -492,7 +495,7 @@ remotes:
     }
 
     #[test]
-    fn test_remotes_with_extras() {
+    fn remote_unknown_keys_are_captured_in_extras() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 remotes:
@@ -519,7 +522,7 @@ remotes:
     // ── Git config ───────────────────────────────────────────────────────
 
     #[test]
-    fn test_git_config_flat_dotted() {
+    fn git_config_flat_dotted_keys_map_directly_to_entries() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 config:
@@ -536,7 +539,7 @@ config:
     }
 
     #[test]
-    fn test_git_config_nested_sections() {
+    fn git_config_nested_sections_flatten_to_dotted_keys() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 config:
@@ -557,7 +560,7 @@ config:
     }
 
     #[test]
-    fn test_git_config_mixed() {
+    fn git_config_mixed_flat_and_nested_keys_flatten_together() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 config:
@@ -577,7 +580,7 @@ config:
     // ── HashMap of repos (as used by Overlay.git) ────────────────────────
 
     #[test]
-    fn test_map_mixed_forms() {
+    fn repo_map_yaml_mixes_simple_detailed_and_worktree_forms() {
         let yaml = r#"
 ".tmux/plugins/tpm": "https://github.com/tmux-plugins/tpm"
 ".config/nvim":
@@ -626,7 +629,7 @@ config:
     }
 
     #[test]
-    fn test_toml_map_mixed_forms() {
+    fn repo_map_toml_mixes_simple_detailed_and_worktree_forms() {
         let toml_str = r#"
 ".tmux/plugins/tpm" = "https://github.com/tmux-plugins/tpm"
 
@@ -687,7 +690,7 @@ url = "git@github.com:upstream/mylib.git"
     }
 
     #[test]
-    fn test_git_field_simple_url() {
+    fn git_field_bare_url_string_maps_to_root_path() {
         let repos = git_field_from_yaml(r#""https://github.com/user/repo.git""#).unwrap();
         assert_eq!(repos.len(), 1);
         let cfg = &repos["."];
@@ -697,7 +700,7 @@ url = "git@github.com:upstream/mylib.git"
     }
 
     #[test]
-    fn test_git_field_detailed_single() {
+    fn git_field_single_detailed_repo_maps_to_root_path() {
         let repos = git_field_from_yaml(
             r#"
   url: "git@github.com:user/repo.git"
@@ -714,7 +717,7 @@ url = "git@github.com:upstream/mylib.git"
     }
 
     #[test]
-    fn test_git_field_map_form_unchanged() {
+    fn git_field_map_form_still_parses_multiple_paths() {
         let repos = git_field_from_yaml(
             r#"
   ".tmux/plugins/tpm": "https://github.com/tmux-plugins/tpm"
@@ -737,7 +740,7 @@ url = "git@github.com:upstream/mylib.git"
     }
 
     #[test]
-    fn test_git_field_none_when_absent() {
+    fn git_field_absent_yields_none() {
         #[derive(Deserialize)]
         struct Wrapper {
             #[serde(default, deserialize_with = "super::deserialize_git_field")]
@@ -750,7 +753,7 @@ url = "git@github.com:upstream/mylib.git"
     // ── per_worktree_config defaults ─────────────────────────────────────
 
     #[test]
-    fn test_per_worktree_config_defaults_true_when_worktree() {
+    fn per_worktree_config_defaults_true_when_worktree_enabled() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 worktree: true
@@ -761,7 +764,7 @@ worktree: true
     }
 
     #[test]
-    fn test_per_worktree_config_defaults_false_without_worktree() {
+    fn per_worktree_config_defaults_false_without_worktree() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 "#;
@@ -771,7 +774,7 @@ url: "git@github.com:user/repo.git"
     }
 
     #[test]
-    fn test_per_worktree_config_explicit_false() {
+    fn per_worktree_config_explicit_false_overrides_worktree_default() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 worktree: true
@@ -783,7 +786,7 @@ per_worktree_config: false
     }
 
     #[test]
-    fn test_per_worktree_config_explicit_true_without_worktree() {
+    fn per_worktree_config_explicit_true_enables_without_worktree() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 per_worktree_config: true
@@ -796,7 +799,7 @@ per_worktree_config: true
     // ── worktree_config ──────────────────────────────────────────────────
 
     #[test]
-    fn test_worktree_config_field() {
+    fn worktree_config_yaml_parses_separately_from_config() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 worktree: true
@@ -818,7 +821,7 @@ worktree_config:
     }
 
     #[test]
-    fn test_worktree_config_toml() {
+    fn worktree_config_toml_parses_separately_from_config() {
         let toml_str = r#"
 url = "git@github.com:user/repo.git"
 worktree = true
@@ -840,7 +843,7 @@ worktree = true
     // ── WorktreeEntry ────────────────────────────────────────────────────
 
     #[test]
-    fn test_worktree_entry_simple_string() {
+    fn worktree_entry_simple_string_sets_branch_without_config() {
         let yaml = r#""feature/x""#;
         let entry: WorktreeEntry = serde_yml::from_str(yaml).unwrap();
         assert_eq!(entry.branch, "feature/x");
@@ -848,7 +851,7 @@ worktree = true
     }
 
     #[test]
-    fn test_worktree_entry_detailed() {
+    fn worktree_entry_detailed_form_parses_branch_and_config() {
         let yaml = r#"
 branch: "develop"
 config:
@@ -861,7 +864,7 @@ config:
     }
 
     #[test]
-    fn test_worktree_entry_detailed_without_config() {
+    fn worktree_entry_detailed_form_without_config_leaves_config_none() {
         let yaml = r#"
 branch: "develop"
 "#;
@@ -871,7 +874,7 @@ branch: "develop"
     }
 
     #[test]
-    fn test_worktree_entries_mixed_forms() {
+    fn worktree_entries_map_mixes_simple_and_detailed_forms() {
         let yaml = r#"
 feature-x: "feature/x"
 dev:
@@ -906,7 +909,7 @@ hotfix:
     }
 
     #[test]
-    fn test_worktree_entries_mixed_forms_toml() {
+    fn worktree_entries_map_mixes_simple_and_detailed_forms_toml() {
         let toml_str = r#"
 [worktrees]
 feature-x = "feature/x"
@@ -943,7 +946,7 @@ branch = "develop"
     // ── Full repo config with worktree_config + WorktreeEntry ────────────
 
     #[test]
-    fn test_full_repo_config_with_worktree_features() {
+    fn full_repo_config_combines_worktrees_config_and_worktree_config() {
         let yaml = r#"
 url: "git@github.com:user/repo.git"
 worktree: true
