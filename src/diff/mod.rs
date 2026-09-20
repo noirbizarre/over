@@ -473,6 +473,25 @@ mod tests {
         (td, repo)
     }
 
+    /// Points `$XDG_STATE_HOME` at a fresh, writable temp dir for the
+    /// duration of the returned guard's lifetime — `classify_virtual_checkout`
+    /// reads (and `materialize_and_record_virtual_checkout` below writes)
+    /// `VirtualCheckoutState` via the real, non-injectable `XdgDirs::new()`,
+    /// so every test exercising it must isolate this or it silently
+    /// pollutes the real `$XDG_STATE_HOME/over/virtual_checkout.toml`.
+    ///
+    /// # Safety
+    /// `env::set_var` is only unsound when other threads read/write the
+    /// process environment concurrently; `cargo nextest` runs each test in
+    /// its own process, matching `xdg::tests`' own `set_env` justification.
+    fn isolate_xdg_state() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("XDG_STATE_HOME", tmp.path());
+        }
+        tmp
+    }
+
     #[rstest]
     fn missing_target_reports_missing() {
         let (td, repo) = repo_and_root();
@@ -1145,6 +1164,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_clean_reports_unchanged() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(td.path());
@@ -1158,6 +1178,7 @@ mod tests {
 
     #[test]
     fn virtual_checkout_missing_reports_missing() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(td.path());
@@ -1170,6 +1191,7 @@ mod tests {
 
     #[test]
     fn virtual_checkout_broken_reports_broken() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(td.path());
@@ -1184,6 +1206,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_modified_file_produces_content_diff() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("original\n").unwrap();
         init_committed_repo(td.path());
@@ -1209,6 +1232,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_added_and_deleted_files_have_no_diff() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         td.child("b.txt").write_str("b").unwrap();
@@ -1254,6 +1278,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_binary_modification_falls_back_to_binary_diff() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         fs::write(td.path().join("bin.dat"), [0xff_u8, 0xfe, 0x00]).unwrap();
         init_committed_repo(td.path());

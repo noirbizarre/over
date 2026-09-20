@@ -167,6 +167,26 @@ mod tests {
         CLI::parse_from(vec!["over", "--home", home.to_str().unwrap()])
     }
 
+    /// Points `$XDG_STATE_HOME` at a fresh, writable temp dir for the
+    /// duration of the returned guard's lifetime — `execute` runs the real
+    /// `over commit` command end to end, which persists
+    /// `VirtualCheckoutState` via the real, non-injectable
+    /// `XdgDirs::new()`, so every test here must isolate this or it
+    /// silently pollutes the real
+    /// `$XDG_STATE_HOME/over/virtual_checkout.toml`.
+    ///
+    /// # Safety
+    /// `env::set_var` is only unsound when other threads read/write the
+    /// process environment concurrently; `cargo nextest` runs each test in
+    /// its own process, matching `xdg::tests`' own `set_env` justification.
+    fn isolate_xdg_state() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("XDG_STATE_HOME", tmp.path());
+        }
+        tmp
+    }
+
     fn params(name: Option<&str>, root: PathBuf, message: Option<&str>) -> Params {
         Params {
             name: name.map(String::from),
@@ -198,6 +218,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_non_checkout_overlay_errors() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -216,6 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_end_to_end_records_a_commit_in_the_source_repository() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         let ov = tmp.path().join("dotfiles");
         fs::create_dir_all(&ov).unwrap();
@@ -274,6 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_with_no_local_changes_reports_nothing_to_commit_and_succeeds() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         let ov = tmp.path().join("dotfiles");
         fs::create_dir_all(&ov).unwrap();
@@ -307,6 +330,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_no_prompt_with_no_message_uses_an_auto_generated_message() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         let ov = tmp.path().join("dotfiles");
         fs::create_dir_all(&ov).unwrap();
@@ -352,6 +376,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_with_a_conflicting_file_fails_and_leaves_it_untouched() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         let ov = tmp.path().join("dotfiles");
         fs::create_dir_all(&ov).unwrap();

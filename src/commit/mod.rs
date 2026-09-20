@@ -192,6 +192,26 @@ mod tests {
     use git2::Signature;
     use std::fs;
 
+    /// Points `$XDG_STATE_HOME` at a fresh, writable temp dir for the
+    /// duration of the returned guard's lifetime — `commit()` reads/writes
+    /// `VirtualCheckoutState` via the real, non-injectable `XdgDirs::new()`,
+    /// so every test here that calls `commit`/`state::persist`/
+    /// `state::record_for_blocking` must isolate this or it silently
+    /// pollutes the real `$XDG_STATE_HOME/over/virtual_checkout.toml` with
+    /// throwaway records that outlive the test.
+    ///
+    /// # Safety
+    /// `env::set_var` is only unsound when other threads read/write the
+    /// process environment concurrently; `cargo nextest` runs each test in
+    /// its own process, matching `xdg::tests`' own `set_env` justification.
+    fn isolate_xdg_state() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("XDG_STATE_HOME", tmp.path());
+        }
+        tmp
+    }
+
     fn init_committed_repo(path: &std::path::Path) -> git2::Repository {
         let repo = git2::Repository::init(path).unwrap();
         let mut cfg = repo.config().unwrap();
@@ -253,6 +273,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_virtual_checkout_entry_is_refused() {
+        let _xdg = isolate_xdg_state();
         let e = DesiredEntry {
             target: PathBuf::from("/tmp/whatever"),
             provenance: Provenance::Overlay {
@@ -268,6 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_local_changes_is_nothing_to_commit() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(td.path());
@@ -281,6 +303,7 @@ mod tests {
 
     #[tokio::test]
     async fn modified_file_is_committed_into_the_source_repository() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("original\n").unwrap();
         let repo = init_committed_repo(td.path());
@@ -329,6 +352,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_preserves_sibling_files_outside_the_managed_path() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("sub/a.txt").write_str("a").unwrap();
         td.child("other.txt").write_str("sibling").unwrap();
@@ -387,6 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_blocked_on_a_conflicting_file() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         let repo = init_committed_repo(td.path());

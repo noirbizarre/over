@@ -182,6 +182,25 @@ mod tests {
     use git2::Signature;
     use std::fs;
 
+    /// Points `$XDG_STATE_HOME` at a fresh, writable temp dir for the
+    /// duration of the returned guard's lifetime — `inspect` reads (and
+    /// `materialize_and_record` below writes) `VirtualCheckoutState` via
+    /// the real, non-injectable `XdgDirs::new()`, so every test here must
+    /// isolate this or it silently pollutes the real
+    /// `$XDG_STATE_HOME/over/virtual_checkout.toml`.
+    ///
+    /// # Safety
+    /// `env::set_var` is only unsound when other threads read/write the
+    /// process environment concurrently; `cargo nextest` runs each test in
+    /// its own process, matching `xdg::tests`' own `set_env` justification.
+    fn isolate_xdg_state() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("XDG_STATE_HOME", tmp.path());
+        }
+        tmp
+    }
+
     fn init_committed_repo(path: &std::path::Path) -> git2::Repository {
         let repo = git2::Repository::init(path).unwrap();
         let mut cfg = repo.config().unwrap();
@@ -258,6 +277,7 @@ mod tests {
 
     #[test]
     fn missing_target_with_no_record_is_missing() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         let e = entry(td.path().join("nope"), td.path().to_path_buf());
         assert_eq!(inspect(&e).unwrap(), Status::Missing);
@@ -265,6 +285,7 @@ mod tests {
 
     #[tokio::test]
     async fn clean_checkout_is_applied() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(td.path());
@@ -278,6 +299,7 @@ mod tests {
 
     #[tokio::test]
     async fn locally_modified_file_is_modified() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(td.path());
@@ -295,6 +317,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_only_drift_is_behind() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         let repo = init_committed_repo(td.path());
@@ -310,6 +333,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_overlapping_local_and_source_changes_are_diverged() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         td.child("b.txt").write_str("b").unwrap();
@@ -328,6 +352,7 @@ mod tests {
 
     #[tokio::test]
     async fn same_file_changed_differently_on_both_sides_is_conflict() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         let repo = init_committed_repo(td.path());
@@ -344,6 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_edit_converging_on_the_same_content_as_source_is_not_a_conflict() {
+        let _xdg = isolate_xdg_state();
         // Both sides independently changed a.txt to the exact same new
         // content — nothing would actually be lost by treating this as
         // reconciled, unlike a genuine conflict.
@@ -364,6 +390,7 @@ mod tests {
 
     #[tokio::test]
     async fn added_local_file_is_modified_not_conflict() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(td.path());

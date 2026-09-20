@@ -392,6 +392,27 @@ mod tests {
         }
     }
 
+    /// Points `$XDG_STATE_HOME` at a fresh, writable temp dir for the
+    /// duration of the returned guard's lifetime — the virtual-checkout
+    /// migration tests below read/write `VirtualCheckoutState` via the
+    /// real, non-injectable `XdgDirs::new()` (`classify`/`materialize` are
+    /// fixed `Materializer` trait methods, leaving no room to inject a
+    /// `StateFile`), so every test reaching that code path must isolate
+    /// this or it silently pollutes the real
+    /// `$XDG_STATE_HOME/over/virtual_checkout.toml`.
+    ///
+    /// # Safety
+    /// `env::set_var` is only unsound when other threads read/write the
+    /// process environment concurrently; `cargo nextest` runs each test in
+    /// its own process, matching `xdg::tests`' own `set_env` justification.
+    fn isolate_xdg_state() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("XDG_STATE_HOME", tmp.path());
+        }
+        tmp
+    }
+
     /// `git2::Repository::init` + one commit, mirroring
     /// `materialize::checkout::tests::init_committed_repo` — a clean
     /// checkout by default (no upstream configured, so `ahead_behind`
@@ -599,6 +620,7 @@ mod tests {
 
     #[tokio::test]
     async fn classify_clean_virtual_checkout_is_migrate_to_symlink_directory() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         init_committed_repo(td.path());
         let target = td.child("checkout");
@@ -628,6 +650,7 @@ mod tests {
 
     #[tokio::test]
     async fn classify_dirty_virtual_checkout_is_migrate_blocked_not_conflict() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         init_committed_repo(td.path());
         let target = td.child("checkout");
@@ -834,6 +857,7 @@ mod tests {
 
     #[tokio::test]
     async fn materialize_migrate_virtual_checkout_to_symlink_replaces_directory_and_drops_state() {
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         init_committed_repo(td.path());
         let checkout_dir = td.child("checkout");
@@ -891,6 +915,7 @@ mod tests {
 
     #[tokio::test]
     async fn materialize_migrate_dirty_virtual_checkout_refuses_even_if_invoked_directly() {
+        let _xdg = isolate_xdg_state();
         // `Plan::execute`'s `is_actionable` never calls `materialize` for a
         // blocked migration, but `materialize_migration` re-verifies
         // safety right before deleting regardless — classify -> execute
