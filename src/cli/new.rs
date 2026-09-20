@@ -18,21 +18,18 @@ use super::CLI;
 
 #[derive(Args, Debug)]
 pub struct Params {
-    /// Overlay path within the repository (e.g. apps/myapp)
+    #[clap(help = "Overlay path within the repository (e.g. apps/myapp)")]
     path: Option<String>,
 
-    /// Target directory for the overlay
+    #[clap(help = "Target directory for the overlay")]
     target: Option<String>,
 
-    /// Overlay descriptor format
-    #[clap(long, short, value_enum)]
+    #[clap(long, short, value_enum, help = "Overlay descriptor format")]
     format: Option<Format>,
 
-    /// Run without applying changes
     #[clap(long, short = 'n', help = "Run without applying changes")]
     dry_run: bool,
 
-    /// Overwrite without prompting
     #[clap(long, help = "Overwrite without prompting")]
     force: bool,
 }
