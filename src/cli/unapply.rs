@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{Context as AnyhowContext, Result, anyhow};
+use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Args;
 use dirs::home_dir;
 
@@ -113,9 +113,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
 
     if report.needs_attention() {
-        return Err(anyhow!(
-            "one or more entries were left untouched — see `skip:` lines above"
-        ));
+        bail!("one or more entries were left untouched — see `skip:` lines above");
     }
 
     Ok(())

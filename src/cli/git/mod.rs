@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use clap::Subcommand;
 
 use crate::cli::CLI;
@@ -136,7 +136,7 @@ pub fn resolve_overlay(
     // Interactive selection
     let overlays = over_repo.overlays()?;
     if overlays.is_empty() {
-        return Err(anyhow!("no overlays found in repository"));
+        bail!("no overlays found in repository");
     }
 
     let selection = dialoguer::FuzzySelect::with_theme(&DialogTheme::default())
@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn test_main_repo_root_regular() {
+    fn main_repo_root_resolves_workdir_for_regular_repo() {
         let (td, repo) = temp_git_repo();
         let root = main_repo_root(&repo).unwrap();
         // Canonicalize both sides: on Windows, libgit2's `workdir()` returns
@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn test_main_repo_root_bare() {
+    fn main_repo_root_resolves_parent_of_git_dir_for_bare_repo() {
         let td = TempDir::new().unwrap();
         let bare_path = td.path().join(".git");
         let repo = git2::Repository::init_bare(&bare_path).unwrap();
@@ -196,14 +196,14 @@ mod tests {
     }
 
     #[test]
-    fn test_get_overlay_config_none() {
+    fn missing_overlay_config_returns_none() {
         let (_td, repo) = temp_git_repo();
         let cfg = get_overlay_config(&repo).unwrap();
         assert_eq!(cfg, None);
     }
 
     #[test]
-    fn test_set_and_get_overlay_config() {
+    fn set_overlay_config_is_read_back_by_get() {
         let (_td, repo) = temp_git_repo();
         set_overlay_config(&repo, "myoverlay").unwrap();
         let cfg = get_overlay_config(&repo).unwrap();
@@ -211,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_overlay_config_overwrite() {
+    fn setting_overlay_config_twice_overwrites_previous_value() {
         let (_td, repo) = temp_git_repo();
         set_overlay_config(&repo, "first").unwrap();
         set_overlay_config(&repo, "second").unwrap();
@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn test_repo_relative_path_under_target() {
+    fn repo_under_overlay_target_returns_relative_subpath() {
         let td = TempDir::new().unwrap();
         // Create a minimal overlay with target = td path
         let overlay_dir = td.child("overlay");
@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn test_repo_relative_path_not_under_target() {
+    fn repo_not_under_overlay_target_errors() {
         let td = TempDir::new().unwrap();
         let overlay_dir = td.child("overlay");
         overlay_dir.create_dir_all().unwrap();
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_overlay_by_name() {
+    fn resolve_overlay_with_explicit_name_skips_git_config() {
         let td = TempDir::new().unwrap();
         let overlay_dir = td.child("myoverlay");
         overlay_dir.create_dir_all().unwrap();
@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_overlay_from_git_config() {
+    fn resolve_overlay_without_explicit_name_uses_git_config() {
         let td = TempDir::new().unwrap();
         let overlay_dir = td.child("dev");
         overlay_dir.create_dir_all().unwrap();

@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow};
 use dirs::home_dir;
+use tokio::task::spawn_blocking;
 use walkdir::WalkDir;
 
 use crate::overlays::{self, Repository};
@@ -76,67 +77,35 @@ pub async fn execute(cli: &CLI) -> Result<()> {
     // ── Overlay-managed files in worktree ────────────────────────────────
     // Walk the repo working tree, find symlinks pointing into the overlay root.
 
-    let mut managed_files: Vec<String> = Vec::new();
     let overlay_root_canonical = if overlay.root.exists() {
         overlay.root.canonicalize()?
     } else {
         overlay.root.clone()
     };
 
-    for entry in WalkDir::new(&workdir)
-        .min_depth(1)
-        .into_iter()
-        .filter_entry(|e| {
-            // Skip .git directory
-            e.file_name() != ".git"
-        })
-        .filter_map(|e| e.ok())
-    {
-        let path = entry.path();
-        if path.is_symlink()
-            && let Ok(target) = std::fs::read_link(path)
-        {
-            let target_canonical = if target.is_absolute() && target.exists() {
-                target.canonicalize().unwrap_or(target)
-            } else {
-                target.clone()
-            };
-            if target_canonical.starts_with(&overlay_root_canonical)
-                && let Ok(rel) = path.strip_prefix(&workdir)
-            {
-                managed_files.push(rel.display().to_string());
-            }
-        }
-    }
+    // `WalkDir` is synchronous disk I/O, hence `spawn_blocking` rather than
+    // walking directly inside this `async fn`.
+    let blocking_workdir = workdir.clone();
+    let blocking_overlay_root = overlay_root_canonical.clone();
+    let managed_files =
+        spawn_blocking(move || find_managed_files(&blocking_workdir, &blocking_overlay_root))
+            .await?;
 
     // ── Overlay files not applied here ───────────────────────────────────
     // Walk the overlay directory for the relative path, find files without
     // corresponding symlinks in the worktree.
 
     let overlay_subdir = overlay.root.join(&rel_path);
-    let mut unapplied_files: Vec<String> = Vec::new();
-
-    if overlay_subdir.exists() {
-        for entry in WalkDir::new(&overlay_subdir)
-            .min_depth(1)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            let path = entry.path();
-            if path.is_file()
-                && !is_overlay_descriptor(path)
-                && let Ok(rel) = path.strip_prefix(&overlay_subdir)
-            {
-                // Check the main repo root (not worktree) since overlays
-                // are symlinked into the main repo root.
-                let check_path = repo_root.join(rel);
-                let is_linked = is_symlink_to(&check_path, path, &overlay_root_canonical);
-                if !is_linked {
-                    unapplied_files.push(rel.display().to_string());
-                }
-            }
-        }
-    }
+    let unapplied_files = if overlay_subdir.exists() {
+        let blocking_repo_root = repo_root.clone();
+        let blocking_overlay_root = overlay_root_canonical.clone();
+        spawn_blocking(move || {
+            find_unapplied_files(&overlay_subdir, &blocking_repo_root, &blocking_overlay_root)
+        })
+        .await?
+    } else {
+        Vec::new()
+    };
 
     // ── Display results ──────────────────────────────────────────────────
 
@@ -180,6 +149,67 @@ pub async fn execute(cli: &CLI) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Walk the repo working tree, find symlinks pointing into the overlay root.
+fn find_managed_files(workdir: &Path, overlay_root_canonical: &Path) -> Vec<String> {
+    let mut managed_files = Vec::new();
+    for entry in WalkDir::new(workdir)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|e| {
+            // Skip .git directory
+            e.file_name() != ".git"
+        })
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if path.is_symlink()
+            && let Ok(target) = std::fs::read_link(path)
+        {
+            let target_canonical = if target.is_absolute() && target.exists() {
+                target.canonicalize().unwrap_or(target)
+            } else {
+                target.clone()
+            };
+            if target_canonical.starts_with(overlay_root_canonical)
+                && let Ok(rel) = path.strip_prefix(workdir)
+            {
+                managed_files.push(rel.display().to_string());
+            }
+        }
+    }
+    managed_files
+}
+
+/// Walk the overlay directory for the relative path, find files without
+/// corresponding symlinks in the worktree.
+fn find_unapplied_files(
+    overlay_subdir: &Path,
+    repo_root: &Path,
+    overlay_root_canonical: &Path,
+) -> Vec<String> {
+    let mut unapplied_files = Vec::new();
+    for entry in WalkDir::new(overlay_subdir)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if path.is_file()
+            && !is_overlay_descriptor(path)
+            && let Ok(rel) = path.strip_prefix(overlay_subdir)
+        {
+            // Check the main repo root (not worktree) since overlays are
+            // symlinked into the main repo root.
+            let check_path = repo_root.join(rel);
+            let is_linked = is_symlink_to(&check_path, path, overlay_root_canonical);
+            if !is_linked {
+                unapplied_files.push(rel.display().to_string());
+            }
+        }
+    }
+    unapplied_files
 }
 
 /// Check if a path is a symlink pointing to (or under) a file in the overlay.
@@ -243,7 +273,10 @@ mod tests {
     #[case("over.yml", true)]
     #[case("over.yaml", true)]
     #[case("over.toml", true)]
-    fn test_is_overlay_descriptor_valid(#[case] name: &str, #[case] expected: bool) {
+    fn known_overlay_descriptor_extensions_are_detected(
+        #[case] name: &str,
+        #[case] expected: bool,
+    ) {
         assert_eq!(is_overlay_descriptor(Path::new(name)), expected);
     }
 
@@ -254,12 +287,12 @@ mod tests {
     #[case("overlay.yaml")]
     #[case("over")]
     #[case(".yml")]
-    fn test_is_overlay_descriptor_invalid(#[case] name: &str) {
+    fn non_descriptor_names_are_not_flagged_as_overlay_descriptors(#[case] name: &str) {
         assert!(!is_overlay_descriptor(Path::new(name)));
     }
 
     #[test]
-    fn test_is_overlay_descriptor_nested_path() {
+    fn overlay_descriptor_detection_ignores_leading_path_components() {
         assert!(is_overlay_descriptor(Path::new("some/deep/path/over.yml")));
         assert!(!is_overlay_descriptor(Path::new(
             "some/deep/path/readme.md"
@@ -269,7 +302,7 @@ mod tests {
     // ── is_symlink_to ────────────────────────────────────────────────────
 
     #[test]
-    fn test_is_symlink_to_not_a_symlink() {
+    fn regular_file_is_never_considered_a_symlink_to_overlay() {
         let td = TempDir::new().unwrap();
         td.child("regular.txt").write_str("hello").unwrap();
 
@@ -281,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_symlink_to_nonexistent_path() {
+    fn missing_path_is_not_treated_as_a_symlink_to_overlay() {
         let td = TempDir::new().unwrap();
 
         assert!(!is_symlink_to(
@@ -292,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_symlink_to_exact_match() {
+    fn symlink_pointing_directly_at_overlay_file_is_recognized() {
         let td = TempDir::new().unwrap();
         let overlay_dir = td.child("overlay");
         overlay_dir.create_dir_all().unwrap();
@@ -314,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_symlink_to_different_target() {
+    fn symlink_pointing_outside_overlay_is_not_recognized() {
         let td = TempDir::new().unwrap();
         let overlay_dir = td.child("overlay");
         overlay_dir.create_dir_all().unwrap();
@@ -342,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_symlink_to_relative_path_match() {
+    fn symlink_matching_by_relative_path_under_overlay_root_is_recognized() {
         let td = TempDir::new().unwrap();
         let overlay_dir = td.child("overlay");
         overlay_dir.create_dir_all().unwrap();

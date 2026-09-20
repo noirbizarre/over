@@ -8,7 +8,9 @@ Some dotfile tools (chezmoi, for instance) template file *content* at apply
 time — injecting a machine-specific value into a tracked config file. `over`
 already uses minijinja for two path-shaped strings: an overlay's `target`
 field (`Overlay::resolve_target`) and a `.link.toml` sidecar's `target`
-field (`render_symlink_target`), rendered against `env`/`overlays` maps.
+field (`render_symlink_target`), rendered against `env`/`overlays` maps
+(later joined by a `machine` map — see
+[ADR-019](019-default-overlay-selection-extends-templating-to-overlay-choice.md)).
 Extending the same engine to file bodies was a natural next step, and
 `src/actions/templates.rs` exists as a named, currently-empty module —
 scaffolding for it.

@@ -42,5 +42,5 @@ repository's own history.
 
 Because identity is filesystem path, renaming or moving an overlay directory
 renames the overlay — and breaks anything that referenced its old name
-(`uses` entries elsewhere, `git over mount`'s stored `over.overlay` config).
+(`uses` entries elsewhere, `over git mount`'s stored `over.overlay` config).
 There is no rename operation; only pick-a-new-name-and-fix-references.

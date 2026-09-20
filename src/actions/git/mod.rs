@@ -6,7 +6,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result, anyhow, bail};
 use async_trait::async_trait;
 use futures::future::join_all;
 use git2::{Progress, Repository};
@@ -20,12 +20,10 @@ use tokio::{
 
 use crate::actions::fs::remove_target;
 use crate::actions::git::config::{GitRepoConfig, ROOT_PATH};
+use crate::exec::{Action, Ctx};
 use crate::overlays::Overlay;
 use crate::plan::actual::{self, ActualState};
-use crate::{
-    exec::{Action, Ctx},
-    ui::{self, emojis, style},
-};
+use crate::ui::{self, emojis, style};
 
 pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Result<()> {
     if let Some(git_repos) = &overlay.git {
@@ -61,11 +59,11 @@ pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Resul
         }
         if !errors.is_empty() {
             let msgs: Vec<String> = errors.iter().map(|e| format!("{e:#}")).collect();
-            return Err(anyhow!(
+            bail!(
                 "Failed to clone {} repositories:\n  {}",
                 msgs.len(),
                 msgs.join("\n  ")
-            ));
+            );
         }
     };
     Ok(())
@@ -210,7 +208,7 @@ impl Action for EnsureGitRepository {
             if let Err(e) = task.await? {
                 pb.println(format!("{} {}", emojis::CROSSMARK, e));
                 pb.abandon_with_message(format!("{} Failed", emojis::CROSSMARK));
-                return Err(anyhow!(e));
+                bail!(e);
             }
         }
 
@@ -507,7 +505,7 @@ fn create_worktree(
             .ok();
         }
     } else {
-        return Err(anyhow!("branch '{branch}' not found for worktree '{name}'"));
+        bail!("branch '{branch}' not found for worktree '{name}'");
     }
 
     Ok(())
@@ -833,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_remotes_adds_new_remote() {
+    fn ensure_remotes_creates_missing_remote_with_configured_url() {
         let (_td, repo) = create_source_repo();
         let mut remotes = HashMap::new();
         remotes.insert(
@@ -857,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_remotes_updates_url() {
+    fn ensure_remotes_updates_url_when_existing_remote_differs() {
         let (_td, repo) = create_source_repo();
 
         // Add a remote manually
@@ -884,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_remotes_with_extras() {
+    fn ensure_remotes_applies_extra_config_keys_and_tagopt_on_create() {
         let (_td, repo) = create_source_repo();
         let mut extras = HashMap::new();
         extras.insert("dmb-hierarchical".to_string(), "true".to_string());
@@ -912,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_remotes_idempotent() {
+    fn ensure_remotes_running_twice_does_not_duplicate_remote() {
         let (_td, repo) = create_source_repo();
         let mut remotes = HashMap::new();
         remotes.insert(
@@ -939,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_git_config() {
+    fn apply_git_config_writes_provided_entries() {
         let (_td, repo) = create_source_repo();
         let mut entries = HashMap::new();
         entries.insert("user.email".to_string(), "work@example.com".to_string());
@@ -953,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_git_config_idempotent() {
+    fn apply_git_config_running_twice_keeps_same_value() {
         let (_td, repo) = create_source_repo();
         let mut entries = HashMap::new();
         entries.insert("user.email".to_string(), "work@example.com".to_string());
@@ -966,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn test_checkout_ref_tag() {
+    fn checkout_ref_annotated_tag_moves_head_to_tagged_commit() {
         let (td, repo) = create_source_repo();
         let sig = git2::Signature::now("Test", "test@test.com").unwrap();
 
@@ -1021,7 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn test_checkout_ref_rev() {
+    fn checkout_ref_rev_moves_head_to_specified_commit() {
         let (td, repo) = create_source_repo();
         let sig = git2::Signature::now("Test", "test@test.com").unwrap();
 
@@ -1063,7 +1061,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_worktrees_creates_default_branch() {
+    fn ensure_worktrees_creates_default_branch_worktree_when_enabled() {
         let (source_td, _source_repo) = create_source_repo();
 
         // Clone as bare
@@ -1113,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_worktrees_creates_named_worktrees() {
+    fn ensure_worktrees_creates_explicitly_named_worktree_alongside_default() {
         let (source_td, _source_repo) = create_source_repo();
 
         let dest_td = TempDir::new().unwrap();
@@ -1157,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_worktrees_idempotent() {
+    fn ensure_worktrees_running_twice_keeps_default_worktree() {
         let (source_td, _source_repo) = create_source_repo();
 
         let dest_td = TempDir::new().unwrap();
@@ -1191,14 +1189,14 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_default_branch() {
+    fn detect_default_branch_reads_current_head_branch_name() {
         let (_td, repo) = create_source_repo();
         let branch = detect_default_branch(&repo).unwrap();
         assert_eq!(branch, "main");
     }
 
     #[test]
-    fn test_short_name() {
+    fn short_name_strips_git_suffix_from_url() {
         let action = EnsureGitRepository::new(
             PathBuf::from("test"),
             GitRepoConfig {
@@ -1220,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn test_short_name_no_git_suffix() {
+    fn short_name_returns_repo_name_when_url_has_no_git_suffix() {
         let action = EnsureGitRepository::new(
             PathBuf::from("test"),
             GitRepoConfig {
@@ -1242,7 +1240,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_per_worktree_config() {
+    fn apply_per_worktree_config_sets_auto_managed_entries_for_bare_repo() {
         let (source_td, _source_repo) = create_source_repo();
 
         let dest_td = TempDir::new().unwrap();
@@ -1282,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_per_worktree_config_with_user_entries() {
+    fn apply_per_worktree_config_merges_user_entries_with_auto_managed_ones() {
         let (source_td, _source_repo) = create_source_repo();
 
         let dest_td = TempDir::new().unwrap();
@@ -1322,7 +1320,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_per_worktree_config_disabled() {
+    fn apply_per_worktree_config_noop_when_feature_disabled() {
         let (_td, repo) = create_source_repo();
 
         let config = GitRepoConfig {
@@ -1347,7 +1345,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_worktrees_with_per_worktree_config() {
+    fn ensure_worktrees_writes_per_worktree_config_for_named_worktree() {
         let (source_td, _source_repo) = create_source_repo();
 
         let dest_td = TempDir::new().unwrap();
@@ -1405,7 +1403,7 @@ mod tests {
     // ── Display for EnsureGitRepository ─────────────────────────────────
 
     #[test]
-    fn test_ensure_git_repository_display() {
+    fn ensure_git_repository_display_shows_path_arrow_url() {
         let config = GitRepoConfig {
             url: "https://github.com/user/repo.git".to_string(),
             branch: None,
@@ -1602,7 +1600,7 @@ mod tests {
     // ── CloneState::update_bar ──────────────────────────────────────────
 
     #[test]
-    fn test_clone_state_update_bar_zero_objects() {
+    fn update_bar_returns_early_when_total_objects_is_zero() {
         let bar = ProgressBar::hidden();
         let state = CloneState::default();
         // total_objects == 0 → early return
@@ -1610,7 +1608,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clone_state_update_bar_receiving() {
+    fn update_bar_reports_network_receive_progress() {
         let bar = ProgressBar::hidden();
         let state = CloneState {
             stats: CloneStats {
@@ -1633,7 +1631,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clone_state_update_bar_resolving_deltas() {
+    fn update_bar_reports_delta_resolution_once_all_objects_received() {
         let bar = ProgressBar::hidden();
         let state = CloneState {
             stats: CloneStats {
@@ -1650,7 +1648,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clone_state_update_bar_no_checkout_progress() {
+    fn update_bar_handles_zero_checkout_total_without_dividing_by_zero() {
         let bar = ProgressBar::hidden();
         let state = CloneState {
             stats: CloneStats {
@@ -1673,7 +1671,7 @@ mod tests {
     // ── Static progress styles ──────────────────────────────────────────
 
     #[test]
-    fn test_progress_styles_are_valid() {
+    fn progress_style_templates_initialize_without_panic() {
         // Dereference lazy statics to ensure they initialize without panic
         let _ = &*CLONE_PROGRESS_STYLE;
         let _ = &*DONE_PROGRESS_STYLE;
@@ -1682,7 +1680,7 @@ mod tests {
     // ── checkout_ref: lightweight tag ────────────────────────────────────
 
     #[test]
-    fn test_checkout_ref_lightweight_tag() {
+    fn checkout_ref_lightweight_tag_detaches_head_at_tagged_commit() {
         let (source_td, _source_repo) = create_source_repo();
         // Create destination by cloning
         let dest_td = TempDir::new().unwrap();
@@ -1719,7 +1717,7 @@ mod tests {
     // ── checkout_ref: no tag, no rev (no-op) ────────────────────────────
 
     #[test]
-    fn test_checkout_ref_noop() {
+    fn checkout_ref_without_tag_or_rev_leaves_head_untouched() {
         let (_td, repo) = create_source_repo();
         let config = GitRepoConfig {
             url: String::new(),
@@ -1742,7 +1740,7 @@ mod tests {
     // ── ensure_remotes: verbose paths ───────────────────────────────────
 
     #[test]
-    fn test_ensure_remotes_verbose_add() {
+    fn ensure_remotes_verbose_logs_when_adding_new_remote() {
         let (_td, repo) = create_source_repo();
         let mut remotes = HashMap::new();
         remotes.insert(
@@ -1760,7 +1758,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_remotes_verbose_update() {
+    fn ensure_remotes_verbose_logs_when_updating_remote_url() {
         let (_td, repo) = create_source_repo();
         // Add remote first
         repo.remote("upstream", "https://old-url.com/repo.git")
@@ -1783,7 +1781,7 @@ mod tests {
     // ── ensure_remotes: push refspec ────────────────────────────────────
 
     #[test]
-    fn test_ensure_remotes_push_refspec() {
+    fn ensure_remotes_sets_push_refspec_when_specified() {
         let (_td, repo) = create_source_repo();
         let mut remotes = HashMap::new();
         remotes.insert(
@@ -1811,7 +1809,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_remotes_push_refspec_idempotent() {
+    fn ensure_remotes_running_twice_does_not_duplicate_push_refspec() {
         let (_td, repo) = create_source_repo();
         let mut remotes = HashMap::new();
         remotes.insert(
@@ -1849,7 +1847,7 @@ mod tests {
     // ── ensure_remotes: tagopt ──────────────────────────────────────────
 
     #[test]
-    fn test_ensure_remotes_tagopt() {
+    fn ensure_remotes_sets_tagopt_config_key() {
         let (_td, repo) = create_source_repo();
         let mut remotes = HashMap::new();
         remotes.insert(
@@ -1873,7 +1871,7 @@ mod tests {
     // ── ensure_remotes: extras ──────────────────────────────────────────
 
     #[test]
-    fn test_ensure_remotes_extras() {
+    fn ensure_remotes_applies_arbitrary_extra_config_keys() {
         let (_td, repo) = create_source_repo();
         let mut extras = HashMap::new();
         extras.insert("prune".to_string(), "true".to_string());
@@ -1905,7 +1903,7 @@ mod tests {
     // ── apply_git_config: verbose ───────────────────────────────────────
 
     #[test]
-    fn test_apply_git_config_verbose() {
+    fn apply_git_config_verbose_logs_set_entries() {
         let (_td, repo) = create_source_repo();
         let mut entries = HashMap::new();
         entries.insert("user.name".to_string(), "Verbose Test".to_string());
@@ -1917,7 +1915,7 @@ mod tests {
     // ── apply_per_worktree_config: verbose ──────────────────────────────
 
     #[test]
-    fn test_apply_per_worktree_config_verbose() {
+    fn apply_per_worktree_config_verbose_does_not_panic() {
         let (source_td, _source_repo) = create_source_repo();
         let dest_td = TempDir::new().unwrap();
         let bare_path = dest_td.path().join("bare.git");
@@ -1947,7 +1945,7 @@ mod tests {
     // ── create_worktree: branch not found ───────────────────────────────
 
     #[test]
-    fn test_create_worktree_branch_not_found() {
+    fn create_worktree_errors_when_branch_does_not_exist() {
         let (source_td, _source_repo) = create_source_repo();
         let dest_td = TempDir::new().unwrap();
         let bare_path = dest_td.path().join("bare.git");
@@ -1970,7 +1968,7 @@ mod tests {
     // ── create_worktree: verbose ────────────────────────────────────────
 
     #[test]
-    fn test_create_worktree_verbose() {
+    fn create_worktree_verbose_creates_worktree_from_remote_tracking_branch() {
         let (source_td, _source_repo) = create_source_repo();
         let dest_td = TempDir::new().unwrap();
         let bare_path = dest_td.path().join("bare.git");
@@ -1989,7 +1987,7 @@ mod tests {
     // ── detect_default_branch: fallback paths ───────────────────────────
 
     #[test]
-    fn test_detect_default_branch_bare_fallback_to_main() {
+    fn detect_default_branch_falls_back_to_main_when_no_head_or_origin_refs() {
         // Create a bare repo with no HEAD and no origin refs
         let td = TempDir::new().unwrap();
         let bare_path = td.path().join("empty.git");
@@ -2000,7 +1998,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_default_branch_from_origin_head_symbolic_ref() {
+    fn detect_default_branch_reads_branch_from_origin_head_symbolic_ref() {
         // Bare repo with no commits (HEAD is unborn) but with a symbolic
         // `refs/remotes/origin/HEAD` ref, as set up by `git clone --bare` or
         // `git remote set-head`.
@@ -2022,7 +2020,7 @@ mod tests {
     // ── ensure_worktrees: idempotent (worktree already exists) ──────────
 
     #[test]
-    fn test_ensure_worktrees_idempotent_default_branch() {
+    fn ensure_worktrees_idempotent_when_default_branch_worktree_already_exists() {
         let (source_td, _source_repo) = create_source_repo();
         let dest_td = TempDir::new().unwrap();
         let bare_path = dest_td.path().join("bare.git");
@@ -2054,7 +2052,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_worktrees_idempotent_named() {
+    fn ensure_worktrees_idempotent_when_named_worktree_already_exists() {
         let (source_td, _source_repo) = create_source_repo();
         let dest_td = TempDir::new().unwrap();
         let bare_path = dest_td.path().join("bare.git");
@@ -2097,7 +2095,7 @@ mod tests {
     // ── clone function ──────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_clone_local_repo() {
+    async fn clone_local_repo_creates_checkout_and_emits_progress_messages() {
         let (source_td, _source_repo) = create_source_repo();
         let dest_td = TempDir::new().unwrap();
         let dest_path = dest_td.path().join("cloned");
@@ -2127,7 +2125,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clone_local_repo_bare() {
+    async fn clone_local_repo_bare_creates_head_at_repo_root() {
         let (source_td, _source_repo) = create_source_repo();
         let dest_td = TempDir::new().unwrap();
         let dest_path = dest_td.path().join("cloned.git");
@@ -2146,7 +2144,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clone_local_repo_with_branch() {
+    async fn clone_local_repo_checks_out_specified_branch() {
         let (source_td, _source_repo) = create_source_repo();
         let dest_td = TempDir::new().unwrap();
         let dest_path = dest_td.path().join("cloned");
@@ -2170,7 +2168,7 @@ mod tests {
     // ── update_submodules (repo without submodules) ─────────────────────
 
     #[test]
-    fn test_update_submodules_no_submodules() {
+    fn update_submodules_succeeds_when_repo_has_no_submodules() {
         let (_td, repo) = create_source_repo();
         // Should succeed with no submodules
         update_submodules(&repo).unwrap();
@@ -2179,7 +2177,7 @@ mod tests {
     // ── apply_config_to_file ────────────────────────────────────────────
 
     #[test]
-    fn test_apply_config_to_file_creates_and_writes() {
+    fn apply_config_to_file_creates_file_and_writes_entries() {
         let td = TempDir::new().unwrap();
         let config_path = td.path().join("config.worktree");
         let mut entries = HashMap::new();
@@ -2194,7 +2192,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_config_to_file_verbose() {
+    fn apply_config_to_file_verbose_does_not_panic() {
         let td = TempDir::new().unwrap();
         let config_path = td.path().join("config.worktree");
         let mut entries = HashMap::new();

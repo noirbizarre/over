@@ -60,6 +60,13 @@ render, is a hard error — never a silent fallback to another selection
 method. See
 [ADR-019](adr/019-default-overlay-selection-extends-templating-to-overlay-choice.md).
 
+[`over doctor`](usage/doctor.md) deliberately does not participate in this:
+its Overlay configuration and XDG state sections always cover every overlay
+in the repository regardless of `NAME`, so narrowing the whole report to a
+single default overlay would leave those sections inconsistently scoped
+with the Git-exclude section. `doctor`'s `NAME` argument only narrows which
+overlay's `.git/info/exclude` drift gets checked; there is no `--all` flag.
+
 ## Materialization Rules
 
 By default, every file in an overlay is symlinked individually and every

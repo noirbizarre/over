@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use clap::Args;
 use dirs::home_dir;
 
@@ -125,9 +125,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
 
     if needs_attention {
-        return Err(anyhow!(
-            "one or more checkouts need attention — see `conflict`/`blocked` entries above"
-        ));
+        bail!("one or more checkouts need attention — see `conflict`/`blocked` entries above");
     }
     Ok(())
 }

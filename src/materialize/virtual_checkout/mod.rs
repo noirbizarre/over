@@ -21,7 +21,7 @@ pub(crate) mod state;
 
 use std::path::Path;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use tokio::task::spawn_blocking;
 
@@ -113,12 +113,12 @@ impl Materializer for VirtualCheckoutMaterializer {
     /// through to the same checkout-from-source-HEAD logic.
     async fn materialize(&self, ctx: Ctx, step: &PlanStep) -> Result<()> {
         if let Operation::Conflict { current } = &step.operation {
-            return Err(anyhow!(
+            bail!(
                 "refusing to materialize a virtual checkout at '{}': found {}, not a \
                  reconstructible legacy `over` installation — move it aside and rerun",
                 step.entry.target.display(),
                 current,
-            ));
+            );
         }
         if ctx.dry_run {
             return Ok(());

@@ -51,11 +51,14 @@ over --help
 | `over show` | Display details about an overlay |
 | `over apply` | Apply a given overlay |
 | `over lint` | Check overlays for configuration issues |
+| `over doctor` | Check the environment and overlays for issues |
 | `over completion` | Generate shell completion scripts |
 | `over status` | Get the current repository/directory overlays status |
 | `over diff` | Show differences between desired and actual overlay state |
 | `over sync` | Reconcile a checkout-materialized overlay with its git source |
 | `over unapply` | Remove a given overlay's own entries from the target |
+| `over commit` | Commit local changes in a checkout-materialized overlay back to its source repository |
+| `over log` | Show the git history behind a checkout-materialized overlay |
 
 `over`'s `git` subcommand group integrates with git workflows:
 

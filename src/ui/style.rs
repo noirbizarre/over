@@ -335,7 +335,7 @@ mod tests {
     use std::fmt::Write;
 
     #[test]
-    fn test_white_styles_text() {
+    fn white_preserves_original_text() {
         let styled = white("hello");
         let mut buf = String::new();
         write!(&mut buf, "{}", styled).unwrap();
@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn test_white_bold_styles_text() {
+    fn white_b_preserves_original_text() {
         let styled = white_b("hello");
         let mut buf = String::new();
         write!(&mut buf, "{}", styled).unwrap();
@@ -351,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn test_white_bold_italic_styles_text() {
+    fn white_bi_preserves_original_text() {
         let styled = white_bi("hello");
         let mut buf = String::new();
         write!(&mut buf, "{}", styled).unwrap();
@@ -359,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cyan_styles_text() {
+    fn cyan_preserves_original_text() {
         let styled = cyan("hello");
         let mut buf = String::new();
         write!(&mut buf, "{}", styled).unwrap();
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn test_yellow_styles_text() {
+    fn yellow_preserves_original_text() {
         let styled = yellow("hello");
         let mut buf = String::new();
         write!(&mut buf, "{}", styled).unwrap();
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn test_green_styles_text() {
+    fn green_preserves_original_text() {
         let styled = green("hello");
         let mut buf = String::new();
         write!(&mut buf, "{}", styled).unwrap();
@@ -383,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn test_red_styles_text() {
+    fn red_preserves_original_text() {
         let styled = red("hello");
         let mut buf = String::new();
         write!(&mut buf, "{}", styled).unwrap();
@@ -391,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_default() {
+    fn default_theme_uses_expected_glyphs() {
         let theme = DialogTheme::default();
         assert_eq!(format!("{}", theme.prompt_prefix), "?");
         assert_eq!(format!("{}", theme.prompt_suffix), "›");
@@ -402,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_confirm_prompt_no_default() {
+    fn confirm_prompt_without_default_shows_yn_hint() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -413,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_confirm_prompt_default_true() {
+    fn confirm_prompt_with_default_true_shows_yes() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_confirm_prompt_default_false() {
+    fn confirm_prompt_with_default_false_shows_no() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -435,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_confirm_prompt_empty_prompt() {
+    fn confirm_prompt_with_empty_text_still_shows_yn_hint() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme.format_confirm_prompt(&mut buf, "", None).unwrap();
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_confirm_selection_yes() {
+    fn confirm_selection_true_renders_yes() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -453,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_confirm_selection_no() {
+    fn confirm_selection_false_does_not_render_yes() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_confirm_selection_none() {
+    fn confirm_selection_none_renders_success_suffix() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -473,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_confirm_selection_empty_prompt() {
+    fn confirm_selection_with_empty_prompt_still_renders_selection() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -483,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_select_prompt() {
+    fn select_prompt_includes_prompt_text() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme.format_select_prompt(&mut buf, "Choose:").unwrap();
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_select_prompt_empty() {
+    fn select_prompt_with_empty_text_still_shows_suffix() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme.format_select_prompt(&mut buf, "").unwrap();
@@ -499,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_select_prompt_selection() {
+    fn select_prompt_selection_includes_chosen_option() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -509,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_select_prompt_selection_empty_prompt() {
+    fn select_prompt_selection_with_empty_prompt_still_shows_option() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -519,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_input_prompt_with_default() {
+    fn input_prompt_with_default_shows_default_hint() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -529,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_input_prompt_no_default() {
+    fn input_prompt_without_default_still_shows_prompt_text() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -539,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_input_prompt_empty_prompt() {
+    fn input_prompt_with_empty_text_still_shows_default_hint() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -549,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_input_prompt_selection() {
+    fn input_prompt_selection_includes_chosen_value() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -559,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_input_prompt_selection_empty_prompt() {
+    fn input_prompt_selection_with_empty_prompt_still_shows_value() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -569,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_multi_select_prompt() {
+    fn multi_select_prompt_includes_prompt_text() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -579,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_multi_select_prompt_empty() {
+    fn multi_select_prompt_with_empty_text_still_shows_suffix() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme.format_multi_select_prompt(&mut buf, "").unwrap();
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_multi_select_prompt_selection() {
+    fn multi_select_prompt_selection_joins_chosen_options() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -597,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_multi_select_prompt_selection_empty_prompt() {
+    fn multi_select_prompt_selection_with_empty_prompt_still_shows_option() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -607,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_select_prompt_item_active() {
+    fn select_prompt_active_item_uses_active_prefix() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -618,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dialog_theme_format_select_prompt_item_inactive() {
+    fn select_prompt_inactive_item_renders_item_text() {
         let theme = DialogTheme::default();
         let mut buf = String::new();
         theme
@@ -628,13 +628,13 @@ mod tests {
     }
 
     #[test]
-    fn test_clap_styles_returns_styles() {
+    fn clap_styles_produces_non_empty_styles() {
         let styles = clap_styles();
         assert!(std::mem::size_of_val(&styles) > 0);
     }
 
     #[test]
-    fn test_spinner_chars_constants() {
+    fn spinner_and_progress_char_constants_are_non_empty() {
         assert!(!TICK_CHARS_BRAILLE_4_6_DOWN.is_empty());
         assert!(!TICK_CHARS_BRAILLE_4_6_UP.is_empty());
         assert!(!BRAILLE_6.is_empty());

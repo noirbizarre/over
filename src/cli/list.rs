@@ -27,7 +27,9 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if args.tree {
         let root_label = root_label(&home);
         let tree = build_tree(&root_label, overlays.iter().map(|o| o.name.as_str()));
-        print!("{tree}");
+        // `tree.to_string()` already ends with a trailing newline; trim it
+        // so `ui::info`'s own `write_line` doesn't double it up.
+        ui::info(tree.to_string().trim_end()).ok();
     } else {
         for overlay in &overlays {
             ui::info(&overlay.name).ok();

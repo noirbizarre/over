@@ -100,7 +100,7 @@ mod tests {
     #[case::home_dir(&home(), "~")]
     #[case::home_dir_with_path(&format!("{}/.config", home()), "~/.config")]
     #[case::outside_home("/tmp", "/tmp")]
-    fn test_short_path(#[case] path: &str, #[case] expected: &str) {
+    fn short_path_replaces_home_directory_with_tilde(#[case] path: &str, #[case] expected: &str) {
         assert_eq!(short_path(path), expected.to_string());
     }
 
@@ -117,12 +117,16 @@ mod tests {
         "sömewhere/päth/tö/ovërlay",
         "/päth/tö/ovërlay"
     )]
-    fn test_longest_common_suffix(#[case] a: &str, #[case] b: &str, #[case] expected: &str) {
+    fn longest_common_suffix_finds_shared_trailing_path_segments(
+        #[case] a: &str,
+        #[case] b: &str,
+        #[case] expected: &str,
+    ) {
         assert_eq!(longest_common_suffix(a, b), expected);
     }
 
     #[test]
-    fn test_short_path_deeply_nested() {
+    fn short_path_shortens_deeply_nested_home_paths() {
         let h = home();
         let path = format!("{}/a/b/c/d/e/f.txt", h);
         let result = short_path(&path);
@@ -130,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn test_short_path_empty_string() {
+    fn short_path_of_empty_string_returns_empty_string() {
         let result = short_path("");
         assert_eq!(result, "");
     }

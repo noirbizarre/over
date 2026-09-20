@@ -79,10 +79,7 @@ fn show_diff(source: &Path, target: &Path) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to run git diff: {}", e))?;
     // git diff --no-index exits with 1 when there are differences, which is expected
     if !status.success() && status.code() != Some(1) {
-        return Err(anyhow::anyhow!(
-            "git diff exited with unexpected status: {}",
-            status
-        ));
+        anyhow::bail!("git diff exited with unexpected status: {}", status);
     }
     Ok(())
 }
@@ -159,10 +156,10 @@ fn resolve_file_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool
         return Ok(true);
     }
     if ctx.no_prompt {
-        return Err(anyhow::anyhow!(
+        anyhow::bail!(
             "file conflict: '{}' already exists (use --force to overwrite or run interactively to choose)",
             target.display()
-        ));
+        );
     }
     // Interactive prompt loop
     loop {
@@ -195,10 +192,10 @@ fn resolve_dir_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool>
         return Ok(true);
     }
     if ctx.no_prompt {
-        return Err(anyhow::anyhow!(
+        anyhow::bail!(
             "directory conflict: '{}' already exists (use --force to overwrite or run interactively to choose)",
             target.display()
-        ));
+        );
     }
     // Interactive prompt loop
     loop {
@@ -237,11 +234,7 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
     let rel_path = match src.strip_prefix(&root) {
         Ok(tail) => tail,
         Err(_) => {
-            return Err(anyhow::anyhow!(
-                "{} is not included in {}",
-                src.display(),
-                root.display(),
-            ));
+            anyhow::bail!("{} is not included in {}", src.display(), root.display());
         }
     };
     let target = overlay.root.join(rel_path);
@@ -300,11 +293,7 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
     let rel_path = match src.strip_prefix(&root) {
         Ok(tail) => tail.to_path_buf(),
         Err(_) => {
-            return Err(anyhow::anyhow!(
-                "{} is not included in {}",
-                src.display(),
-                root.display(),
-            ));
+            anyhow::bail!("{} is not included in {}", src.display(), root.display());
         }
     };
 
@@ -336,27 +325,34 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
         }
         link_action.execute(ctx.clone()).await?;
     } else {
-        // Recurse into the directory and add each file individually
-        let files: Vec<PathBuf> = WalkDir::new(&src)
-            .min_depth(1)
-            .into_iter()
-            .filter_map(|entry| match entry {
-                Ok(e) => Some(e),
-                Err(e) => {
-                    tracing::warn!("skipping entry due to error: {}", e);
-                    None
-                }
-            })
-            .filter(|e| e.path().is_file())
-            .filter(|e| {
-                let rel = match e.path().strip_prefix(&src) {
-                    Ok(r) => r,
-                    Err(_) => return false,
-                };
-                !overlay.is_excluded(rel)
-            })
-            .map(|e| e.path().to_path_buf())
-            .collect();
+        // Recurse into the directory and add each file individually.
+        // `WalkDir` is synchronous disk I/O, hence `spawn_blocking` rather
+        // than walking directly inside this `async fn`.
+        let walk_src = src.clone();
+        let walk_overlay = overlay.clone();
+        let files: Vec<PathBuf> = spawn_blocking(move || {
+            WalkDir::new(&walk_src)
+                .min_depth(1)
+                .into_iter()
+                .filter_map(|entry| match entry {
+                    Ok(e) => Some(e),
+                    Err(e) => {
+                        tracing::warn!("skipping entry due to error: {}", e);
+                        None
+                    }
+                })
+                .filter(|e| e.path().is_file())
+                .filter(|e| {
+                    let rel = match e.path().strip_prefix(&walk_src) {
+                        Ok(r) => r,
+                        Err(_) => return false,
+                    };
+                    !walk_overlay.is_excluded(rel)
+                })
+                .map(|e| e.path().to_path_buf())
+                .collect()
+        })
+        .await?;
 
         for file in files {
             add_file(ctx.clone(), overlay, &file).await?;

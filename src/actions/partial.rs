@@ -20,7 +20,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use dialoguer::Select;
 
@@ -352,11 +352,11 @@ fn resolve_structural_conflict(ctx: &Ctx, target: &Path) -> Result<bool> {
         return Ok(true);
     }
     if ctx.no_prompt {
-        return Err(anyhow::anyhow!(
+        anyhow::bail!(
             "partial-file conflict: '{}' is a directory or symlink, not a plain file \
              (use --force to replace it or run interactively to choose)",
             target.display()
-        ));
+        );
     }
     // No "loop back and ask again" choice exists here (unlike the block-
     // level conflict below, which has "Diff") — a single prompt suffices.
@@ -414,12 +414,12 @@ fn resolve_block_conflict(
         return Ok(true);
     }
     if ctx.no_prompt {
-        return Err(anyhow::anyhow!(
+        anyhow::bail!(
             "partial-file conflict: managed block '{}' in '{}' doesn't match the overlay's \
              content (use --force to overwrite or run interactively to choose)",
             marker,
             target.display()
-        ));
+        );
     }
     loop {
         let prompt = format!(
