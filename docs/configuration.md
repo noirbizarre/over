@@ -79,7 +79,7 @@ override this per overlay or per subtree:
 
 ```toml
 [defaults]
-materialization = "symlink"          # symlink | symlink-directory
+materialization = "symlink"          # symlink | symlink-directory | checkout
 
 [[rules]]
 path = "some/directory"               # glob or literal, relative to the overlay root
@@ -90,7 +90,10 @@ materialization = "symlink-directory"
   directory with no more specific `rules` match. `symlink` (the default)
   recurses into the directory and symlinks each file individually.
   `symlink-directory` symlinks the directory as a single unit — its
-  contents are not separately enumerated or tracked.
+  contents are not separately enumerated or tracked. `checkout` makes the
+  subtree a **virtual checkout** — ordinary, directly editable files with
+  no `.git` at the target — see [Virtual checkouts](usage/status.md#virtual-checkouts-materialization-checkout)
+  and [ADR-022](adr/022-virtual-checkout-materialization.md).
 - `rules` is a list of path/subtree overrides. `path` is a glob pattern (or
   a literal path) relative to the overlay root. When more than one rule
   matches the same path, the most specific one wins: a literal path always
