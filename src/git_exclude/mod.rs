@@ -16,10 +16,13 @@
 //! `unapply`'s "never trust persisted state" philosophy. [`unreconcile`]
 //! (#147) covers the reverse: unconditionally dropping an overlay's whole
 //! block on `over unapply`, regardless of which individual entries were
-//! actually removed from disk. `over status` diagnostics are tracked
-//! separately (out of scope here).
+//! actually removed from disk. [`diagnose`] (#148) covers `over status`'s
+//! read-only counterpart: it shares [`compute_expectation`] with the write
+//! path so the two can never drift apart, but never opens the exclude file
+//! for writing.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -29,6 +32,8 @@ use git2::Repository;
 use crate::actions::partial::{self, BlockState};
 use crate::desired::{DesiredTree, MaterializationIntent, Provenance};
 use crate::ui;
+use crate::ui::{emojis, style};
+use crate::utils::short_path;
 
 /// One managed target discovered from a [`DesiredTree`] (or supplied
 /// directly, e.g. by `over git add`), paired with the name of the overlay
@@ -63,6 +68,113 @@ pub struct ExcludeReport {
     /// Exclude files with a malformed block (stray begin/end marker) for
     /// the overlay's own marker — left untouched, never auto-repaired.
     pub malformed: Vec<PathBuf>,
+}
+
+/// The state of a single (repository, overlay) exclude block, compared
+/// against what [`reconcile`] would write there — `over status`'s exclude
+/// diagnostics (#148).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExcludeStatus {
+    /// Expected a non-empty block, but `.git/info/exclude` has none yet.
+    Missing,
+    /// The existing block already matches what `over` would write (or
+    /// nothing is expected and nothing is there) — nothing to do.
+    Ok,
+    /// A block exists, but nothing is expected there anymore (every
+    /// target that used to land in it is now tracked, or the group
+    /// otherwise resolved to an empty expected set) — stale, safe to drop
+    /// on the next `reconcile`, never auto-removed by `status` itself.
+    Orphaned,
+    /// A block exists but its content differs from what `over` would
+    /// write — manually edited, or drifted from a stale `reconcile` run.
+    Modified,
+    /// A begin marker without a matching end marker (or vice versa) for
+    /// this overlay's marker — left untouched, never auto-repaired.
+    Malformed,
+}
+
+/// One (repository, overlay) group's exclude-block diagnosis, plus any
+/// tracked-path conflicts found while computing it — reported
+/// independently of `status`, since a group can be otherwise `Ok` and
+/// still have paths it had to skip.
+#[derive(Debug, Clone)]
+pub struct ExcludeDiagnosis {
+    /// The repository's working directory.
+    pub repo_root: PathBuf,
+    pub overlay: String,
+    /// The `.git/info/exclude` path this diagnosis is about.
+    pub exclude_path: PathBuf,
+    pub status: ExcludeStatus,
+    pub tracked_conflicts: Vec<TrackedConflict>,
+}
+
+impl ExcludeDiagnosis {
+    /// Whether this diagnosis needs attention — used by `over status` to
+    /// decide what to show without `--verbose`, mirroring
+    /// `status::Status::needs_attention`.
+    pub fn needs_attention(&self) -> bool {
+        !matches!(self.status, ExcludeStatus::Ok) || !self.tracked_conflicts.is_empty()
+    }
+}
+
+impl fmt::Display for ExcludeDiagnosis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let repo = short_path(&self.repo_root.to_string_lossy());
+        match self.status {
+            ExcludeStatus::Ok => write!(
+                f,
+                "{} {} {} (overlay '{}')",
+                emojis::CHECKMARK,
+                style::white("exclude ok:"),
+                repo,
+                self.overlay,
+            )?,
+            ExcludeStatus::Missing => write!(
+                f,
+                "{} {} {} (overlay '{}')",
+                emojis::CROSSMARK,
+                style::white("exclude missing:"),
+                repo,
+                self.overlay,
+            )?,
+            ExcludeStatus::Modified => write!(
+                f,
+                "{} {} {} (overlay '{}')",
+                emojis::WARNING,
+                style::yellow("exclude modified:"),
+                repo,
+                self.overlay,
+            )?,
+            ExcludeStatus::Orphaned => write!(
+                f,
+                "{} {} {} (overlay '{}')",
+                emojis::TRASH,
+                style::yellow("exclude orphaned:"),
+                repo,
+                self.overlay,
+            )?,
+            ExcludeStatus::Malformed => write!(
+                f,
+                "{} {} {} (overlay '{}')",
+                emojis::WARNING,
+                style::yellow("exclude malformed:"),
+                repo,
+                self.overlay,
+            )?,
+        }
+
+        for conflict in &self.tracked_conflicts {
+            write!(
+                f,
+                "\n    {} {} {}",
+                emojis::LOCK,
+                style::yellow("tracked:"),
+                conflict.path.display(),
+            )?;
+        }
+
+        Ok(())
+    }
 }
 
 /// The name of the overlay that produced `provenance`.
@@ -272,13 +384,30 @@ pub fn unreconcile(targets: &[ManagedTarget]) -> Result<ExcludeReport> {
     Ok(report)
 }
 
-/// Reconcile a single (repository, overlay) group's exclude block.
-fn reconcile_group(
+/// What a (repository, overlay) group's exclude block *should* contain —
+/// computed once, shared by the write path ([`reconcile_group`]) and the
+/// read-only diagnostic path ([`diagnose_group`], #148) so the two can
+/// never drift apart.
+struct GroupExpectation {
+    /// The repository's working directory, for reporting.
+    repo_root: PathBuf,
+    exclude_path: PathBuf,
+    marker: String,
+    /// Sorted, deduped gitignore lines, tracked paths excluded — joined by
+    /// `\n`, matching `partial::find_block`'s block-content shape.
+    expected_content: String,
+    tracked_conflicts: Vec<TrackedConflict>,
+}
+
+/// Compute [`GroupExpectation`] for `targets`, all belonging to `overlay`
+/// and enclosed by `repo`. Purely read-only: only reads `repo.workdir()`/
+/// `repo.index()` and canonicalizes paths — never touches
+/// `.git/info/exclude` itself (not even to check whether it exists).
+fn compute_expectation(
     repo: &Repository,
     overlay: &str,
     targets: &BTreeSet<PathBuf>,
-    report: &mut ExcludeReport,
-) -> Result<()> {
+) -> Result<GroupExpectation> {
     let workdir = repo.workdir().with_context(|| {
         format!(
             "bare repository at '{}' has no working directory to exclude paths from",
@@ -293,6 +422,7 @@ fn reconcile_group(
         .with_context(|| format!("failed to open index for '{}'", repo.path().display()))?;
 
     let mut expected: BTreeSet<String> = BTreeSet::new();
+    let mut tracked_conflicts = Vec::new();
     for target in targets {
         let canonical_target = canonical_parent_join(target)?;
         let Ok(relative) = canonical_target.strip_prefix(&canonical_workdir) else {
@@ -302,27 +432,48 @@ fn reconcile_group(
         };
 
         if index.get_path(relative, 0).is_some() {
-            report.tracked_conflicts.push(TrackedConflict {
+            tracked_conflicts.push(TrackedConflict {
                 repo_root: workdir.to_path_buf(),
                 path: relative.to_path_buf(),
             });
-            ui::warn(format!(
-                "'{}' is already tracked by the repository at '{}' — not excluding it \
-                 (would hide a tracked file from `git status`)",
-                relative.display(),
-                workdir.display(),
-            ))
-            .ok();
             continue;
         }
 
         expected.insert(to_gitignore_pattern(relative));
     }
 
-    let expected_content = expected.into_iter().collect::<Vec<_>>().join("\n");
-    let marker = format!("exclude:{overlay}");
-    let exclude_path = repo.commondir().join("info").join("exclude");
+    Ok(GroupExpectation {
+        repo_root: workdir.to_path_buf(),
+        exclude_path: repo.commondir().join("info").join("exclude"),
+        marker: format!("exclude:{overlay}"),
+        expected_content: expected.into_iter().collect::<Vec<_>>().join("\n"),
+        tracked_conflicts,
+    })
+}
 
+/// Reconcile a single (repository, overlay) group's exclude block.
+fn reconcile_group(
+    repo: &Repository,
+    overlay: &str,
+    targets: &BTreeSet<PathBuf>,
+    report: &mut ExcludeReport,
+) -> Result<()> {
+    let expectation = compute_expectation(repo, overlay, targets)?;
+
+    for conflict in &expectation.tracked_conflicts {
+        ui::warn(format!(
+            "'{}' is already tracked by the repository at '{}' — not excluding it \
+             (would hide a tracked file from `git status`)",
+            conflict.path.display(),
+            conflict.repo_root.display(),
+        ))
+        .ok();
+    }
+    report
+        .tracked_conflicts
+        .extend(expectation.tracked_conflicts);
+
+    let exclude_path = expectation.exclude_path;
     if let Some(parent) = exclude_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create '{}'", parent.display()))?;
@@ -334,25 +485,33 @@ fn reconcile_group(
         String::new()
     };
 
-    let new_content = match partial::find_block(&current, &marker) {
+    let new_content = match partial::find_block(&current, &expectation.marker) {
         BlockState::Malformed => {
             report.malformed.push(exclude_path.clone());
             ui::warn(format!(
                 "'{}' has a malformed 'over: {}' exclude block (stray begin/end marker) — left \
                  untouched",
                 exclude_path.display(),
-                marker,
+                expectation.marker,
             ))
             .ok();
             None
         }
-        BlockState::Absent if expected_content.is_empty() => None,
-        BlockState::Absent => Some(partial::append_block(&current, &marker, &expected_content)),
-        BlockState::Found(existing) if existing == expected_content => None,
-        BlockState::Found(_) if expected_content.is_empty() => {
-            Some(partial::remove_block(&current, &marker))
+        BlockState::Absent if expectation.expected_content.is_empty() => None,
+        BlockState::Absent => Some(partial::append_block(
+            &current,
+            &expectation.marker,
+            &expectation.expected_content,
+        )),
+        BlockState::Found(existing) if existing == expectation.expected_content => None,
+        BlockState::Found(_) if expectation.expected_content.is_empty() => {
+            Some(partial::remove_block(&current, &expectation.marker))
         }
-        BlockState::Found(_) => Some(partial::replace_block(&current, &marker, &expected_content)),
+        BlockState::Found(_) => Some(partial::replace_block(
+            &current,
+            &expectation.marker,
+            &expectation.expected_content,
+        )),
     };
 
     if let Some(content) = new_content {
@@ -362,6 +521,68 @@ fn reconcile_group(
     }
 
     Ok(())
+}
+
+/// Diagnose (read-only) the `.git/info/exclude` block state for each
+/// (repository, overlay) group `targets` would reconcile — `over
+/// status`'s exclude diagnostics (#148).
+///
+/// Shares [`compute_expectation`]/[`discover_groups`] with [`reconcile`],
+/// so it only ever reads `.git/info/exclude` (never creates its parent
+/// directory or writes to it) and can only surface problems for groups
+/// reachable from `targets`, exactly like `reconcile`/`unreconcile` — a
+/// repository an overlay no longer manages *any* target in at all is
+/// undiscoverable here too.
+pub fn diagnose(targets: &[ManagedTarget]) -> Result<Vec<ExcludeDiagnosis>> {
+    let (repos, groups) = discover_groups(targets)?;
+    let mut diagnoses = Vec::with_capacity(groups.len());
+
+    for ((repo_key, overlay), abs_targets) in &groups {
+        let repo = repos
+            .get(repo_key)
+            .expect("every group key was inserted alongside its repo handle above");
+        diagnoses.push(diagnose_group(repo, overlay, abs_targets)?);
+    }
+
+    Ok(diagnoses)
+}
+
+/// Diagnose a single (repository, overlay) group — see [`diagnose`].
+fn diagnose_group(
+    repo: &Repository,
+    overlay: &str,
+    targets: &BTreeSet<PathBuf>,
+) -> Result<ExcludeDiagnosis> {
+    let expectation = compute_expectation(repo, overlay, targets)?;
+
+    // Read-only: unlike `reconcile_group`, never creates the parent
+    // directory just to find it empty — a missing file simply means an
+    // empty current block.
+    let current = if expectation.exclude_path.exists() {
+        fs::read_to_string(&expectation.exclude_path)
+            .with_context(|| format!("failed to read '{}'", expectation.exclude_path.display()))?
+    } else {
+        String::new()
+    };
+
+    let status = match partial::find_block(&current, &expectation.marker) {
+        BlockState::Malformed => ExcludeStatus::Malformed,
+        BlockState::Absent if expectation.expected_content.is_empty() => ExcludeStatus::Ok,
+        BlockState::Absent => ExcludeStatus::Missing,
+        BlockState::Found(existing) if existing == expectation.expected_content => {
+            ExcludeStatus::Ok
+        }
+        BlockState::Found(_) if expectation.expected_content.is_empty() => ExcludeStatus::Orphaned,
+        BlockState::Found(_) => ExcludeStatus::Modified,
+    };
+
+    Ok(ExcludeDiagnosis {
+        repo_root: expectation.repo_root,
+        overlay: overlay.to_string(),
+        exclude_path: expectation.exclude_path,
+        status,
+        tracked_conflicts: expectation.tracked_conflicts,
+    })
 }
 
 /// Unconditionally remove `overlay`'s exclude block from `repo`'s
@@ -920,5 +1141,190 @@ mod tests {
         assert!(report.updated.is_empty());
         let content = exclude_content(&repo);
         assert_eq!(content, "# >>> over: exclude:demo >>>\n/stray\n");
+    }
+
+    // ── diagnose: over status (#148) ───────────────────────────────────────
+
+    #[test]
+    fn diagnose_reports_missing_when_no_exclude_file_exists_yet() {
+        let (td, _repo) = temp_git_repo();
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+
+        let diagnoses = diagnose(&[ManagedTarget {
+            target: a,
+            overlay: "demo".into(),
+        }])
+        .unwrap();
+
+        assert_eq!(diagnoses.len(), 1);
+        assert_eq!(diagnoses[0].status, ExcludeStatus::Missing);
+        assert!(diagnoses[0].tracked_conflicts.is_empty());
+        assert!(diagnoses[0].needs_attention());
+    }
+
+    #[test]
+    fn diagnose_never_creates_or_writes_the_exclude_file() {
+        let (td, repo) = temp_git_repo();
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+        let exclude_path = repo.commondir().join("info").join("exclude");
+        let existed_before = exclude_path.exists();
+
+        diagnose(&[ManagedTarget {
+            target: a,
+            overlay: "demo".into(),
+        }])
+        .unwrap();
+
+        // `git init` may or may not have pre-created `info/exclude` —
+        // whatever the state was before, `diagnose` must not change it.
+        assert_eq!(exclude_path.exists(), existed_before);
+    }
+
+    #[test]
+    fn diagnose_reports_ok_when_the_block_matches_expected_content() {
+        let (td, repo) = temp_git_repo();
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+
+        let targets = [ManagedTarget {
+            target: a,
+            overlay: "demo".into(),
+        }];
+        reconcile(&targets).unwrap();
+        let _ = &repo;
+
+        let diagnoses = diagnose(&targets).unwrap();
+        assert_eq!(diagnoses.len(), 1);
+        assert_eq!(diagnoses[0].status, ExcludeStatus::Ok);
+        assert!(!diagnoses[0].needs_attention());
+    }
+
+    #[test]
+    fn diagnose_reports_modified_when_the_block_has_drifted() {
+        let (td, repo) = temp_git_repo();
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+
+        let targets = [ManagedTarget {
+            target: a,
+            overlay: "demo".into(),
+        }];
+        reconcile(&targets).unwrap();
+
+        // Hand-edit the block's content without touching the markers.
+        let exclude_path = repo.commondir().join("info").join("exclude");
+        std::fs::write(
+            &exclude_path,
+            "# >>> over: exclude:demo >>>\n/something-else\n# <<< over: exclude:demo <<<\n",
+        )
+        .unwrap();
+
+        let diagnoses = diagnose(&targets).unwrap();
+        assert_eq!(diagnoses.len(), 1);
+        assert_eq!(diagnoses[0].status, ExcludeStatus::Modified);
+        assert!(diagnoses[0].needs_attention());
+
+        // Read-only: the hand-edit must survive untouched.
+        assert_eq!(
+            exclude_content(&repo),
+            "# >>> over: exclude:demo >>>\n/something-else\n# <<< over: exclude:demo <<<\n"
+        );
+    }
+
+    #[test]
+    fn diagnose_reports_malformed_and_leaves_it_untouched() {
+        let (td, repo) = temp_git_repo();
+        let exclude_path = repo.commondir().join("info").join("exclude");
+        std::fs::create_dir_all(exclude_path.parent().unwrap()).unwrap();
+        std::fs::write(&exclude_path, "# >>> over: exclude:demo >>>\n/stray\n").unwrap();
+
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+
+        let diagnoses = diagnose(&[ManagedTarget {
+            target: a,
+            overlay: "demo".into(),
+        }])
+        .unwrap();
+
+        assert_eq!(diagnoses.len(), 1);
+        assert_eq!(diagnoses[0].status, ExcludeStatus::Malformed);
+        assert!(diagnoses[0].needs_attention());
+        assert_eq!(
+            exclude_content(&repo),
+            "# >>> over: exclude:demo >>>\n/stray\n"
+        );
+    }
+
+    #[test]
+    fn diagnose_reports_orphaned_when_every_managed_target_becomes_tracked() {
+        let (td, repo) = temp_git_repo();
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+
+        let targets = [ManagedTarget {
+            target: a.clone(),
+            overlay: "demo".into(),
+        }];
+        reconcile(&targets).unwrap();
+        assert!(exclude_content(&repo).contains("/a"));
+
+        // The only managed target is now tracked by the repository — the
+        // expected content becomes empty, but the block is still there.
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("a")).unwrap();
+            index.write().unwrap();
+        }
+
+        let diagnoses = diagnose(&targets).unwrap();
+        assert_eq!(diagnoses.len(), 1);
+        assert_eq!(diagnoses[0].status, ExcludeStatus::Orphaned);
+        assert!(diagnoses[0].needs_attention());
+        // The now-tracked target is also reported as a conflict.
+        assert_eq!(diagnoses[0].tracked_conflicts.len(), 1);
+
+        // Read-only: the stale block must survive untouched.
+        assert!(exclude_content(&repo).contains("/a"));
+    }
+
+    #[test]
+    fn diagnose_reports_tracked_conflicts_independently_of_block_state() {
+        let (td, repo) = temp_git_repo();
+        let a = td.path().join("a");
+        let tracked = td.path().join("tracked");
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&tracked, "content").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("tracked")).unwrap();
+            index.write().unwrap();
+        }
+
+        let targets = [
+            ManagedTarget {
+                target: a,
+                overlay: "demo".into(),
+            },
+            ManagedTarget {
+                target: tracked,
+                overlay: "demo".into(),
+            },
+        ];
+        // The block matches expected content (just "/a" — "tracked" is
+        // skipped) — status is `Ok`, but the conflict is still reported.
+        reconcile(&targets).unwrap();
+
+        let diagnoses = diagnose(&targets).unwrap();
+        assert_eq!(diagnoses.len(), 1);
+        assert_eq!(diagnoses[0].status, ExcludeStatus::Ok);
+        assert_eq!(diagnoses[0].tracked_conflicts.len(), 1);
+        assert_eq!(
+            diagnoses[0].tracked_conflicts[0].path,
+            PathBuf::from("tracked")
+        );
+        assert!(diagnoses[0].needs_attention());
     }
 }

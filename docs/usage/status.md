@@ -82,3 +82,26 @@ target:
 
 `--verbose` also lists the specific added/modified/deleted files
 underneath a virtual checkout's aggregate status line.
+
+## `.git/info/exclude` diagnostics
+
+When an overlay materializes symlinks or checkouts into a target that's
+itself inside a git repository, `over apply` keeps that repository's
+`.git/info/exclude` in sync so its own `git status` doesn't list
+overlay-managed paths as untracked (see [`over apply`](apply.md)). `over
+status` reports the state of that block, one line per (repository,
+overlay) pair, read-only — it never creates or writes to
+`.git/info/exclude`:
+
+| Status | Meaning |
+|--------|---------|
+| `exclude ok` | The block already matches what `over apply` would write — nothing to do. Only shown with `--verbose`. |
+| `exclude missing` | Managed paths exist here, but no block has been written yet — run `over apply`. |
+| `exclude modified` | The block exists but its content differs from what `over apply` would write (manual edit, or drift) — re-running `over apply` reconciles it. |
+| `exclude orphaned` | The block exists but nothing is left to exclude in it (e.g. every managed path it used to cover is now tracked by git) — `over apply` will shrink or remove it. |
+| `exclude malformed` | A begin/end marker mismatch for this overlay's block — never auto-repaired; fix it by hand. |
+
+A managed path that's already tracked by the repository is reported as a
+`tracked:` line underneath its group, independently of the block's own
+status above — `over` never removes a tracked path from the index or
+hides it from `git status`.

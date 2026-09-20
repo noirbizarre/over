@@ -11,6 +11,10 @@
 //! Persistent metadata (`$XDG_STATE_HOME/over`) is not involved — status
 //! must stay fully reconstructible from disk/git/config alone, per the
 //! issue's own requirement.
+//!
+//! Also surfaces `.git/info/exclude` drift/conflicts among the report's
+//! managed targets (#148, part of #142), via
+//! [`crate::git_exclude::diagnose`] — see [`Report::exclude_problems`].
 
 pub mod git;
 pub(crate) mod virtual_checkout;
@@ -21,6 +25,7 @@ use anyhow::Result;
 
 use crate::actions::symlink::LinkType;
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent};
+use crate::git_exclude::{self, ExcludeDiagnosis};
 use crate::plan::{Operation, Plan};
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
@@ -215,10 +220,12 @@ impl fmt::Display for Counts {
 }
 
 /// The reconciliation status of a whole [`DesiredTree`]: one
-/// [`EntryStatus`] per [`DesiredEntry`].
+/// [`EntryStatus`] per [`DesiredEntry`], plus any `.git/info/exclude`
+/// drift/conflicts among its managed targets (#148).
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     entries: Vec<EntryStatus>,
+    exclude_problems: Vec<ExcludeDiagnosis>,
 }
 
 impl Report {
@@ -264,11 +271,32 @@ impl Report {
                 status,
             });
         }
-        Ok(Self { entries })
+
+        // #148: read-only exclude-block diagnostics, reusing the exact
+        // same (repo, overlay) grouping/discovery `git_exclude::reconcile`
+        // uses at apply time — never opens `.git/info/exclude` for
+        // writing.
+        let managed = git_exclude::managed_targets(desired);
+        let exclude_problems = if managed.is_empty() {
+            Vec::new()
+        } else {
+            git_exclude::diagnose(&managed)?
+        };
+
+        Ok(Self {
+            entries,
+            exclude_problems,
+        })
     }
 
     pub fn entries(&self) -> &[EntryStatus] {
         &self.entries
+    }
+
+    /// `.git/info/exclude` diagnostics for this report's managed targets
+    /// (#148) — see [`ExcludeDiagnosis`].
+    pub fn exclude_problems(&self) -> &[ExcludeDiagnosis] {
+        &self.exclude_problems
     }
 
     pub fn is_empty(&self) -> bool {
@@ -293,11 +321,12 @@ impl Report {
     }
 
     /// Whether anything in this report needs attention (everything except
-    /// `Applied`). Informational only — `over status` never fails the
-    /// process just because entries need attention, mirroring `git
-    /// status`.
+    /// `Applied`, plus any exclude-block problem). Informational only —
+    /// `over status` never fails the process just because entries need
+    /// attention, mirroring `git status`.
     pub fn needs_attention(&self) -> bool {
         self.entries.iter().any(|e| e.status.needs_attention())
+            || self.exclude_problems.iter().any(|p| p.needs_attention())
     }
 }
 
@@ -577,6 +606,7 @@ mod tests {
                     behind: 1,
                 }),
             ],
+            exclude_problems: Vec::new(),
         };
         let counts = report.counts();
         assert_eq!(
@@ -761,5 +791,82 @@ mod tests {
         assert!(s.contains("6 ahead"));
         assert!(s.contains("7 behind"));
         assert!(s.contains("8 diverged"));
+    }
+
+    // ── exclude_problems: #148 ──────────────────────────────────────────
+
+    #[test]
+    fn report_build_surfaces_a_missing_exclude_block_for_a_managed_target() {
+        use crate::desired::Provenance;
+        use crate::git_exclude::ExcludeStatus;
+
+        let td = TempDir::new().unwrap();
+        git2::Repository::init(td.path()).unwrap();
+        let target = td.path().join("dotfile");
+        fs::write(&target, "content").unwrap();
+
+        let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            target,
+            provenance: Provenance::Overlay {
+                overlay: "demo".to_string(),
+                source: std::path::PathBuf::new(),
+            },
+            intent: MaterializationIntent::SymlinkFile {
+                source: std::path::PathBuf::from("/dev/null"),
+                link_type: LinkType::Soft,
+            },
+            permissions: None,
+        }]);
+
+        let report = Report::build(&desired).unwrap();
+
+        assert_eq!(report.exclude_problems().len(), 1);
+        assert_eq!(report.exclude_problems()[0].status, ExcludeStatus::Missing);
+        assert!(report.exclude_problems()[0].needs_attention());
+        assert!(report.needs_attention());
+    }
+
+    #[test]
+    fn report_build_reports_ok_when_the_exclude_block_already_matches() {
+        use crate::desired::Provenance;
+        use crate::git_exclude::{ExcludeStatus, ManagedTarget};
+
+        let td = TempDir::new().unwrap();
+        git2::Repository::init(td.path()).unwrap();
+        let target = td.path().join("dotfile");
+        fs::write(&target, "content").unwrap();
+
+        let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            target: target.clone(),
+            provenance: Provenance::Overlay {
+                overlay: "demo".to_string(),
+                source: std::path::PathBuf::new(),
+            },
+            intent: MaterializationIntent::SymlinkFile {
+                source: std::path::PathBuf::from("/dev/null"),
+                link_type: LinkType::Soft,
+            },
+            permissions: None,
+        }]);
+
+        // Pre-reconcile so the block already matches what `diagnose` would
+        // expect to find.
+        git_exclude::reconcile(&[ManagedTarget {
+            target,
+            overlay: "demo".to_string(),
+        }])
+        .unwrap();
+
+        let report = Report::build(&desired).unwrap();
+
+        assert_eq!(report.exclude_problems().len(), 1);
+        assert_eq!(report.exclude_problems()[0].status, ExcludeStatus::Ok);
+        assert!(!report.exclude_problems()[0].needs_attention());
+    }
+
+    #[test]
+    fn report_build_without_any_managed_target_has_no_exclude_problems() {
+        let report = Report::build(&DesiredTree::default()).unwrap();
+        assert!(report.exclude_problems().is_empty());
     }
 }
