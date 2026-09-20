@@ -273,7 +273,10 @@ mod tests {
     #[case("over.yml", true)]
     #[case("over.yaml", true)]
     #[case("over.toml", true)]
-    fn test_is_overlay_descriptor_valid(#[case] name: &str, #[case] expected: bool) {
+    fn known_overlay_descriptor_extensions_are_detected(
+        #[case] name: &str,
+        #[case] expected: bool,
+    ) {
         assert_eq!(is_overlay_descriptor(Path::new(name)), expected);
     }
 
@@ -284,12 +287,12 @@ mod tests {
     #[case("overlay.yaml")]
     #[case("over")]
     #[case(".yml")]
-    fn test_is_overlay_descriptor_invalid(#[case] name: &str) {
+    fn non_descriptor_names_are_not_flagged_as_overlay_descriptors(#[case] name: &str) {
         assert!(!is_overlay_descriptor(Path::new(name)));
     }
 
     #[test]
-    fn test_is_overlay_descriptor_nested_path() {
+    fn overlay_descriptor_detection_ignores_leading_path_components() {
         assert!(is_overlay_descriptor(Path::new("some/deep/path/over.yml")));
         assert!(!is_overlay_descriptor(Path::new(
             "some/deep/path/readme.md"
@@ -299,7 +302,7 @@ mod tests {
     // ── is_symlink_to ────────────────────────────────────────────────────
 
     #[test]
-    fn test_is_symlink_to_not_a_symlink() {
+    fn regular_file_is_never_considered_a_symlink_to_overlay() {
         let td = TempDir::new().unwrap();
         td.child("regular.txt").write_str("hello").unwrap();
 
@@ -311,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_symlink_to_nonexistent_path() {
+    fn missing_path_is_not_treated_as_a_symlink_to_overlay() {
         let td = TempDir::new().unwrap();
 
         assert!(!is_symlink_to(
@@ -322,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_symlink_to_exact_match() {
+    fn symlink_pointing_directly_at_overlay_file_is_recognized() {
         let td = TempDir::new().unwrap();
         let overlay_dir = td.child("overlay");
         overlay_dir.create_dir_all().unwrap();
@@ -344,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_symlink_to_different_target() {
+    fn symlink_pointing_outside_overlay_is_not_recognized() {
         let td = TempDir::new().unwrap();
         let overlay_dir = td.child("overlay");
         overlay_dir.create_dir_all().unwrap();
@@ -372,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_symlink_to_relative_path_match() {
+    fn symlink_matching_by_relative_path_under_overlay_root_is_recognized() {
         let td = TempDir::new().unwrap();
         let overlay_dir = td.child("overlay");
         overlay_dir.create_dir_all().unwrap();

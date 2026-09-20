@@ -118,7 +118,7 @@ mod tests {
     #[case("plain.txt", false)]
     #[case("path/to/file.rs", false)]
     #[case("no-special-chars", false)]
-    fn test_is_glob_pattern(#[case] input: &str, #[case] expected: bool) {
+    fn is_glob_pattern_detects_glob_metacharacters(#[case] input: &str, #[case] expected: bool) {
         assert_eq!(is_glob_pattern(input), expected);
     }
 
@@ -128,7 +128,10 @@ mod tests {
     #[case("/absolute/path", false)]
     #[case("relative/path", false)]
     #[case("~user/path", false)] // only ~/... is expanded, not ~user/
-    fn test_expand_tilde(#[case] input: &str, #[case] should_expand: bool) {
+    fn tilde_prefixed_paths_expand_to_home_others_unchanged(
+        #[case] input: &str,
+        #[case] should_expand: bool,
+    ) {
         let result = expand_tilde(input);
         if should_expand {
             if let Some(home) = home_dir() {
@@ -146,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn test_expand_tilde_bare() {
+    fn bare_tilde_expands_to_home_dir_exactly() {
         let result = expand_tilde("~");
         if let Some(home) = home_dir() {
             assert_eq!(result, home);
@@ -154,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_inputs_absolute_file() {
+    fn resolve_inputs_returns_absolute_path_for_existing_file() {
         let td = TempDir::new().unwrap();
         let file = td.child("hello.txt");
         file.touch().unwrap();
@@ -166,13 +169,13 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_inputs_nonexistent_errors() {
+    fn resolve_inputs_errors_on_nonexistent_path() {
         let result = resolve_inputs(&["/nonexistent/path/file.txt".to_string()]);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_resolve_inputs_glob_expands() {
+    fn resolve_inputs_expands_glob_to_matching_files() {
         let td = TempDir::new().unwrap();
         td.child("a.txt").touch().unwrap();
         td.child("b.txt").touch().unwrap();
@@ -185,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_inputs_glob_no_match_errors() {
+    fn resolve_inputs_errors_when_glob_matches_nothing() {
         let td = TempDir::new().unwrap();
         let pattern = format!("{}/*.nonexistent", td.path().display());
         let result = resolve_inputs(&[pattern]);
