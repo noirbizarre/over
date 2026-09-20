@@ -368,6 +368,212 @@ fn lint_cycle_detection() -> TestResult {
     Ok(())
 }
 
+// ── doctor integration tests (#149) ──────────────────────────────────────
+
+#[test]
+fn doctor_clean_repository_reports_no_issues() -> TestResult {
+    let tmp = TempDir::new()?;
+    let root = tmp.path().join("root");
+    fs::create_dir_all(&root)?;
+    let ov = tmp.path().join("clean");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), b"target = \"~\"")?;
+
+    let xdg_state_home = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["doctor", "--root"])
+        .arg(&root)
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .success()
+        .stdout(contains("No issues found"));
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_lint_errors_and_exits_nonzero() -> TestResult {
+    let tmp = TempDir::new()?;
+    let root = tmp.path().join("root");
+    fs::create_dir_all(&root)?;
+    let ov = tmp.path().join("broken");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), b"this is not valid toml [[[")?;
+
+    let xdg_state_home = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["doctor", "--root"])
+        .arg(&root)
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .failure()
+        .stdout(contains("error"));
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_malformed_exclude_block_and_exits_nonzero() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let root = TempDir::new()?;
+    let target = canonical_for_matching(root.path())?;
+    git2::Repository::init(&target)?;
+
+    let ov = canonical_tmp.join("dotfiles");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), b"target = \"~\"")?;
+    fs::write(ov.join("file.txt"), b"content")?;
+
+    let exclude_path = target.join(".git/info/exclude");
+    fs::create_dir_all(exclude_path.parent().unwrap())?;
+    fs::write(&exclude_path, b"# >>> over: exclude:dotfiles >>>\n/stray\n")?;
+
+    let xdg_state_home = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["doctor", "--root"])
+        .arg(&target)
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .failure()
+        .stdout(contains("exclude malformed"));
+
+    // Detection-only without `--fix`: the malformed block must survive
+    // byte-for-byte.
+    assert_eq!(
+        fs::read_to_string(&exclude_path)?,
+        "# >>> over: exclude:dotfiles >>>\n/stray\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn doctor_fix_repairs_malformed_exclude_block_and_exits_zero() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let root = TempDir::new()?;
+    let target = canonical_for_matching(root.path())?;
+    git2::Repository::init(&target)?;
+
+    let ov = canonical_tmp.join("dotfiles");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), b"target = \"~\"")?;
+    fs::write(ov.join("file.txt"), b"content")?;
+
+    let exclude_path = target.join(".git/info/exclude");
+    fs::create_dir_all(exclude_path.parent().unwrap())?;
+    fs::write(&exclude_path, b"# >>> over: exclude:dotfiles >>>\n/stray\n")?;
+
+    let xdg_state_home = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["doctor", "--root"])
+        .arg(&target)
+        .arg("--fix")
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .success()
+        .stdout(contains("repaired malformed"));
+
+    let content = fs::read_to_string(&exclude_path)?;
+    assert!(content.contains("# >>> over: exclude:dotfiles >>>"));
+    assert!(content.contains("# <<< over: exclude:dotfiles <<<"));
+    Ok(())
+}
+
+#[test]
+fn doctor_fix_never_touches_a_merely_modified_block() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let root = TempDir::new()?;
+    let target = canonical_for_matching(root.path())?;
+    git2::Repository::init(&target)?;
+
+    let ov = canonical_tmp.join("dotfiles");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), b"target = \"~\"")?;
+    fs::write(ov.join("file.txt"), b"content")?;
+
+    let exclude_path = target.join(".git/info/exclude");
+    fs::create_dir_all(exclude_path.parent().unwrap())?;
+    // Well-formed markers, but hand-edited content — `Modified`, not
+    // `Malformed`, so `--fix` must leave it completely alone.
+    let hand_edited =
+        "# >>> over: exclude:dotfiles >>>\n/something-else\n# <<< over: exclude:dotfiles <<<\n";
+    fs::write(&exclude_path, hand_edited)?;
+
+    let xdg_state_home = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["doctor", "--root"])
+        .arg(&target)
+        .arg("--fix")
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .success(); // `Modified` is only a `Warning`, never an `Error`.
+
+    assert_eq!(fs::read_to_string(&exclude_path)?, hand_edited);
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_a_stale_xdg_sync_record() -> TestResult {
+    use dot_over::sync::state::{CheckoutRecord, SyncState};
+
+    #[derive(serde::Serialize)]
+    struct Envelope<T> {
+        version: u32,
+        state: T,
+    }
+
+    let tmp = TempDir::new()?;
+    let root = tmp.path().join("root");
+    fs::create_dir_all(&root)?;
+    let missing_target = root.join("nonexistent");
+
+    let mut checkouts = std::collections::HashMap::new();
+    checkouts.insert(
+        missing_target.to_string_lossy().to_string(),
+        CheckoutRecord {
+            overlay: "dotfiles".to_string(),
+            repo_key: ".".to_string(),
+            worktree: None,
+            last_synced_oid: None,
+            last_synced_at: None,
+            last_outcome: None,
+        },
+    );
+    let envelope = Envelope {
+        version: 1,
+        state: SyncState { checkouts },
+    };
+
+    let xdg_state_home = TempDir::new()?;
+    let over_state_dir = xdg_state_home.path().join("over");
+    fs::create_dir_all(&over_state_dir)?;
+    fs::write(
+        over_state_dir.join("sync.toml"),
+        toml::to_string(&envelope)?,
+    )?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["doctor", "--root"])
+        .arg(&root)
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .success()
+        .stdout(contains("stale sync record"));
+    Ok(())
+}
+
 // ── status integration tests ─────────────────────────────────────────────
 
 #[test]
@@ -978,14 +1184,12 @@ fn legacy_symlink_only_installation_migrates_to_checkout_with_no_prior_xdg_state
     // A fresh, empty `$XDG_STATE_HOME` — the issue's explicit requirement:
     // no prior `over` state directory of any kind, not even an empty one
     // `over` itself created.
-    let xdg_state_home = TempDir::new()?;
 
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
         .args(["apply", "legacy", "--root"])
         .arg(&target)
-        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
 
@@ -1025,14 +1229,11 @@ fn legacy_symlink_installation_with_drift_is_reported_as_conflict_not_replaced()
     // discarded/replaced.
     fs::write(target.join("foreign.txt"), "not from over")?;
 
-    let xdg_state_home = TempDir::new()?;
-
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
         .args(["apply", "legacy2", "--root"])
         .arg(&target)
-        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .failure();
 

@@ -12,9 +12,11 @@
 
 use std::collections::HashMap;
 
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::xdg::state::VersionedState;
+use crate::xdg::XdgDirs;
+use crate::xdg::state::{StateFile, VersionedState};
 
 /// One record per synced checkout/worktree path, keyed by its
 /// canonicalized target path (string form, so it round-trips through TOML
@@ -48,6 +50,17 @@ pub struct CheckoutRecord {
     /// Short human-readable label of the last outcome (e.g. `"merged"`,
     /// `"conflict"`), for display only.
     pub last_outcome: Option<String>,
+}
+
+/// The real, default state file location under `$XDG_STATE_HOME/over`.
+/// Mirrors `materialize::virtual_checkout::state`'s own `state_file()` —
+/// kept separate from the tests' isolated `StateFile` instances, and
+/// reused by both `sync::sync` and `doctor::checks::xdg_state_findings` so
+/// the path is only ever spelled out once.
+pub(crate) fn state_file() -> Result<StateFile<SyncState>> {
+    Ok(StateFile::new(
+        XdgDirs::new()?.state_dir().join("sync.toml"),
+    ))
 }
 
 #[cfg(test)]

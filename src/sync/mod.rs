@@ -38,7 +38,6 @@ use crate::status::{self, Status};
 use crate::ui::style::DialogTheme;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
-use crate::xdg::XdgDirs;
 use crate::xdg::state::StateFile;
 
 use state::{CheckoutRecord, SyncState};
@@ -234,8 +233,7 @@ struct SyncUnit {
 /// through [`SyncOptions`]. Never touches subpath `git` entries — those
 /// stay opaque resources, per this module's scope (see module doc).
 pub async fn sync(desired: &DesiredTree, opts: &SyncOptions) -> Result<Vec<SyncOutcome>> {
-    let state_file: StateFile<SyncState> =
-        StateFile::new(XdgDirs::new()?.state_dir().join("sync.toml"));
+    let state_file: StateFile<SyncState> = state::state_file()?;
 
     let mut outcomes = Vec::new();
     for entry in desired.entries() {
