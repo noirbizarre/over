@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use clap::Args;
 use dialoguer::Input;
 use dirs::home_dir;
@@ -80,11 +80,11 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .collect();
 
     if checkout_entries.is_empty() {
-        return Err(anyhow!(
+        bail!(
             "overlay '{}' is not checkout-materialized (no `checkout` materialization rule \
              applies) — nothing for `over commit` to do",
             overlay.name,
-        ));
+        );
     }
 
     ui::info(format!(
@@ -118,10 +118,10 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
 
     if needs_attention {
-        return Err(anyhow!(
+        bail!(
             "one or more virtual checkouts have conflicting files — resolve them manually, \
              then re-run `over commit`"
-        ));
+        );
     }
 
     Ok(())

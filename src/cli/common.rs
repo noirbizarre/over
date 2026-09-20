@@ -1,7 +1,7 @@
 use std::env::current_dir;
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use dialoguer::FuzzySelect;
 use dirs::home_dir;
 
@@ -45,7 +45,7 @@ pub fn resolve_inputs(inputs: &[String]) -> Result<Vec<PathBuf>> {
                 .collect();
 
             if matches.is_empty() {
-                return Err(anyhow!("No files matched pattern '{}'", input));
+                bail!("No files matched pattern '{}'", input);
             }
 
             for path in matches {
@@ -63,7 +63,7 @@ pub fn resolve_inputs(inputs: &[String]) -> Result<Vec<PathBuf>> {
                 expanded
             };
             if !abs.exists() {
-                return Err(anyhow!("{} does not exist", abs.display()));
+                bail!("{} does not exist", abs.display());
             }
             resolved.push(abs);
         }
@@ -91,7 +91,7 @@ pub fn select_overlay(
     }
     let overlays = repo.overlays()?;
     if overlays.is_empty() {
-        return Err(anyhow!("no overlays found in repository"));
+        bail!("no overlays found in repository");
     }
     let selection = FuzzySelect::with_theme(&DialogTheme::default())
         .with_prompt(prompt)

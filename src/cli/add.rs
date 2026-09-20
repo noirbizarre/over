@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use clap::Args;
 use dialoguer::{FuzzySelect, Input};
 use dirs::home_dir;
@@ -48,7 +48,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         None => {
             let overlays = repo.overlays()?;
             if overlays.is_empty() {
-                return Err(anyhow!("no overlays found in repository"));
+                bail!("no overlays found in repository");
             }
             let selection = FuzzySelect::with_theme(&DialogTheme::default())
                 .with_prompt("Choose the target overlay")

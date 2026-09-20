@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use clap::Args;
 use config::{Config, File, FileFormat, FileSourceFile};
 use dialoguer::{Input, MultiSelect};
@@ -72,10 +72,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     // Check the overlay does not already exist
     let descriptor = overlay_root.join(format!("{}.{}", BASENAME, format.extension()));
     if descriptor.exists() && !args.force {
-        return Err(anyhow!(
-            "overlay already exists at {}",
-            overlay_root.display()
-        ));
+        bail!("overlay already exists at {}", overlay_root.display());
     }
 
     // Resolve the actual target path for filesystem operations. Shares

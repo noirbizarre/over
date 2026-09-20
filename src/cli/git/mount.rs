@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use clap::Args;
 use dialoguer::{FuzzySelect, MultiSelect};
 use dirs::home_dir;
@@ -79,7 +79,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     } else {
         let overlays = over_repo.overlays()?;
         if overlays.is_empty() {
-            return Err(anyhow!("no overlays found in repository"));
+            bail!("no overlays found in repository");
         }
         let selection = FuzzySelect::with_theme(&DialogTheme::default())
             .with_prompt("Choose the target overlay")
@@ -376,9 +376,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             }
 
             if url.is_empty() {
-                return Err(anyhow!(
-                    "no URL available for git entry; add an origin remote first"
-                ));
+                bail!("no URL available for git entry; add an origin remote first");
             }
 
             let git_repo_config = GitRepoConfig {

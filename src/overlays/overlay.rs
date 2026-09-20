@@ -282,11 +282,11 @@ impl Overlay {
             // Currently in the recursion stack — true cycle
             if stack.contains(&self.name) {
                 stack.push(self.name.clone());
-                return Err(anyhow::anyhow!(
+                anyhow::bail!(
                     "Cycle detected: overlay '{}' forms a cycle (path: {})",
                     self.name,
                     stack.join(" -> ")
-                ));
+                );
             }
             stack.push(self.name.clone());
 

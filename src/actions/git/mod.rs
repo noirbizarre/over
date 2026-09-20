@@ -6,7 +6,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result, anyhow, bail};
 use async_trait::async_trait;
 use futures::future::join_all;
 use git2::{Progress, Repository};
@@ -61,11 +61,11 @@ pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Resul
         }
         if !errors.is_empty() {
             let msgs: Vec<String> = errors.iter().map(|e| format!("{e:#}")).collect();
-            return Err(anyhow!(
+            bail!(
                 "Failed to clone {} repositories:\n  {}",
                 msgs.len(),
                 msgs.join("\n  ")
-            ));
+            );
         }
     };
     Ok(())
@@ -210,7 +210,7 @@ impl Action for EnsureGitRepository {
             if let Err(e) = task.await? {
                 pb.println(format!("{} {}", emojis::CROSSMARK, e));
                 pb.abandon_with_message(format!("{} Failed", emojis::CROSSMARK));
-                return Err(anyhow!(e));
+                bail!(e);
             }
         }
 
@@ -507,7 +507,7 @@ fn create_worktree(
             .ok();
         }
     } else {
-        return Err(anyhow!("branch '{branch}' not found for worktree '{name}'"));
+        bail!("branch '{branch}' not found for worktree '{name}'");
     }
 
     Ok(())

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use tokio::task::spawn_blocking;
 
@@ -285,11 +285,11 @@ async fn materialize_migration(
         match status::git::inspect_checkout(&entry.target)? {
             Status::Applied => {}
             other => {
-                return Err(anyhow!(
+                bail!(
                     "refusing to migrate '{}': checkout {} since it was classified — rerun to re-evaluate",
                     entry.target.display(),
                     status::describe(&other),
-                ));
+                );
             }
         }
     }
@@ -297,11 +297,11 @@ async fn materialize_migration(
         match status::virtual_checkout::inspect(entry)? {
             Status::Applied => {}
             other => {
-                return Err(anyhow!(
+                bail!(
                     "refusing to migrate '{}': virtual checkout {} since it was classified — rerun to re-evaluate",
                     entry.target.display(),
                     status::describe(&other),
-                ));
+                );
             }
         }
         // The target is about to be removed and replaced by a symlink —

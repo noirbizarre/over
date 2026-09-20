@@ -88,11 +88,11 @@ fn build_inner(
     // Currently in the recursion stack — true cycle.
     if stack.contains(&overlay.name) {
         stack.push(overlay.name.clone());
-        return Err(anyhow::anyhow!(
+        anyhow::bail!(
             "Cycle detected: overlay '{}' forms a cycle (path: {})",
             overlay.name,
             stack.join(" -> ")
-        ));
+        );
     }
     stack.push(overlay.name.clone());
 

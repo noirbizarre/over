@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use clap::Subcommand;
 
 use crate::cli::CLI;
@@ -136,7 +136,7 @@ pub fn resolve_overlay(
     // Interactive selection
     let overlays = over_repo.overlays()?;
     if overlays.is_empty() {
-        return Err(anyhow!("no overlays found in repository"));
+        bail!("no overlays found in repository");
     }
 
     let selection = dialoguer::FuzzySelect::with_theme(&DialogTheme::default())

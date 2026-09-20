@@ -19,7 +19,7 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use tokio::task::spawn_blocking;
 
@@ -152,12 +152,12 @@ impl Materializer for CheckoutMaterializer {
         // "absorb-diff"-style resolution for a checkout the way there is
         // for symlinks/files, so this is the only safe response.
         if let Operation::Conflict { current } = &step.operation {
-            return Err(anyhow!(
+            bail!(
                 "refusing to clone into '{}': found {}, not a reconstructible \
                  legacy `over` installation — move it aside and rerun",
                 step.entry.target.display(),
                 current,
-            ));
+            );
         }
 
         let Provenance::Git {
