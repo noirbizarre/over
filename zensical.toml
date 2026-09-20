@@ -21,6 +21,7 @@ Copyright &copy; 2026 Axel H. — MIT licensed
 # meaningfully conflict with additions here.
 nav = [
   { "Home" = "index.md" },
+  { "Examples" = "examples.md" },
   { "Usage" = [
     { "Overview" = "usage/index.md" },
     { "over add" = "usage/add.md" },

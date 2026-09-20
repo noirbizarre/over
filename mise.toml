@@ -240,3 +240,42 @@ git tpl diff --exit-code --stat
 #
 # Artwork tasks belong here rather than in `default` or `check`: they rewrite
 # committed binaries, so a routine run would dirty the working tree every time.
+
+[tasks.demo]
+description = "Regenerate the README demo GIF"
+# vhs (and ttyd, which it drives to capture the terminal) are declared here
+# rather than in [tools]: no CI job regenerates the demo, so `mise install`
+# must not pull them onto every runner in the matrix — same reasoning as
+# cargo-insta on `snapshots` above.
+# ffmpeg and gifsicle are NOT mise-managed here (neither is in mise's
+# registry, and vhs/this task only shell out to the system binary): common
+# enough as base-image/dev-machine dependencies that pulling a media
+# toolchain through aqua isn't worth it. Install both via your system
+# package manager if `mise run demo` reports either missing.
+# vhs pinned below its latest (0.12.x): 0.12.0's evaluator cancels the
+# context it later hands to its own ffmpeg invocation (Render runs after
+# teardown() has already called cancel() on that same ctx), so
+# `exec.CommandContext` refuses to even start ffmpeg — silently, since the
+# error path only logs ffmpeg's (empty, because it never ran) output rather
+# than the real error. Confirmed against both the v0.12.0 tag and `main` as
+# of 2026-09; 0.11.0 predates the regression. Revisit once upstream fixes it.
+tools = { vhs = "0.11.0", "aqua:tsl0922/ttyd" = "latest" }
+# Depends on `build` rather than building inside the tape itself: the tape
+# puts `target/debug` on `PATH` for the recorded shell, so the GIF always
+# reflects the current source — but doing the build there too would show a
+# `Compiling...` pause even hidden, wasting a rebuild on every take.
+depends = ["build"]
+# vhs's own encode (ffmpeg + palettegen/paletteuse, 256 colors, no inter-frame
+# delta) renders a terminal-recording GIF this long at 0.9-1.1MB (it varies
+# a little run to run) — over the repo's check-added-large-files limit
+# (500KB). gifsicle's optimizer plus a lossy pass and a smaller palette gets
+# it to ~350-400KB with no visible loss of text sharpness (verified by
+# hand) — comfortable margin under the limit given that run-to-run
+# variance. Re-run and eyeball it after any change to the tape's timing or
+# dimensions.
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+vhs docs/vhs/demo.tape
+gifsicle -O3 --lossy=150 --colors 48 docs/images/demo.gif -o docs/images/demo.gif
+"""
