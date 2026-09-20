@@ -8,6 +8,7 @@ use config::{Config, File, FileFormat, FileSourceFile};
 use dialoguer::{Input, MultiSelect};
 use dirs::home_dir;
 
+use crate::cli::common;
 use crate::exec::Context;
 use crate::overlays::{BASENAME, DEFAULT_TARGET, Format, Repository};
 use crate::ui;
@@ -77,8 +78,10 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         ));
     }
 
-    // Resolve the actual target path for filesystem operations
-    let resolved_target = resolve_target_path(&target_str)?;
+    // Resolve the actual target path for filesystem operations. Shares
+    // `common::expand_tilde` rather than reimplementing `~` expansion, so
+    // there's a single source of truth for tilde-handling semantics.
+    let resolved_target = common::expand_tilde(&target_str);
 
     if cli.debug {
         tracing::debug!(
@@ -175,17 +178,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     .ok();
 
     Ok(())
-}
-
-/// Expand `~` to the user home directory.
-fn resolve_target_path(target: &str) -> Result<PathBuf> {
-    let home = home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?;
-    let path = match target {
-        "~" => home,
-        t if t.starts_with("~/") => home.join(t.strip_prefix("~/").unwrap()),
-        t => PathBuf::from(t),
-    };
-    Ok(path)
 }
 
 /// Walk the target directory, categorise entries, and prompt the user to
@@ -355,52 +347,9 @@ mod tests {
 
     use super::*;
 
-    // ── resolve_target_path ─────────────────────────────────────────────
-
-    #[test]
-    fn test_resolve_target_path_tilde() {
-        let home = home_dir().unwrap();
-        assert_eq!(resolve_target_path("~").unwrap(), home);
-    }
-
-    #[test]
-    fn test_resolve_target_path_tilde_subdir() {
-        let home = home_dir().unwrap();
-        assert_eq!(
-            resolve_target_path("~/apps/foo").unwrap(),
-            home.join("apps/foo")
-        );
-    }
-
-    #[test]
-    fn test_resolve_target_path_absolute() {
-        #[cfg(unix)]
-        let abs_path = "/tmp/overlay-test";
-        #[cfg(windows)]
-        let abs_path = "C:\\overlay-test";
-
-        assert_eq!(
-            resolve_target_path(abs_path).unwrap(),
-            PathBuf::from(abs_path)
-        );
-    }
-
-    #[test]
-    fn test_resolve_target_path_relative() {
-        assert_eq!(
-            resolve_target_path("relative/path").unwrap(),
-            PathBuf::from("relative/path")
-        );
-    }
-
-    #[test]
-    fn test_resolve_target_path_tilde_deep_nesting() {
-        let home = home_dir().unwrap();
-        assert_eq!(
-            resolve_target_path("~/a/b/c/d").unwrap(),
-            home.join("a/b/c/d")
-        );
-    }
+    // `~` expansion itself is exercised by `common::expand_tilde`'s own
+    // tests (`cli/common.rs`) — this module no longer reimplements it, so
+    // there's nothing overlay-specific left to test here.
 
     // ── build_toml_descriptor ───────────────────────────────────────────
 
