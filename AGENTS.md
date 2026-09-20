@@ -17,9 +17,12 @@ src/
 ├── main.rs       the `over` binary
 ├── actions/      filesystem, symlink, install and git side effects
 ├── cli/          argument types for the CLI (cli/git/ is the `over git` group)
+├── commit/       `over commit` recording virtual-checkout changes back to the source repository
 ├── desired/      the DesiredTree/DesiredEntry desired-state model
 ├── diff/         `over diff` desired-vs-actual comparison
+├── doctor/       `over doctor` diagnostics aggregation and limited repair
 ├── exec/         execution context and templating
+├── git_exclude/  reconciling overlay-managed paths into the host repo's `.git/info/exclude`
 ├── lint/         `over lint` diagnostics
 ├── materialize/  Materializer backends (registry, symlink)
 ├── overlays/     the Overlay/Repository domain model
@@ -29,7 +32,7 @@ src/
 ├── ui/           logging, styling, emojis
 ├── unapply/      `over unapply` reversal of an overlay's own entries
 ├── xdg/          XDG state/cache layout and persistence
-└── utils/        shared helpers
+└── utils.rs      shared helpers
 ```
 
 Dependencies point inward. Nothing in the library knows a command exists.
