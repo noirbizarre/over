@@ -41,4 +41,5 @@ Options:
   target are added to that repository's `.git/info/exclude`, in a block
   scoped to the applied overlay, so its own `git status` stops listing them
   as untracked. Skipped on `--dry-run`; a path already tracked by that
-  repository is never excluded.
+  repository is never excluded. See [`over status`](status.md#gitinfoexclude-diagnostics)
+  for how to spot a missing, drifted, orphaned, or malformed block.

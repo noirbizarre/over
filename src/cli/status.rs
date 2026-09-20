@@ -112,6 +112,15 @@ fn print_overlay_status(
             ui::info(format!("  {entry_status}")).ok();
         }
     }
+
+    // #148: `.git/info/exclude` drift/conflicts among this overlay's
+    // managed targets — same verbose/needs-attention gating as entries
+    // above, informational only.
+    for problem in report.exclude_problems() {
+        if cli.verbose || problem.needs_attention() {
+            ui::info(format!("  {problem}")).ok();
+        }
+    }
     ui::info("").ok();
 
     Ok(())
@@ -191,6 +200,36 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
+    }
+
+    /// End-to-end smoke test for #148: a managed target landing inside a
+    /// git repository with no `.git/info/exclude` block yet must not
+    /// error — `execute` stays `Ok` (informational only), and the block
+    /// must not be created as a side effect of running `over status`.
+    #[tokio::test]
+    async fn status_reports_a_missing_exclude_block_without_erroring_or_writing() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.child("root");
+        root.create_dir_all().unwrap();
+        git2::Repository::init(root.path()).unwrap();
+        let ov = tmp.path().join("dotfiles");
+        fs::create_dir_all(&ov).unwrap();
+        fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
+        fs::write(ov.join("file.txt"), "content").unwrap();
+
+        let cli = make_cli(tmp.path().to_path_buf());
+        let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
+        assert!(result.is_ok());
+
+        // `git init` itself pre-populates `info/exclude` with a commented
+        // template — assert our own marker never lands in it, rather than
+        // asserting non-existence (a false negative).
+        let exclude_path = root.path().join(".git/info/exclude");
+        let content = fs::read_to_string(&exclude_path).unwrap_or_default();
+        assert!(
+            !content.contains("over: exclude:"),
+            "`over status` must never write to .git/info/exclude:\n{content}"
+        );
     }
 
     #[tokio::test]
