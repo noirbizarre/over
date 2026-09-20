@@ -253,6 +253,15 @@ fn discover_enclosing_repo(target: &Path) -> Result<Option<Repository>> {
         return Ok(None);
     };
     match Repository::discover(&ancestor) {
+        // A bare repository has no working directory at all, so nothing
+        // under it is ever "inside a working tree" whose `git status` this
+        // module could affect — treated exactly like no enclosing repo
+        // found, not an error. This is a real, observed layout: e.g. a
+        // `git worktree`-based bare-repo-plus-worktrees setup, where a
+        // target can land in the bare repo's own directory (used purely
+        // as an object store, never checked out) rather than in one of
+        // its linked worktrees.
+        Ok(repo) if repo.is_bare() => Ok(None),
         Ok(repo) => Ok(Some(repo)),
         // No enclosing repo — most overlay targets (e.g. `~` with no
         // `.git`) produce no exclude changes at all.
@@ -1342,6 +1351,31 @@ mod tests {
             exclude_content(&repo),
             "# >>> over: exclude:demo >>>\n/stray\n"
         );
+    }
+
+    // ── bare enclosing repositories are skipped, never an error ─────────
+
+    #[test]
+    fn a_target_inside_a_bare_repository_is_skipped_not_an_error() {
+        // A real, observed layout: a bare-repo-plus-worktrees setup, where
+        // a target lands directly in the bare repo's own directory (used
+        // purely as an object store, never checked out) rather than in
+        // one of its linked worktrees. There's no working tree there for
+        // any of `diagnose`/`reconcile`/`unreconcile`/`repair` to affect.
+        let td = TempDir::new().unwrap();
+        git2::Repository::init_bare(td.path()).unwrap();
+        let target = td.path().join("some-file");
+        std::fs::write(&target, "x").unwrap();
+
+        let targets = [ManagedTarget {
+            target,
+            overlay: "demo".into(),
+        }];
+
+        assert!(diagnose(&targets).unwrap().is_empty());
+        assert!(reconcile(&targets).unwrap().updated.is_empty());
+        assert!(repair(&targets).unwrap().repaired.is_empty());
+        assert!(unreconcile(&targets).unwrap().updated.is_empty());
     }
 
     // ── repair (#149) ────────────────────────────────────────────────────
