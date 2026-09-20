@@ -40,12 +40,12 @@ pub fn resolve_inputs(inputs: &[String]) -> Result<Vec<PathBuf>> {
 
         if is_glob_pattern(&pattern_str) {
             let matches: Vec<_> = glob::glob(&pattern_str)
-                .map_err(|e| anyhow!("Invalid glob pattern '{}': {}", input, e))?
+                .map_err(|e| anyhow!("invalid glob pattern '{}': {}", input, e))?
                 .filter_map(|entry| entry.ok())
                 .collect();
 
             if matches.is_empty() {
-                bail!("No files matched pattern '{}'", input);
+                bail!("no files matched pattern '{}'", input);
             }
 
             for path in matches {
