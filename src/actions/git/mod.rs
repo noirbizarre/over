@@ -20,12 +20,10 @@ use tokio::{
 
 use crate::actions::fs::remove_target;
 use crate::actions::git::config::{GitRepoConfig, ROOT_PATH};
+use crate::exec::{Action, Ctx};
 use crate::overlays::Overlay;
 use crate::plan::actual::{self, ActualState};
-use crate::{
-    exec::{Action, Ctx},
-    ui::{self, emojis, style},
-};
+use crate::ui::{self, emojis, style};
 
 pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Result<()> {
     if let Some(git_repos) = &overlay.git {

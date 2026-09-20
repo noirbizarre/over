@@ -5,8 +5,10 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 use which::which;
 
+use crate::exec::Ctx;
+use crate::overlays::Overlay;
 use crate::ui;
-use crate::{exec::Ctx, overlays::Overlay, utils::detect_linux_distro_id};
+use crate::utils::detect_linux_distro_id;
 
 /// Serde helper: accept either a single string or a list of strings for
 /// `Option<Vec<String>>` fields, normalising both to `Some(vec![…])`.
