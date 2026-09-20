@@ -83,7 +83,7 @@ fn resolve_scope(
     // contains the current directory.
     let cwd = std::env::current_dir().context("failed to determine current directory")?;
     let mut best: Option<(PathBuf, Overlay)> = None;
-    for overlay in repo.overlays().unwrap_or_default() {
+    for overlay in repo.overlays()? {
         let ctx = Context::builder()
             .root(root.to_path_buf())
             .repository(repo.clone())
