@@ -4,7 +4,7 @@ Apply a given overlay: optionally install packages first (`--install`), then
 clone any declared git repositories and symlink its files into the target
 root.
 
-```
+```text
 Usage: over apply [OPTIONS] [NAME]
 
 Arguments:

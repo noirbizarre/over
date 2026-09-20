@@ -3,7 +3,7 @@
 Check overlays for configuration issues, without touching any target
 directory.
 
-```
+```text
 Usage: over lint [OPTIONS]
 
 Options:

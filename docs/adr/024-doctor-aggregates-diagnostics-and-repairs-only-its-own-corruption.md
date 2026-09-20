@@ -4,7 +4,7 @@
 
 ## Context
 
-#142's own "Status and diagnostics" section floats an `over doctor` as a
+\#142's own "Status and diagnostics" section floats an `over doctor` as a
 possible follow-up, with one explicit constraint: "it must not silently
 rewrite user-owned Git configuration". #149 narrows that into a concrete,
 backlog-scoped ask: a `doctor`/repair command specifically for malformed

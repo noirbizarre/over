@@ -2,7 +2,7 @@
 
 Get the current repository/directory overlays status.
 
-```
+```text
 Usage: over status [OPTIONS] [NAME]
 
 Arguments:

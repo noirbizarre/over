@@ -4,7 +4,7 @@ Mount the current git repository to an overlay: record the association in
 the repository's `.git/config` (`over.overlay`), so later `over git add`/
 `over git status` calls in this repository know which overlay to use.
 
-```
+```text
 Usage: over git mount [OPTIONS]
 
 Options:

@@ -380,47 +380,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dot-over"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "assert_fs",
- "async-trait",
- "clap",
- "clap_complete",
- "config",
- "console",
- "dialoguer",
- "dirs 7.0.0",
- "etcetera",
- "futures",
- "gethostname",
- "git2",
- "git2_credentials",
- "glob",
- "globset",
- "indicatif",
- "libz-sys",
- "minijinja",
- "noyalib",
- "predicates",
- "pretty_assertions",
- "rstest",
- "serde",
- "similar",
- "symlink",
- "tempfile",
- "termtree 1.0.0",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "walkdir",
- "which",
-]
-
-[[package]]
 name = "encode_unicode"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1161,6 +1120,47 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "over"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "assert_fs",
+ "async-trait",
+ "clap",
+ "clap_complete",
+ "config",
+ "console",
+ "dialoguer",
+ "dirs 7.0.0",
+ "etcetera",
+ "futures",
+ "gethostname",
+ "git2",
+ "git2_credentials",
+ "glob",
+ "globset",
+ "indicatif",
+ "libz-sys",
+ "minijinja",
+ "noyalib",
+ "predicates",
+ "pretty_assertions",
+ "rstest",
+ "serde",
+ "similar",
+ "symlink",
+ "tempfile",
+ "termtree 1.0.0",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "walkdir",
+ "which",
+]
 
 [[package]]
 name = "pathdiff"

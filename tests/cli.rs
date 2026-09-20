@@ -519,7 +519,7 @@ fn doctor_fix_never_touches_a_merely_modified_block() -> TestResult {
 
 #[test]
 fn doctor_reports_a_stale_xdg_sync_record() -> TestResult {
-    use dot_over::sync::state::{CheckoutRecord, SyncState};
+    use over::sync::state::{CheckoutRecord, SyncState};
 
     #[derive(serde::Serialize)]
     struct Envelope<T> {

@@ -4,7 +4,7 @@ Check the environment and overlays for issues, aggregating diagnostics that
 are each already computed by a focused, existing pass — closest to
 chezmoi's `doctor`.
 
-```
+```text
 Usage: over doctor [OPTIONS] [NAME]
 
 Arguments:

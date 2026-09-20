@@ -5,7 +5,7 @@ directories `over apply` created there, and remove a fully-synced git
 checkout. The overlay source itself is never touched, so a plain `over
 apply` afterwards fully restores everything.
 
-```
+```text
 Usage: over unapply [OPTIONS] [NAME]
 
 Arguments:

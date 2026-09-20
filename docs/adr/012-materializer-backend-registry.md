@@ -43,7 +43,7 @@ or rule-migration semantics (#113).
 `MaterializationIntent::Checkout` has no registered backend yet —
 `MaterializerRegistry::find` returns `None` for it, so it still classifies
 as `Operation::Deferred`, identical to the previous hardcoded match arm.
-#110 adds a `CheckoutMaterializer` to the registry's backend list to change
+\#110 adds a `CheckoutMaterializer` to the registry's backend list to change
 that, without `Plan` or any other backend changing.
 
 `Materializer::materialize` is declared `#[async_trait(?Send)]`: it

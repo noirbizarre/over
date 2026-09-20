@@ -1,3 +1,4 @@
+
 name: 🚢 Ship
 
 # gh-ship runs the release. This workflow does none of the release work itself;
@@ -36,7 +37,10 @@ concurrency:
 jobs:
   prepare:
     name: 🚢 Prepare
-    if: github.event_name == 'push'
+    # A public fork's push to main would otherwise also trigger this job,
+    # which then fails noisily for lack of the App/release secrets a fork
+    # does not have.
+    if: github.event_name == 'push' && github.repository_owner == 'noirbizarre'
     runs-on: ubuntu-latest
     # `gh ship prepare` blocks on the dispatched workflow until
     # SHIP_RUN_TIMEOUT expires, 60 minutes by default. Cap the job well below
@@ -61,6 +65,11 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - uses: actions/checkout@v7
+        with:
+          # gh-ship authenticates its own API calls; a persisted default-token
+          # credential here would only be unused attack surface, since nothing
+          # in this job shells out to `git push`.
+          persist-credentials: false
 
       - name: Install gh-ship
         run: gh extension install noirbizarre/gh-ship
@@ -75,11 +84,12 @@ jobs:
   release:
     name: 🚢 Release
     # Only the Release PR, and only when it actually merged — `closed` fires for
-    # abandoned pull requests too.
+    # abandoned pull requests too. Same fork guard as `prepare`, above.
     if: >-
       github.event_name == 'pull_request'
       && github.event.pull_request.merged
       && github.event.pull_request.head.ref == 'release/next'
+      && github.repository_owner == 'noirbizarre'
     runs-on: ubuntu-latest
     # `gh ship release` waits on the publish workflow, which cross-compiles the
     # whole target matrix. Capped below the App installation token's one-hour
@@ -98,6 +108,8 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install gh-ship
         run: gh extension install noirbizarre/gh-ship

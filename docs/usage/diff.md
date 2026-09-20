@@ -4,7 +4,7 @@ Show differences between desired overlay state and what actually exists on
 disk (and, for `git` checkouts, in the repository), without touching
 anything.
 
-```
+```text
 Usage: over diff [OPTIONS] [NAME]
 
 Arguments:

@@ -4,7 +4,7 @@
 
 ## Context
 
-#107 deliberately left `DesiredEntry` without a `permissions` field,
+\#107 deliberately left `DesiredEntry` without a `permissions` field,
 anticipating this issue (#65) rather than guessing its shape. Two things
 make permission metadata harder than it first looks, given ADR-006's
 symlink-first architecture:

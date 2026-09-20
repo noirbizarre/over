@@ -2,7 +2,7 @@
 
 List known overlays. Aliased as `over ls`.
 
-```
+```text
 Usage: over list [OPTIONS]
 
 Options:
@@ -15,7 +15,7 @@ Options:
 
 `--tree` (`-t`) groups overlays by their directory hierarchy:
 
-```
+```text
 .over
 ├── git
 ├── shell

@@ -11,9 +11,6 @@
   <a href="https://codecov.io/gh/noirbizarre/over">
     <img src="https://codecov.io/gh/noirbizarre/over/graph/badge.svg" alt="Codecov">
   </a>
-  <a href="https://crates.io/crates/dot-over">
-    <img src="https://img.shields.io/crates/v/dot-over" alt="crates.io">
-  </a>
   <img src="https://img.shields.io/github/v/release/noirbizarre/over" alt="Release">
   <a href="https://noirbizarre.github.io/over/">
     <img src="https://img.shields.io/badge/docs-noirbizarre.github.io-blue" alt="Documentation">
@@ -23,14 +20,13 @@
 
 ---
 
-Over is a git-based file overlay manager that lets you define file overlays in Git repositories, with support for nested references and installation requirements. It is particularly well-suited for managing dotfiles.
-It is inspired by tools like GNU Stow and Chezmoi but focuses on a Git-centric workflow with flexible configuration and installation capabilities.
+Over is a git-based file overlay manager that lets you define file overlays in
+Git repositories, with support for nested references and installation
+requirements. It is particularly well-suited for managing dotfiles.
+It is inspired by tools like GNU Stow and Chezmoi but focuses on a Git-centric
+workflow with flexible configuration and installation capabilities.
 
 ## Installation
-
-```bash
-cargo install dot-over
-```
 
 Or download a binary for your platform from the
 [latest release](https://github.com/noirbizarre/over/releases/latest).

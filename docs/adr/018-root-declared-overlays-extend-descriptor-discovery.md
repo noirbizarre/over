@@ -11,7 +11,7 @@ cascading config merge (ADR-002) already tolerates a missing descriptor at
 every *ancestor* level except the overlay's own directory
 (`.required(dir == root)`).
 
-#113 asks for a repository root that can declare overlays/workspaces
+\#113 asks for a repository root that can declare overlays/workspaces
 directly, e.g. `overlays: [{ path: "hosts/*" }]`, so a directory doesn't
 need its own descriptor purely to exist as an overlay.
 

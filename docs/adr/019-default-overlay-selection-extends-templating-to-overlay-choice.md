@@ -4,7 +4,7 @@
 
 ## Context
 
-#113 asks for a repository root that can designate one overlay as the
+\#113 asks for a repository root that can designate one overlay as the
 default target for commands accepting an optional `NAME` argument, e.g.:
 
 ```toml

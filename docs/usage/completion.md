@@ -2,7 +2,7 @@
 
 Generate shell completion scripts.
 
-```
+```text
 Usage: over completion [OPTIONS] <SHELL>
 
 Arguments:
