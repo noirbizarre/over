@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Args;
 use console::style;
 
@@ -56,7 +56,7 @@ pub async fn execute(cli: &CLI, _args: &Params) -> Result<()> {
     ui::info(format!("{} found", parts.join(", "))).ok();
 
     if result.has_errors() {
-        anyhow::bail!(
+        bail!(
             "lint found {} error{}",
             errors,
             if errors == 1 { "" } else { "s" },

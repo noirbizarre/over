@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use clap::Args;
 use dirs::home_dir;
 
@@ -82,7 +82,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     if report.has_errors() {
         let errors = report.error_count();
-        anyhow::bail!(
+        bail!(
             "doctor found {} error{}",
             errors,
             if errors == 1 { "" } else { "s" }
