@@ -1,7 +1,7 @@
 # Packaging
 
-Templates for the distribution channels that are not driven by
-`cargo publish`. All three are rendered and pushed by workflows that run on
+Templates for the AUR and Homebrew distribution channels. All three are
+rendered and pushed by workflows that run on
 `release: published` — after gh-ship has undrafted the release, so the URLs
 they bake in already resolve.
 

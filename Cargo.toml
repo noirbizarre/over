@@ -6,7 +6,7 @@
 # See docs/adr/023-merge-git-over-into-over.md (supersedes ADR-001).
 
 [package]
-name = "dot-over"
+name = "over"
 edition = "2024"
 version = "0.0.1"
 # The MSRV. Checked by a dedicated CI job, which greps this very line — keep it
@@ -22,15 +22,19 @@ documentation = "https://noirbizarre.github.io/over/"
 readme = "README.md"
 keywords = ["dotfiles", "overlay", "git", "symlink", "cli"]
 categories = ["command-line-utilities", "filesystem", "development-tools"]
+# Not published to crates.io. Distribution is through the release assets alone,
+# and `cargo install over` would create a second install path that nothing
+# tests and nobody updates.
+publish = false
 
 [[bin]]
 name = "over"
 path = "src/main.rs"
 
 # No explicit [lib] table: Cargo infers the library target's name from the
-# package name (`dot_over`), which is what `use dot_over::...` in src/main.rs
-# already expects. An explicit `name = "over"` here would rename the lib
-# crate and break that.
+# package name (`over`), which is what `use over::...` in src/main.rs already
+# expects. An explicit `name = "over"` here would be redundant with that
+# inference.
 
 [profile.release]
 # Release binaries are cross-compiled once per tag and downloaded many times, so

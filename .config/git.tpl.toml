@@ -20,7 +20,7 @@ keywords = "dotfiles, overlay, git, symlink, cli"
 msrv = true
 msrv_version = "1.98"
 owner = "noirbizarre"
-publish = true
+publish = false
 targets = [
   "x86_64-unknown-linux-gnu",
   "aarch64-unknown-linux-gnu",

@@ -62,8 +62,7 @@ Releases are run by [gh-ship](https://github.com/noirbizarre/gh-ship).
 3. gh-ship opens (or updates) the Release PR from `release/next`. Review it.
 4. Merging it triggers 🚢 Ship again, which runs `gh ship release`: it tags the
    merge commit, creates a draft release, dispatches 📦 Publish Release to
-   attach the `over` binary and publish `dot-over` to crates.io, then makes
-   the release public.
+   attach the `over` binary, then makes the release public.
 
 Nothing to release is the normal case for step 1, and costs one workflow run
 reporting `changed: false`.
@@ -81,8 +80,7 @@ no CI results. That means the repository needs:
   `APP_PRIVATE_KEY`;
 - squash-merge settings of `squash_merge_commit_title: PR_TITLE` and
   `squash_merge_commit_message: BLANK`, so the squash commit subject is the
-  Conventional Commit title from `.github/ship.yml`;
-- Trusted Publishing configured on crates.io for the `release` environment.
+  Conventional Commit title from `.github/ship.yml`.
 
 ## This repository is generated from a template
 
