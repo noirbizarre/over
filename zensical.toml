@@ -29,6 +29,7 @@ nav = [
     { "over show" = "usage/show.md" },
     { "over apply" = "usage/apply.md" },
     { "over lint" = "usage/lint.md" },
+    { "over doctor" = "usage/doctor.md" },
     { "over completion" = "usage/completion.md" },
     { "over status" = "usage/status.md" },
     { "over diff" = "usage/diff.md" },

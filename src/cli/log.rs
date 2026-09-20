@@ -280,6 +280,25 @@ mod tests {
         CLI::parse_from(vec!["over", "--home", home.to_str().unwrap()])
     }
 
+    /// Points `$XDG_STATE_HOME` at a fresh, writable temp dir for the
+    /// duration of the returned guard's lifetime — `execute` runs the real
+    /// `over log` command end to end, which reads `VirtualCheckoutState`
+    /// via the real, non-injectable `XdgDirs::new()` for `VirtualCheckout`
+    /// overlays, so every test here must isolate this or it silently
+    /// touches the real `$XDG_STATE_HOME/over/virtual_checkout.toml`.
+    ///
+    /// # Safety
+    /// `env::set_var` is only unsound when other threads read/write the
+    /// process environment concurrently; `cargo nextest` runs each test in
+    /// its own process, matching `xdg::tests`' own `set_env` justification.
+    fn isolate_xdg_state() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("XDG_STATE_HOME", tmp.path());
+        }
+        tmp
+    }
+
     fn params(name: Option<&str>, root: PathBuf) -> Params {
         params_with_limit(name, root, 20)
     }
@@ -335,6 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn log_named_non_checkout_overlay_errors() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -349,6 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn log_named_checkout_overlay_lists_commits() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         let ov = tmp.path().join("dotfiles");
         fs::create_dir_all(&ov).unwrap();
@@ -373,6 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn log_no_name_falls_back_to_whole_repository() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         init_repo(tmp.path());
         fs::write(tmp.path().join("README.md"), "hello").unwrap();
@@ -437,6 +459,7 @@ mod tests {
 
     #[tokio::test]
     async fn log_limit_flag_is_honored_end_to_end() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         let (repo, ov) = setup_nested_checkout_overlay(tmp.path());
         fs::write(ov.join("a.txt"), "changed").unwrap();
@@ -456,6 +479,7 @@ mod tests {
 
     #[tokio::test]
     async fn log_no_name_guesses_the_overlay_from_the_current_directory() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         let (_, ov) = setup_nested_checkout_overlay(tmp.path());
 

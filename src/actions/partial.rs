@@ -297,6 +297,28 @@ pub fn remove_block(text: &str, marker: &str) -> String {
     out
 }
 
+/// Remove every line exactly matching `marker`'s begin/end marker text
+/// from `text`, byte-for-byte preserving every other line — used only to
+/// repair a [`BlockState::Malformed`] block (`over doctor --fix`) before
+/// appending a fresh, well-formed one. Unlike [`remove_block`] (which
+/// requires a matched begin/end pair), this tolerates any number of stray
+/// occurrences of either marker line, removing all of them.
+pub fn strip_block_markers(text: &str, marker: &str) -> String {
+    let begin = begin_line(marker);
+    let end = end_line(marker);
+    let mut out = text.to_string();
+    loop {
+        if let Some((start, line_end)) = find_line(&out, &begin, 0) {
+            out.replace_range(start..line_end, "");
+        } else if let Some((start, line_end)) = find_line(&out, &end, 0) {
+            out.replace_range(start..line_end, "");
+        } else {
+            break;
+        }
+    }
+    out
+}
+
 // ── conflict resolution (interactive, force/no_prompt-gated) ────────────
 
 /// Choices for a structural conflict — a directory or symlink sits where
@@ -722,6 +744,48 @@ mod tests {
     fn remove_block_no_op_when_end_marker_missing() {
         let text = "before\n# >>> over: m >>>\nold, no end marker\n";
         assert_eq!(remove_block(text, "m"), text);
+    }
+
+    // ── strip_block_markers ──────────────────────────────────────────────
+
+    #[test]
+    fn strip_block_markers_removes_a_stray_begin_without_end() {
+        let text = "before\n# >>> over: m >>>\nstray content\nafter\n";
+        assert_eq!(
+            strip_block_markers(text, "m"),
+            "before\nstray content\nafter\n"
+        );
+    }
+
+    #[test]
+    fn strip_block_markers_removes_a_stray_end_without_begin() {
+        let text = "before\nstray content\n# <<< over: m <<<\nafter\n";
+        assert_eq!(
+            strip_block_markers(text, "m"),
+            "before\nstray content\nafter\n"
+        );
+    }
+
+    #[test]
+    fn strip_block_markers_removes_multiple_stray_occurrences() {
+        let text = "# >>> over: m >>>\na\n# >>> over: m >>>\nb\n# <<< over: m <<<\n";
+        assert_eq!(strip_block_markers(text, "m"), "a\nb\n");
+    }
+
+    #[test]
+    fn strip_block_markers_leaves_unrelated_markers_and_content_untouched() {
+        let text = "before\n# >>> over: other >>>\nkeep\n# <<< over: other <<<\n\
+                     # >>> over: m >>>\nstray\nafter\n";
+        assert_eq!(
+            strip_block_markers(text, "m"),
+            "before\n# >>> over: other >>>\nkeep\n# <<< over: other <<<\nstray\nafter\n"
+        );
+    }
+
+    #[test]
+    fn strip_block_markers_no_op_when_marker_absent() {
+        let text = "no markers here\n";
+        assert_eq!(strip_block_markers(text, "m"), text);
     }
 
     // ── discover_partials ────────────────────────────────────────────────

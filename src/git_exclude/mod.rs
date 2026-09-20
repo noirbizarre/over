@@ -253,6 +253,15 @@ fn discover_enclosing_repo(target: &Path) -> Result<Option<Repository>> {
         return Ok(None);
     };
     match Repository::discover(&ancestor) {
+        // A bare repository has no working directory at all, so nothing
+        // under it is ever "inside a working tree" whose `git status` this
+        // module could affect — treated exactly like no enclosing repo
+        // found, not an error. This is a real, observed layout: e.g. a
+        // `git worktree`-based bare-repo-plus-worktrees setup, where a
+        // target can land in the bare repo's own directory (used purely
+        // as an object store, never checked out) rather than in one of
+        // its linked worktrees.
+        Ok(repo) if repo.is_bare() => Ok(None),
         Ok(repo) => Ok(Some(repo)),
         // No enclosing repo — most overlay targets (e.g. `~` with no
         // `.git`) produce no exclude changes at all.
@@ -583,6 +592,92 @@ fn diagnose_group(
         status,
         tracked_conflicts: expectation.tracked_conflicts,
     })
+}
+
+/// Outcome of a [`repair`] pass — `over doctor --fix` (#149).
+#[derive(Debug, Clone, Default)]
+pub struct RepairReport {
+    /// `(exclude_path, overlay)` pairs whose malformed block was stripped
+    /// and rewritten as a fresh, well-formed one.
+    pub repaired: Vec<(PathBuf, String)>,
+}
+
+/// Repair malformed `.git/info/exclude` blocks for `targets` — `over
+/// doctor --fix` (#149), the only place a malformed block is ever touched
+/// automatically (everywhere else — [`reconcile`]/[`diagnose`] — leaves it
+/// strictly alone, per #146/#148's acceptance criteria).
+///
+/// Deliberately narrower than [`reconcile`]: a group is only ever rewritten
+/// here if [`partial::find_block`] currently reports
+/// [`BlockState::Malformed`] for its own `exclude:<overlay>` marker. Every
+/// other status (`Ok`/`Missing`/`Modified`/`Orphaned`) is left completely
+/// untouched — repair fixes corruption of `over`'s own marker lines, it
+/// never reconciles drift or fills in a missing block (that's `reconcile`'s
+/// job, run by `over apply`).
+pub fn repair(targets: &[ManagedTarget]) -> Result<RepairReport> {
+    let mut report = RepairReport::default();
+    let (repos, groups) = discover_groups(targets)?;
+
+    for ((repo_key, overlay), abs_targets) in &groups {
+        let repo = repos
+            .get(repo_key)
+            .expect("every group key was inserted alongside its repo handle above");
+        repair_group(repo, overlay, abs_targets, &mut report)?;
+    }
+
+    Ok(report)
+}
+
+/// Repair a single (repository, overlay) group's exclude block — see
+/// [`repair`].
+fn repair_group(
+    repo: &Repository,
+    overlay: &str,
+    targets: &BTreeSet<PathBuf>,
+    report: &mut RepairReport,
+) -> Result<()> {
+    let expectation = compute_expectation(repo, overlay, targets)?;
+    let exclude_path = &expectation.exclude_path;
+
+    if !exclude_path.exists() {
+        return Ok(()); // Nothing to repair.
+    }
+    let current = fs::read_to_string(exclude_path)
+        .with_context(|| format!("failed to read '{}'", exclude_path.display()))?;
+
+    if !matches!(
+        partial::find_block(&current, &expectation.marker),
+        BlockState::Malformed
+    ) {
+        return Ok(()); // Ok/Missing/Modified/Orphaned — never touched here.
+    }
+
+    let stripped = partial::strip_block_markers(&current, &expectation.marker);
+    let repaired_content = if expectation.expected_content.is_empty() {
+        // Nothing left to manage for this group — dropping the stray
+        // marker lines is the whole repair, no fresh block to append.
+        stripped
+    } else {
+        partial::append_block(
+            &stripped,
+            &expectation.marker,
+            &expectation.expected_content,
+        )
+    };
+
+    fs::write(exclude_path, repaired_content)
+        .with_context(|| format!("failed to write '{}'", exclude_path.display()))?;
+    ui::info(format!(
+        "repaired malformed 'over: {}' exclude block in '{}'",
+        expectation.marker,
+        exclude_path.display(),
+    ))
+    .ok();
+    report
+        .repaired
+        .push((exclude_path.clone(), overlay.to_string()));
+
+    Ok(())
 }
 
 /// Unconditionally remove `overlay`'s exclude block from `repo`'s
@@ -1256,6 +1351,150 @@ mod tests {
             exclude_content(&repo),
             "# >>> over: exclude:demo >>>\n/stray\n"
         );
+    }
+
+    // ── bare enclosing repositories are skipped, never an error ─────────
+
+    #[test]
+    fn a_target_inside_a_bare_repository_is_skipped_not_an_error() {
+        // A real, observed layout: a bare-repo-plus-worktrees setup, where
+        // a target lands directly in the bare repo's own directory (used
+        // purely as an object store, never checked out) rather than in
+        // one of its linked worktrees. There's no working tree there for
+        // any of `diagnose`/`reconcile`/`unreconcile`/`repair` to affect.
+        let td = TempDir::new().unwrap();
+        git2::Repository::init_bare(td.path()).unwrap();
+        let target = td.path().join("some-file");
+        std::fs::write(&target, "x").unwrap();
+
+        let targets = [ManagedTarget {
+            target,
+            overlay: "demo".into(),
+        }];
+
+        assert!(diagnose(&targets).unwrap().is_empty());
+        assert!(reconcile(&targets).unwrap().updated.is_empty());
+        assert!(repair(&targets).unwrap().repaired.is_empty());
+        assert!(unreconcile(&targets).unwrap().updated.is_empty());
+    }
+
+    // ── repair (#149) ────────────────────────────────────────────────────
+
+    #[test]
+    fn repair_rewrites_a_malformed_block_as_a_fresh_well_formed_one() {
+        let (td, repo) = temp_git_repo();
+        let exclude_path = repo.commondir().join("info").join("exclude");
+        std::fs::create_dir_all(exclude_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &exclude_path,
+            "unrelated\n# >>> over: exclude:demo >>>\n/stray-stale-line\n",
+        )
+        .unwrap();
+
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+        let targets = [ManagedTarget {
+            target: a,
+            overlay: "demo".into(),
+        }];
+
+        let report = repair(&targets).unwrap();
+        assert_eq!(report.repaired.len(), 1);
+        assert_eq!(report.repaired[0].1, "demo");
+
+        // The stray begin marker is gone (the stray content line under it
+        // is *not* touched — only marker lines are stripped), and a fresh
+        // well-formed block with the current expected content is appended.
+        assert_eq!(
+            exclude_content(&repo),
+            "unrelated\n/stray-stale-line\n# >>> over: exclude:demo >>>\n/a\n# <<< over: exclude:demo <<<\n"
+        );
+
+        let diagnoses = diagnose(&targets).unwrap();
+        assert_eq!(diagnoses[0].status, ExcludeStatus::Ok);
+    }
+
+    #[test]
+    fn repair_drops_stray_markers_without_appending_when_nothing_is_expected() {
+        let (td, repo) = temp_git_repo();
+        let exclude_path = repo.commondir().join("info").join("exclude");
+        std::fs::create_dir_all(exclude_path.parent().unwrap()).unwrap();
+        std::fs::write(&exclude_path, "# >>> over: exclude:demo >>>\nstray\n").unwrap();
+
+        // The only "target" is already tracked, so expected content is
+        // empty — nothing left to manage, no fresh block should appear.
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("a")).unwrap();
+            index.write().unwrap();
+        }
+        let targets = [ManagedTarget {
+            target: a,
+            overlay: "demo".into(),
+        }];
+
+        let report = repair(&targets).unwrap();
+        assert_eq!(report.repaired.len(), 1);
+        assert_eq!(exclude_content(&repo), "stray\n");
+    }
+
+    #[test]
+    fn repair_never_touches_a_group_that_is_not_malformed() {
+        let (td, repo) = temp_git_repo();
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+        let targets = [ManagedTarget {
+            target: a,
+            overlay: "demo".into(),
+        }];
+        // A well-formed, matching block — status `Ok`.
+        reconcile(&targets).unwrap();
+        let before = exclude_content(&repo);
+
+        let report = repair(&targets).unwrap();
+        assert!(report.repaired.is_empty());
+        assert_eq!(exclude_content(&repo), before);
+    }
+
+    #[test]
+    fn repair_never_touches_a_modified_block() {
+        let (td, repo) = temp_git_repo();
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+        let targets = [ManagedTarget {
+            target: a,
+            overlay: "demo".into(),
+        }];
+        reconcile(&targets).unwrap();
+        // Hand-edit the block's content without touching the markers —
+        // `Modified`, not `Malformed`.
+        let exclude_path = repo.commondir().join("info").join("exclude");
+        std::fs::write(
+            &exclude_path,
+            "# >>> over: exclude:demo >>>\n/something-else\n# <<< over: exclude:demo <<<\n",
+        )
+        .unwrap();
+        let before = exclude_content(&repo);
+
+        let report = repair(&targets).unwrap();
+        assert!(report.repaired.is_empty());
+        assert_eq!(exclude_content(&repo), before);
+    }
+
+    #[test]
+    fn repair_is_a_no_op_when_the_exclude_file_does_not_exist() {
+        let (td, _repo) = temp_git_repo();
+        let a = td.path().join("a");
+        std::fs::write(&a, "a").unwrap();
+        let targets = [ManagedTarget {
+            target: a,
+            overlay: "demo".into(),
+        }];
+
+        let report = repair(&targets).unwrap();
+        assert!(report.repaired.is_empty());
     }
 
     #[test]

@@ -38,7 +38,6 @@ use crate::status::{self, Status};
 use crate::ui::style::DialogTheme;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
-use crate::xdg::XdgDirs;
 use crate::xdg::state::StateFile;
 
 use state::{CheckoutRecord, SyncState};
@@ -234,8 +233,7 @@ struct SyncUnit {
 /// through [`SyncOptions`]. Never touches subpath `git` entries — those
 /// stay opaque resources, per this module's scope (see module doc).
 pub async fn sync(desired: &DesiredTree, opts: &SyncOptions) -> Result<Vec<SyncOutcome>> {
-    let state_file: StateFile<SyncState> =
-        StateFile::new(XdgDirs::new()?.state_dir().join("sync.toml"));
+    let state_file: StateFile<SyncState> = state::state_file()?;
 
     let mut outcomes = Vec::new();
     for entry in desired.entries() {
@@ -657,6 +655,28 @@ mod tests {
     use git2::Signature;
     use std::fs;
 
+    /// Points `$XDG_STATE_HOME` at a fresh, writable temp dir for the
+    /// duration of the returned guard's lifetime. `sync()` persists a
+    /// checkpoint (`SyncState`) and, for `VirtualCheckout` entries, reads/
+    /// writes `VirtualCheckoutState` via the real, non-injectable
+    /// `XdgDirs::new()` — every test here that calls `sync`/
+    /// `fast_forward_virtual_checkout` must isolate this or it silently
+    /// pollutes the real `$XDG_STATE_HOME/over/{sync,virtual_checkout}.toml`
+    /// with throwaway records that outlive the test (observed directly,
+    /// not just theoretical — see #149's `over doctor` follow-up).
+    ///
+    /// # Safety
+    /// `env::set_var` is only unsound when other threads read/write the
+    /// process environment concurrently; `cargo nextest` runs each test in
+    /// its own process, matching `xdg::tests`' own `set_env` justification.
+    fn isolate_xdg_state() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("XDG_STATE_HOME", tmp.path());
+        }
+        tmp
+    }
+
     fn git_config(worktree: bool) -> GitRepoConfig {
         GitRepoConfig {
             url: String::new(),
@@ -747,6 +767,7 @@ mod tests {
 
     #[test]
     fn sync_ignores_subpath_git_entries() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         init_committed_repo(source_td.path());
         let dest_td = TempDir::new().unwrap();
@@ -762,6 +783,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_root_entry_up_to_date_reports_up_to_date() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         init_committed_repo(source_td.path());
         let dest_td = TempDir::new().unwrap();
@@ -783,6 +805,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_blocks_on_dirty_working_tree_without_touching_it() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         init_committed_repo(source_td.path());
         let dest_td = TempDir::new().unwrap();
@@ -805,6 +828,7 @@ mod tests {
 
     #[tokio::test]
     async fn dry_run_performs_no_mutation() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         let source_repo = init_committed_repo_ret(source_td.path());
         let dest_td = TempDir::new().unwrap();
@@ -837,6 +861,7 @@ mod tests {
 
     #[tokio::test]
     async fn bare_worktrees_are_synced_independently() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         init_committed_repo(source_td.path());
         let dest_td = TempDir::new().unwrap();
@@ -917,6 +942,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_up_to_date_reports_up_to_date() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         source_td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(source_td.path());
@@ -940,6 +966,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_behind_fast_forwards_without_prompting() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         source_td.child("a.txt").write_str("a").unwrap();
         let source_repo = init_committed_repo_ret(source_td.path());
@@ -970,6 +997,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_dry_run_behind_does_not_mutate() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         source_td.child("a.txt").write_str("a").unwrap();
         let source_repo = init_committed_repo_ret(source_td.path());
@@ -1004,6 +1032,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_modified_with_no_prompt_is_blocked_and_untouched() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         source_td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(source_td.path());
@@ -1044,6 +1073,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_push_only_disabled_reports_blocked_for_local_changes() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         source_td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(source_td.path());
@@ -1067,6 +1097,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_conflicting_file_reports_conflict_without_mutating() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         source_td.child("a.txt").write_str("a").unwrap();
         let source_repo = init_committed_repo_ret(source_td.path());
@@ -1095,6 +1126,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_missing_is_blocked() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         source_td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(source_td.path());
@@ -1110,6 +1142,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_malformed_base_oid_errors_rather_than_misreporting() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         source_td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(source_td.path());
@@ -1143,6 +1176,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_broken_with_no_recorded_association_is_blocked() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         source_td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(source_td.path());
@@ -1163,6 +1197,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_pull_only_disabled_leaves_behind_status_untouched() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         source_td.child("a.txt").write_str("a").unwrap();
         let source_repo = init_committed_repo_ret(source_td.path());
@@ -1199,6 +1234,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_dry_run_modified_reports_blocked_without_prompting() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         source_td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(source_td.path());
@@ -1228,6 +1264,7 @@ mod tests {
 
     #[tokio::test]
     async fn virtual_checkout_diverged_non_overlapping_changes_reports_conflict() {
+        let _xdg = isolate_xdg_state();
         // Different files changed on each side (no per-file overlap) is
         // still surfaced as a sync-blocking `Conflict` — `over sync` never
         // auto-merges even the "safe-looking" diverged case.
@@ -1254,6 +1291,7 @@ mod tests {
 
     #[tokio::test]
     async fn fast_forward_virtual_checkout_errors_without_a_recorded_association() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         source_td.child("a.txt").write_str("a").unwrap();
         let source_repo = init_committed_repo_ret(source_td.path());

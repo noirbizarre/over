@@ -11,6 +11,7 @@ mod commit;
 pub(crate) mod common;
 mod completion;
 mod diff;
+mod doctor;
 mod git;
 mod lint;
 mod list;
@@ -71,6 +72,12 @@ pub enum Commands {
 
     #[clap(name = "lint", about = "Check overlays for configuration issues")]
     Lint(lint::Params),
+
+    #[clap(
+        name = "doctor",
+        about = "Check the environment and overlays for issues"
+    )]
+    Doctor(doctor::Params),
 
     #[clap(name = "completion", about = "Generate shell completion scripts")]
     Completion(completion::Params),
@@ -144,6 +151,9 @@ pub async fn main() -> Result<()> {
         }
         Some(Commands::Lint(ref opt)) => {
             lint::execute(&args, opt).await?;
+        }
+        Some(Commands::Doctor(ref opt)) => {
+            doctor::execute(&args, opt).await?;
         }
         Some(Commands::Completion(ref opt)) => {
             completion::execute(&args, opt).await?;
@@ -278,6 +288,12 @@ mod tests {
     fn cli_lint_subcommand() {
         let args = CLI::parse_from(["over", "lint"]);
         assert!(matches!(args.cmd, Some(Commands::Lint(_))));
+    }
+
+    #[test]
+    fn cli_doctor_subcommand() {
+        let args = CLI::parse_from(["over", "doctor"]);
+        assert!(matches!(args.cmd, Some(Commands::Doctor(_))));
     }
 
     #[test]

@@ -187,6 +187,26 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    /// Points `$XDG_STATE_HOME` at a fresh, writable temp dir for the
+    /// duration of the returned guard's lifetime — `classify`/`materialize`
+    /// read/write `VirtualCheckoutState` via the real, non-injectable
+    /// `XdgDirs::new()` (the `Materializer` trait's fixed signature leaves
+    /// no room to inject a `StateFile` here), so any test reaching that
+    /// code path must isolate this or it silently pollutes the real
+    /// `$XDG_STATE_HOME/over/virtual_checkout.toml`.
+    ///
+    /// # Safety
+    /// `env::set_var` is only unsound when other threads read/write the
+    /// process environment concurrently; `cargo nextest` runs each test in
+    /// its own process, matching `xdg::tests`' own `set_env` justification.
+    fn isolate_xdg_state() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("XDG_STATE_HOME", tmp.path());
+        }
+        tmp
+    }
+
     fn init_committed_repo(path: &Path) {
         let repo = git2::Repository::init(path).unwrap();
         let mut cfg = repo.config().unwrap();
@@ -259,6 +279,7 @@ mod tests {
 
     #[test]
     fn classify_directory_with_no_recorded_state_and_foreign_content_is_conflict() {
+        let _xdg = isolate_xdg_state();
         let m = VirtualCheckoutMaterializer;
         let td = TempDir::new().unwrap();
         let target = td.child("target_dir");
@@ -274,6 +295,7 @@ mod tests {
 
     #[tokio::test]
     async fn materialize_create_checks_out_managed_path_with_no_git() {
+        let _xdg = isolate_xdg_state();
         let source_td = TempDir::new().unwrap();
         init_committed_repo(source_td.path());
         source_td.child("sub").create_dir_all().unwrap();

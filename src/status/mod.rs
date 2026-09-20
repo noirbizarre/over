@@ -394,6 +394,24 @@ mod tests {
         (td, repo)
     }
 
+    /// Points `$XDG_STATE_HOME` at a fresh, writable temp dir for the
+    /// duration of the returned guard's lifetime — needed only by the one
+    /// test here that persists a `VirtualCheckoutState` record via the
+    /// real, non-injectable `XdgDirs::new()`, so it never pollutes the
+    /// real `$XDG_STATE_HOME/over/virtual_checkout.toml`.
+    ///
+    /// # Safety
+    /// `env::set_var` is only unsound when other threads read/write the
+    /// process environment concurrently; `cargo nextest` runs each test in
+    /// its own process, matching `xdg::tests`' own `set_env` justification.
+    fn isolate_xdg_state() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("XDG_STATE_HOME", tmp.path());
+        }
+        tmp
+    }
+
     #[rstest]
     fn missing_target_reports_missing() {
         let (td, repo) = repo_and_root();
@@ -673,6 +691,7 @@ mod tests {
     async fn virtual_checkout_modified_display_lists_the_changed_file() {
         use crate::materialize::virtual_checkout::{git as vc_git, state as vc_state};
 
+        let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("original\n").unwrap();
         let source_repo = git2::Repository::init(td.path()).unwrap();

@@ -46,3 +46,4 @@ by editing the old one. The history is the value.
 | [021](021-declared-git-repositories-report-provisioning-not-content-status.md) | Declared (non-root) `git` repositories report provisioning status, not content status, amending ADR-014 |
 | [022](022-virtual-checkout-materialization.md) | Virtual checkout materialization, distinct from `overlay.git`'s `Checkout`, amending ADR-017 |
 | [023](023-merge-git-over-into-over.md) | Merge `git-over` into `over` as a nested `git` subcommand, superseding ADR-001 |
+| [024](024-doctor-aggregates-diagnostics-and-repairs-only-its-own-corruption.md) | `over doctor` aggregates existing diagnostics and repairs only its own corruption |

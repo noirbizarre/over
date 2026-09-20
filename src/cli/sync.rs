@@ -241,6 +241,25 @@ mod tests {
         CLI::parse_from(vec!["over", "--home", home.to_str().unwrap()])
     }
 
+    /// Points `$XDG_STATE_HOME` at a fresh, writable temp dir for the
+    /// duration of the returned guard's lifetime — `execute` runs the real
+    /// `over sync` command end to end, which persists `SyncState`/
+    /// `VirtualCheckoutState` via the real, non-injectable `XdgDirs::new()`,
+    /// so every test here must isolate this or it silently pollutes the
+    /// real `$XDG_STATE_HOME/over/{sync,virtual_checkout}.toml`.
+    ///
+    /// # Safety
+    /// `env::set_var` is only unsound when other threads read/write the
+    /// process environment concurrently; `cargo nextest` runs each test in
+    /// its own process, matching `xdg::tests`' own `set_env` justification.
+    fn isolate_xdg_state() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("XDG_STATE_HOME", tmp.path());
+        }
+        tmp
+    }
+
     fn params(name: Option<&str>, root: PathBuf) -> Params {
         Params {
             name: name.map(String::from),
@@ -277,6 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_empty_repository() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(&cli, &params(None, tmp.path().to_path_buf())).await;
@@ -285,6 +305,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_overlay_without_git_reports_nothing_to_sync() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -299,6 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_up_to_date_checkout_succeeds() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         let source_td = TempDir::new().unwrap();
         init_committed_repo(source_td.path());
@@ -330,6 +352,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_unknown_overlay_errors() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -347,6 +370,7 @@ mod tests {
     /// instead of syncing every overlay (#128).
     #[tokio::test]
     async fn sync_default_overlay_narrows_omitted_name() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("over.toml"), "default_overlay = \"plain\"").unwrap();
         let root = tmp.child("root");
@@ -366,6 +390,7 @@ mod tests {
     /// `default_overlay` is configured (#128).
     #[tokio::test]
     async fn sync_all_flag_overrides_configured_default() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("over.toml"), "default_overlay = \"plain\"").unwrap();
         let root = tmp.child("root");
@@ -387,6 +412,7 @@ mod tests {
     /// not a silent fallback to "all overlays" (#128).
     #[tokio::test]
     async fn sync_misconfigured_default_overlay_errors() {
+        let _xdg = isolate_xdg_state();
         let tmp = TempDir::new().unwrap();
         fs::write(
             tmp.path().join("over.toml"),

@@ -3,7 +3,7 @@ use clap::Args;
 use console::style;
 
 use crate::cli::CLI;
-use crate::lint::{Severity, lint_repository};
+use crate::lint::lint_repository;
 use crate::overlays::Repository;
 use crate::ui;
 
@@ -21,28 +21,7 @@ pub async fn execute(cli: &CLI, _args: &Params) -> Result<()> {
     }
 
     for diag in &result.diagnostics {
-        let severity_label = match diag.severity {
-            Severity::Error => style("error").red().bold(),
-            Severity::Warning => style("warning").yellow().bold(),
-        };
-        let overlay_label = style(format!("[{}]", diag.overlay)).cyan();
-
-        ui::info(format!("{severity_label}{overlay_label}: {}", diag.message)).ok();
-
-        if let Some(file) = &diag.file {
-            let location = format!("{}/{file}", diag.overlay);
-            ui::info(format!(
-                "  {} {}",
-                style("-->").dim(),
-                style(location).dim()
-            ))
-            .ok();
-        }
-
-        if let Some(hint) = &diag.hint {
-            ui::info(format!("  {} {hint}", style("=").dim())).ok();
-        }
-
+        ui::info(format!("{diag}")).ok();
         ui::info("").ok();
     }
 

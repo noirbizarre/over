@@ -76,6 +76,36 @@ impl Diagnostic {
     }
 }
 
+impl fmt::Display for Diagnostic {
+    /// Renders exactly what `over lint` prints for one diagnostic — shared
+    /// with `over doctor`'s "Overlay configuration" section so the two
+    /// commands never drift into two different formats for the same
+    /// underlying finding.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let severity_label = match self.severity {
+            Severity::Error => console::style("error").red().bold(),
+            Severity::Warning => console::style("warning").yellow().bold(),
+        };
+        let overlay_label = console::style(format!("[{}]", self.overlay)).cyan();
+        write!(f, "{severity_label}{overlay_label}: {}", self.message)?;
+
+        if let Some(file) = &self.file {
+            write!(
+                f,
+                "\n  {} {}",
+                console::style("-->").dim(),
+                console::style(format!("{}/{file}", self.overlay)).dim()
+            )?;
+        }
+
+        if let Some(hint) = &self.hint {
+            write!(f, "\n  {} {hint}", console::style("=").dim())?;
+        }
+
+        Ok(())
+    }
+}
+
 /// Aggregated lint results.
 #[derive(Debug)]
 pub struct LintResult {

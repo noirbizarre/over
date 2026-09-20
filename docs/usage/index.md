@@ -14,6 +14,7 @@ workflows.
 | [`over show`](show.md) | Display details about an overlay |
 | [`over apply`](apply.md) | Apply a given overlay |
 | [`over lint`](lint.md) | Check overlays for configuration issues |
+| [`over doctor`](doctor.md) | Check the environment and overlays for issues |
 | [`over completion`](completion.md) | Generate shell completion scripts |
 | [`over status`](status.md) | Get the current repository/directory overlays status |
 | [`over diff`](diff.md) | Show differences between desired and actual overlay state |

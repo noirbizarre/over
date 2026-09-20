@@ -368,6 +368,212 @@ fn lint_cycle_detection() -> TestResult {
     Ok(())
 }
 
+// ── doctor integration tests (#149) ──────────────────────────────────────
+
+#[test]
+fn doctor_clean_repository_reports_no_issues() -> TestResult {
+    let tmp = TempDir::new()?;
+    let root = tmp.path().join("root");
+    fs::create_dir_all(&root)?;
+    let ov = tmp.path().join("clean");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), b"target = \"~\"")?;
+
+    let xdg_state_home = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["doctor", "--root"])
+        .arg(&root)
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .success()
+        .stdout(contains("No issues found"));
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_lint_errors_and_exits_nonzero() -> TestResult {
+    let tmp = TempDir::new()?;
+    let root = tmp.path().join("root");
+    fs::create_dir_all(&root)?;
+    let ov = tmp.path().join("broken");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), b"this is not valid toml [[[")?;
+
+    let xdg_state_home = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["doctor", "--root"])
+        .arg(&root)
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .failure()
+        .stdout(contains("error"));
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_malformed_exclude_block_and_exits_nonzero() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let root = TempDir::new()?;
+    let target = canonical_for_matching(root.path())?;
+    git2::Repository::init(&target)?;
+
+    let ov = canonical_tmp.join("dotfiles");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), b"target = \"~\"")?;
+    fs::write(ov.join("file.txt"), b"content")?;
+
+    let exclude_path = target.join(".git/info/exclude");
+    fs::create_dir_all(exclude_path.parent().unwrap())?;
+    fs::write(&exclude_path, b"# >>> over: exclude:dotfiles >>>\n/stray\n")?;
+
+    let xdg_state_home = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["doctor", "--root"])
+        .arg(&target)
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .failure()
+        .stdout(contains("exclude malformed"));
+
+    // Detection-only without `--fix`: the malformed block must survive
+    // byte-for-byte.
+    assert_eq!(
+        fs::read_to_string(&exclude_path)?,
+        "# >>> over: exclude:dotfiles >>>\n/stray\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn doctor_fix_repairs_malformed_exclude_block_and_exits_zero() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let root = TempDir::new()?;
+    let target = canonical_for_matching(root.path())?;
+    git2::Repository::init(&target)?;
+
+    let ov = canonical_tmp.join("dotfiles");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), b"target = \"~\"")?;
+    fs::write(ov.join("file.txt"), b"content")?;
+
+    let exclude_path = target.join(".git/info/exclude");
+    fs::create_dir_all(exclude_path.parent().unwrap())?;
+    fs::write(&exclude_path, b"# >>> over: exclude:dotfiles >>>\n/stray\n")?;
+
+    let xdg_state_home = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["doctor", "--root"])
+        .arg(&target)
+        .arg("--fix")
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .success()
+        .stdout(contains("repaired malformed"));
+
+    let content = fs::read_to_string(&exclude_path)?;
+    assert!(content.contains("# >>> over: exclude:dotfiles >>>"));
+    assert!(content.contains("# <<< over: exclude:dotfiles <<<"));
+    Ok(())
+}
+
+#[test]
+fn doctor_fix_never_touches_a_merely_modified_block() -> TestResult {
+    let tmp = TempDir::new()?;
+    let canonical_tmp = canonical_for_matching(tmp.path())?;
+    let root = TempDir::new()?;
+    let target = canonical_for_matching(root.path())?;
+    git2::Repository::init(&target)?;
+
+    let ov = canonical_tmp.join("dotfiles");
+    fs::create_dir_all(&ov)?;
+    fs::write(ov.join("over.toml"), b"target = \"~\"")?;
+    fs::write(ov.join("file.txt"), b"content")?;
+
+    let exclude_path = target.join(".git/info/exclude");
+    fs::create_dir_all(exclude_path.parent().unwrap())?;
+    // Well-formed markers, but hand-edited content — `Modified`, not
+    // `Malformed`, so `--fix` must leave it completely alone.
+    let hand_edited =
+        "# >>> over: exclude:dotfiles >>>\n/something-else\n# <<< over: exclude:dotfiles <<<\n";
+    fs::write(&exclude_path, hand_edited)?;
+
+    let xdg_state_home = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
+        .args(["doctor", "--root"])
+        .arg(&target)
+        .arg("--fix")
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .success(); // `Modified` is only a `Warning`, never an `Error`.
+
+    assert_eq!(fs::read_to_string(&exclude_path)?, hand_edited);
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_a_stale_xdg_sync_record() -> TestResult {
+    use dot_over::sync::state::{CheckoutRecord, SyncState};
+
+    #[derive(serde::Serialize)]
+    struct Envelope<T> {
+        version: u32,
+        state: T,
+    }
+
+    let tmp = TempDir::new()?;
+    let root = tmp.path().join("root");
+    fs::create_dir_all(&root)?;
+    let missing_target = root.join("nonexistent");
+
+    let mut checkouts = std::collections::HashMap::new();
+    checkouts.insert(
+        missing_target.to_string_lossy().to_string(),
+        CheckoutRecord {
+            overlay: "dotfiles".to_string(),
+            repo_key: ".".to_string(),
+            worktree: None,
+            last_synced_oid: None,
+            last_synced_at: None,
+            last_outcome: None,
+        },
+    );
+    let envelope = Envelope {
+        version: 1,
+        state: SyncState { checkouts },
+    };
+
+    let xdg_state_home = TempDir::new()?;
+    let over_state_dir = xdg_state_home.path().join("over");
+    fs::create_dir_all(&over_state_dir)?;
+    fs::write(
+        over_state_dir.join("sync.toml"),
+        toml::to_string(&envelope)?,
+    )?;
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["doctor", "--root"])
+        .arg(&root)
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .success()
+        .stdout(contains("stale sync record"));
+    Ok(())
+}
+
 // ── status integration tests ─────────────────────────────────────────────
 
 #[test]
@@ -716,11 +922,13 @@ fn setup_git_overlay(home: &Path, name: &str, origin: &Path) {
 
 #[test]
 fn sync_unknown_overlay_fails() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(tmp.path())
         .args(["sync", "does-not-exist"])
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .failure();
     Ok(())
@@ -728,11 +936,13 @@ fn sync_unknown_overlay_fails() -> TestResult {
 
 #[test]
 fn sync_empty_repository_reports_no_overlays() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(tmp.path())
         .arg("sync")
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success()
         .stdout(contains("No overlays found"));
@@ -745,6 +955,7 @@ fn sync_empty_repository_reports_no_overlays() -> TestResult {
 /// tell which overlay(s) were actually visited.
 #[test]
 fn sync_without_name_narrows_to_configured_default_overlay() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let repo = setup_overlay_repo();
     fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
     let other = repo.path().join("other");
@@ -757,6 +968,7 @@ fn sync_without_name_narrows_to_configured_default_overlay() -> TestResult {
         .arg(repo.path())
         .args(["sync", "--verbose", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success()
         .stdout(contains("dev"))
@@ -768,6 +980,7 @@ fn sync_without_name_narrows_to_configured_default_overlay() -> TestResult {
 /// configured (#128).
 #[test]
 fn sync_all_flag_overrides_configured_default_overlay() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let repo = setup_overlay_repo();
     fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
     let other = repo.path().join("other");
@@ -780,6 +993,7 @@ fn sync_all_flag_overrides_configured_default_overlay() -> TestResult {
         .arg(repo.path())
         .args(["sync", "--all", "--verbose", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success()
         .stdout(contains("dev"))
@@ -789,6 +1003,7 @@ fn sync_all_flag_overrides_configured_default_overlay() -> TestResult {
 
 #[test]
 fn sync_overlay_without_git_entry_succeeds_quietly() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let repo = setup_overlay_repo();
     let root = TempDir::new()?;
     Command::cargo_bin("over")?
@@ -796,6 +1011,7 @@ fn sync_overlay_without_git_entry_succeeds_quietly() -> TestResult {
         .arg(repo.path())
         .args(["sync", "dev", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
     Ok(())
@@ -803,6 +1019,7 @@ fn sync_overlay_without_git_entry_succeeds_quietly() -> TestResult {
 
 #[test]
 fn sync_reports_up_to_date_right_after_apply() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let origin = canonical_tmp.join("origin");
@@ -816,6 +1033,7 @@ fn sync_reports_up_to_date_right_after_apply() -> TestResult {
         .args(["apply", "gitsync", "--root"])
         .arg(root.path())
         .arg("--force")
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
 
@@ -824,6 +1042,7 @@ fn sync_reports_up_to_date_right_after_apply() -> TestResult {
         .arg(&canonical_tmp)
         .args(["sync", "gitsync", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success()
         .stdout(contains("up to date"));
@@ -832,6 +1051,7 @@ fn sync_reports_up_to_date_right_after_apply() -> TestResult {
 
 #[test]
 fn sync_pulls_and_fast_forwards_after_upstream_advances() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let origin = canonical_tmp.join("origin");
@@ -845,6 +1065,7 @@ fn sync_pulls_and_fast_forwards_after_upstream_advances() -> TestResult {
         .args(["apply", "gitsync2", "--root"])
         .arg(root.path())
         .arg("--force")
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
 
@@ -869,6 +1090,7 @@ fn sync_pulls_and_fast_forwards_after_upstream_advances() -> TestResult {
         .arg(&canonical_tmp)
         .args(["sync", "gitsync2", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success()
         .stdout(contains("fast-forwarded"));
@@ -879,6 +1101,7 @@ fn sync_pulls_and_fast_forwards_after_upstream_advances() -> TestResult {
 
 #[test]
 fn sync_blocks_on_dirty_checkout_without_touching_it() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let origin = canonical_tmp.join("origin");
@@ -892,6 +1115,7 @@ fn sync_blocks_on_dirty_checkout_without_touching_it() -> TestResult {
         .args(["apply", "gitsync3", "--root"])
         .arg(root.path())
         .arg("--force")
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
 
@@ -902,6 +1126,7 @@ fn sync_blocks_on_dirty_checkout_without_touching_it() -> TestResult {
         .arg(&canonical_tmp)
         .args(["sync", "gitsync3", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .failure()
         .stdout(contains("blocked"));
@@ -913,6 +1138,7 @@ fn sync_blocks_on_dirty_checkout_without_touching_it() -> TestResult {
 
 #[test]
 fn sync_dry_run_reports_without_mutating() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let origin = canonical_tmp.join("origin");
@@ -926,6 +1152,7 @@ fn sync_dry_run_reports_without_mutating() -> TestResult {
         .args(["apply", "gitsync4", "--root"])
         .arg(root.path())
         .arg("--force")
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
 
@@ -935,6 +1162,7 @@ fn sync_dry_run_reports_without_mutating() -> TestResult {
         .args(["sync", "gitsync4", "--root"])
         .arg(root.path())
         .arg("--dry-run")
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success()
         .stdout(contains("up to date"));
@@ -2364,6 +2592,7 @@ fn commit_all(dir: &Path, message: &str) {
 
 #[test]
 fn virtual_checkout_apply_materializes_files_with_no_git_directory() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     setup_checkout_overlay(&canonical_tmp, "dotfiles");
@@ -2376,6 +2605,7 @@ fn virtual_checkout_apply_materializes_files_with_no_git_directory() -> TestResu
         .arg(&canonical_tmp)
         .args(["apply", "dotfiles", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
 
@@ -2391,6 +2621,7 @@ fn virtual_checkout_apply_materializes_files_with_no_git_directory() -> TestResu
 
 #[test]
 fn virtual_checkout_status_and_diff_report_local_modification() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     setup_checkout_overlay(&canonical_tmp, "dotfiles");
@@ -2403,6 +2634,7 @@ fn virtual_checkout_status_and_diff_report_local_modification() -> TestResult {
         .arg(&canonical_tmp)
         .args(["apply", "dotfiles", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
 
@@ -2413,6 +2645,7 @@ fn virtual_checkout_status_and_diff_report_local_modification() -> TestResult {
         .arg(&canonical_tmp)
         .args(["status", "dotfiles", "--verbose", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success()
         .stdout(contains("modified"))
@@ -2423,6 +2656,7 @@ fn virtual_checkout_status_and_diff_report_local_modification() -> TestResult {
         .arg(&canonical_tmp)
         .args(["diff", "dotfiles", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success()
         .stdout(contains("original"))
@@ -2432,6 +2666,7 @@ fn virtual_checkout_status_and_diff_report_local_modification() -> TestResult {
 
 #[test]
 fn virtual_checkout_commit_records_a_commit_in_the_source_repository() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = setup_checkout_overlay(&canonical_tmp, "dotfiles");
@@ -2444,6 +2679,7 @@ fn virtual_checkout_commit_records_a_commit_in_the_source_repository() -> TestRe
         .arg(&canonical_tmp)
         .args(["apply", "dotfiles", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
 
@@ -2461,6 +2697,7 @@ fn virtual_checkout_commit_records_a_commit_in_the_source_repository() -> TestRe
             "--root",
         ])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success()
         .stdout(contains("committed"));
@@ -2478,6 +2715,7 @@ fn virtual_checkout_commit_records_a_commit_in_the_source_repository() -> TestRe
         .arg(&canonical_tmp)
         .args(["status", "dotfiles", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
     Ok(())
@@ -2485,6 +2723,7 @@ fn virtual_checkout_commit_records_a_commit_in_the_source_repository() -> TestRe
 
 #[test]
 fn virtual_checkout_sync_fast_forwards_from_the_source_repository() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = setup_checkout_overlay(&canonical_tmp, "dotfiles");
@@ -2497,6 +2736,7 @@ fn virtual_checkout_sync_fast_forwards_from_the_source_repository() -> TestResul
         .arg(&canonical_tmp)
         .args(["apply", "dotfiles", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
 
@@ -2510,6 +2750,7 @@ fn virtual_checkout_sync_fast_forwards_from_the_source_repository() -> TestResul
         .arg(&canonical_tmp)
         .args(["sync", "dotfiles", "--no-prompt", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success()
         .stdout(contains("fast-forwarded"));
@@ -2523,6 +2764,7 @@ fn virtual_checkout_sync_fast_forwards_from_the_source_repository() -> TestResul
 
 #[test]
 fn virtual_checkout_sync_reports_conflict_without_mutating_either_side() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let ov = setup_checkout_overlay(&canonical_tmp, "dotfiles");
@@ -2535,6 +2777,7 @@ fn virtual_checkout_sync_reports_conflict_without_mutating_either_side() -> Test
         .arg(&canonical_tmp)
         .args(["apply", "dotfiles", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
 
@@ -2547,6 +2790,7 @@ fn virtual_checkout_sync_reports_conflict_without_mutating_either_side() -> Test
         .arg(&canonical_tmp)
         .args(["sync", "dotfiles", "--no-prompt", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .failure()
         .stdout(contains("conflict"));
@@ -2560,6 +2804,7 @@ fn virtual_checkout_sync_reports_conflict_without_mutating_either_side() -> Test
 
 #[test]
 fn virtual_checkout_log_lists_commits_scoped_to_the_overlay() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     setup_checkout_overlay(&canonical_tmp, "dotfiles");
@@ -2572,6 +2817,7 @@ fn virtual_checkout_log_lists_commits_scoped_to_the_overlay() -> TestResult {
         .arg(&canonical_tmp)
         .args(["apply", "dotfiles", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
 
@@ -2580,6 +2826,7 @@ fn virtual_checkout_log_lists_commits_scoped_to_the_overlay() -> TestResult {
         .arg(&canonical_tmp)
         .args(["log", "dotfiles", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success()
         .stdout(contains("initial commit for dotfiles"));
@@ -2588,6 +2835,7 @@ fn virtual_checkout_log_lists_commits_scoped_to_the_overlay() -> TestResult {
 
 #[test]
 fn virtual_checkout_unapply_removes_only_when_clean() -> TestResult {
+    let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     setup_checkout_overlay(&canonical_tmp, "dotfiles");
@@ -2600,6 +2848,7 @@ fn virtual_checkout_unapply_removes_only_when_clean() -> TestResult {
         .arg(&canonical_tmp)
         .args(["apply", "dotfiles", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
 
@@ -2610,6 +2859,7 @@ fn virtual_checkout_unapply_removes_only_when_clean() -> TestResult {
         .arg(&canonical_tmp)
         .args(["unapply", "dotfiles", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .failure();
     assert!(root.path().join("file.txt").exists());
@@ -2621,6 +2871,7 @@ fn virtual_checkout_unapply_removes_only_when_clean() -> TestResult {
         .arg(&canonical_tmp)
         .args(["unapply", "dotfiles", "--root"])
         .arg(root.path())
+        .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success();
     assert!(!root.path().join("file.txt").exists());
