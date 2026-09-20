@@ -336,27 +336,34 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
         }
         link_action.execute(ctx.clone()).await?;
     } else {
-        // Recurse into the directory and add each file individually
-        let files: Vec<PathBuf> = WalkDir::new(&src)
-            .min_depth(1)
-            .into_iter()
-            .filter_map(|entry| match entry {
-                Ok(e) => Some(e),
-                Err(e) => {
-                    tracing::warn!("skipping entry due to error: {}", e);
-                    None
-                }
-            })
-            .filter(|e| e.path().is_file())
-            .filter(|e| {
-                let rel = match e.path().strip_prefix(&src) {
-                    Ok(r) => r,
-                    Err(_) => return false,
-                };
-                !overlay.is_excluded(rel)
-            })
-            .map(|e| e.path().to_path_buf())
-            .collect();
+        // Recurse into the directory and add each file individually.
+        // `WalkDir` is synchronous disk I/O, hence `spawn_blocking` rather
+        // than walking directly inside this `async fn`.
+        let walk_src = src.clone();
+        let walk_overlay = overlay.clone();
+        let files: Vec<PathBuf> = spawn_blocking(move || {
+            WalkDir::new(&walk_src)
+                .min_depth(1)
+                .into_iter()
+                .filter_map(|entry| match entry {
+                    Ok(e) => Some(e),
+                    Err(e) => {
+                        tracing::warn!("skipping entry due to error: {}", e);
+                        None
+                    }
+                })
+                .filter(|e| e.path().is_file())
+                .filter(|e| {
+                    let rel = match e.path().strip_prefix(&walk_src) {
+                        Ok(r) => r,
+                        Err(_) => return false,
+                    };
+                    !walk_overlay.is_excluded(rel)
+                })
+                .map(|e| e.path().to_path_buf())
+                .collect()
+        })
+        .await?;
 
         for file in files {
             add_file(ctx.clone(), overlay, &file).await?;
