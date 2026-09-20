@@ -122,7 +122,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::overlays::Repository as OverlayRepository;
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use clap::Parser;
@@ -144,7 +143,7 @@ mod tests {
     /// bypassing the CLI layer (mirrors the pattern already used by
     /// `plan::reconcile`/`status`/`diff`'s own tests).
     async fn apply_overlay(home: &std::path::Path, root: &std::path::Path, name: &str) {
-        let repo = OverlayRepository::new(home.to_path_buf());
+        let repo = Repository::new(home.to_path_buf());
         let overlay = repo.get(name).unwrap();
         let ctx = Context::builder()
             .root(root.to_path_buf())

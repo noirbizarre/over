@@ -262,7 +262,7 @@ impl Action for EnsureGitRepository {
                 apply_per_worktree_config(&repo, &config, verbose)?;
 
                 // Associate the overlay with this repository so that
-                // subsequent `git over mount` skips the overlay prompt.
+                // subsequent `over git mount` skips the overlay prompt.
                 let mut git_config = repo.config().with_context(|| {
                     format!("failed to open git config for {}", repo_path.display())
                 })?;

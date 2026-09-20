@@ -24,7 +24,7 @@ src/
 ├── exec/         execution context and templating
 ├── git_exclude/  reconciling overlay-managed paths into the host repo's `.git/info/exclude`
 ├── lint/         `over lint` diagnostics
-├── materialize/  Materializer backends (registry, symlink)
+├── materialize/  Materializer backends (registry, symlink, checkout, partial, virtual checkout)
 ├── overlays/     the Overlay/Repository domain model
 ├── plan/         the Plan/PlanStep reconciliation model
 ├── status/       `over status` desired-state classification

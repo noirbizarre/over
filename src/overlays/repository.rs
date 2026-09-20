@@ -95,17 +95,36 @@ impl Repository {
     /// Load the preferred overlay descriptor format from the root config.
     ///
     /// Reads `format` from the repository root `over.{toml,yaml,yml}`.
-    /// Returns `None` when no root config exists or the field is absent.
+    /// Returns `None` when no root config exists, the field is absent, or
+    /// the root config fails to parse (logged as a warning — this method
+    /// has no `Result` to propagate a hard failure through; contrast with
+    /// `default_overlay()`, which does hard-fail on the same condition).
     pub fn preferred_format(&self) -> Option<Format> {
-        self.root_config().format
+        match self.root_config() {
+            Ok(cfg) => cfg.format,
+            Err(e) => {
+                tracing::warn!("ignoring unreadable repository root config: {e:#}");
+                None
+            }
+        }
     }
 
     /// Directories declared via the repository root's `overlays:` key
     /// (#113/#127), resolved to concrete filesystem paths. Public so
     /// `over lint`'s own discovery (`lint::discover_overlay_dirs`) can
     /// union the same set instead of re-deriving it.
+    ///
+    /// A root config that fails to parse is treated as declaring nothing
+    /// (logged as a warning) rather than propagated — see
+    /// `preferred_format()` for why this method can't hard-fail.
     pub fn declared_overlay_dirs(&self) -> Vec<PathBuf> {
-        let declarations = self.root_config().overlays.unwrap_or_default();
+        let declarations = match self.root_config() {
+            Ok(cfg) => cfg.overlays.unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!("ignoring unreadable repository root config: {e:#}");
+                Vec::new()
+            }
+        };
         resolve_declared_dirs(&self.root, &declarations)
     }
 
@@ -117,12 +136,13 @@ impl Repository {
     ///
     /// `Ok(None)` means no `default_overlay` is configured: silent,
     /// matching `preferred_format()`'s absent-means-opt-out contract.
-    /// `Err` means it *is* configured but broken (bad template, or names
-    /// an overlay that doesn't exist): a misconfigured default must never
-    /// silently fall through to another selection method (never silence
-    /// errors, AGENTS.md).
+    /// `Err` means the root config is configured but broken — either the
+    /// file itself fails to parse, or `default_overlay` names an overlay
+    /// that doesn't exist, or fails to render: a misconfigured default
+    /// must never silently fall through to another selection method
+    /// (never silence errors, AGENTS.md).
     pub fn default_overlay(&self, ctx: &exec::Context) -> Result<Option<Overlay>> {
-        let Some(raw) = self.root_config().default_overlay else {
+        let Some(raw) = self.root_config()?.default_overlay else {
             return Ok(None);
         };
         let name = exec::templates::render_string(&raw, ctx)
@@ -138,17 +158,29 @@ impl Repository {
     /// (ADR-002), this reads *only* `self.root`'s file: `format` and
     /// `overlays` are root-scoped fields with no meaning cascaded
     /// per-overlay (ADR-018).
-    fn root_config(&self) -> RootConfig {
+    ///
+    /// Distinguishes "no root config file" (`Ok(RootConfig::default())`)
+    /// from "root config file exists but fails to parse/deserialize"
+    /// (`Err`, with context) — the two used to be conflated via
+    /// `.ok().unwrap_or_default()`, which silently treated a malformed
+    /// `over.toml` the same as an absent one and broke `default_overlay`'s
+    /// own documented hard-error contract above.
+    fn root_config(&self) -> Result<RootConfig> {
         let basename = self.root.join(BASENAME);
         let Some(path) = basename.to_str() else {
-            return RootConfig::default();
+            return Ok(RootConfig::default());
         };
-        Config::builder()
+        let cfg = Config::builder()
             .add_source(File::with_name(path).required(false))
             .build()
-            .ok()
-            .and_then(|cfg| cfg.try_deserialize().ok())
-            .unwrap_or_default()
+            .with_context(|| {
+                format!(
+                    "failed to load repository root config '{}'",
+                    basename.display()
+                )
+            })?;
+        cfg.try_deserialize()
+            .with_context(|| format!("invalid repository root config '{}'", basename.display()))
     }
 }
 
@@ -367,6 +399,18 @@ mod tests {
             .build();
         let overlay = repo.default_overlay(&ctx).unwrap().unwrap();
         assert_eq!(overlay.name, "hosts/laptop");
+    }
+
+    #[test]
+    fn default_overlay_errors_on_malformed_root_config_instead_of_falling_through() {
+        let tmp = TempDir::new().unwrap();
+        // Syntactically invalid TOML: must be a hard error, never silently
+        // treated as "no default_overlay configured" (see root_config's
+        // doc comment — this used to regress into `Ok(None)`).
+        fs::write(tmp.path().join("over.toml"), "{{{{not valid toml}}}}").unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let ctx = exec::Context::builder().repository(repo.clone()).build();
+        assert!(repo.default_overlay(&ctx).is_err());
     }
 
     #[test]

@@ -27,7 +27,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
 
     // Read overlay from git config
     let overlay_name = get_overlay_config(&git_repo)?
-        .ok_or_else(|| anyhow!("no overlay configured; run `git over mount` first"))?;
+        .ok_or_else(|| anyhow!("no overlay configured; run `over git mount` first"))?;
     let overlay = over_repo.get(&overlay_name)?;
 
     // Use the main repo root (not worktree) for overlay path computation

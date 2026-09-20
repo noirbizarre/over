@@ -107,7 +107,7 @@ async fn run_cmd(ctx: &Ctx, program: &str, args: &[&str]) -> Result<()> {
     }
     let status = Command::new(program).args(args).status().await?;
     if !status.success() {
-        anyhow::bail!("Command failed: {} {}", program, args.join(" "));
+        anyhow::bail!("command failed: {} {}", program, args.join(" "));
     }
     Ok(())
 }

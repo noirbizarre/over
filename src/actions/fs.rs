@@ -108,17 +108,17 @@ fn absorb_dir(source: &Path, target: &Path) -> Result<()> {
     copy_dir_recursive(target, source)
 }
 
-/// Recursively copy a directory tree from `src` to `dst`.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
+/// Recursively copy a directory tree from `source` to `target`.
+fn copy_dir_recursive(source: &Path, target: &Path) -> Result<()> {
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
         let entry = entry?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_dir_recursive(&source_path, &target_path)?;
         } else {
-            fs::copy(&src_path, &dst_path)?;
+            fs::copy(&source_path, &target_path)?;
         }
     }
     Ok(())
@@ -641,28 +641,32 @@ impl Action for EnsureDirLink {
 
 pub struct MoveFile {
     pub ctx: Ctx,
-    pub src: PathBuf,
-    pub dst: PathBuf,
+    pub source: PathBuf,
+    pub target: PathBuf,
 }
 
 impl MoveFile {
-    pub fn new(ctx: Ctx, src: PathBuf, dst: PathBuf) -> Self {
-        Self { ctx, src, dst }
+    pub fn new(ctx: Ctx, source: PathBuf, target: PathBuf) -> Self {
+        Self {
+            ctx,
+            source,
+            target,
+        }
     }
 }
 
 impl fmt::Display for MoveFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(overlay) = self.ctx.overlay.as_ref()
-            && let Ok(src_root) = overlay.resolve_target(&self.ctx)
-            && let Ok(rel_path) = self.src.strip_prefix(&src_root)
+            && let Ok(source_root) = overlay.resolve_target(&self.ctx)
+            && let Ok(rel_path) = self.source.strip_prefix(&source_root)
         {
             let rel_str = rel_path.to_string_lossy();
             let target_root = self
-                .dst
+                .target
                 .to_string_lossy()
                 .strip_suffix(rel_str.as_ref())
-                .unwrap_or(&self.dst.to_string_lossy())
+                .unwrap_or(&self.target.to_string_lossy())
                 .to_string();
             return write!(
                 f,
@@ -670,7 +674,7 @@ impl fmt::Display for MoveFile {
                 emojis::MOVE_FILE,
                 style::white("move file:"),
                 style::white("{"),
-                short_path(&src_root.to_string_lossy()),
+                short_path(&source_root.to_string_lossy()),
                 style::white("->"),
                 short_path(&target_root),
                 style::white("}"),
@@ -682,8 +686,8 @@ impl fmt::Display for MoveFile {
             "{} {} {} -> {}",
             emojis::MOVE_FILE,
             style::white("move file:"),
-            self.src.display(),
-            self.dst.display(),
+            self.source.display(),
+            self.target.display(),
         )
     }
 }
@@ -692,7 +696,7 @@ impl fmt::Display for MoveFile {
 impl Action for MoveFile {
     async fn execute(&self, ctx: Ctx) -> Result<()> {
         if !ctx.dry_run {
-            rename(&self.src, &self.dst).await?;
+            rename(&self.source, &self.target).await?;
         }
         Ok(())
     }

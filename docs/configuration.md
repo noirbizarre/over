@@ -44,7 +44,8 @@ so it can resolve to a different overlay per machine:
 default_overlay = "hosts/{{ machine.hostname }}"
 ```
 
-Selection priority (highest to lowest) for `over apply`/`over unapply`:
+Selection priority (highest to lowest) for `over apply`/`over unapply`/
+`over commit`:
 
 1. An explicit `NAME` CLI argument.
 2. The resolved `default_overlay`.
@@ -78,7 +79,7 @@ override this per overlay or per subtree:
 
 ```toml
 [defaults]
-materialization = "symlink"          # symlink | symlink-directory
+materialization = "symlink"          # symlink | symlink-directory | checkout
 
 [[rules]]
 path = "some/directory"               # glob or literal, relative to the overlay root
@@ -89,7 +90,10 @@ materialization = "symlink-directory"
   directory with no more specific `rules` match. `symlink` (the default)
   recurses into the directory and symlinks each file individually.
   `symlink-directory` symlinks the directory as a single unit — its
-  contents are not separately enumerated or tracked.
+  contents are not separately enumerated or tracked. `checkout` makes the
+  subtree a **virtual checkout** — ordinary, directly editable files with
+  no `.git` at the target — see [Virtual checkouts](usage/status.md#virtual-checkouts-materialization-checkout)
+  and [ADR-022](adr/022-virtual-checkout-materialization.md).
 - `rules` is a list of path/subtree overrides. `path` is a glob pattern (or
   a literal path) relative to the overlay root. When more than one rule
   matches the same path, the most specific one wins: a literal path always
@@ -156,8 +160,12 @@ content = "alias ll='ls -la'\n"
 # marker = "aliases"   # optional; defaults to the sidecar's own stem
 ```
 
-- `target`: the file to modify. Templated the same way an overlay's own
-  `target` field is (`{{ env.* }}`, `{{ machine.* }}`, `{{ overlays[...] }}`).
+- `target`: the file to modify. Templated the same way a `.link.*` sidecar's
+  `target` is (`{{ env.* }}`, `{{ machine.* }}`, `{{ overlays[...] }}`) — not
+  the same context as an overlay's own `target` field, which currently only
+  exposes `{{ machine.* }}` and has no `env`/`overlays` maps. See
+  [ADR-010](adr/010-templating-is-scoped-to-path-strings.md) for the
+  templating design these two paths share.
 - `content`: the literal block body, used verbatim (not templated).
 - `marker`: identifies the block, so more than one sidecar can manage
   distinct blocks in the same target file. Defaults to the sidecar's stem.
