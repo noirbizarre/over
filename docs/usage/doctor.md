@@ -36,6 +36,14 @@ self-heals on the next `over apply`, or a stale bookkeeping record) never
 fails the process, mirroring `over lint`'s "errors fail, warnings don't"
 contract.
 
+Unlike [`over status`](status.md)/[`over diff`](diff.md)/[`over
+sync`](sync.md), `NAME` here only narrows the Git-exclude section to a
+single overlay's managed targets — Overlay configuration and XDG state
+always cover every overlay in the repository. A configured
+`default_overlay` is therefore never consulted, and there is no `--all`
+flag: since only one of four sections could ever be narrowed, doctor always
+reports on everything unless you name a specific overlay.
+
 ## `--fix`
 
 `--fix` repairs **only** a malformed `.git/info/exclude` block: a stray,
