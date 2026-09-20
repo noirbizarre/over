@@ -54,7 +54,7 @@ cargo-binstall = "latest"
 #
 # An explicit version, never `latest`: mise applies a `minimum_release_age`, so
 # `latest` resolves to whatever is old enough rather than to the newest release.
-"cargo:git-tpl" = "0.5.0"
+"cargo:git-tpl" = "0.11.0"
 # Zensical runs through `uvx`, so uv is the only thing the docs build needs.
 uv = "latest"
 # cargo-insta is declared on the task that uses it instead of here — see the
@@ -72,7 +72,7 @@ uv = "latest"
 
 [tasks.default]
 description = "Run format, lint, build and test"
-depends = ["format", "lint", "lint:actions", "build", "test"]
+depends = ["format", "lint", "lint:actions", "lint:md", "build", "test"]
 
 [tasks.build]
 description = "Build the binary"
@@ -109,6 +109,20 @@ description = "Lint the GitHub Actions workflows"
 # this task and the prek hook cannot drift apart.
 run = "actionlint .github/workflows/*.yaml"
 
+[tasks."lint:md"]
+description = "Lint the documentation Markdown"
+# Through `npx -p`, not mise's `npm:` backend: .markdownlint-cli2.yaml loads
+# the pretty output formatter alongside markdownlint-cli2 itself, and mise's
+# `npm:` backend installs each tool into its own isolated tree, where one
+# cannot resolve the other — `npx -p pkg1 -p pkg2` installs both into one
+# shared cache instead. Also not in [tools] for the usual reason: `mise
+# install`, what CI's other jobs run, would then pull an npm toolchain onto
+# every job in the matrix for a check only this task needs.
+#
+# Scoped to the same files as the prek hook, minus CHANGELOG.md, which is
+# git-cliff's output, not prose to wrap.
+run = 'npx -y -p markdownlint-cli2 -p markdownlint-cli2-formatter-pretty -- markdownlint-cli2 "AGENTS.md" "CONTRIBUTING.md" "README.md" "docs/**/*.md"'
+
 [tasks.snapshots]
 description = "Review and update insta snapshots interactively"
 tools = { "cargo:cargo-insta" = "latest" }
@@ -116,7 +130,7 @@ run = "cargo insta review"
 
 [tasks.check]
 description = "Run every check that does not modify the working tree"
-depends = ["format:check", "lint", "lint:actions", "spell", "test"]
+depends = ["format:check", "lint", "lint:actions", "lint:md", "spell", "test"]
 
 [tasks.ci]
 description = "Everything CI runs, locally"
