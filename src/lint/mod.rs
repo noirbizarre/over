@@ -11,6 +11,7 @@ use noyalib::compat::serde_yaml as serde_yml;
 use walkdir::WalkDir;
 
 use crate::overlays::{BASENAME, EXTENSIONS, GLOB_PATTERN, Overlay, Repository};
+use crate::ui::style;
 
 /// Severity level for a lint diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,13 +81,16 @@ impl fmt::Display for Diagnostic {
     /// Renders exactly what `over lint` prints for one diagnostic — shared
     /// with `over doctor`'s "Overlay configuration" section so the two
     /// commands never drift into two different formats for the same
-    /// underlying finding.
+    /// underlying finding. Uses `crate::ui::style`, like every other
+    /// `Display` impl in the codebase (`status`/`diff`/`plan::step`), not
+    /// raw `console::style`, so this and `cli::doctor`'s summary can never
+    /// visually drift again.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let severity_label = match self.severity {
-            Severity::Error => console::style("error").red().bold(),
-            Severity::Warning => console::style("warning").yellow().bold(),
+            Severity::Error => style::red("error"),
+            Severity::Warning => style::yellow("warning"),
         };
-        let overlay_label = console::style(format!("[{}]", self.overlay)).cyan();
+        let overlay_label = style::cyan(format!("[{}]", self.overlay));
         write!(f, "{severity_label}{overlay_label}: {}", self.message)?;
 
         if let Some(file) = &self.file {
