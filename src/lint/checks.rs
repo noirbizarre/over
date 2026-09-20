@@ -511,7 +511,7 @@ mod tests {
     // ── uses checks ──────────────────────────────────────────────────────
 
     #[rstest]
-    fn test_empty_uses() {
+    fn empty_uses_list_warns() {
         let overlay = setup_overlay("target = \"~\"\nuses = []");
         let diags = check_uses(&overlay);
         assert_eq!(diags.len(), 1);
@@ -520,7 +520,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_self_reference_uses() {
+    fn self_referencing_uses_entry_errors() {
         let overlay = setup_overlay("target = \"~\"\nuses = [\"test_ov\"]");
         let diags = check_uses(&overlay);
         assert!(
@@ -531,7 +531,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_duplicate_uses() {
+    fn duplicate_uses_entries_warn() {
         let overlay = setup_overlay("target = \"~\"\nuses = [\"other\", \"other\"]");
         let diags = check_uses(&overlay);
         assert!(
@@ -542,7 +542,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_valid_uses_no_diagnostics() {
+    fn valid_uses_list_produces_no_diagnostics() {
         let overlay = setup_overlay("target = \"~\"\nuses = [\"other\"]");
         let diags = check_uses(&overlay);
         assert!(diags.is_empty());
@@ -551,7 +551,7 @@ mod tests {
     // ── exclude checks ───────────────────────────────────────────────────
 
     #[rstest]
-    fn test_empty_exclude() {
+    fn empty_exclude_list_warns() {
         let overlay = setup_overlay("target = \"~\"\nexclude = []");
         let diags = check_empty_exclude(&overlay);
         assert_eq!(diags.len(), 1);
@@ -559,14 +559,14 @@ mod tests {
     }
 
     #[rstest]
-    fn test_nonempty_exclude_no_diagnostic() {
+    fn nonempty_exclude_list_produces_no_diagnostic() {
         let overlay = setup_overlay("target = \"~\"\nexclude = [\"*.bak\"]");
         let diags = check_empty_exclude(&overlay);
         assert!(diags.is_empty());
     }
 
     #[rstest]
-    fn test_invalid_glob_in_exclude() {
+    fn invalid_glob_in_exclude_errors() {
         let overlay = setup_overlay("target = \"~\"\nexclude = [\"[invalid\"]");
         let diags = check_invalid_exclude_globs(&overlay);
         assert_eq!(diags.len(), 1);
@@ -575,14 +575,14 @@ mod tests {
     }
 
     #[rstest]
-    fn test_valid_glob_in_exclude() {
+    fn valid_globs_in_exclude_produce_no_diagnostic() {
         let overlay = setup_overlay("target = \"~\"\nexclude = [\"*.bak\", \".git\"]");
         let diags = check_invalid_exclude_globs(&overlay);
         assert!(diags.is_empty());
     }
 
     #[rstest]
-    fn test_exclude_as_single_string_no_diagnostic() {
+    fn exclude_as_single_string_is_accepted() {
         let overlay = setup_overlay("target = \"~\"\nexclude = \"*.bak\"");
         let diags = check_invalid_exclude_globs(&overlay);
         assert!(diags.is_empty());
@@ -591,7 +591,7 @@ mod tests {
     // ── link_dirs checks ─────────────────────────────────────────────────
 
     #[rstest]
-    fn test_empty_link_dirs() {
+    fn empty_link_dirs_list_warns() {
         let overlay = setup_overlay("target = \"~\"\nlink_dirs = []");
         let diags = check_empty_link_dirs(&overlay);
         assert_eq!(diags.len(), 1);
@@ -599,7 +599,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_invalid_glob_in_link_dirs() {
+    fn invalid_glob_in_link_dirs_errors() {
         let overlay = setup_overlay("target = \"~\"\nlink_dirs = [\"[invalid\"]");
         let diags = check_invalid_link_dirs_globs(&overlay);
         assert_eq!(diags.len(), 1);
@@ -608,7 +608,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_valid_glob_in_link_dirs() {
+    fn valid_glob_in_link_dirs_produces_no_diagnostic() {
         let overlay = setup_overlay("target = \"~\"\nlink_dirs = [\".config/*\"]");
         let diags = check_invalid_link_dirs_globs(&overlay);
         assert!(diags.is_empty());
@@ -617,7 +617,7 @@ mod tests {
     // ── materialization rules checks (#113/#126) ─────────────────────────
 
     #[rstest]
-    fn test_empty_rules() {
+    fn empty_rules_list_warns() {
         let overlay = setup_overlay("target = \"~\"\nrules = []");
         let diags = check_empty_rules(&overlay);
         assert_eq!(diags.len(), 1);
@@ -625,7 +625,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_invalid_glob_in_rules() {
+    fn invalid_glob_in_rule_path_errors() {
         let overlay = setup_overlay(
             "target = \"~\"\n[[rules]]\npath = \"[invalid\"\nmaterialization = \"symlink\"",
         );
@@ -636,7 +636,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_valid_glob_in_rules() {
+    fn valid_glob_in_rule_path_produces_no_diagnostic() {
         let overlay = setup_overlay(
             "target = \"~\"\n[[rules]]\npath = \".config/*\"\nmaterialization = \"symlink-directory\"",
         );
@@ -645,7 +645,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_duplicate_rule_paths() {
+    fn duplicate_rule_paths_warn() {
         let overlay = setup_overlay(
             r#"
 target = "~"
@@ -665,7 +665,7 @@ materialization = "symlink-directory"
     }
 
     #[rstest]
-    fn test_rule_path_does_not_exist() {
+    fn nonexistent_rule_path_warns() {
         let overlay = setup_overlay(
             "target = \"~\"\n[[rules]]\npath = \"missing\"\nmaterialization = \"symlink-directory\"",
         );
@@ -676,7 +676,7 @@ materialization = "symlink-directory"
     }
 
     #[rstest]
-    fn test_rule_path_existence_check_skips_invalid_globs() {
+    fn rule_path_existence_check_skips_already_reported_invalid_globs() {
         // An invalid glob is already reported by `check_invalid_rules_globs`
         // — `check_rules_paths_exist` must skip it rather than double-report.
         let overlay = setup_overlay(
@@ -687,7 +687,7 @@ materialization = "symlink-directory"
     }
 
     #[rstest]
-    fn test_rule_path_exists_no_diagnostic() {
+    fn existing_rule_path_produces_no_diagnostic() {
         let overlay = setup_overlay(
             "target = \"~\"\n[[rules]]\npath = \"present\"\nmaterialization = \"symlink-directory\"",
         );
@@ -699,7 +699,7 @@ materialization = "symlink-directory"
     // ── permission rules checks (#65) ─────────────────────────────────────
 
     #[rstest]
-    fn test_empty_permissions() {
+    fn empty_permissions_list_warns() {
         let overlay = setup_overlay("target = \"~\"\npermissions = []");
         let diags = check_empty_permissions(&overlay);
         assert_eq!(diags.len(), 1);
@@ -707,7 +707,7 @@ materialization = "symlink-directory"
     }
 
     #[rstest]
-    fn test_invalid_glob_in_permissions() {
+    fn invalid_glob_in_permission_path_errors() {
         let overlay =
             setup_overlay("target = \"~\"\n[[permissions]]\npath = \"[invalid\"\nmode = \"600\"");
         let diags = check_invalid_permission_globs(&overlay);
@@ -717,7 +717,7 @@ materialization = "symlink-directory"
     }
 
     #[rstest]
-    fn test_valid_glob_in_permissions() {
+    fn valid_glob_in_permission_path_produces_no_diagnostic() {
         let overlay =
             setup_overlay("target = \"~\"\n[[permissions]]\npath = \"secrets/*\"\nmode = \"600\"");
         let diags = check_invalid_permission_globs(&overlay);
@@ -725,7 +725,7 @@ materialization = "symlink-directory"
     }
 
     #[rstest]
-    fn test_duplicate_permission_rule_paths() {
+    fn duplicate_permission_rule_paths_warn() {
         let overlay = setup_overlay(
             r#"
 target = "~"
@@ -747,7 +747,7 @@ mode = "644"
     // ── git checks ───────────────────────────────────────────────────────
 
     #[rstest]
-    fn test_git_empty_url() {
+    fn git_empty_url_errors() {
         let overlay = setup_overlay(
             r#"
 target = "~"
@@ -765,7 +765,7 @@ url = ""
     }
 
     #[rstest]
-    fn test_git_conflicting_refs() {
+    fn git_branch_and_tag_conflict_errors() {
         let overlay = setup_overlay(
             r#"
 target = "~"
@@ -784,7 +784,7 @@ tag = "v1.0"
     }
 
     #[rstest]
-    fn test_git_worktree_with_tag_warns() {
+    fn git_tag_ignored_in_worktree_mode_warns() {
         let overlay = setup_overlay(
             r#"
 target = "~"
@@ -801,7 +801,7 @@ worktree = true
     }
 
     #[rstest]
-    fn test_git_path_traversal() {
+    fn git_key_with_path_traversal_errors() {
         let overlay = setup_overlay(
             r#"
 target = "~"
@@ -819,7 +819,7 @@ url = "https://example.com/repo.git"
     }
 
     #[rstest]
-    fn test_git_valid_config_no_diagnostics() {
+    fn valid_git_config_produces_no_diagnostics() {
         let overlay = setup_overlay(
             r#"
 target = "~"
@@ -834,7 +834,7 @@ branch = "main"
     }
 
     #[rstest]
-    fn test_git_empty_worktrees_map() {
+    fn git_empty_worktrees_map_warns() {
         let overlay = setup_overlay(
             r#"
 target = "~"
@@ -855,14 +855,14 @@ worktree = true
     // ── check_overlay aggregation ────────────────────────────────────────
 
     #[rstest]
-    fn test_check_overlay_clean() {
+    fn clean_overlay_produces_no_diagnostics() {
         let overlay = setup_overlay("target = \"~\"");
         let diags = check_overlay(&overlay);
         assert!(diags.is_empty());
     }
 
     #[rstest]
-    fn test_check_overlay_multiple_issues() {
+    fn overlay_with_multiple_issues_aggregates_all_warnings() {
         let overlay = setup_overlay("target = \"~\"\nuses = []\nexclude = []\nlink_dirs = []");
         let diags = check_overlay(&overlay);
         // empty uses + empty exclude + empty link_dirs = 3 warnings
@@ -871,7 +871,7 @@ worktree = true
     }
 
     #[rstest]
-    fn test_check_symlinks_hard_type_warning() {
+    fn hard_symlink_type_warns() {
         let overlay = setup_overlay("target = \"~\"");
         let link_file = overlay.root.join("test.link.toml");
         std::fs::write(&link_file, "target = \"/foo\"\ntype = \"hard\"").unwrap();
@@ -884,7 +884,7 @@ worktree = true
     }
 
     #[rstest]
-    fn test_check_symlinks_valid_no_diagnostics() {
+    fn valid_symlink_config_produces_no_diagnostics() {
         let overlay = setup_overlay("target = \"~\"");
         let link_file = overlay.root.join("test.link.toml");
         std::fs::write(&link_file, "target = \"/foo\"").unwrap();
@@ -893,7 +893,7 @@ worktree = true
     }
 
     #[rstest]
-    fn test_check_symlinks_invalid_template() {
+    fn invalid_symlink_target_template_errors() {
         let overlay = setup_overlay("target = \"~\"");
         let link_file = overlay.root.join("test.link.toml");
         std::fs::write(&link_file, "target = \"{{ invalid\"").unwrap();
@@ -908,7 +908,7 @@ worktree = true
     // ── partial checks (#66) ─────────────────────────────────────────────
 
     #[rstest]
-    fn test_check_partials_valid_no_diagnostics() {
+    fn valid_partial_config_produces_no_diagnostics() {
         let overlay = setup_overlay("target = \"~\"");
         let partial_file = overlay.root.join("test.partial.toml");
         std::fs::write(&partial_file, "target = \"/foo\"\ncontent = \"x\"").unwrap();
@@ -917,7 +917,7 @@ worktree = true
     }
 
     #[rstest]
-    fn test_check_partials_invalid_template() {
+    fn invalid_partial_target_template_errors() {
         let overlay = setup_overlay("target = \"~\"");
         let partial_file = overlay.root.join("test.partial.toml");
         std::fs::write(&partial_file, "target = \"{{ invalid\"\ncontent = \"x\"").unwrap();
@@ -930,7 +930,7 @@ worktree = true
     }
 
     #[rstest]
-    fn test_check_partials_discover_error() {
+    fn malformed_partial_toml_reports_discover_error() {
         let overlay = setup_overlay("target = \"~\"");
         let partial_file = overlay.root.join("bad.partial.toml");
         // Malformed TOML syntax (not just a missing/empty field) makes

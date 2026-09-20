@@ -746,7 +746,7 @@ mod tests {
     // ── build_git_entry ─────────────────────────────────────────────────
 
     #[test]
-    fn test_build_git_entry_url_only() {
+    fn build_git_entry_with_url_only_produces_single_url_field() {
         let config = GitRepoConfig {
             url: "https://github.com/user/repo.git".into(),
             branch: None,
@@ -771,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_git_entry_with_branch() {
+    fn build_git_entry_includes_branch_field() {
         let config = GitRepoConfig {
             url: "git@github.com:user/repo.git".into(),
             branch: Some("main".into()),
@@ -793,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_git_entry_with_tag() {
+    fn build_git_entry_includes_tag_field() {
         let config = GitRepoConfig {
             url: "https://example.com/repo.git".into(),
             branch: None,
@@ -815,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_git_entry_with_rev() {
+    fn build_git_entry_includes_rev_field() {
         let config = GitRepoConfig {
             url: "https://example.com/repo.git".into(),
             branch: None,
@@ -837,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_git_entry_with_recurse_submodules() {
+    fn build_git_entry_includes_recurse_submodules_flag() {
         let config = GitRepoConfig {
             url: "https://example.com/repo.git".into(),
             branch: None,
@@ -859,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_git_entry_with_worktree() {
+    fn build_git_entry_includes_worktree_flag() {
         let config = GitRepoConfig {
             url: "https://example.com/repo.git".into(),
             branch: None,
@@ -878,7 +878,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_git_entry_with_worktrees() {
+    fn build_git_entry_includes_worktrees_mapping() {
         let mut worktrees = HashMap::new();
         worktrees.insert(
             "feature".to_string(),
@@ -909,7 +909,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_git_entry_with_remotes() {
+    fn build_git_entry_includes_remote_url_and_fetch() {
         let mut remotes = HashMap::new();
         remotes.insert(
             "upstream".into(),
@@ -952,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_git_entry_with_config() {
+    fn build_git_entry_includes_config_entries() {
         let mut entries = HashMap::new();
         entries.insert("user.name".into(), "Test User".into());
         entries.insert("user.email".into(), "test@example.com".into());
@@ -984,7 +984,7 @@ mod tests {
     // ── yaml_value_to_toml / yaml_mapping_to_toml ───────────────────────
 
     #[test]
-    fn test_yaml_value_to_toml_string() {
+    fn yaml_string_converts_to_toml_string() {
         let v = serde_yml::Value::String("hello".into());
         assert_eq!(
             yaml_value_to_toml(&v).unwrap(),
@@ -993,19 +993,19 @@ mod tests {
     }
 
     #[test]
-    fn test_yaml_value_to_toml_bool() {
+    fn yaml_bool_converts_to_toml_boolean() {
         let v = serde_yml::Value::Bool(true);
         assert_eq!(yaml_value_to_toml(&v).unwrap(), toml::Value::Boolean(true));
     }
 
     #[test]
-    fn test_yaml_value_to_toml_integer() {
+    fn yaml_integer_converts_to_toml_integer() {
         let v = serde_yml::Value::Number(serde_yml::Number::from(42));
         assert_eq!(yaml_value_to_toml(&v).unwrap(), toml::Value::Integer(42));
     }
 
     #[test]
-    fn test_yaml_value_to_toml_float() {
+    fn yaml_float_converts_to_toml_float() {
         let v = serde_yml::Value::Number(serde_yml::Number::from(2.72));
         let result = yaml_value_to_toml(&v).unwrap();
         match result {
@@ -1015,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn test_yaml_value_to_toml_mapping() {
+    fn yaml_mapping_converts_to_toml_table() {
         let mut m = serde_yml::Mapping::new();
         m.insert("key", serde_yml::Value::String("value".into()));
         let result = yaml_value_to_toml(&serde_yml::Value::Mapping(m)).unwrap();
@@ -1028,19 +1028,19 @@ mod tests {
     }
 
     #[test]
-    fn test_yaml_value_to_toml_null_errors() {
+    fn yaml_null_value_errors_converting_to_toml() {
         let v = serde_yml::Value::Null;
         assert!(yaml_value_to_toml(&v).is_err());
     }
 
     #[test]
-    fn test_yaml_value_to_toml_sequence_errors() {
+    fn yaml_sequence_value_errors_converting_to_toml() {
         let v = serde_yml::Value::Sequence(vec![serde_yml::Value::String("a".into())]);
         assert!(yaml_value_to_toml(&v).is_err());
     }
 
     #[test]
-    fn test_yaml_mapping_to_toml_nested() {
+    fn yaml_mapping_to_toml_preserves_nested_tables() {
         let mut inner = serde_yml::Mapping::new();
         inner.insert("nested_key", serde_yml::Value::Bool(true));
         let mut outer = serde_yml::Mapping::new();
@@ -1064,7 +1064,7 @@ mod tests {
     // ── find_descriptor ─────────────────────────────────────────────────
 
     #[test]
-    fn test_find_descriptor_yaml() {
+    fn find_descriptor_finds_over_yaml() {
         let td = TempDir::new().unwrap();
         td.child("over.yaml").write_str("target: ~").unwrap();
         let (path, format) = find_descriptor(td.path());
@@ -1073,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_descriptor_yml() {
+    fn find_descriptor_finds_over_yml() {
         let td = TempDir::new().unwrap();
         td.child("over.yml").write_str("target: ~").unwrap();
         let (path, format) = find_descriptor(td.path());
@@ -1082,7 +1082,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_descriptor_toml() {
+    fn find_descriptor_finds_over_toml() {
         let td = TempDir::new().unwrap();
         td.child("over.toml").write_str("target = \"~\"").unwrap();
         let (path, format) = find_descriptor(td.path());
@@ -1091,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_descriptor_default_when_none() {
+    fn find_descriptor_defaults_to_over_yaml_when_missing() {
         let td = TempDir::new().unwrap();
         let (path, format) = find_descriptor(td.path());
         assert_eq!(path, td.path().join("over.yaml"));
@@ -1101,7 +1101,7 @@ mod tests {
     // ── update_descriptor_yaml ──────────────────────────────────────────
 
     #[test]
-    fn test_update_descriptor_yaml_new_file() {
+    fn update_descriptor_yaml_creates_new_file_with_git_entry() {
         let td = TempDir::new().unwrap();
         let config = GitRepoConfig {
             url: "https://github.com/user/repo.git".into(),
@@ -1126,7 +1126,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_descriptor_yaml_existing_file() {
+    fn update_descriptor_yaml_preserves_existing_content_and_adds_entry() {
         let td = TempDir::new().unwrap();
         td.child("over.yaml")
             .write_str("target: ~\nuses:\n  - base\n")
@@ -1160,7 +1160,7 @@ mod tests {
     // ── update_descriptor_toml ──────────────────────────────────────────
 
     #[test]
-    fn test_update_descriptor_toml_new_file() {
+    fn update_descriptor_toml_creates_new_file_with_git_entry() {
         let td = TempDir::new().unwrap();
         let config = GitRepoConfig {
             url: "https://github.com/user/repo.git".into(),
@@ -1185,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_descriptor_toml_existing_file() {
+    fn update_descriptor_toml_preserves_existing_content_and_adds_entry() {
         let td = TempDir::new().unwrap();
         td.child("over.toml")
             .write_str("target = \"~\"\nuses = [\"base\"]\n")
@@ -1219,7 +1219,7 @@ mod tests {
     // ── update_overlay_descriptor (integration) ─────────────────────────
 
     #[test]
-    fn test_update_overlay_descriptor_detects_yaml() {
+    fn update_overlay_descriptor_detects_yaml_format() {
         let td = TempDir::new().unwrap();
         td.child("over.yaml").write_str("target: ~\n").unwrap();
 
@@ -1244,7 +1244,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_overlay_descriptor_detects_toml() {
+    fn update_overlay_descriptor_detects_toml_format() {
         let td = TempDir::new().unwrap();
         td.child("over.toml").write_str("target = \"~\"\n").unwrap();
 
@@ -1271,7 +1271,7 @@ mod tests {
     // ── build_git_entry: per_worktree_config differs from worktree ──────
 
     #[test]
-    fn test_build_git_entry_per_worktree_config_differs() {
+    fn build_git_entry_includes_per_worktree_config_when_it_differs_from_worktree() {
         let config = GitRepoConfig {
             url: "https://example.com/repo.git".into(),
             branch: None,
@@ -1293,7 +1293,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_git_entry_per_worktree_config_same_as_worktree() {
+    fn build_git_entry_omits_per_worktree_config_when_same_as_worktree() {
         // When per_worktree_config == worktree, the field should NOT appear
         let config = GitRepoConfig {
             url: "https://example.com/repo.git".into(),
@@ -1315,7 +1315,7 @@ mod tests {
     // ── build_git_entry: worktrees with config (detailed form) ──────────
 
     #[test]
-    fn test_build_git_entry_with_worktrees_detailed_form() {
+    fn build_git_entry_includes_worktree_branch_and_config_in_detailed_form() {
         let mut wt_entries = HashMap::new();
         wt_entries.insert("user.email".to_string(), "dev@test.com".to_string());
         let mut worktrees = HashMap::new();
@@ -1358,7 +1358,7 @@ mod tests {
     // ── build_git_entry: remote with push ───────────────────────────────
 
     #[test]
-    fn test_build_git_entry_with_remotes_push() {
+    fn build_git_entry_includes_remote_push_url() {
         let mut remotes = HashMap::new();
         remotes.insert(
             "upstream".to_string(),
@@ -1397,7 +1397,7 @@ mod tests {
     // ── build_git_entry: remote with tagopt ─────────────────────────────
 
     #[test]
-    fn test_build_git_entry_with_remotes_tagopt() {
+    fn build_git_entry_includes_remote_tagopt() {
         let mut remotes = HashMap::new();
         remotes.insert(
             "upstream".to_string(),
@@ -1434,7 +1434,7 @@ mod tests {
     // ── build_git_entry: remote with extras ─────────────────────────────
 
     #[test]
-    fn test_build_git_entry_with_remotes_extras() {
+    fn build_git_entry_includes_remote_extra_fields() {
         let mut extras = HashMap::new();
         extras.insert("prune".to_string(), "true".to_string());
         let mut remotes = HashMap::new();
@@ -1473,7 +1473,7 @@ mod tests {
     // ── build_git_entry: worktree_config ────────────────────────────────
 
     #[test]
-    fn test_build_git_entry_with_worktree_config() {
+    fn build_git_entry_includes_worktree_config_entries() {
         let mut entries = HashMap::new();
         entries.insert("core.sparseCheckout".to_string(), "true".to_string());
         let config = GitRepoConfig {
@@ -1500,7 +1500,7 @@ mod tests {
     // ── update_descriptor error paths ───────────────────────────────────
 
     #[test]
-    fn test_update_descriptor_toml_invalid_content() {
+    fn update_descriptor_toml_errors_on_invalid_existing_content() {
         let td = TempDir::new().unwrap();
         td.child("over.toml")
             .write_str("not valid {{{{ toml")
@@ -1523,7 +1523,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_descriptor_yaml_invalid_content() {
+    fn update_descriptor_yaml_errors_on_invalid_existing_content() {
         let td = TempDir::new().unwrap();
         td.child("over.yaml")
             .write_str(":\n  :\n  - ][invalid")
@@ -1548,14 +1548,14 @@ mod tests {
     // ── read_worktree_config ────────────────────────────────────────────
 
     #[test]
-    fn test_read_worktree_config_no_file() {
+    fn read_worktree_config_returns_none_when_config_file_missing() {
         let td = TempDir::new().unwrap();
         let repo = git2::Repository::init(td.path()).unwrap();
         assert!(read_worktree_config(&repo, "nonexistent").is_none());
     }
 
     #[test]
-    fn test_read_worktree_config_with_entries() {
+    fn read_worktree_config_reads_entries_from_config_worktree_file() {
         let td = TempDir::new().unwrap();
         let repo = git2::Repository::init(td.path()).unwrap();
 
@@ -1580,7 +1580,7 @@ mod tests {
     // ── resolve_worktree_branch ─────────────────────────────────────────
 
     #[test]
-    fn test_resolve_worktree_branch_not_found() {
+    fn resolve_worktree_branch_returns_none_for_unknown_worktree() {
         let td = TempDir::new().unwrap();
         let repo = git2::Repository::init(td.path()).unwrap();
         assert_eq!(resolve_worktree_branch(&repo, "nonexistent"), None);

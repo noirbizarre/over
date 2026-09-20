@@ -692,7 +692,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_empty_repository() {
+    fn empty_repository_has_no_diagnostics() {
         let (_, repo) = setup_repo();
         let result = lint_repository(&repo);
         assert!(result.diagnostics.is_empty());
@@ -700,7 +700,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_valid_overlay_no_diagnostics() {
+    fn valid_overlay_produces_no_diagnostics() {
         let (td, repo) = setup_repo();
         let ov = td.child("myoverlay");
         ov.create_dir_all().unwrap();
@@ -711,7 +711,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_discovers_root_declared_overlay_without_local_descriptor() {
+    fn overlay_without_local_descriptor_is_discovered_via_root_declaration() {
         let (td, repo) = setup_repo();
         // `uses` cascades from the root descriptor (ADR-002) down to
         // `hosts/laptop`, which has zero local descriptor of its own —
@@ -739,7 +739,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_parse_error() {
+    fn invalid_toml_produces_syntax_error_with_file_reference() {
         let (td, repo) = setup_repo();
         let ov = td.child("broken");
         ov.create_dir_all().unwrap();
@@ -764,7 +764,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_multiple_descriptors() {
+    fn overlay_with_both_toml_and_yaml_descriptors_warns() {
         let (td, repo) = setup_repo();
         let ov = td.child("multi");
         ov.create_dir_all().unwrap();
@@ -781,7 +781,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_uses_nonexistent_overlay() {
+    fn uses_reference_to_nonexistent_overlay_errors() {
         let (td, repo) = setup_repo();
         let ov = td.child("broken_ref");
         ov.create_dir_all().unwrap();
@@ -800,7 +800,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_uses_cycle() {
+    fn circular_uses_dependency_is_detected() {
         let (td, repo) = setup_repo();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -825,7 +825,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_diamond_no_false_cycle() {
+    fn diamond_shaped_uses_graph_is_not_a_false_cycle() {
         let (td, repo) = setup_repo();
 
         let d = td.child("d");
@@ -859,7 +859,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_uses_failed_overlay() {
+    fn using_a_broken_overlay_reports_parse_failure_not_nonexistent() {
         let (td, repo) = setup_repo();
 
         // Overlay "good" references "broken" via uses
@@ -920,7 +920,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_sorting_errors_before_warnings() {
+    fn diagnostics_sort_errors_before_warnings() {
         let (td, repo) = setup_repo();
         let ov = td.child("zz_overlay");
         ov.create_dir_all().unwrap();
@@ -948,7 +948,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_unknown_key() {
+    fn unknown_toml_key_is_reported_with_file() {
         let (td, repo) = setup_repo();
         let ov = td.child("bad_key");
         ov.create_dir_all().unwrap();
@@ -968,7 +968,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_unknown_key_with_suggestion() {
+    fn unknown_key_close_to_valid_key_suggests_correction() {
         let (td, repo) = setup_repo();
         let ov = td.child("typo");
         ov.create_dir_all().unwrap();
@@ -993,7 +993,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_multiple_unknown_keys() {
+    fn multiple_unknown_keys_are_all_reported() {
         let (td, repo) = setup_repo();
         let ov = td.child("multi_bad");
         ov.create_dir_all().unwrap();
@@ -1016,7 +1016,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_unknown_key_skips_deserialization() {
+    fn unknown_key_prevents_raw_serde_error_leaking() {
         let (td, repo) = setup_repo();
         let ov = td.child("skip_deser");
         ov.create_dir_all().unwrap();
@@ -1038,7 +1038,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_type_mismatch_produces_clean_error() {
+    fn type_mismatch_error_omits_caused_by_chain() {
         let (td, repo) = setup_repo();
         let ov = td.child("bad_type");
         ov.create_dir_all().unwrap();
@@ -1060,7 +1060,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_yaml_unknown_key() {
+    fn unknown_yaml_key_is_reported_with_file() {
         let (td, repo) = setup_repo();
         let ov = td.child("yaml_bad");
         ov.create_dir_all().unwrap();
@@ -1080,7 +1080,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_lint_yaml_syntax_error() {
+    fn invalid_yaml_produces_syntax_error() {
         let (td, repo) = setup_repo();
         let ov = td.child("yaml_broken");
         ov.create_dir_all().unwrap();
@@ -1099,7 +1099,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_edit_distance() {
+    fn edit_distance_computes_levenshtein_distance() {
         assert_eq!(edit_distance("target", "targt"), 1);
         assert_eq!(edit_distance("target", "target"), 0);
         assert_eq!(edit_distance("exclude", "exclde"), 1);
@@ -1109,7 +1109,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_suggest_key() {
+    fn suggest_key_finds_closest_valid_key() {
         assert_eq!(suggest_key("targt"), Some("target"));
         assert_eq!(suggest_key("exclde"), Some("exclude"));
         assert_eq!(suggest_key("descrption"), Some("description"));
@@ -1120,7 +1120,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_parse_serde_message_unknown_field() {
+    fn unknown_field_message_becomes_unknown_key_diagnostic() {
         let diag = parse_serde_message(
             "unknown field `foo`, expected one of `name`, `root`, `target`",
             "test_overlay",
@@ -1131,25 +1131,25 @@ mod tests {
     }
 
     #[rstest]
-    fn test_parse_serde_message_missing_field() {
+    fn missing_field_message_becomes_missing_required_key_diagnostic() {
         let diag = parse_serde_message("missing field `target`", "test_overlay");
         assert!(diag.message.contains("missing required key `target`"));
     }
 
     #[rstest]
-    fn test_diagnostic_with_file() {
+    fn diagnostic_with_file_sets_file_field() {
         let diag = Diagnostic::error("test", "test message").with_file("over.toml");
         assert_eq!(diag.file.as_deref(), Some("over.toml"));
     }
 
     #[rstest]
-    fn test_severity_display() {
+    fn severity_display_uses_lowercase_labels() {
         assert_eq!(format!("{}", Severity::Error), "error");
         assert_eq!(format!("{}", Severity::Warning), "warning");
     }
 
     #[rstest]
-    fn test_severity_ordering() {
+    fn error_severity_sorts_before_warning() {
         // Error sorts before Warning
         assert!(Severity::Error < Severity::Warning);
         assert_eq!(
@@ -1163,7 +1163,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_diagnostics_from_config_error_not_found() {
+    fn config_error_not_found_becomes_missing_required_key() {
         let err = ConfigError::NotFound("target".into());
         let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
         assert_eq!(diags.len(), 1);
@@ -1172,7 +1172,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_diagnostics_from_config_error_message() {
+    fn config_error_message_unknown_field_becomes_unknown_key() {
         let err = ConfigError::Message(
             "unknown field `foo`, expected one of `name`, `root`, `target`".into(),
         );
@@ -1183,7 +1183,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_diagnostics_from_config_error_foreign() {
+    fn config_error_foreign_becomes_configuration_error() {
         let cause = Box::new(std::io::Error::other("test io"));
         let err = ConfigError::Foreign(cause);
         let diags = diagnostics_from_config_error(&err, "my-overlay", Some("over.toml"));
@@ -1193,7 +1193,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_diagnostics_from_config_error_frozen() {
+    fn config_error_frozen_reports_internal_error() {
         let err = ConfigError::Frozen;
         let diags = diagnostics_from_config_error(&err, "my-overlay", None);
         assert_eq!(diags.len(), 1);
@@ -1201,7 +1201,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_diagnostics_from_config_error_path_parse() {
+    fn config_error_path_parse_becomes_invalid_config_path() {
         let err = ConfigError::PathParse {
             cause: config::ConfigError::Message("bad path".into()).into(),
         };
@@ -1212,7 +1212,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_diagnostics_from_config_error_at_with_inner() {
+    fn config_error_at_enriches_inner_diagnostic_with_key_context() {
         // An `At` wrapping a `Message` with unknown field
         let inner =
             ConfigError::Message("unknown field `baz`, expected one of `name`, `root`".into());
@@ -1228,7 +1228,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_diagnostics_from_config_error_at_empty_inner() {
+    fn config_error_at_wrapping_frozen_still_produces_diagnostic() {
         // An `At` where inner diagnostics end up empty — falls back to direct message
         let inner = ConfigError::Frozen;
         let err = ConfigError::At {
@@ -1243,7 +1243,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_diagnostics_from_anyhow_error_fallback() {
+    fn anyhow_error_without_config_error_uses_fallback_message() {
         // An anyhow error that is NOT a ConfigError — should hit the fallback path
         let err = anyhow::anyhow!("some random error");
         let diags = diagnostics_from_anyhow_error(&err, "my-overlay", Some("over.toml"));
@@ -1253,7 +1253,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_diagnostics_from_anyhow_error_config_error() {
+    fn anyhow_error_wrapping_config_error_downcasts_successfully() {
         // An anyhow error wrapping a ConfigError — should downcast successfully
         let config_err = ConfigError::NotFound("target".into());
         let err: anyhow::Error = config_err.into();
@@ -1264,7 +1264,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_parse_serde_message_unknown_variant() {
+    fn unknown_variant_message_passes_through_unchanged() {
         let diag = parse_serde_message(
             "unknown variant `bloop`, expected one of `soft`, `hard`",
             "test_overlay",
@@ -1273,7 +1273,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_parse_serde_message_invalid_type() {
+    fn invalid_type_message_passes_through_unchanged() {
         let diag = parse_serde_message(
             "invalid type: found boolean, expected a string",
             "test_overlay",
@@ -1282,13 +1282,13 @@ mod tests {
     }
 
     #[rstest]
-    fn test_parse_serde_message_fallback() {
+    fn unrecognized_serde_message_falls_back_to_original_text() {
         let diag = parse_serde_message("something completely unexpected", "test_overlay");
         assert_eq!(diag.message, "something completely unexpected");
     }
 
     #[rstest]
-    fn test_parse_serde_message_unknown_field_with_suggestion() {
+    fn unknown_field_message_with_close_match_suggests_correction() {
         let diag = parse_serde_message(
             "unknown field `targt`, expected one of `name`, `root`",
             "test_overlay",
@@ -1302,14 +1302,14 @@ mod tests {
     }
 
     #[rstest]
-    fn test_find_descriptor_file_none() {
+    fn find_descriptor_file_returns_none_when_absent() {
         let td = TempDir::new().unwrap();
         // No descriptor file exists
         assert_eq!(find_descriptor_file(td.path()), None);
     }
 
     #[rstest]
-    fn test_prevalidate_no_descriptor() {
+    fn prevalidate_descriptor_without_file_returns_no_diagnostics() {
         let td = TempDir::new().unwrap();
         // No descriptor file — should return empty diagnostics
         let diags = prevalidate_descriptor(td.path(), "empty-overlay");
@@ -1317,7 +1317,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_prevalidate_yaml_non_mapping() {
+    fn prevalidate_descriptor_ignores_non_mapping_yaml() {
         let td = TempDir::new().unwrap();
         // A YAML file that is a scalar, not a mapping
         td.child("over.yaml").write_str("just a string").unwrap();
@@ -1326,7 +1326,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_prevalidate_ignores_internal_keys() {
+    fn prevalidate_descriptor_skips_internal_name_and_root_keys() {
         let td = TempDir::new().unwrap();
         // A TOML file with internal keys `name` and `root` alongside valid keys
         td.child("over.toml")

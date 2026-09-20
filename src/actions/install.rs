@@ -1576,7 +1576,10 @@ winget = ["bat"]
 post = 'echo "Goodbye, World!"'
 "#
     )]
-    fn test_config(#[case] format: FileFormat, #[case] content: &str) {
+    fn all_install_sections_deserialize_from_yaml_and_toml(
+        #[case] format: FileFormat,
+        #[case] content: &str,
+    ) {
         let c = Config::builder()
             .add_source(File::from_str(content, format))
             .build()
@@ -1641,7 +1644,10 @@ brew.taps = ["my/repo"]
 brew.packages = ["pkg1", {name="pkg2", options="--cask", cask=true}]
 "#
     )]
-    fn test_brew_config(#[case] format: FileFormat, #[case] content: &str) {
+    fn brew_config_parses_taps_and_mixed_package_forms(
+        #[case] format: FileFormat,
+        #[case] content: &str,
+    ) {
         let c = Config::builder()
             .add_source(File::from_str(content, format))
             .build()
@@ -1686,7 +1692,10 @@ install:
 winget.packages = ["bat", {id="sharkdp.bat"}, {name="Git", options="--source winget"}]
 "#
     )]
-    fn test_winget_config(#[case] format: FileFormat, #[case] content: &str) {
+    fn winget_config_parses_flat_and_full_package_forms(
+        #[case] format: FileFormat,
+        #[case] content: &str,
+    ) {
         let c = Config::builder()
             .add_source(File::from_str(content, format))
             .build()
@@ -1736,7 +1745,10 @@ pre = 'echo "before apt"'
 post = 'echo "after apt"'
 "#
     )]
-    fn test_manager_scalar_scripts(#[case] format: FileFormat, #[case] content: &str) {
+    fn manager_section_scalar_pre_post_normalizes_to_vec(
+        #[case] format: FileFormat,
+        #[case] content: &str,
+    ) {
         let c = Config::builder()
             .add_source(File::from_str(content, format))
             .build()
@@ -1748,7 +1760,7 @@ post = 'echo "after apt"'
     }
 
     #[test]
-    fn test_linux_precedence_top_level() {
+    fn top_level_precedence_picks_first_available_manager_per_distro() {
         let install = InstallConfig {
             pre: None,
             apt: Some(AptConfig {
@@ -1782,7 +1794,7 @@ post = 'echo "after apt"'
     }
 
     #[test]
-    fn test_linux_composition_platform_section() {
+    fn platform_section_composes_all_configured_managers() {
         let mut platforms = std::collections::HashMap::new();
         platforms.insert(
             "ubuntu".into(),
@@ -1847,7 +1859,7 @@ post = 'echo "after apt"'
     /// A uses B and C, both B and C use D.
     /// D's cargo packages should appear once (not duplicated, no infinite recursion).
     #[tokio::test]
-    async fn test_get_cargo_packages_diamond() {
+    async fn cargo_packages_diamond_dependency_collected_once() {
         let (td, repo) = repo_and_root();
 
         // D: leaf overlay with cargo packages
@@ -1902,7 +1914,7 @@ post = 'echo "after apt"'
     /// Cycle in `uses` for package collection should not infinite-loop.
     /// The visited set breaks the recursion; packages from the first visit are collected.
     #[tokio::test]
-    async fn test_get_cargo_packages_cycle() {
+    async fn cargo_packages_cycle_does_not_infinite_loop() {
         let (td, repo) = repo_and_root();
 
         let a = td.child("x");
@@ -1937,7 +1949,7 @@ post = 'echo "after apt"'
     // ── APT packages ────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_get_apt_packages_single() {
+    async fn apt_packages_collected_from_single_overlay() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -1956,7 +1968,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_get_apt_packages_diamond() {
+    async fn apt_packages_diamond_dependency_deduplicated() {
         let (td, repo) = repo_and_root();
 
         let d = td.child("d");
@@ -2009,7 +2021,7 @@ post = 'echo "after apt"'
     // ── Brew packages ───────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_get_brew_packages_single() {
+    async fn brew_packages_collected_with_taps_and_cask_flag() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2040,7 +2052,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_get_brew_packages_diamond() {
+    async fn brew_packages_diamond_dependency_dedupes_taps_and_packages() {
         let (td, repo) = repo_and_root();
 
         let d = td.child("d");
@@ -2096,7 +2108,7 @@ post = 'echo "after apt"'
     // ── Python packages ─────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_get_python_packages_single() {
+    async fn python_packages_collected_from_single_overlay() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2116,7 +2128,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_get_python_packages_full_form() {
+    async fn python_package_full_form_preserves_tool_extras_and_options() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2139,7 +2151,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_get_python_packages_diamond() {
+    async fn python_packages_diamond_dependency_deduplicated() {
         let (td, repo) = repo_and_root();
 
         let d = td.child("d");
@@ -2187,7 +2199,7 @@ post = 'echo "after apt"'
     // ── Node packages ───────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_get_node_packages_single() {
+    async fn node_packages_collected_from_single_overlay() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2207,7 +2219,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_get_node_packages_full_form() {
+    async fn node_package_full_form_preserves_options() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2228,7 +2240,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_get_node_packages_diamond() {
+    async fn node_packages_diamond_dependency_deduplicated() {
         let (td, repo) = repo_and_root();
 
         let d = td.child("d");
@@ -2276,7 +2288,7 @@ post = 'echo "after apt"'
     // ── Winget packages ─────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_get_winget_packages_single() {
+    async fn winget_packages_collected_from_single_overlay() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2303,7 +2315,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_get_winget_packages_full_form() {
+    async fn winget_packages_collect_id_only_and_name_options_forms() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2333,7 +2345,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_get_winget_packages_diamond() {
+    async fn winget_packages_diamond_dependency_deduplicated() {
         let (td, repo) = repo_and_root();
 
         let d = td.child("d");
@@ -2381,7 +2393,7 @@ post = 'echo "after apt"'
     // ── Archlinux packages ──────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_get_archlinux_packages_single() {
+    async fn archlinux_packages_collected_from_single_overlay() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2400,7 +2412,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_get_archlinux_packages_diamond() {
+    async fn archlinux_packages_diamond_dependency_deduplicated() {
         let (td, repo) = repo_and_root();
 
         let d = td.child("d");
@@ -2452,7 +2464,7 @@ post = 'echo "after apt"'
     // ── decide_linux_managers edge cases ────────────────────────────────
 
     #[test]
-    fn test_linux_precedence_no_config() {
+    fn no_configured_managers_yields_empty_precedence() {
         // No manager configured at all => empty
         let install = InstallConfig {
             pre: None,
@@ -2475,7 +2487,7 @@ post = 'echo "after apt"'
     }
 
     #[test]
-    fn test_linux_precedence_brew_only_top_level() {
+    fn brew_only_config_is_picked_despite_lower_precedence() {
         let install = InstallConfig {
             pre: None,
             apt: None,
@@ -2502,7 +2514,7 @@ post = 'echo "after apt"'
     }
 
     #[test]
-    fn test_linux_precedence_generic_distro() {
+    fn unknown_distro_falls_back_to_generic_precedence() {
         // Unknown distro falls back to generic precedence
         let install = InstallConfig {
             pre: None,
@@ -2525,7 +2537,7 @@ post = 'echo "after apt"'
     }
 
     #[test]
-    fn test_linux_precedence_platform_section_empty_managers() {
+    fn platform_section_with_no_managers_overrides_top_level_config() {
         // Platform section exists but none of its managers are configured
         let mut platforms = std::collections::HashMap::new();
         platforms.insert(
@@ -2564,7 +2576,7 @@ post = 'echo "after apt"'
     }
 
     #[test]
-    fn test_linux_precedence_arch_alias() {
+    fn arch_distro_alias_uses_archlinux_precedence() {
         // "arch" should match the arch precedence
         let install = InstallConfig {
             pre: None,
@@ -2589,7 +2601,7 @@ post = 'echo "after apt"'
     // ── run_cmd dry_run ─────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_run_cmd_dry_run() {
+    async fn dry_run_skips_command_execution() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2608,7 +2620,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_run_cmd_verbose() {
+    async fn verbose_mode_still_executes_command() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2626,7 +2638,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_run_cmd_failure() {
+    async fn failed_command_returns_error() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2645,7 +2657,7 @@ post = 'echo "after apt"'
     // ── run_scripts ─────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_run_scripts_dry_run() {
+    async fn dry_run_skips_script_execution() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2664,7 +2676,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_run_scripts_success() {
+    async fn all_scripts_succeeding_returns_ok() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2681,7 +2693,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_run_scripts_failure_stops() {
+    async fn script_failure_stops_remaining_scripts() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2700,7 +2712,7 @@ post = 'echo "after apt"'
     // ── install with no config / dry_run ─────────────────────────────────
 
     #[tokio::test]
-    async fn test_install_no_config() {
+    async fn install_without_config_is_a_no_op() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2717,7 +2729,7 @@ post = 'echo "after apt"'
     }
 
     #[tokio::test]
-    async fn test_install_linux_no_install_section() {
+    async fn install_linux_without_config_is_a_no_op() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2735,7 +2747,7 @@ post = 'echo "after apt"'
     // ── config deserialization: platform overrides ─────────────────────────
 
     #[test]
-    fn test_config_with_platform_override_toml() {
+    fn platform_override_apt_packages_parsed_from_toml() {
         let content = r#"
 [install]
 apt = ["base-pkg"]
@@ -2754,7 +2766,7 @@ apt = ["ubuntu-specific"]
     }
 
     #[test]
-    fn test_config_with_platform_override_yaml() {
+    fn platform_override_brew_packages_parsed_from_yaml() {
         let content = r#"
 install:
   brew:
@@ -2775,7 +2787,7 @@ install:
     }
 
     #[test]
-    fn test_config_with_pre_post_scripts_in_managers() {
+    fn manager_pre_post_scripts_parsed_from_list_and_scalar() {
         let content = r#"
 [install.cargo]
 packages = [{name = "ripgrep"}]
@@ -2808,7 +2820,7 @@ post = "echo after node"
     }
 
     #[test]
-    fn test_cargo_package_full_form_deserialization() {
+    fn cargo_package_full_form_supports_version_git_and_path_variants() {
         let content = r#"
 [install.cargo]
 packages = [
@@ -2853,7 +2865,7 @@ packages = [
     }
 
     #[test]
-    fn test_winget_package_forms() {
+    fn winget_package_config_deserializes_id_and_name_option_forms() {
         let content = r#"
 [install.winget]
 packages = [
@@ -2880,7 +2892,7 @@ packages = [
     // ── resolve_platform_override ────────────────────────────────────────
 
     #[test]
-    fn test_resolve_platform_override_no_platforms() {
+    fn resolve_platform_override_without_platforms_does_not_panic() {
         let install = InstallConfig {
             pre: None,
             apt: None,
@@ -2902,7 +2914,7 @@ packages = [
     // ── No install config ───────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_get_packages_no_install_section() {
+    async fn all_package_getters_return_empty_without_install_section() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -2952,7 +2964,7 @@ packages = [
     // ── install_cargo_crates (dry_run) ──────────────────────────────────
 
     #[tokio::test]
-    async fn test_install_cargo_crates_empty() {
+    async fn install_cargo_crates_with_empty_set_is_a_no_op() {
         let (td, repo) = repo_and_root();
         let ctx = test_ctx(td.path().to_path_buf(), repo, None);
         let ctx = Context::builder()
@@ -2965,7 +2977,7 @@ packages = [
     }
 
     #[tokio::test]
-    async fn test_install_cargo_crates_name_only_dry_run() {
+    async fn install_cargo_crate_name_and_version_dry_run() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -2989,7 +3001,7 @@ packages = [
     }
 
     #[tokio::test]
-    async fn test_install_cargo_crates_git_with_tag_dry_run() {
+    async fn install_cargo_crate_git_with_tag_dry_run() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3013,7 +3025,7 @@ packages = [
     }
 
     #[tokio::test]
-    async fn test_install_cargo_crates_git_with_branch_dry_run() {
+    async fn install_cargo_crate_git_with_branch_dry_run() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3037,7 +3049,7 @@ packages = [
     }
 
     #[tokio::test]
-    async fn test_install_cargo_crates_git_with_rev_dry_run() {
+    async fn install_cargo_crate_git_with_rev_dry_run() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3061,7 +3073,7 @@ packages = [
     }
 
     #[tokio::test]
-    async fn test_install_cargo_crates_path_dry_run() {
+    async fn install_cargo_crate_from_local_path_dry_run() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3087,7 +3099,7 @@ packages = [
     // ── install_python_packages (dry_run) ───────────────────────────────
 
     #[tokio::test]
-    async fn test_install_python_packages_empty() {
+    async fn install_python_packages_with_empty_set_is_a_no_op() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3099,7 +3111,7 @@ packages = [
     }
 
     #[tokio::test]
-    async fn test_install_python_packages_with_extras_dry_run() {
+    async fn install_python_package_with_extras_dry_run() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3117,7 +3129,7 @@ packages = [
     }
 
     #[tokio::test]
-    async fn test_install_python_packages_with_explicit_tool_dry_run() {
+    async fn install_python_package_with_explicit_pip_tool_dry_run() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3137,7 +3149,7 @@ packages = [
     // ── install_node_packages (dry_run) ─────────────────────────────────
 
     #[tokio::test]
-    async fn test_install_node_packages_empty() {
+    async fn install_node_packages_with_empty_set_is_a_no_op() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3149,7 +3161,7 @@ packages = [
     }
 
     #[tokio::test]
-    async fn test_install_node_packages_dry_run() {
+    async fn install_node_package_with_options_dry_run() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3167,7 +3179,7 @@ packages = [
     // ── install_apt_pkgs (dry_run) ──────────────────────────────────────
 
     #[tokio::test]
-    async fn test_install_apt_pkgs_empty() {
+    async fn install_apt_pkgs_with_empty_set_is_a_no_op() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3179,7 +3191,7 @@ packages = [
     }
 
     #[tokio::test]
-    async fn test_install_apt_pkgs_dry_run() {
+    async fn install_apt_pkgs_multiple_packages_dry_run() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3195,7 +3207,7 @@ packages = [
     // ── install_arch_pkgs (dry_run) ─────────────────────────────────────
 
     #[tokio::test]
-    async fn test_install_arch_pkgs_empty() {
+    async fn install_arch_pkgs_with_empty_set_is_a_no_op() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3207,7 +3219,7 @@ packages = [
     }
 
     #[tokio::test]
-    async fn test_install_arch_pkgs_dry_run() {
+    async fn install_arch_pkgs_dry_run_regardless_of_helper_availability() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3225,7 +3237,7 @@ packages = [
     // ── install_brew_pkgs (dry_run) ─────────────────────────────────────
 
     #[tokio::test]
-    async fn test_install_brew_pkgs_empty() {
+    async fn install_brew_pkgs_with_empty_taps_and_packages_is_a_no_op() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3238,7 +3250,7 @@ packages = [
     }
 
     #[tokio::test]
-    async fn test_install_brew_pkgs_no_brew() {
+    async fn install_brew_pkgs_succeeds_whether_or_not_brew_is_found() {
         // When brew is not found, it should print a message and return Ok
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
@@ -3261,7 +3273,7 @@ packages = [
     // ── install_winget_pkgs ─────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_install_winget_pkgs_empty() {
+    async fn install_winget_pkgs_with_empty_set_is_a_no_op() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3272,7 +3284,7 @@ packages = [
     }
 
     #[tokio::test]
-    async fn test_install_winget_pkgs_not_found() {
+    async fn install_winget_pkgs_missing_binary_verbose_is_ok() {
         // winget is not available on Linux → should return Ok
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
@@ -3291,7 +3303,7 @@ packages = [
     }
 
     #[tokio::test]
-    async fn test_install_winget_pkgs_not_found_non_verbose() {
+    async fn install_winget_pkgs_missing_binary_non_verbose_is_ok() {
         let (td, repo) = repo_and_root();
         let ctx = Context::builder()
             .root(td.path().to_path_buf())
@@ -3310,7 +3322,7 @@ packages = [
     // ── install_language_managers (dry_run) ──────────────────────────────
 
     #[tokio::test]
-    async fn test_install_language_managers_with_all_dry_run() {
+    async fn install_language_managers_handles_cargo_python_and_node_dry_run() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -3341,7 +3353,7 @@ node = ["typescript"]
     }
 
     #[tokio::test]
-    async fn test_install_language_managers_with_pre_post_dry_run() {
+    async fn install_language_managers_runs_pre_and_post_scripts_dry_run() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -3382,7 +3394,7 @@ post = ["echo node-post"]
     // ── install_linux (full orchestration, dry_run) ─────────────────────
 
     #[tokio::test]
-    async fn test_install_linux_full_dry_run() {
+    async fn install_linux_full_pipeline_dry_run() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -3413,7 +3425,7 @@ post = ["echo global-post"]
     }
 
     #[tokio::test]
-    async fn test_install_linux_with_brew_dry_run() {
+    async fn install_linux_brew_only_config_dry_run() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -3439,7 +3451,7 @@ brew = ["git"]
     }
 
     #[tokio::test]
-    async fn test_install_linux_with_archlinux_dry_run() {
+    async fn install_linux_archlinux_only_config_dry_run() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -3467,7 +3479,7 @@ archlinux = ["base-devel"]
     // ── install_macos (dry_run, called directly on Linux) ───────────────
 
     #[tokio::test]
-    async fn test_install_macos_no_config() {
+    async fn install_macos_without_config_is_a_no_op() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -3485,7 +3497,7 @@ archlinux = ["base-devel"]
     }
 
     #[tokio::test]
-    async fn test_install_macos_dry_run() {
+    async fn install_macos_full_pipeline_dry_run() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -3516,7 +3528,7 @@ post = ["echo mac-post"]
     // ── install_windows (dry_run, called directly on Linux) ─────────────
 
     #[tokio::test]
-    async fn test_install_windows_no_config() {
+    async fn install_windows_without_config_is_a_no_op() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -3534,7 +3546,7 @@ post = ["echo mac-post"]
     }
 
     #[tokio::test]
-    async fn test_install_windows_dry_run() {
+    async fn install_windows_full_pipeline_dry_run() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -3563,7 +3575,7 @@ post = ["echo win-post"]
     }
 
     #[tokio::test]
-    async fn test_install_windows_with_platform_pre_post_dry_run() {
+    async fn install_windows_runs_top_level_and_platform_pre_post_dry_run() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
@@ -3597,7 +3609,7 @@ post = ["echo win-post"]
     // ── install_linux with platform overrides ───────────────────────────
 
     #[tokio::test]
-    async fn test_install_linux_with_platform_pre_post_dry_run() {
+    async fn install_linux_runs_top_level_and_platform_pre_post_dry_run() {
         let distro = detect_linux_distro_id().unwrap_or_else(|| "linux".to_string());
         let (td, repo) = repo_and_root();
         let a = td.child("a");
@@ -3640,7 +3652,7 @@ install:
     // ── install_macos with brew pre/post ─────────────────────────────────
 
     #[tokio::test]
-    async fn test_install_macos_with_brew_hooks_dry_run() {
+    async fn install_macos_runs_brew_pre_and_post_hooks_dry_run() {
         let (td, repo) = repo_and_root();
         let a = td.child("a");
         a.create_dir_all().unwrap();
