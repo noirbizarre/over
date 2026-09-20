@@ -173,9 +173,19 @@ precedence order run; otherwise the first available top-level manager only.
 
 ## Platform Sections
 
-Add distro/OS-specific overrides using keys inside `install` (e.g. `ubuntu`,
-`archlinux`, `macos`). These mirror top-level structure but apply only on
-that platform.
+Add distro/OS-specific overrides using keys inside `install` matching the
+`/etc/os-release` `ID` (e.g. `ubuntu`, `debian`, `arch`) or `macos`/
+`windows`. These mirror top-level structure but apply only on that
+platform.
+
+Note: `archlinux` is **not** a valid platform-section key — it's already
+the top-level Arch package manager field shown above, so
+`[install.archlinux]` sets that manager's config, not a platform override
+(the actual Arch platform key is `arch`, matching the real
+`/etc/os-release` `ID`). Package extraction across `uses` dependencies
+does accept `archlinux` as an alias for `arch` when looking up platform
+sections, but the other manager/`pre`/`post` resolution paths do not —
+use `arch` to be safe.
 
 ## Scripts
 
