@@ -93,13 +93,14 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             .add_files(&ctx, &regular_paths)
             .await
             .inspect_err(|e| {
-                let _ = ui::warn(format!(
+                ui::warn(format!(
                     "{} {} {}: {}",
                     emojis::CROSSMARK,
                     style::white_b("Failed to add to overlay"),
                     style::cyan(&overlay.name),
                     e,
-                ));
+                ))
+                .ok();
             })?;
     }
 

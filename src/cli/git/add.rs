@@ -83,13 +83,14 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let resolved = resolve_inputs(&args.files)?;
 
     overlay.add_files(&ctx, &resolved).await.inspect_err(|e| {
-        let _ = ui::warn(format!(
+        ui::warn(format!(
             "{} {} {}: {}",
             emojis::CROSSMARK,
             style::white_b("Failed to add to overlay"),
             style::cyan(&overlay.name),
             e,
-        ));
+        ))
+        .ok();
     })?;
 
     // Exclude the newly added files from this repo's `git status`, via the

@@ -80,13 +80,14 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
 
     overlay.apply(&ctx).await.inspect_err(|e| {
-        let _ = ui::warn(format!(
+        ui::warn(format!(
             "{} {} {}: {}",
             emojis::CROSSMARK,
             style::white_b("Failed to apply overlay"),
             style::cyan(&overlay.name),
             e,
-        ));
+        ))
+        .ok();
     })?;
 
     Ok(())
