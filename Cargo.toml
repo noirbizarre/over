@@ -102,7 +102,7 @@ gethostname = "1.1"
 glob = "0.3"
 globset = "0.4"
 symlink = "0.1"
-minijinja = "3.0"
+minijinja = { version = "3.0", features = ["serde"] }
 walkdir = "2"
 termtree = "1.0"
 tokio = { version = "1.52", features = [
