@@ -1,5 +1,6 @@
 use anyhow::Result;
 use minijinja::Environment;
+use minijinja::value::Serde;
 use serde::Serialize;
 
 /// Create a shared MiniJinja `Environment` with all registered filters and functions.
@@ -14,7 +15,9 @@ pub fn create_env<'a>() -> Environment<'a> {
 /// Render a template string against the given serializable context.
 pub fn render_string(template: &str, ctx: &impl Serialize) -> Result<String> {
     let env = create_env();
-    Ok(env.render_str(template, ctx)?)
+    // MiniJinja 3 no longer converts `Serialize` types implicitly; without the
+    // `Serde` wrapper the context fails to compile as `Into<Value>`.
+    Ok(env.render_str(template, Serde(ctx))?)
 }
 
 #[cfg(test)]
@@ -60,7 +63,7 @@ mod tests {
         let env = create_env();
         let mut ctx = HashMap::new();
         ctx.insert("x", "42");
-        let result = env.render_str("val={{ x }}", &ctx).unwrap();
+        let result = env.render_str("val={{ x }}", Serde(&ctx)).unwrap();
         assert_eq!(result, "val=42");
     }
 }
