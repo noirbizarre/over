@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1](https://github.com/noirbizarre/over/compare/0.1.0..0.1.1) - 2026-10-25
+
+### 🏗️ Build
+
+- **deps** Bump noyalib from 0.0.57 to 0.0.58 ([#173](https://github.com/noirbizarre/over/issues/173)) - ([0205549](https://github.com/noirbizarre/over/commit/0205549b9d68d8137af32c5480144f80da167162))
+
 ## 0.1.0 - 2026-10-22
 
 ### 💫 Features
