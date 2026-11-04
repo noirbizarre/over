@@ -36,6 +36,7 @@ impl Materializer for SymlinkMaterializer {
             intent,
             MaterializationIntent::Checkout
                 | MaterializationIntent::VirtualCheckout
+                | MaterializationIntent::ScopedVirtualCheckout(_)
                 | MaterializationIntent::PartialFile { .. }
         )
     }
@@ -136,6 +137,7 @@ impl Materializer for SymlinkMaterializer {
             }
             MaterializationIntent::Checkout
             | MaterializationIntent::VirtualCheckout
+            | MaterializationIntent::ScopedVirtualCheckout(_)
             | MaterializationIntent::PartialFile { .. } => {
                 unreachable!("MaterializerRegistry only calls classify() after handles() passed")
             }
@@ -217,8 +219,18 @@ fn checkout_migration(entry: &DesiredEntry) -> Result<Option<Operation>> {
 fn virtual_checkout_migration(entry: &DesiredEntry) -> Result<Option<Operation>> {
     use crate::materialize::virtual_checkout::state;
 
-    if state::record_for_blocking(&entry.target)?.is_none() {
+    let Some(record) = state::record_for_blocking(&entry.target)? else {
         return Ok(None);
+    };
+    if !record.scope.target_excludes.is_empty() {
+        return Ok(Some(Operation::Migrate {
+            from: MaterializationIntent::ScopedVirtualCheckout(record.scope),
+            to: entry.intent.clone(),
+            blocked: Some(
+                "checkout contains independent mapped directories; unapply its old layout first"
+                    .into(),
+            ),
+        }));
     }
     Ok(match status::virtual_checkout::inspect(entry)? {
         Status::Applied => Some(Operation::Migrate {
@@ -293,7 +305,7 @@ async fn materialize_migration(
             }
         }
     }
-    if matches!(from, MaterializationIntent::VirtualCheckout) {
+    if from.is_virtual_checkout() {
         match status::virtual_checkout::inspect(entry)? {
             Status::Applied => {}
             other => {
@@ -362,6 +374,7 @@ fn build_action(ctx: Ctx, entry: &DesiredEntry) -> Box<dyn Action> {
         }
         MaterializationIntent::Checkout
         | MaterializationIntent::VirtualCheckout
+        | MaterializationIntent::ScopedVirtualCheckout(_)
         | MaterializationIntent::PartialFile { .. } => {
             unreachable!(
                 "SymlinkMaterializer::handles filters out Checkout/VirtualCheckout/PartialFile entries"
@@ -612,6 +625,7 @@ mod tests {
                 base_oid,
                 created_at: 0,
                 last_commit_at: None,
+                ..Default::default()
             },
         )
         .await

@@ -203,8 +203,8 @@ fn overlay_name(provenance: &Provenance) -> &str {
 ///   non-overlay files a user might place inside it.
 /// - `PartialFile` — only a delimited region of a possibly-foreign file is
 ///   owned; the file itself must never be excluded.
-pub fn managed_targets(desired: &DesiredTree) -> Vec<ManagedTarget> {
-    desired
+pub fn managed_targets(desired: &DesiredTree) -> Result<Vec<ManagedTarget>> {
+    let mut targets: Vec<_> = desired
         .entries()
         .iter()
         .filter(|entry| {
@@ -220,7 +220,27 @@ pub fn managed_targets(desired: &DesiredTree) -> Vec<ManagedTarget> {
             target: entry.target.clone(),
             overlay: overlay_name(&entry.provenance).to_string(),
         })
-        .collect()
+        .collect();
+    for entry in desired.entries() {
+        if let MaterializationIntent::ScopedVirtualCheckout(scope) = &entry.intent {
+            let Provenance::Overlay { source, .. } = &entry.provenance else {
+                unreachable!()
+            };
+            let (repo, managed) =
+                crate::materialize::virtual_checkout::git::discover_source(source)?;
+            let head = crate::materialize::virtual_checkout::git::base_tree(&repo, None)?;
+            let view = crate::materialize::virtual_checkout::git::scoped_subtree(
+                &repo, &head, &managed, scope,
+            )?;
+            for path in crate::materialize::virtual_checkout::git::tracked_blobs(&view)?.keys() {
+                targets.push(ManagedTarget {
+                    target: entry.target.join(path),
+                    overlay: overlay_name(&entry.provenance).to_string(),
+                });
+            }
+        }
+    }
+    Ok(targets)
 }
 
 /// Walk `path` up to the nearest ancestor that currently exists on disk.
@@ -764,7 +784,7 @@ mod tests {
     #[test]
     fn a_symlink_file_entry_is_managed() {
         let entries = vec![symlink_file(PathBuf::from("/tmp/x"), "demo")];
-        let targets = managed_targets(&DesiredTree::from_entries(entries));
+        let targets = managed_targets(&DesiredTree::from_entries(entries)).unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].overlay, "demo");
     }
@@ -776,7 +796,7 @@ mod tests {
             "demo",
             MaterializationIntent::Directory,
         )];
-        let targets = managed_targets(&DesiredTree::from_entries(entries));
+        let targets = managed_targets(&DesiredTree::from_entries(entries)).unwrap();
         assert!(
             targets.is_empty(),
             "a bare mkdir scaffold must never be excluded — it might hold non-overlay files"
@@ -793,7 +813,7 @@ mod tests {
                 marker: "m".into(),
             },
         )];
-        let targets = managed_targets(&DesiredTree::from_entries(entries));
+        let targets = managed_targets(&DesiredTree::from_entries(entries)).unwrap();
         assert!(
             targets.is_empty(),
             "only a delimited region of a partial file is owned — the file itself must never be excluded"

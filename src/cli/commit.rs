@@ -8,7 +8,7 @@ use dirs::home_dir;
 use crate::cli::CLI;
 use crate::cli::common::select_overlay;
 use crate::commit::{self, CommitOptions, CommitOutcome};
-use crate::desired::{DesiredTree, MaterializationIntent};
+use crate::desired::DesiredTree;
 use crate::exec::Context;
 use crate::overlays::Repository;
 use crate::ui;
@@ -76,7 +76,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let checkout_entries: Vec<_> = desired
         .entries()
         .iter()
-        .filter(|e| matches!(e.intent, MaterializationIntent::VirtualCheckout))
+        .filter(|e| e.intent.is_virtual_checkout())
         .collect();
 
     if checkout_entries.is_empty() {
@@ -98,24 +98,35 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     .ok();
 
     let mut needs_attention = false;
-    for entry in checkout_entries {
-        // Only bother asking for a message once we know there's actually
-        // something to commit — never prompt for a no-op.
-        let pending = crate::status::virtual_checkout::file_changes(entry)?;
-        let outcome = if pending.is_empty() {
-            CommitOutcome::NothingToCommit
-        } else {
-            let message = resolve_message(args, &entry.target)?;
-            commit::commit(entry, &CommitOptions { message }).await?
-        };
-        ui::info(format!(
-            "  {} {}",
-            short_path(&entry.target.to_string_lossy()),
-            outcome
-        ))
-        .ok();
-        needs_attention |= outcome.needs_attention();
-    }
+    let owned_entries: Vec<_> = checkout_entries.into_iter().cloned().collect();
+    // Only bother asking for a message once we know there's actually
+    // something to commit — never prompt for a no-op.
+    let pending = owned_entries
+        .iter()
+        .map(crate::status::virtual_checkout::staged_changes)
+        .collect::<Result<Vec<_>>>()?;
+    let conflicting_files = owned_entries
+        .iter()
+        .map(crate::status::virtual_checkout::conflicts)
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let outcome = if !conflicting_files.is_empty() {
+        CommitOutcome::Blocked { conflicting_files }
+    } else if pending.iter().all(Vec::is_empty) {
+        CommitOutcome::NothingToCommit
+    } else {
+        let message = resolve_message(args, &target)?;
+        commit::commit_entries(&owned_entries, &CommitOptions { message }).await?
+    };
+    ui::info(format!(
+        "  {} {}",
+        short_path(&target.to_string_lossy()),
+        outcome
+    ))
+    .ok();
+    needs_attention |= outcome.needs_attention();
 
     if needs_attention {
         bail!(
@@ -269,6 +280,10 @@ mod tests {
         );
 
         fs::write(root.path().join("a.txt"), "edited locally\n").unwrap();
+        overlay
+            .add_files(&ctx, &[root.path().join("a.txt")])
+            .await
+            .unwrap();
 
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(
@@ -357,6 +372,10 @@ mod tests {
         // must fall through to `commit::default_message` rather than
         // reaching the interactive prompt.
         fs::write(root.path().join("a.txt"), "edited\n").unwrap();
+        overlay
+            .add_files(&ctx, &[root.path().join("a.txt")])
+            .await
+            .unwrap();
 
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(

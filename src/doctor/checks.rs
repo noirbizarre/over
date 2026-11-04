@@ -18,6 +18,28 @@ use crate::xdg::state::StateFile;
 
 use super::Finding;
 
+pub(crate) fn association_findings(desired: &crate::desired::DesiredTree) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for entry in desired
+        .entries()
+        .iter()
+        .filter(|entry| entry.intent.is_virtual_checkout())
+    {
+        match vc_state::record_for_blocking(&entry.target) {
+            Ok(Some(record)) => {
+                if let Err(error) = vc_state::verify(entry, &record) {
+                    findings.push(Finding::warning(error.to_string()));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => findings.push(Finding::error(format!(
+                "failed to read checkout association: {error}"
+            ))),
+        }
+    }
+    findings
+}
+
 /// git on `PATH`, and the XDG state directory actually writable — the two
 /// pieces of environment plumbing several `over` features (git-based
 /// overlays, `over sync`/virtual checkouts) silently depend on.
@@ -316,6 +338,7 @@ mod tests {
                         base_oid: "deadbeef".to_string(),
                         created_at: 0,
                         last_commit_at: None,
+                        ..Default::default()
                     },
                 );
                 Ok(())

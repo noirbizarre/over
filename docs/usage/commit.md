@@ -1,6 +1,6 @@
 # `over commit`
 
-Record local changes made directly in a
+Record staged changes made directly in a
 [virtual checkout](../adr/022-virtual-checkout-materialization.md) back
 into the overlay's own source repository, as a normal git commit.
 
@@ -26,26 +26,38 @@ any) is used instead of prompting interactively — see
 
 ## What it does
 
-For each of the named overlay's own virtual checkout entries (never a
-`uses` dependency's — that content belongs to a different overlay):
+For the named overlay's own virtual checkout entries (never a `uses`
+dependency's — that content belongs to a different overlay):
 
-1. Computes the specific added/modified/deleted files since the
-   checkout's recorded base revision (the same comparison `over status`/
-   `over diff` use).
+1. Selects the added/modified/deleted files staged with [`over add`](add.md)
+   in the source repository's Git index.
 2. If any file changed both locally and in the source repository, to
    different content, refuses to commit at all — resolve the conflicting
    files manually first (`over status --verbose` lists them).
 3. Otherwise, with something to commit, asks for a commit message
    (`--message` skips the prompt; `--no-prompt` with no `--message` falls
    back to an auto-generated one).
-4. Builds new blobs for the changed files, updates just those paths in the
+4. Uses the staged snapshots, updates just those paths in the
    source repository's current tree (everything else in that repository —
    sibling overlays, unrelated files — is carried over untouched), and
    creates a normal, single-parent commit on top of the source
    repository's current `HEAD`.
-5. Advances the checkout's recorded base revision to the new commit, so a
-   subsequent `over status`/`over commit`/`over sync` sees a clean
-   checkout again.
+5. Advances participating checkout checkpoints to the new commit.
+   Unstaged target edits remain visible and unchanged. Selected source
+   working-tree files are brought into agreement with the commit after
+   checking that doing so preserves existing source edits.
+
+Mapped and residual checkout units are committed together. Unrelated
+staged files are preserved in the index and excluded from this commit.
+A checkout whose own source content has advanced must be synced first.
+Sync preserves independent staged and unstaged edits while reconciling
+non-conflicting source advancement. Source updates are prepared before HEAD
+advances and rolled back if applying them or creating the commit fails.
+Existing source access permissions are retained; unstaged source content or
+executable-bit edits are rejected rather than overwritten.
+
+Unlike the earlier automatic-recording workflow, `over commit` does not
+include unstaged target changes. Use `over add` to select changes first.
 
 The resulting commit is entirely ordinary: inspect it with `git log`/`git
 show`/`git diff` directly in the overlay's source repository, and push it

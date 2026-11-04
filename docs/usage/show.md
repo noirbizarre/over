@@ -2,6 +2,9 @@
 
 Display details about an overlay.
 
+Includes configured directory mappings as source-prefix/target pairs, along
+with the base target and materialization rules.
+
 ```text
 Usage: over show [OPTIONS] <NAME>
 

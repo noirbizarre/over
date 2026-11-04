@@ -52,6 +52,9 @@ materialize there right now:
   commit`/`over sync` first. Its recorded XDG association is dropped
   alongside it, so a virtual checkout later re-materialized at the same
   path starts fresh rather than being misread against stale history.
+  For mapped layouts, only owned files and empty directories are removed;
+  independently mapped destinations are protected. A dirty mapped checkout
+  survives removal of a clean residual checkout around it.
 
 Removal proceeds deepest-target-first, so a directory that only ever held
 overlay-managed content becomes empty (and is then removed) once its

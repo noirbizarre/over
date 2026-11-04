@@ -18,8 +18,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow};
-use git2::build::CheckoutBuilder;
 use git2::{ObjectType, Oid, Repository, Tree, TreeWalkMode, TreeWalkResult};
+
+use crate::desired::CheckoutScope;
 
 /// Discover the git repository backing `source` (an overlay's root, or one
 /// of its subdirectories when a subtree-level `checkout` rule applies),
@@ -32,7 +33,11 @@ use git2::{ObjectType, Oid, Repository, Tree, TreeWalkMode, TreeWalkResult};
 /// worktree root — an overlay may live in a subdirectory of a larger
 /// repository.
 pub(crate) fn discover_source(source: &Path) -> Result<(Repository, PathBuf)> {
-    let repo = Repository::discover(source).with_context(|| {
+    let anchor = source
+        .ancestors()
+        .find(|path| path.exists())
+        .unwrap_or(source);
+    let repo = Repository::discover(anchor).with_context(|| {
         format!(
             "'{}' is not inside a git repository — virtual checkout materialization requires \
              the overlay to live inside one",
@@ -47,8 +52,9 @@ pub(crate) fn discover_source(source: &Path) -> Result<(Repository, PathBuf)> {
         )
     })?;
 
-    let canonical_source = source
+    let canonical_source = anchor
         .canonicalize()
+        .map(|root| root.join(source.strip_prefix(anchor).unwrap_or(Path::new(""))))
         .with_context(|| format!("failed to canonicalize '{}'", source.display()))?;
     let canonical_workdir = workdir
         .canonicalize()
@@ -59,6 +65,31 @@ pub(crate) fn discover_source(source: &Path) -> Result<(Repository, PathBuf)> {
         .unwrap_or_default();
 
     Ok((repo, managed_path))
+}
+
+/// Filter both historical and current source trees through identical ownership
+/// boundaries, so a sibling mapping cannot appear as drift in this checkout.
+pub(crate) fn scoped_subtree<'repo>(
+    repo: &'repo Repository,
+    tree: &Tree<'repo>,
+    managed_path: &Path,
+    scope: &CheckoutScope,
+) -> Result<Tree<'repo>> {
+    let subtree = if !managed_path.as_os_str().is_empty() && tree.get_path(managed_path).is_err() {
+        repo.find_tree(repo.treebuilder(None)?.write()?)?
+    } else {
+        managed_subtree(repo, tree, managed_path)?
+    };
+    let mut entries = tracked_entries(&subtree)?;
+    entries.retain(|path, _| scope.owns_source(path));
+    for path in entries.keys() {
+        anyhow::ensure!(
+            scope.owns_target(path),
+            "source path '{}' collides with an independently mapped destination",
+            path.display()
+        );
+    }
+    build_content_tree(repo, &entries)
 }
 
 /// The tree to materialize/compare against: the commit at `base_oid` if
@@ -117,44 +148,16 @@ pub(crate) fn managed_subtree<'repo>(
     })
 }
 
-/// Checkout every entry of `tree` directly into `target`, with no `.git`
-/// created there — `tree` is expected to already be the *managed* subtree
-/// (see [`managed_subtree`]), so its entries land directly under `target`
-/// with no path prefix. `remove_untracked` also deletes any file at
-/// `target` not present in `tree` — safe for first-time materialization
-/// (target is empty) and for `over sync`'s behind-only fast-forward
-/// (caller already confirmed there are no local changes to lose), but
-/// callers are responsible for that safety gate: this is purely the
-/// checkout mechanics.
+/// Write the already-filtered managed tree into `target` without creating
+/// `.git` or updating the source index. Callers preflight target ownership;
+/// unrelated paths are never removed as a side effect of initialization.
 pub(crate) fn checkout_subtree(repo: &Repository, tree: &Tree, target: &Path) -> Result<()> {
     fs::create_dir_all(target)
         .with_context(|| format!("failed to create '{}'", target.display()))?;
-    // libgit2's `target_dir` checkout doesn't reliably resolve a relative
-    // path the same way plain `std::fs` calls do (observed directly: a
-    // relative target silently fails to create nested directories partway
-    // through the checkout) — canonicalize first so it's always given an
-    // absolute path, regardless of what the caller (ultimately `over`'s
-    // `--root`) was given.
-    let absolute_target = target
-        .canonicalize()
-        .with_context(|| format!("failed to resolve '{}'", target.display()))?;
-    let mut co = CheckoutBuilder::new();
-    co.target_dir(&absolute_target);
-    co.force();
-    co.remove_untracked(true);
-    // Every content comparison in this module (`hash_file`,
-    // `diff_target_against_tree`) hashes the target's raw on-disk bytes
-    // against the tree's recorded blob oid directly — there is no
-    // git index at the target to apply a matching clean filter on the
-    // way back in via `over commit`. A smudge filter here (most notably
-    // `core.autocrlf` converting LF to CRLF, the platform default on
-    // Windows) would make a freshly materialized, untouched checkout
-    // immediately hash as "modified" — disable filters so what's on disk
-    // always matches the blob byte-for-byte, matching `apply_tree_diff`'s
-    // own filter-free `fs::write`.
-    co.disable_filters(true);
-    repo.checkout_tree(tree.as_object(), Some(&mut co))
-        .with_context(|| format!("failed to checkout into '{}'", target.display()))
+    // libgit2 checkout_tree updates the source index even with target_dir.
+    // Writing blobs ourselves preserves real staging and independent target holes.
+    let empty = build_content_tree(repo, &BTreeMap::new())?;
+    apply_tree_diff(repo, target, &empty, tree)
 }
 
 /// Raw content of the blob `oid` — used by `over diff` to build a content
@@ -189,8 +192,8 @@ pub(crate) fn apply_tree_diff(
     let from_entries = tracked_entries(from_tree)?;
     let to_entries = tracked_entries(to_tree)?;
 
-    for (path, (oid, _mode)) in &to_entries {
-        if from_entries.get(path).map(|(from_oid, _)| from_oid) != Some(oid) {
+    for (path, (oid, mode)) in &to_entries {
+        if from_entries.get(path) != Some(&(*oid, *mode)) {
             let on_disk = target.join(path);
             if let Some(parent) = on_disk.parent() {
                 fs::create_dir_all(parent)
@@ -199,6 +202,11 @@ pub(crate) fn apply_tree_diff(
             let content = read_blob(repo, *oid)?;
             fs::write(&on_disk, content)
                 .with_context(|| format!("failed to write '{}'", on_disk.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&on_disk, fs::Permissions::from_mode(*mode as u32 & 0o777))?;
+            }
         }
     }
 
@@ -225,6 +233,66 @@ pub(crate) fn apply_tree_diff(
 pub(crate) fn hash_file(path: &Path) -> Result<Oid> {
     let bytes = fs::read(path).with_context(|| format!("failed to read '{}'", path.display()))?;
     Oid::hash_object(ObjectType::Blob, &bytes).map_err(Into::into)
+}
+
+/// An absent source is a valid addition/deletion; a symlink or directory is
+/// not an absent file. Following one during commit could overwrite unrelated
+/// content, so reject it during preflight along with unstaged executable edits.
+pub(crate) fn source_entry(repo: &Repository, relative: &Path) -> Result<Option<(Oid, i32)>> {
+    let root = repo.workdir().context("source has no working directory")?;
+    file_entry(root, relative, "source")
+}
+
+pub(crate) fn target_entry(root: &Path, relative: &Path) -> Result<Option<(Oid, i32)>> {
+    file_entry(root, relative, "target")
+}
+
+pub(crate) fn entries_match(left: Option<(Oid, i32)>, right: Option<(Oid, i32)>) -> bool {
+    // Non-Unix targets cannot represent Git's executable bit. Comparing it
+    // there would permanently block an otherwise identical checkout file.
+    if cfg!(unix) {
+        left == right
+    } else {
+        left.map(|entry| entry.0) == right.map(|entry| entry.0)
+    }
+}
+
+fn file_entry(root: &Path, relative: &Path, label: &str) -> Result<Option<(Oid, i32)>> {
+    let mut path = root.to_path_buf();
+    for component in relative.components() {
+        path.push(component);
+        match path.symlink_metadata() {
+            Ok(metadata) => {
+                anyhow::ensure!(
+                    !metadata.is_symlink(),
+                    "{label} path '{}' is a symlink",
+                    path.display()
+                );
+                if path == root.join(relative) {
+                    anyhow::ensure!(
+                        metadata.is_file(),
+                        "{label} path '{}' is not a regular file",
+                        path.display()
+                    );
+                    return Ok(Some((
+                        hash_file(&path)?,
+                        i32::from(on_disk_filemode(&path)?),
+                    )));
+                }
+                anyhow::ensure!(
+                    metadata.is_dir(),
+                    "{label} parent '{}' is not a directory",
+                    path.display()
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to inspect '{}'", path.display()));
+            }
+        }
+    }
+    anyhow::bail!("{label} file path is empty")
 }
 
 /// A single file-level difference between a virtual checkout's target and
@@ -259,9 +327,18 @@ pub(crate) enum FileChangeKind {
 /// `over status`/`over diff`/`over commit`'s per-file reporting for a
 /// virtual checkout, computed entirely from blob hashes since there's no
 /// real git index at `target` to diff against.
+#[cfg(test)]
 pub(crate) fn diff_target_against_tree(
     target: &Path,
     tracked: &BTreeMap<PathBuf, Oid>,
+) -> Result<Vec<FileChange>> {
+    diff_scoped_target(target, tracked, &CheckoutScope::default())
+}
+
+pub(crate) fn diff_scoped_target(
+    target: &Path,
+    tracked: &BTreeMap<PathBuf, Oid>,
+    scope: &CheckoutScope,
 ) -> Result<Vec<FileChange>> {
     let mut changes = Vec::new();
 
@@ -286,7 +363,7 @@ pub(crate) fn diff_target_against_tree(
         }
     }
 
-    for path in walk_files(target)? {
+    for path in walk_owned_files(target, scope)? {
         // Never propose committing a stray file that happens to be named
         // like `over`'s own metadata (e.g. a user-created `over.toml`
         // inside the checkout) — at the managed path's own root, that
@@ -324,12 +401,21 @@ pub(crate) fn commits_between(repo: &Repository, from: Oid, to: Oid) -> Result<u
 /// Every regular file under `root`, recursively, as paths relative to
 /// `root` — used to detect files added directly at a virtual checkout's
 /// target that aren't tracked at all yet.
-fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn walk_owned_files(root: &Path, scope: &CheckoutScope) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     if !root.exists() {
         return Ok(files);
     }
-    for entry in walkdir::WalkDir::new(root).min_depth(1) {
+    for entry in walkdir::WalkDir::new(root)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry
+                .path()
+                .strip_prefix(root)
+                .is_ok_and(|path| scope.owns_target(path))
+        })
+    {
         let entry = entry.with_context(|| format!("failed to walk '{}'", root.display()))?;
         if entry.file_type().is_file()
             && let Ok(rel) = entry.path().strip_prefix(root)
@@ -338,6 +424,24 @@ fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(files)
+}
+
+pub(crate) fn has_owned_content(root: &Path, scope: &CheckoutScope) -> Result<bool> {
+    for entry in walkdir::WalkDir::new(root)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry
+                .path()
+                .strip_prefix(root)
+                .is_ok_and(|path| scope.owns_target(path))
+        })
+    {
+        if !entry?.file_type().is_dir() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Whether `rel_path` (relative to a managed subtree's own root) is
@@ -350,7 +454,7 @@ fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
 /// its own `over.toml` as regular content. Per-overlay `exclude` glob
 /// patterns are a documented follow-up (ADR-022): only this fixed,
 /// config-independent metadata is excluded so far.
-fn is_overlay_metadata(rel_path: &Path) -> bool {
+pub(crate) fn is_overlay_metadata(rel_path: &Path) -> bool {
     [
         crate::overlays::GLOB_PATTERN.as_str(),
         "**/*.link.{toml,yaml,yml}",
@@ -378,7 +482,7 @@ pub(crate) fn tracked_entries(tree: &Tree) -> Result<BTreeMap<PathBuf, (Oid, i32
     let mut paths = BTreeMap::new();
     tree.walk(TreeWalkMode::PreOrder, |root, entry| {
         let is_plain_blob = matches!(entry.kind(), Some(ObjectType::Blob))
-            && entry.filemode() != i32::from(git2::FileMode::Link);
+            && is_supported_mode(entry.filemode() as u32);
         if is_plain_blob && let Ok(name) = entry.name() {
             let rel_path = Path::new(root).join(name);
             if !is_overlay_metadata(&rel_path) {
@@ -456,13 +560,371 @@ pub(crate) fn tracked_blobs(tree: &Tree) -> Result<BTreeMap<PathBuf, Oid>> {
         .collect())
 }
 
+/// Snapshot staged content independently of target bytes: edits after `add`
+/// must stay unstaged even if a commit happens much later.
+pub(crate) fn staged_changes(
+    repo: &Repository,
+    managed: &Path,
+    scope: &CheckoutScope,
+) -> Result<Vec<FileChange>> {
+    let head = base_tree(repo, None)?;
+    let view = scoped_subtree(repo, &head, managed, scope)?;
+    let head_entries = tracked_entries(&view)?;
+    let index = repo.index()?;
+    anyhow::ensure!(
+        !index.has_conflicts(),
+        "source index has unresolved conflicts"
+    );
+    let mut staged = BTreeMap::new();
+    for entry in index.iter() {
+        let path = Path::new(std::str::from_utf8(&entry.path)?);
+        if let Ok(relative) = path.strip_prefix(managed)
+            && scope.owns_source(relative)
+            && scope.owns_target(relative)
+            && !is_overlay_metadata(relative)
+            && is_supported_mode(entry.mode)
+        {
+            staged.insert(relative.to_path_buf(), (entry.id, entry.mode as i32));
+        }
+    }
+    let paths: std::collections::BTreeSet<_> = head_entries.keys().chain(staged.keys()).collect();
+    Ok(paths
+        .into_iter()
+        .filter_map(|path| {
+            let old = head_entries.get(path);
+            let new = staged.get(path);
+            (old != new).then(|| FileChange {
+                path: path.clone(),
+                kind: match (old, new) {
+                    (_, None) => FileChangeKind::Deleted,
+                    (None, _) => FileChangeKind::Added,
+                    _ => FileChangeKind::Modified,
+                },
+                local_oid: new.map(|(oid, _)| *oid),
+            })
+        })
+        .collect())
+}
+
+/// Keep index views symmetric with the regular-file-only tree view.
+pub(crate) fn is_supported_mode(mode: u32) -> bool {
+    matches!(mode, 0o100644 | 0o100755)
+}
+
+/// Unsupported entries may coexist with checkout content, but their staged
+/// changes must not disappear silently when the user asks to commit this unit.
+pub(crate) fn ensure_supported_staged(
+    repo: &Repository,
+    managed: &Path,
+    scope: &CheckoutScope,
+) -> Result<()> {
+    let head = base_tree(repo, None)?;
+    let index = repo.index()?;
+    let mut unsupported = BTreeMap::new();
+    head.walk(TreeWalkMode::PreOrder, |root, entry| {
+        if entry.kind() != Some(ObjectType::Tree)
+            && !is_supported_mode(entry.filemode() as u32)
+            && let Ok(name) = entry.name()
+        {
+            unsupported.insert(
+                Path::new(root).join(name),
+                (entry.id(), entry.filemode() as u32),
+            );
+        }
+        TreeWalkResult::Ok
+    })?;
+    for entry in index.iter().filter(|entry| !is_supported_mode(entry.mode)) {
+        let path = PathBuf::from(std::str::from_utf8(&entry.path)?);
+        unsupported.entry(path.clone()).or_insert_with(|| {
+            head.get_path(&path)
+                .map(|entry| (entry.id(), entry.filemode() as u32))
+                .unwrap_or((Oid::ZERO_SHA1, 0))
+        });
+    }
+    for (path, old) in unsupported {
+        if let Ok(relative) = path.strip_prefix(managed)
+            && scope.owns_source(relative)
+            && scope.owns_target(relative)
+            && !is_overlay_metadata(relative)
+        {
+            anyhow::ensure!(
+                index.get_path(&path, 0).map(|entry| (entry.id, entry.mode)) == Some(old),
+                "unsupported staged checkout change at '{}'",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A regular target must not replace a source symlink/gitlink, including one
+/// above it: that would silently convert unsupported source content on add.
+pub(crate) fn ensure_supported_path(head: &Tree, index: &git2::Index, path: &Path) -> Result<()> {
+    for ancestor in path.ancestors().filter(|path| !path.as_os_str().is_empty()) {
+        let head_mode = head
+            .get_path(ancestor)
+            .ok()
+            .map(|entry| entry.filemode() as u32);
+        let index_mode = index.get_path(ancestor, 0).map(|entry| entry.mode);
+        anyhow::ensure!(
+            head_mode
+                .into_iter()
+                .chain(index_mode)
+                .all(|mode| mode == 0o040000 || is_supported_mode(mode)),
+            "cannot stage or commit unsupported checkout path '{}'",
+            ancestor.display()
+        );
+    }
+    Ok(())
+}
+
+/// Commit exactly these repository-relative staged paths, preserving unrelated
+/// index entries and checking the source worktree before updating owned files.
+pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str) -> Result<Oid> {
+    let parent = repo.head()?.peel_to_commit()?;
+    let head = parent.tree()?;
+    let index = repo.index()?;
+    anyhow::ensure!(
+        !index.has_conflicts(),
+        "source index has unresolved conflicts"
+    );
+    let workdir = repo.workdir().context("source has no working directory")?;
+    let mut updates = Vec::new();
+    let mut builder = git2::build::TreeUpdateBuilder::new();
+    // Overlapping selections must not back up and replace the same path twice.
+    for path in paths.iter().collect::<std::collections::BTreeSet<_>>() {
+        ensure_supported_path(&head, &index, path)?;
+        let old = head
+            .get_path(path)
+            .ok()
+            .map(|entry| (entry.id(), entry.filemode()));
+        let staged = index.get_path(path, 0);
+        let new = staged.as_ref().map(|entry| (entry.id, entry.mode as i32));
+        let file = workdir.join(path);
+        let current = source_entry(repo, path)?;
+        anyhow::ensure!(
+            entries_match(current, old) || entries_match(current, new),
+            "source file '{}' has unstaged edits",
+            file.display()
+        );
+        if let Some(entry) = staged {
+            let mode =
+                filemode_from_raw(entry.mode as i32).context("unsupported staged file mode")?;
+            anyhow::ensure!(
+                matches!(mode, git2::FileMode::Blob | git2::FileMode::BlobExecutable),
+                "cannot commit non-regular checkout path '{}'",
+                path.display()
+            );
+            builder.upsert(path.clone(), entry.id, mode);
+            // Already-converged sources need no filesystem writes, preserving
+            // their metadata and avoiding failures on read-only directories.
+            if !entries_match(current, new) {
+                updates.push((file, Some((read_blob(repo, entry.id)?, entry.mode))));
+            }
+        } else {
+            builder.remove(path.clone());
+            if current.is_some() {
+                updates.push((file, None));
+            }
+        }
+    }
+    let tree = repo.find_tree(builder.create_updated(repo, &head)?)?;
+    let signature = crate::actions::git::sync::signature(repo)?;
+    // Prepare every write on the destination filesystem before changing any
+    // source file. Backups remain available until Git accepts the HEAD update.
+    let mut transaction = SourceTransaction::default();
+    let result = (|| {
+        for (file, update) in updates {
+            transaction.prepare(file.clone(), update).with_context(|| {
+                format!("failed to prepare source update for '{}'", file.display())
+            })?;
+        }
+        transaction.apply()?;
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &[&parent],
+        )
+        .context("failed to create commit")
+    })();
+    match result {
+        Ok(oid) => {
+            // Cleanup failure must not report a failed commit after HEAD moved.
+            if let Err(error) = transaction.cleanup() {
+                tracing::warn!(
+                    "commit {oid} succeeded, but source backup cleanup failed: {error:#}"
+                );
+            }
+            Ok(oid)
+        }
+        Err(error) => {
+            transaction
+                .rollback()
+                .with_context(|| format!("{error:#}; source rollback also failed"))?;
+            Err(error)
+        }
+    }
+}
+
+#[derive(Default)]
+struct SourceTransaction {
+    updates: Vec<PreparedSourceUpdate>,
+    created_directories: Vec<PathBuf>,
+}
+
+struct PreparedSourceUpdate {
+    file: PathBuf,
+    directory: PathBuf,
+    has_new: bool,
+    backed_up: bool,
+    installed: bool,
+}
+
+impl SourceTransaction {
+    fn prepare(&mut self, file: PathBuf, update: Option<(Vec<u8>, u32)>) -> Result<()> {
+        let parent = file.parent().context("source file has no parent")?;
+        let mut missing = Vec::new();
+        let mut ancestor = parent;
+        while !ancestor.exists() {
+            missing.push(ancestor.to_path_buf());
+            ancestor = ancestor.parent().context("source parent has no ancestor")?;
+        }
+        for directory in missing.into_iter().rev() {
+            fs::create_dir(&directory)?;
+            self.created_directories.push(directory);
+        }
+        // create_dir is exclusive; a counter prevents collisions between units
+        // and concurrent commits without relying on random-number dependencies.
+        static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let directory = loop {
+            let counter = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let directory = parent.join(format!(".over-commit-{}-{counter}", std::process::id()));
+            match fs::create_dir(&directory) {
+                Ok(()) => break directory,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to prepare '{}'", file.display()));
+                }
+            }
+        };
+        self.updates.push(PreparedSourceUpdate {
+            file: file.clone(),
+            directory: directory.clone(),
+            has_new: update.is_some(),
+            backed_up: false,
+            installed: false,
+        });
+        if let Some((content, mode)) = update {
+            let prepared = directory.join("new");
+            // Private creation avoids exposing source secrets even temporarily.
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut output = options.open(&prepared)?;
+            use std::io::Write as _;
+            output.write_all(&content)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut access = match file.symlink_metadata() {
+                    Ok(metadata) => metadata.permissions().mode(),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0o600,
+                    Err(error) => return Err(error.into()),
+                };
+                // Git records executability, not access permissions. Only toggle
+                // execute bits when necessary, and only for existing readers.
+                if (access & 0o111 != 0) != (mode == 0o100755) {
+                    access &= !0o111;
+                    if mode == 0o100755 {
+                        access |= (access & 0o444) >> 2;
+                    }
+                }
+                output.set_permissions(fs::Permissions::from_mode(access & 0o7777))?;
+            }
+            #[cfg(not(unix))]
+            let _ = mode;
+            output.sync_all()?;
+        }
+        Ok(())
+    }
+
+    fn apply(&mut self) -> Result<()> {
+        for update in &mut self.updates {
+            match fs::rename(&update.file, update.directory.join("old")) {
+                Ok(()) => update.backed_up = true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to back up '{}'", update.file.display()));
+                }
+            }
+            if update.has_new {
+                fs::rename(update.directory.join("new"), &update.file)
+                    .with_context(|| format!("failed to update '{}'", update.file.display()))?;
+                update.installed = true;
+            }
+        }
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<()> {
+        let mut errors = Vec::new();
+        for update in self.updates.iter_mut().rev() {
+            let result = (|| -> Result<()> {
+                if update.installed {
+                    fs::remove_file(&update.file)?;
+                    update.installed = false;
+                }
+                if update.backed_up {
+                    fs::rename(update.directory.join("old"), &update.file)?;
+                    update.backed_up = false;
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                // Keep the backup on disk and name it in the error so failed
+                // recovery never destroys the only remaining original copy.
+                errors.push(format!(
+                    "{} (backup '{}'): {error:#}",
+                    update.file.display(),
+                    update.directory.display()
+                ));
+            }
+        }
+        if !errors.is_empty() {
+            anyhow::bail!("{}", errors.join("; "));
+        }
+        self.cleanup()?;
+        for directory in self.created_directories.iter().rev() {
+            fs::remove_dir(directory)?;
+        }
+        Ok(())
+    }
+
+    fn cleanup(&self) -> Result<()> {
+        for update in &self.updates {
+            fs::remove_dir_all(&update.directory)
+                .with_context(|| format!("failed to remove '{}'", update.directory.display()))?;
+        }
+        Ok(())
+    }
+}
+
 /// The git filemode a file currently on disk at `path` should be recorded
 /// with if newly added: executable (`0o100755`) if any executable bit is
 /// set (unix only — every other platform has no equivalent concept, and
 /// checked-out files there are never executable in git's model), plain
 /// (`0o100644`) otherwise.
 #[cfg(unix)]
-fn on_disk_filemode(path: &Path) -> Result<git2::FileMode> {
+pub(crate) fn on_disk_filemode(path: &Path) -> Result<git2::FileMode> {
     use std::os::unix::fs::PermissionsExt;
     let mode = fs::metadata(path)
         .with_context(|| format!("failed to read metadata for '{}'", path.display()))?
@@ -476,7 +938,7 @@ fn on_disk_filemode(path: &Path) -> Result<git2::FileMode> {
 }
 
 #[cfg(not(unix))]
-fn on_disk_filemode(_path: &Path) -> Result<git2::FileMode> {
+pub(crate) fn on_disk_filemode(_path: &Path) -> Result<git2::FileMode> {
     Ok(git2::FileMode::Blob)
 }
 
@@ -488,6 +950,7 @@ fn on_disk_filemode(_path: &Path) -> Result<git2::FileMode> {
 /// object rather than rebuilding the whole tree by hand. This is an
 /// ordinary, single-parent commit: fully inspectable and revertable with
 /// plain `git log`/`git show`/`git revert` in the source repository.
+#[cfg(test)]
 pub(crate) fn commit_changes(
     repo: &Repository,
     managed_path: &Path,
@@ -558,6 +1021,129 @@ mod tests {
                 .unwrap();
         }
         repo
+    }
+
+    #[cfg(unix)]
+    #[rstest::rstest]
+    #[case(0o100644, 0o600)]
+    #[case(0o100755, 0o700)]
+    fn new_source_files_use_private_access_permissions(#[case] git_mode: u32, #[case] access: u32) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = TempDir::new().unwrap();
+        source.child("existing").write_str("existing").unwrap();
+        let repo = init_committed_repo(source.path());
+        let mut index = repo.index().unwrap();
+        let mut entry = index.get_path(Path::new("existing"), 0).unwrap();
+        entry.path = b"nested/new".to_vec();
+        entry.mode = git_mode;
+        index
+            .add_frombuffer(&entry, b"new private content")
+            .unwrap();
+        index.write().unwrap();
+
+        let oid = commit_staged(&repo, &[PathBuf::from("nested/new")], "add private file").unwrap();
+
+        assert_eq!(repo.head().unwrap().target(), Some(oid));
+        assert_eq!(
+            fs::read(source.path().join("nested/new")).unwrap(),
+            b"new private content"
+        );
+        assert_eq!(
+            fs::metadata(source.path().join("nested/new"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            access
+        );
+        assert_eq!(
+            repo.find_commit(oid)
+                .unwrap()
+                .tree()
+                .unwrap()
+                .get_path(Path::new("nested/new"))
+                .unwrap()
+                .filemode() as u32,
+            git_mode
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_executability_changes_do_not_broaden_private_read_or_write_access() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = TempDir::new().unwrap();
+        source.child("script").write_str("original").unwrap();
+        fs::set_permissions(
+            source.path().join("script"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let repo = init_committed_repo(source.path());
+        let mut index = repo.index().unwrap();
+        let mut entry = index.get_path(Path::new("script"), 0).unwrap();
+        entry.mode = 0o100755;
+        index.add_frombuffer(&entry, b"staged script").unwrap();
+        index.write().unwrap();
+
+        commit_staged(&repo, &[PathBuf::from("script")], "make executable").unwrap();
+
+        assert_eq!(
+            fs::metadata(source.path().join("script"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_mid_apply_write_failure_rolls_back_prior_writes_and_deletions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = TempDir::new().unwrap();
+        for (path, mode) in [("a", 0o600), ("b", 0o700), ("c", 0o600)] {
+            source.child(path).write_str(path).unwrap();
+            fs::set_permissions(source.path().join(path), fs::Permissions::from_mode(mode))
+                .unwrap();
+        }
+        let mut transaction = SourceTransaction::default();
+        transaction
+            .prepare(source.path().join("a"), Some((b"new a".to_vec(), 0o100644)))
+            .unwrap();
+        transaction.prepare(source.path().join("b"), None).unwrap();
+        transaction
+            .prepare(
+                source.path().join("nested/added"),
+                Some((b"added".to_vec(), 0o100644)),
+            )
+            .unwrap();
+        transaction
+            .prepare(source.path().join("c"), Some((b"new c".to_vec(), 0o100644)))
+            .unwrap();
+        // Removing the last prepared write deterministically fails installation
+        // after an earlier replacement and deletion, even when run as root.
+        fs::remove_file(transaction.updates[3].directory.join("new")).unwrap();
+
+        assert!(transaction.apply().is_err());
+        transaction.rollback().unwrap();
+
+        for (path, mode) in [("a", 0o600), ("b", 0o700), ("c", 0o600)] {
+            assert_eq!(fs::read(source.path().join(path)).unwrap(), path.as_bytes());
+            assert_eq!(
+                fs::metadata(source.path().join(path))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                mode
+            );
+        }
+        assert_eq!(fs::read_dir(source.path()).unwrap().count(), 3);
     }
 
     #[test]

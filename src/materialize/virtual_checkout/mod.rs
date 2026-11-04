@@ -62,11 +62,22 @@ fn reconstruct_symlink_intent(points_to: &Path) -> MaterializationIntent {
 #[async_trait(?Send)]
 impl Materializer for VirtualCheckoutMaterializer {
     fn handles(&self, intent: &MaterializationIntent) -> bool {
-        matches!(intent, MaterializationIntent::VirtualCheckout)
+        intent.is_virtual_checkout()
     }
 
     fn classify(&self, entry: &DesiredEntry) -> Result<Operation> {
+        // A missing new destination does not mean this source unit is undeployed.
+        state::verify_live_target(entry)?;
         let actual = actual::inspect(&entry.target)?;
+        let scope = entry.intent.checkout_scope();
+        if !scope.target_excludes.is_empty() {
+            let Provenance::Overlay { source, .. } = &entry.provenance else {
+                unreachable!()
+            };
+            let (repo, managed) = git::discover_source(source)?;
+            let head = git::base_tree(&repo, None)?;
+            git::scoped_subtree(&repo, &head, &managed, &scope)?;
+        }
 
         // A stale symlink (a rule changed from `SymlinkFile`/`SymlinkDirectory`
         // to `checkout`) — always safe to migrate away from: removing a
@@ -74,7 +85,7 @@ impl Materializer for VirtualCheckoutMaterializer {
         if let ActualState::Symlink { points_to } = &actual {
             return Ok(Operation::Migrate {
                 from: reconstruct_symlink_intent(points_to),
-                to: MaterializationIntent::VirtualCheckout,
+                to: entry.intent.clone(),
                 blocked: None,
             });
         }
@@ -88,7 +99,8 @@ impl Materializer for VirtualCheckoutMaterializer {
         // status/diff/commit/sync for anything beyond "it exists" (see
         // module doc). Uses the blocking XDG read since `classify` is
         // deliberately sync across every `Materializer` backend.
-        if state::record_for_blocking(&entry.target)?.is_some() {
+        if let Some(record) = state::record_for_blocking(&entry.target)? {
+            state::verify(entry, &record)?;
             return Ok(Operation::Noop);
         }
 
@@ -96,10 +108,20 @@ impl Materializer for VirtualCheckoutMaterializer {
         // directory (nothing lost by discarding it, same reasoning as
         // `CheckoutMaterializer`'s #130 handling) — anything else is a
         // genuine conflict, never silently adopted as a virtual checkout.
+        if matches!(actual, ActualState::Directory)
+            && !scope.target_excludes.is_empty()
+            && !git::has_owned_content(&entry.target, &scope)?
+        {
+            return Ok(Operation::Create);
+        }
         if matches!(actual, ActualState::Directory) && actual::is_symlink_only(&entry.target)? {
+            anyhow::ensure!(
+                scope.target_excludes.is_empty(),
+                "cannot migrate a legacy directory with mapping holes; unapply its old layout first"
+            );
             return Ok(Operation::Migrate {
                 from: MaterializationIntent::Directory,
-                to: MaterializationIntent::VirtualCheckout,
+                to: entry.intent.clone(),
                 blocked: None,
             });
         }
@@ -139,8 +161,9 @@ impl Materializer for VirtualCheckoutMaterializer {
         let target = step.entry.target.clone();
         let overlay = overlay.clone();
         let source = source.clone();
+        let scope = step.entry.intent.checkout_scope();
         let record =
-            spawn_blocking(move || checkout_from_head(&target, &overlay, &source)).await??;
+            spawn_blocking(move || checkout_from_head(&target, &overlay, &source, scope)).await??;
         state::persist(&step.entry.target, record).await
     }
 }
@@ -153,12 +176,20 @@ fn checkout_from_head(
     target: &Path,
     overlay: &str,
     source: &Path,
+    scope: crate::desired::CheckoutScope,
 ) -> Result<VirtualCheckoutRecord> {
     let (repo, managed_path) = git::discover_source(source)?;
     let head_tree = git::base_tree(&repo, None)?;
-    let subtree = git::managed_subtree(&repo, &head_tree, &managed_path)?;
+    let subtree = git::scoped_subtree(&repo, &head_tree, &managed_path, &scope)?;
     let content_tree = git::managed_content_tree(&repo, &subtree)?;
-    git::checkout_subtree(&repo, &content_tree, target)?;
+    // Never use remove_untracked on a target containing another unit's files.
+    if scope.target_excludes.is_empty() {
+        git::checkout_subtree(&repo, &content_tree, target)?;
+    } else {
+        std::fs::create_dir_all(target)?;
+        let empty = git::build_content_tree(&repo, &Default::default())?;
+        git::apply_tree_diff(&repo, target, &empty, &content_tree)?;
+    }
 
     let base_oid = repo.head()?.peel_to_commit()?.id().to_string();
     Ok(VirtualCheckoutRecord {
@@ -167,6 +198,8 @@ fn checkout_from_head(
         base_oid,
         created_at: now(),
         last_commit_at: None,
+        scope,
+        source_repository: repo.workdir().map(Path::to_path_buf),
     })
 }
 
@@ -248,6 +281,7 @@ mod tests {
 
     #[test]
     fn classify_missing_target_is_create() {
+        let _xdg = isolate_xdg_state();
         let m = VirtualCheckoutMaterializer;
         let td = TempDir::new().unwrap();
         let e = entry(td.path().join("nope"), td.path().to_path_buf());
@@ -256,6 +290,7 @@ mod tests {
 
     #[test]
     fn classify_stale_symlink_is_migrate() {
+        let _xdg = isolate_xdg_state();
         let m = VirtualCheckoutMaterializer;
         let td = TempDir::new().unwrap();
         let source_dir = td.child("source_dir");

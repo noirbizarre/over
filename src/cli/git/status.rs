@@ -87,7 +87,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
     // walking directly inside this `async fn`.
     let blocking_workdir = workdir.clone();
     let blocking_overlay_root = overlay_root_canonical.clone();
-    let managed_files =
+    let mut managed_files =
         spawn_blocking(move || find_managed_files(&blocking_workdir, &blocking_overlay_root))
             .await?;
 
@@ -96,11 +96,50 @@ pub async fn execute(cli: &CLI) -> Result<()> {
     // corresponding symlinks in the worktree.
 
     let overlay_subdir = overlay.root.join(&rel_path);
+    let ctx = crate::exec::Context::builder()
+        .root(root)
+        .repository(over_repo)
+        .overlay(overlay.clone())
+        .build();
+    let routing = overlay.resolve_mappings(&ctx)?;
+    let desired = crate::desired::DesiredTree::build_own(&ctx, &overlay)?;
+    let checkout_entries: Vec<_> = desired
+        .entries()
+        .iter()
+        .filter(|entry| entry.intent.is_virtual_checkout())
+        .cloned()
+        .collect();
+    let checkout_workdir = routing.target_for(&routing.logical_path_for(&workdir)?);
+    let checkout_files = spawn_blocking(move || -> Result<Vec<String>> {
+        let mut files = Vec::new();
+        for entry in &checkout_entries {
+            for path in crate::materialize::virtual_checkout::git::walk_owned_files(
+                &entry.target,
+                &entry.intent.checkout_scope(),
+            )? {
+                if let Ok(relative) = entry.target.join(path).strip_prefix(&checkout_workdir) {
+                    files.push(relative.display().to_string());
+                }
+            }
+        }
+        Ok(files)
+    })
+    .await??;
+    managed_files.extend(checkout_files);
+    managed_files.sort();
+    managed_files.dedup();
     let unapplied_files = if overlay_subdir.exists() {
-        let blocking_repo_root = repo_root.clone();
+        let blocking_repo_root = routing.target_for(&rel_path);
         let blocking_overlay_root = overlay_root_canonical.clone();
+        let source = overlay.root.clone();
         spawn_blocking(move || {
-            find_unapplied_files(&overlay_subdir, &blocking_repo_root, &blocking_overlay_root)
+            find_unapplied_files_routed(
+                &overlay_subdir,
+                &blocking_repo_root,
+                &blocking_overlay_root,
+                Some((&routing, &source)),
+                desired.entries(),
+            )
         })
         .await?
     } else {
@@ -184,10 +223,12 @@ fn find_managed_files(workdir: &Path, overlay_root_canonical: &Path) -> Vec<Stri
 
 /// Walk the overlay directory for the relative path, find files without
 /// corresponding symlinks in the worktree.
-fn find_unapplied_files(
+fn find_unapplied_files_routed(
     overlay_subdir: &Path,
     repo_root: &Path,
     overlay_root_canonical: &Path,
+    routing: Option<(&crate::overlays::mapping::ResolvedMappings, &Path)>,
+    entries: &[crate::desired::DesiredEntry],
 ) -> Vec<String> {
     let mut unapplied_files = Vec::new();
     for entry in WalkDir::new(overlay_subdir)
@@ -202,10 +243,26 @@ fn find_unapplied_files(
         {
             // Check the main repo root (not worktree) since overlays are
             // symlinked into the main repo root.
-            let check_path = repo_root.join(rel);
-            let is_linked = is_symlink_to(&check_path, path, overlay_root_canonical);
-            if !is_linked {
-                unapplied_files.push(rel.display().to_string());
+            let check_path = if let Some((routing, source)) = routing {
+                let Ok(logical) = path.strip_prefix(source) else {
+                    continue;
+                };
+                let destination = routing.target_for(logical);
+                if !destination.starts_with(repo_root) {
+                    continue;
+                }
+                destination
+            } else {
+                repo_root.join(rel)
+            };
+            let is_linked = is_symlink_to(&check_path, path, overlay_root_canonical)
+                || entries.iter().any(|entry| {
+                    entry.intent.is_virtual_checkout()
+                        && crate::stage::owns(entry, &check_path)
+                        && check_path.is_file()
+                });
+            if !is_linked && let Ok(relative) = check_path.strip_prefix(repo_root) {
+                unapplied_files.push(relative.display().to_string());
             }
         }
     }

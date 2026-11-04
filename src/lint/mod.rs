@@ -287,6 +287,7 @@ const VALID_OVERLAY_KEYS: &[&str] = &[
     "git",
     "install",
     "link_dirs",
+    "map",
     "overlays",
     "permissions",
     "rules",

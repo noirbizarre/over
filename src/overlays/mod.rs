@@ -14,6 +14,7 @@ pub(crate) const DEFAULT_TARGET: &str = "~";
 pub(crate) const EXTENSIONS: &[&str] = &["yml", "yaml", "toml"];
 
 pub mod discovery;
+pub mod mapping;
 pub mod overlay;
 pub mod permissions;
 pub mod repository;

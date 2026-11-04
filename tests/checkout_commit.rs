@@ -1,0 +1,279 @@
+#![cfg(unix)]
+
+use std::fs;
+use std::os::unix::fs::{PermissionsExt, symlink};
+use std::path::{Path, PathBuf};
+
+use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
+use predicates::str::contains;
+use tempfile::TempDir;
+
+struct Fixture {
+    temp: TempDir,
+    source: PathBuf,
+    home: PathBuf,
+    target: PathBuf,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let home = temp.path().join("home");
+        let target = home.join("checkout");
+        fs::create_dir_all(source.join("ov")).unwrap();
+        fs::write(source.join("ov/file"), "original").unwrap();
+        fs::write(source.join("sibling"), "sibling original").unwrap();
+        fs::write(
+            source.join("ov/over.yaml"),
+            "target: ~/checkout\ndefaults:\n  materialization: checkout\n",
+        )
+        .unwrap();
+        symlink("file", source.join("ov/link")).unwrap();
+        symlink("sibling", source.join("outside-link")).unwrap();
+        let repo = git2::Repository::init(&source).unwrap();
+        repo.config().unwrap().set_str("user.name", "Test").unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("user.email", "test@example.com")
+            .unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        commit_index(&repo);
+        // A gitlink only records a commit ID. Using an existing commit avoids
+        // needing a remote or an external git process to construct the fixture.
+        let mut module = index.get_path(Path::new("ov/file"), 0).unwrap();
+        module.path = b"ov/module".to_vec();
+        module.mode = 0o160000;
+        module.id = repo.head().unwrap().target().unwrap();
+        index.add(&module).unwrap();
+        index.write().unwrap();
+        fs::create_dir(source.join("ov/module")).unwrap();
+        commit_index(&repo);
+        Self {
+            temp,
+            source,
+            home,
+            target,
+        }
+    }
+
+    fn command(&self, command: &str) -> Command {
+        let mut cmd = Command::cargo_bin("over").unwrap();
+        cmd.env("XDG_STATE_HOME", self.temp.path().join("state"))
+            .arg("--home")
+            .arg(&self.source)
+            .arg(command);
+        cmd
+    }
+
+    fn apply(&self) {
+        self.command("apply")
+            .args(["ov", "--no-prompt", "--root"])
+            .arg(&self.home)
+            .assert()
+            .success();
+    }
+
+    fn add(&self) {
+        self.command("add")
+            .args(["--overlay", "ov", "--root"])
+            .arg(&self.home)
+            .arg(&self.target)
+            .assert()
+            .success();
+    }
+
+    fn commit_command(&self) -> Command {
+        let mut cmd = self.command("commit");
+        cmd.args(["ov", "--no-prompt", "--message", "selected", "--root"])
+            .arg(&self.home);
+        cmd
+    }
+}
+
+fn commit_index(repo: &git2::Repository) {
+    let tree = repo
+        .find_tree(repo.index().unwrap().write_tree().unwrap())
+        .unwrap();
+    let parent = repo.head().ok().map(|head| head.peel_to_commit().unwrap());
+    let parents: Vec<_> = parent.iter().collect();
+    let signature = repo.signature().unwrap();
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "fixture",
+        &tree,
+        &parents,
+    )
+    .unwrap();
+}
+
+#[test]
+fn clean_symlinks_and_gitlinks_do_not_enter_checkout_views_or_regular_file_commits() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fixture
+        .command("status")
+        .args(["ov", "--verbose", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("applied"))
+        .stdout(contains("module").not())
+        .stdout(contains("link (unstaged)").not());
+    assert!(!fixture.target.join("link").exists());
+    assert!(!fixture.target.join("module").exists());
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let old = repo.head().unwrap().peel_to_tree().unwrap();
+    let mut index = repo.index().unwrap();
+    let sibling = index.get_path(Path::new("sibling"), 0).unwrap();
+    index.add_frombuffer(&sibling, b"unrelated staged").unwrap();
+    let mut outside = index.get_path(Path::new("outside-link"), 0).unwrap();
+    outside.id = repo.blob(b"unrelated staged destination").unwrap();
+    index.add(&outside).unwrap();
+    index.write().unwrap();
+    let staged_sibling = repo
+        .index()
+        .unwrap()
+        .get_path(Path::new("sibling"), 0)
+        .unwrap()
+        .id;
+    fs::write(fixture.target.join("file"), "selected content").unwrap();
+    fixture.add();
+    let index_before_commit = fs::read(repo.path().join("index")).unwrap();
+
+    fixture.commit_command().assert().success();
+
+    let tree = repo.head().unwrap().peel_to_tree().unwrap();
+    for path in ["ov/link", "ov/module", "sibling", "outside-link"] {
+        let path = Path::new(path);
+        let before = old.get_path(path).unwrap();
+        let after = tree.get_path(path).unwrap();
+        assert_eq!(
+            (after.id(), after.filemode()),
+            (before.id(), before.filemode())
+        );
+    }
+    assert_eq!(
+        repo.find_blob(tree.get_path(Path::new("ov/file")).unwrap().id())
+            .unwrap()
+            .content(),
+        b"selected content"
+    );
+    assert_eq!(
+        fs::read(repo.path().join("index")).unwrap(),
+        index_before_commit
+    );
+    assert_eq!(
+        repo.index()
+            .unwrap()
+            .get_path(Path::new("sibling"), 0)
+            .unwrap()
+            .id,
+        staged_sibling
+    );
+    assert_eq!(
+        fs::read_link(fixture.source.join("ov/link")).unwrap(),
+        PathBuf::from("file")
+    );
+    fixture
+        .command("status")
+        .args(["ov", "--verbose", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("applied"))
+        .stdout(contains("module").not())
+        .stdout(contains("link (unstaged)").not());
+}
+
+#[test]
+fn intentionally_staged_symlink_changes_are_rejected_without_committing_regular_files() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "selected content").unwrap();
+    fixture.add();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let mut index = repo.index().unwrap();
+    let mut link = index.get_path(Path::new("ov/link"), 0).unwrap();
+    link.id = repo.blob(b"different destination").unwrap();
+    index.add(&link).unwrap();
+    index.write().unwrap();
+    let head = repo.head().unwrap().target().unwrap();
+    let index = fs::read(repo.path().join("index")).unwrap();
+
+    fixture
+        .commit_command()
+        .assert()
+        .failure()
+        .stderr(contains("unsupported staged checkout change"));
+
+    assert_eq!(repo.head().unwrap().target().unwrap(), head);
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"original"
+    );
+}
+
+#[test]
+fn failed_source_preparation_preserves_head_sources_index_targets_and_checkpoint() {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.source.join("ov/locked")).unwrap();
+    fs::write(fixture.source.join("ov/locked/file"), "locked original").unwrap();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("ov/locked/file")).unwrap();
+    index.write().unwrap();
+    commit_index(&repo);
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "selected content").unwrap();
+    fs::write(fixture.target.join("locked/file"), "locked staged").unwrap();
+    fixture.add();
+    let directory = fixture.source.join("ov/locked");
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o500)).unwrap();
+    // Root bypasses Unix access checks; the deterministic obstruction and ref
+    // lock unit tests still exercise failure recovery under such runners.
+    let probe = directory.join("probe");
+    if fs::File::create(&probe).is_ok() {
+        fs::remove_file(probe).unwrap();
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    let head = repo.head().unwrap().target().unwrap();
+    let index = fs::read(repo.path().join("index")).unwrap();
+    let checkpoint = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let checkpoint_before = fs::read(&checkpoint).unwrap();
+
+    let result = fixture.commit_command().assert();
+    // Restore traversal/write access before assertions so failures cannot make
+    // the temporary fixture leak an unremovable directory.
+    fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
+    result.failure();
+
+    assert_eq!(repo.head().unwrap().target().unwrap(), head);
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"original"
+    );
+    assert_eq!(
+        fs::read(fixture.source.join("ov/locked/file")).unwrap(),
+        b"locked original"
+    );
+    assert_eq!(
+        fs::read(fixture.target.join("file")).unwrap(),
+        b"selected content"
+    );
+    assert_eq!(
+        fs::read(fixture.target.join("locked/file")).unwrap(),
+        b"locked staged"
+    );
+    assert_eq!(fs::read(checkpoint).unwrap(), checkpoint_before);
+}

@@ -45,9 +45,10 @@ labelling an entry as needing attention, it shows *what* differs —
 - for a **virtual checkout** (`materialization = "checkout"`, no `.git` at
   the target — see [ADR-022](../adr/022-virtual-checkout-materialization.md)),
   the same aggregate status `over status` reports, plus a real line-level
-  content diff for each modified file (base content vs. current on-disk
-  content) and a plain added/deleted marker for the rest — computed
-  against the checkout's recorded base revision, not a real git index.
+  content diff for each modified file and a plain added/deleted marker for
+  the rest. Staged changes compare source `HEAD` to the source index;
+  unstaged changes compare that index to target files. Both lists respect
+  mapped checkout ownership boundaries.
 
 Without `--verbose`, only entries with something to show are printed; pass
 `--verbose` to also print unchanged entries. See

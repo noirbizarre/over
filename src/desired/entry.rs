@@ -4,6 +4,29 @@ use crate::actions::git::config::GitRepoConfig;
 use crate::actions::symlink::LinkType;
 use crate::overlays::FileMode;
 
+/// Ownership holes in an otherwise contiguous virtual checkout.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct CheckoutScope {
+    pub source_excludes: Vec<PathBuf>,
+    pub target_excludes: Vec<PathBuf>,
+}
+
+impl CheckoutScope {
+    pub fn owns_source(&self, path: &std::path::Path) -> bool {
+        !self
+            .source_excludes
+            .iter()
+            .any(|root| path.starts_with(root))
+    }
+
+    pub fn owns_target(&self, path: &std::path::Path) -> bool {
+        !self
+            .target_excludes
+            .iter()
+            .any(|root| path.starts_with(root))
+    }
+}
+
 /// What kind of filesystem node a [`DesiredEntry`] should be, independent of
 /// *how* it gets there (see [`MaterializationIntent`]).
 ///
@@ -63,6 +86,9 @@ pub enum MaterializationIntent {
     /// the overlay's own repository, never via a real git index at the
     /// target.
     VirtualCheckout,
+    /// A checkout partitioned around independently routed directories. The
+    /// unscoped variant remains useful for ordinary indivisible checkouts.
+    ScopedVirtualCheckout(CheckoutScope),
     /// A managed block injected into an existing (possibly foreign) file,
     /// delimited by marker lines unique to `marker` (#66). The first intent
     /// to ever produce [`EntryKind::File`]: unlike every other intent, the
@@ -74,12 +100,24 @@ pub enum MaterializationIntent {
 }
 
 impl MaterializationIntent {
+    pub fn is_virtual_checkout(&self) -> bool {
+        matches!(self, Self::VirtualCheckout | Self::ScopedVirtualCheckout(_))
+    }
+
+    pub fn checkout_scope(&self) -> CheckoutScope {
+        match self {
+            Self::ScopedVirtualCheckout(scope) => scope.clone(),
+            _ => CheckoutScope::default(),
+        }
+    }
+
     /// The [`EntryKind`] this intent results in on disk.
     pub fn kind(&self) -> EntryKind {
         match self {
             MaterializationIntent::Directory
             | MaterializationIntent::Checkout
-            | MaterializationIntent::VirtualCheckout => EntryKind::Directory,
+            | MaterializationIntent::VirtualCheckout
+            | MaterializationIntent::ScopedVirtualCheckout(_) => EntryKind::Directory,
             MaterializationIntent::SymlinkFile { .. }
             | MaterializationIntent::SymlinkDirectory { .. } => EntryKind::Symlink,
             MaterializationIntent::PartialFile { .. } => EntryKind::File,

@@ -1,5 +1,38 @@
 # Examples
 
+## One workspace, several destinations
+
+An overlay `workspace/client` can keep application files and machine
+configuration together:
+
+```text
+workspace/client/
+├── over.yaml
+├── main/
+├── etc/
+└── config/
+```
+
+```yaml
+target: ~/Workspace/Client
+map:
+  etc:
+    target: /etc/client
+  config:
+    target: ~/.config/client
+```
+
+`over apply workspace/client` puts `main/` below the workspace target,
+`etc/` contents directly in `/etc/client`, and `config/` contents directly
+in `~/.config/client`. `over add --overlay workspace/client
+/etc/client/other.yaml` reverse-maps to `etc/other.yaml` in the overlay.
+
+Add `defaults: {materialization: checkout}` to use ordinary editable files
+at all three destinations. In that mode, use `over add` to stage selected
+changes, then `over commit workspace/client` to record the staged snapshots.
+See [Directory Target Mappings](configuration.md#directory-target-mappings)
+for validation, inheritance, and materialization boundaries.
+
 Two complete overlay-repository layouts, from the simplest thing that works
 to a composed, multi-host setup. Both use generic names — no real hostnames,
 usernames, organizations, or secrets.

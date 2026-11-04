@@ -221,13 +221,15 @@ impl Report {
                 // declared" split exists for it the way #140 introduced
                 // for `Checkout` (a virtual checkout is never a
                 // provisioning-only resource).
-                (MaterializationIntent::VirtualCheckout, _) => {
-                    match status::virtual_checkout::inspect(&step.entry)? {
-                        Status::Missing => Outcome::AlreadyAbsent,
-                        Status::Applied => Outcome::Removed,
-                        other => Outcome::CheckoutNotClean { status: other },
-                    }
-                }
+                (
+                    MaterializationIntent::VirtualCheckout
+                    | MaterializationIntent::ScopedVirtualCheckout(_),
+                    _,
+                ) => match status::virtual_checkout::inspect(&step.entry)? {
+                    Status::Missing => Outcome::AlreadyAbsent,
+                    Status::Applied => Outcome::Removed,
+                    other => Outcome::CheckoutNotClean { status: other },
+                },
                 (_, Operation::Create) => Outcome::AlreadyAbsent,
                 // A permission-only drift (#65) doesn't change ownership:
                 // the content is still exactly what this overlay put
@@ -331,7 +333,8 @@ async fn dematerialize(entry: &DesiredEntry) -> Result<()> {
             remove_symlink_if_unchanged(entry.target.clone(), source.clone()).await
         }
         MaterializationIntent::Checkout => remove_checkout_if_clean(entry.clone()).await,
-        MaterializationIntent::VirtualCheckout => {
+        MaterializationIntent::VirtualCheckout
+        | MaterializationIntent::ScopedVirtualCheckout(_) => {
             remove_virtual_checkout_if_clean(entry.clone()).await
         }
         MaterializationIntent::PartialFile { content, marker } => {
@@ -465,7 +468,48 @@ async fn remove_virtual_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
         return Ok(());
     }
     let target = entry.target.clone();
-    spawn_blocking(move || fs::remove_dir_all(&target)).await??;
+    let removal_entry = entry.clone();
+    spawn_blocking(move || -> Result<()> {
+        use crate::materialize::virtual_checkout::{git, state};
+        let Some(record) = state::record_for_blocking(&target)? else {
+            return Ok(());
+        };
+        state::verify(&removal_entry, &record)?;
+        let crate::desired::Provenance::Overlay { source, .. } = &removal_entry.provenance else {
+            unreachable!()
+        };
+        let (repo, managed) = git::discover_source(source)?;
+        let base = git::base_tree(&repo, Some(&record.base_oid))?;
+        let scope = removal_entry.intent.checkout_scope();
+        let tree = git::scoped_subtree(&repo, &base, &managed, &scope)?;
+        let tracked = git::tracked_blobs(&tree)?;
+        anyhow::ensure!(
+            git::diff_scoped_target(&target, &tracked, &scope)?.is_empty(),
+            "checkout changed while removing '{}'",
+            target.display()
+        );
+        for path in tracked.keys() {
+            let file = target.join(path);
+            fs::remove_file(&file)?;
+            let mut parent = file.parent();
+            while let Some(dir) = parent {
+                if dir == target || !dir.starts_with(&target) {
+                    break;
+                }
+                match fs::remove_dir(dir) {
+                    Ok(()) => parent = dir.parent(),
+                    Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => break,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        match fs::remove_dir(&target) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    })
+    .await??;
     crate::materialize::virtual_checkout::state::remove(&entry.target).await
 }
 

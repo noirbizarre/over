@@ -68,7 +68,8 @@ fn intent_label(intent: &MaterializationIntent) -> &'static str {
         MaterializationIntent::SymlinkFile { .. } => "symlink",
         MaterializationIntent::SymlinkDirectory { .. } => "directory symlink",
         MaterializationIntent::Checkout => "checkout",
-        MaterializationIntent::VirtualCheckout => "virtual checkout",
+        MaterializationIntent::VirtualCheckout
+        | MaterializationIntent::ScopedVirtualCheckout(_) => "virtual checkout",
         MaterializationIntent::PartialFile { .. } => "partial file",
     }
 }
@@ -175,14 +176,22 @@ impl fmt::Display for PlanStep {
                 target,
                 current,
             ),
-            (MaterializationIntent::VirtualCheckout, Operation::Create) => write!(
+            (
+                MaterializationIntent::VirtualCheckout
+                | MaterializationIntent::ScopedVirtualCheckout(_),
+                Operation::Create,
+            ) => write!(
                 f,
                 "{} {} {}",
                 emojis::THREAD,
                 style::white("checkout:"),
                 target,
             ),
-            (MaterializationIntent::VirtualCheckout, Operation::Noop) => write!(
+            (
+                MaterializationIntent::VirtualCheckout
+                | MaterializationIntent::ScopedVirtualCheckout(_),
+                Operation::Noop,
+            ) => write!(
                 f,
                 "{} {} {} ({})",
                 emojis::CHECKMARK,
@@ -196,7 +205,11 @@ impl fmt::Display for PlanStep {
             // `over sync` instead) — only for genuinely foreign content at
             // the target with no recorded association. Kept for
             // completeness, same reasoning as the `Checkout` arm above.
-            (MaterializationIntent::VirtualCheckout, Operation::Conflict { current }) => write!(
+            (
+                MaterializationIntent::VirtualCheckout
+                | MaterializationIntent::ScopedVirtualCheckout(_),
+                Operation::Conflict { current },
+            ) => write!(
                 f,
                 "{} {} {} ({})",
                 emojis::WARNING,

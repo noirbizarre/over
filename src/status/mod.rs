@@ -151,20 +151,25 @@ impl fmt::Display for EntryStatus {
         // `over status` needs beyond a single status word. Best-effort:
         // a lookup failure here just means one less line of detail, never
         // a panic from `Display` (which can't propagate a `Result`).
-        if matches!(self.entry.intent, MaterializationIntent::VirtualCheckout)
+        if self.entry.intent.is_virtual_checkout()
             && matches!(
                 self.status,
                 Status::Modified | Status::Diverged { .. } | Status::Conflict
             )
-            && let Ok(changes) = virtual_checkout::file_changes(&self.entry)
         {
-            for change in changes {
-                write!(
-                    f,
-                    "\n    {} {}",
-                    file_change_symbol(change.kind),
-                    change.path.display()
-                )?;
+            for (label, changes) in [
+                ("staged", virtual_checkout::staged_changes(&self.entry)),
+                ("unstaged", virtual_checkout::unstaged_changes(&self.entry)),
+            ] {
+                let changes = changes.map_err(|_| fmt::Error)?;
+                for change in changes {
+                    write!(
+                        f,
+                        "\n    {} {} ({label})",
+                        file_change_symbol(change.kind),
+                        change.path.display()
+                    )?;
+                }
             }
         }
 
@@ -245,9 +250,11 @@ impl Report {
         for step in plan.steps() {
             let status = match (&step.entry.intent, &step.operation) {
                 (MaterializationIntent::Checkout, _) => git::inspect(&step.entry)?,
-                (MaterializationIntent::VirtualCheckout, _) => {
-                    virtual_checkout::inspect(&step.entry)?
-                }
+                (
+                    MaterializationIntent::VirtualCheckout
+                    | MaterializationIntent::ScopedVirtualCheckout(_),
+                    _,
+                ) => virtual_checkout::inspect(&step.entry)?,
                 (_, Operation::Create) => Status::Missing,
                 (_, Operation::Conflict { .. }) => Status::Conflict,
                 (intent, Operation::Noop) => classify_noop(intent),
@@ -276,7 +283,7 @@ impl Report {
         // same (repo, overlay) grouping/discovery `git_exclude::reconcile`
         // uses at apply time — never opens `.git/info/exclude` for
         // writing.
-        let managed = git_exclude::managed_targets(desired);
+        let managed = git_exclude::managed_targets(desired)?;
         let exclude_problems = if managed.is_empty() {
             Vec::new()
         } else {
@@ -732,6 +739,7 @@ mod tests {
                 base_oid,
                 created_at: 0,
                 last_commit_at: None,
+                ..Default::default()
             },
         )
         .await

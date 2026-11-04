@@ -74,14 +74,18 @@ target:
 | Status | Meaning |
 |--------|---------|
 | `Applied` | No local edits, and the source repository hasn't moved since the checkout was last materialized/synced/committed. |
-| `Modified` | One or more files were edited/added/deleted locally, and the source repository hasn't moved. Run `over commit`. |
+| `Modified` | Local or staged changes exist, and the managed source content hasn't moved. Select changes with `over add`, then run `over commit`. |
 | `Behind` | The source repository has new commits touching the managed path; nothing local to lose — `over sync` fast-forwards it automatically. |
-| `Diverged` | Local edits *and* unrelated source-side changes, to different files — resolved by `over commit` (local) then `over sync` (source), in either order. |
+| `Diverged` | Local edits and source-side changes coexist. `over sync` advances non-conflicting source paths and preserves independent local/index edits; then stage and commit the remaining edits. |
 | `Conflict` | The *same* file changed both locally and in the source repository, to different content — resolve manually, then re-run. |
 | `Missing` / `Broken` | Not materialized yet, or its recorded association is gone — run `over apply`. |
 
 `--verbose` also lists the specific added/modified/deleted files
 underneath a virtual checkout's aggregate status line.
+Files are labeled `(staged)` or `(unstaged)`; a file edited again after
+staging can appear in both lists. Mapped checkout units are inspected
+independently, so changes confined to a mapped sibling do not make the
+residual checkout behind.
 
 ## `.git/info/exclude` diagnostics
 

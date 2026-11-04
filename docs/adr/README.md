@@ -47,3 +47,4 @@ by editing the old one. The history is the value.
 | [022](022-virtual-checkout-materialization.md) | Virtual checkout materialization, distinct from `overlay.git`'s `Checkout`, amending ADR-017 |
 | [023](023-merge-git-over-into-over.md) | Merge `git-over` into `over` as a nested `git` subcommand, superseding ADR-001 |
 | [024](024-doctor-aggregates-diagnostics-and-repairs-only-its-own-corruption.md) | `over doctor` aggregates existing diagnostics and repairs only its own corruption |
+| [025](025-directory-mappings-and-checkout-staging.md) | Directory mappings partition ownership; virtual-checkout adds stage snapshots |

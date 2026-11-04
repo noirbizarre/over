@@ -13,6 +13,10 @@ use super::Diagnostic;
 pub fn check_overlay(overlay: &Overlay) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
+    if let Err(error) = crate::overlays::mapping::validate_sources(overlay) {
+        diagnostics.push(Diagnostic::error(&overlay.name, error.to_string()));
+    }
+
     diagnostics.extend(check_uses(overlay));
     diagnostics.extend(check_empty_exclude(overlay));
     diagnostics.extend(check_invalid_exclude_globs(overlay));

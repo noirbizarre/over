@@ -29,6 +29,12 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     ))
     .ok();
     ui::info(format!("  target: {}", overlay.target)).ok();
+    if !overlay.map.is_empty() {
+        ui::info("  map:").ok();
+        for (source, mapping) in &overlay.map {
+            ui::info(format!("    {source}: {}", mapping.target)).ok();
+        }
+    }
     if let Some(desc) = &overlay.description {
         ui::info(format!("  desc:   {}", desc)).ok();
     }

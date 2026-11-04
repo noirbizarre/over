@@ -262,7 +262,8 @@ pub async fn sync(desired: &DesiredTree, opts: &SyncOptions) -> Result<Vec<SyncO
             // `overlay.git`'s bare+worktrees form), and reconciliation is
             // entirely local (no network I/O), unlike the root `Checkout`
             // case above.
-            MaterializationIntent::VirtualCheckout => {
+            MaterializationIntent::VirtualCheckout
+            | MaterializationIntent::ScopedVirtualCheckout(_) => {
                 outcomes.push(sync_virtual_checkout(entry, opts).await?);
             }
             _ => {}
@@ -435,9 +436,9 @@ fn handle_unresolved_state(
 ///   not `opts.no_prompt`, asks for confirmation (and a message) before
 ///   committing — declining, or `no_prompt`, leaves everything untouched
 ///   and reports [`SyncOutcome::Blocked`].
-/// - `Diverged`/`Conflict` (the same file, or the checkout as a whole,
-///   changed incompatibly on both sides) -> [`SyncOutcome::Conflict`],
-///   never auto-resolved.
+/// - `Diverged`: reconcile source-only changes and converged files while
+///   preserving independent target/index edits; overlapping edits block.
+/// - `Conflict`: never auto-resolve incompatible same-file edits.
 /// - `Missing`/`Broken` -> [`SyncOutcome::Blocked`] (nothing to sync;
 ///   `over apply` materializes it).
 async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Result<SyncOutcome> {
@@ -446,14 +447,15 @@ async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Resu
 
     match vc_status {
         Status::Applied => Ok(SyncOutcome::UpToDate { path }),
-        Status::Behind(_) => {
+        Status::Behind(_) | Status::Diverged { .. } => {
             if !opts.pull {
                 return Ok(SyncOutcome::UpToDate { path });
             }
             if opts.dry_run {
+                reconcile_virtual_checkout(entry, true).await?;
                 return Ok(SyncOutcome::FastForwarded { path });
             }
-            fast_forward_virtual_checkout(entry).await?;
+            reconcile_virtual_checkout(entry, false).await?;
             Ok(SyncOutcome::FastForwarded { path })
         }
         Status::Modified => {
@@ -475,7 +477,7 @@ async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Resu
             }
             commit_virtual_checkout_interactively(entry, opts).await
         }
-        Status::Diverged { .. } | Status::Conflict => Ok(SyncOutcome::Conflict { path }),
+        Status::Conflict => Ok(SyncOutcome::Conflict { path }),
         Status::Missing => Ok(SyncOutcome::Blocked {
             path,
             reason: "not materialized yet; run `over apply`".to_string(),
@@ -502,6 +504,13 @@ async fn commit_virtual_checkout_interactively(
     opts: &SyncOptions,
 ) -> Result<SyncOutcome> {
     let path = entry.target.clone();
+    let pending = status::virtual_checkout::staged_changes(entry)?;
+    if pending.is_empty() || !status::virtual_checkout::unstaged_changes(entry)?.is_empty() {
+        return Ok(SyncOutcome::Blocked {
+            path,
+            reason: "uncommitted changes; stage selected paths with `over add`, then run `over commit`; unstaged edits are preserved".to_string(),
+        });
+    }
     if opts.no_prompt {
         return Ok(SyncOutcome::Blocked {
             path,
@@ -511,10 +520,9 @@ async fn commit_virtual_checkout_interactively(
         });
     }
 
-    let pending = status::virtual_checkout::file_changes(entry)?;
     let confirmed = Confirm::with_theme(&DialogTheme::default())
         .with_prompt(format!(
-            "{} local file{} changed at {} — commit {} now?",
+            "{} staged file{} changed at {} — commit {} now?",
             pending.len(),
             if pending.len() == 1 { "" } else { "s" },
             short_path(&path.to_string_lossy()),
@@ -561,9 +569,9 @@ async fn commit_virtual_checkout_interactively(
 /// Update `entry`'s managed subtree in place to reflect the source
 /// repository's current `HEAD` (writing/removing only the paths that
 /// actually drifted since the recorded `base_oid`) and advance that
-/// `base_oid` — safe only because [`sync_virtual_checkout`] only calls
-/// this for [`Status::Behind`] (confirmed no local changes to lose). All
-/// git2/filesystem work is synchronous, hence `spawn_blocking`.
+/// `base_oid`. Recheck every source-changed path against both base and HEAD:
+/// independent local/index edits survive, and already-converged files only
+/// need their checkpoint advanced. All git2/filesystem work is synchronous.
 ///
 /// Deliberately does *not* use [`vc_git::checkout_subtree`] here (unlike
 /// the materializer's own first-time `Create` path): re-checking out the
@@ -572,7 +580,7 @@ async fn commit_virtual_checkout_interactively(
 /// content (observed directly in CI, not reproducible locally — see
 /// `vc_git::apply_tree_diff`'s own doc). Reading/writing only the
 /// changed blobs with plain `std::fs` avoids that entirely.
-async fn fast_forward_virtual_checkout(entry: &DesiredEntry) -> Result<()> {
+async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
     let Provenance::Overlay { source, .. } = &entry.provenance else {
         unreachable!(
             "VirtualCheckout entries only ever carry Provenance::Overlay \
@@ -589,19 +597,72 @@ async fn fast_forward_virtual_checkout(entry: &DesiredEntry) -> Result<()> {
     let target = entry.target.clone();
     let source = source.clone();
     let base_oid = record.base_oid.clone();
+    let inspect_entry = entry.clone();
+    let scope = entry.intent.checkout_scope();
+    let verification_record = record.clone();
     let new_base_oid = tokio::task::spawn_blocking(move || {
+        vc_state::verify(&inspect_entry, &verification_record)?;
         let (repo, managed_path) = vc_git::discover_source(&source)?;
         let from_tree = vc_git::base_tree(&repo, Some(&base_oid))?;
-        let from_subtree = vc_git::managed_subtree(&repo, &from_tree, &managed_path)?;
+        let from_subtree = vc_git::scoped_subtree(&repo, &from_tree, &managed_path, &scope)?;
         let to_tree = vc_git::base_tree(&repo, None)?;
-        let to_subtree = vc_git::managed_subtree(&repo, &to_tree, &managed_path)?;
-        vc_git::apply_tree_diff(&repo, &target, &from_subtree, &to_subtree)?;
+        let to_subtree = vc_git::scoped_subtree(&repo, &to_tree, &managed_path, &scope)?;
+        let base_entries = vc_git::tracked_entries(&from_subtree)?;
+        let head_entries = vc_git::tracked_entries(&to_subtree)?;
+        let index = repo.index()?;
+        anyhow::ensure!(
+            !index.has_conflicts(),
+            "source index has unresolved conflicts"
+        );
+        let paths: std::collections::BTreeSet<_> =
+            base_entries.keys().chain(head_entries.keys()).collect();
+        let mut updates_from = std::collections::BTreeMap::new();
+        let mut updates_to = std::collections::BTreeMap::new();
+        for relative in paths {
+            let base = base_entries.get(relative).copied();
+            let head = head_entries.get(relative).copied();
+            if base == head {
+                continue;
+            }
+            let local = vc_git::target_entry(&target, relative)?;
+            let indexed = index
+                .get_path(&managed_path.join(relative), 0)
+                .map(|entry| (entry.id, entry.mode as i32));
+            anyhow::ensure!(
+                vc_git::entries_match(local, base) || vc_git::entries_match(local, head),
+                "target '{}' changed incompatibly with its source",
+                target.join(relative).display()
+            );
+            anyhow::ensure!(
+                indexed == base || indexed == head,
+                "staged path '{}' changed incompatibly with its source",
+                relative.display()
+            );
+            // Do not rewrite converged files: they may have private permissions
+            // or be read-only. Unchanged local/index paths remain untouched too.
+            if !vc_git::entries_match(local, head) {
+                if let Some(base) = base {
+                    updates_from.insert(relative.clone(), base);
+                }
+                if let Some(head) = head {
+                    updates_to.insert(relative.clone(), head);
+                }
+            }
+        }
+        if !dry_run {
+            let from = vc_git::build_content_tree(&repo, &updates_from)?;
+            let to = vc_git::build_content_tree(&repo, &updates_to)?;
+            vc_git::apply_tree_diff(&repo, &target, &from, &to)?;
+        }
         anyhow::Ok(repo.head()?.peel_to_commit()?.id().to_string())
     })
     .await??;
 
-    record.base_oid = new_base_oid;
-    vc_state::persist(&entry.target, record).await
+    if !dry_run {
+        record.base_oid = new_base_oid;
+        vc_state::persist(&entry.target, record).await?;
+    }
+    Ok(())
 }
 
 fn current_branch_name(repo: &Repository) -> Result<String> {
@@ -934,6 +995,7 @@ mod tests {
                 base_oid,
                 created_at: 0,
                 last_commit_at: None,
+                ..Default::default()
             },
         )
         .await
@@ -1158,6 +1220,7 @@ mod tests {
                 base_oid: "not-a-real-oid".to_string(),
                 created_at: 0,
                 last_commit_at: None,
+                ..Default::default()
             },
         )
         .await
@@ -1263,11 +1326,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn virtual_checkout_diverged_non_overlapping_changes_reports_conflict() {
+    async fn virtual_checkout_sync_preserves_local_edits_while_advancing_unrelated_source_paths() {
         let _xdg = isolate_xdg_state();
-        // Different files changed on each side (no per-file overlap) is
-        // still surfaced as a sync-blocking `Conflict` — `over sync` never
-        // auto-merges even the "safe-looking" diverged case.
+        // Reconcile source-only paths without staging or rewriting local edits.
         let source_td = TempDir::new().unwrap();
         source_td.child("a.txt").write_str("a").unwrap();
         source_td.child("b.txt").write_str("b").unwrap();
@@ -1286,7 +1347,15 @@ mod tests {
         let desired = DesiredTree::from_entries(vec![entry]);
         let outcomes = sync(&desired, &SyncOptions::default()).await.unwrap();
         assert_eq!(outcomes.len(), 1);
-        assert!(matches!(outcomes[0], SyncOutcome::Conflict { .. }));
+        assert!(matches!(outcomes[0], SyncOutcome::FastForwarded { .. }));
+        assert_eq!(
+            fs::read_to_string(target_td.path().join("a.txt")).unwrap(),
+            "local edit"
+        );
+        assert_eq!(
+            fs::read_to_string(target_td.path().join("b.txt")).unwrap(),
+            "source edit"
+        );
     }
 
     #[tokio::test]
@@ -1309,7 +1378,7 @@ mod tests {
             target_td.path().to_path_buf(),
             source_td.path().to_path_buf(),
         );
-        let result = fast_forward_virtual_checkout(&entry).await;
+        let result = reconcile_virtual_checkout(&entry, false).await;
         assert!(result.is_err());
     }
 

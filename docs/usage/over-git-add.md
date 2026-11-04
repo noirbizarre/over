@@ -1,5 +1,10 @@
 # `over git add`
 
+Directory mappings are reversed just as for [`over add`](add.md), including
+repositories outside the overlay's base target. Virtual-checkout inputs
+stage selected snapshots in the overlay source index; symlink-materialized
+inputs retain move-and-link ingestion.
+
 Add files from the current git repository to an overlay — the `over git`
 equivalent of [`over add`](add.md), resolved from inside the repository
 mounted with [`over git mount`](over-git-mount.md).

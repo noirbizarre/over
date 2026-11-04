@@ -108,7 +108,7 @@ pub enum Commands {
 
     #[clap(
         name = "commit",
-        about = "Commit local changes in a checkout-materialized overlay back to its source repository"
+        about = "Commit staged changes in a checkout-materialized overlay back to its source repository"
     )]
     Commit(commit::Params),
 
