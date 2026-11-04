@@ -109,7 +109,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
         .filter(|entry| entry.intent.is_virtual_checkout())
         .cloned()
         .collect();
-    let checkout_workdir = workdir.clone();
+    let checkout_workdir = routing.target_for(&routing.logical_path_for(&workdir)?);
     let checkout_files = spawn_blocking(move || -> Result<Vec<String>> {
         let mut files = Vec::new();
         for entry in &checkout_entries {
@@ -129,7 +129,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
     managed_files.sort();
     managed_files.dedup();
     let unapplied_files = if overlay_subdir.exists() {
-        let blocking_repo_root = repo_root.clone();
+        let blocking_repo_root = routing.target_for(&rel_path);
         let blocking_overlay_root = overlay_root_canonical.clone();
         let source = overlay.root.clone();
         spawn_blocking(move || {

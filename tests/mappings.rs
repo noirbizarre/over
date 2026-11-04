@@ -792,3 +792,40 @@ fn source_deletions_conflict_with_local_edits_instead_of_erasing_them() {
         "preserve local"
     );
 }
+
+#[test]
+fn ancestor_aliases_preserve_mapped_checkout_staging_and_history_inference() {
+    let fixture = Fixture::new(true);
+    fs::create_dir_all(fixture.etc.parent().unwrap()).unwrap();
+    let alias = fixture.temp.path().join("system-alias");
+    symlink::symlink_dir(fixture.etc.parent().unwrap(), &alias).unwrap();
+    let descriptor = fixture.source.join("workspace/client/over.yaml");
+    let config = fs::read_to_string(&descriptor).unwrap().replace(
+        &format!("{:?}", fixture.etc.to_string_lossy()),
+        &format!("{:?}", alias.join("client").to_string_lossy()),
+    );
+    fs::write(descriptor, config).unwrap();
+    fixture.apply();
+    let new = fixture.etc.join("new");
+    fs::write(&new, "alias snapshot").unwrap();
+    fixture.add(&[&new], false);
+    assert!(!new.is_symlink());
+    let repo = fixture.repo();
+    let staged = repo
+        .index()
+        .unwrap()
+        .get_path(Path::new("workspace/client/etc/new"), 0)
+        .unwrap();
+    assert_eq!(
+        repo.find_blob(staged.id).unwrap().content(),
+        b"alias snapshot"
+    );
+    fixture
+        .command("log")
+        .arg("--root")
+        .arg(&fixture.home)
+        .current_dir(&fixture.etc)
+        .assert()
+        .success()
+        .stdout(contains("History for workspace/client"));
+}

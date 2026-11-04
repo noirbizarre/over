@@ -8,7 +8,7 @@ use anyhow::{Context as _, Result, ensure};
 use crate::desired::{DesiredEntry, DesiredTree, Provenance};
 use crate::exec::Ctx;
 use crate::materialize::virtual_checkout::{git, state};
-use crate::overlays::{Overlay, mapping::absolute};
+use crate::overlays::Overlay;
 
 pub(crate) fn owns(entry: &DesiredEntry, path: &Path) -> bool {
     path.strip_prefix(&entry.target)
@@ -32,11 +32,15 @@ fn add_blocking(ctx: &Ctx, overlay: &Overlay, selections: &[PathBuf]) -> Result<
         .filter(|entry| entry.intent.is_virtual_checkout())
         .cloned()
         .collect();
+    let routing = overlay.resolve_mappings(ctx)?;
     let selections = selections
         .iter()
-        .map(|path| absolute(path))
+        .map(|path| {
+            routing
+                .logical_path_for(path)
+                .map(|logical| routing.target_for(&logical))
+        })
         .collect::<Result<Vec<_>>>()?;
-    let routing = overlay.resolve_mappings(ctx)?;
     let mut remaining = BTreeSet::new();
     for path in &selections {
         routing.logical_path_for(path)?;

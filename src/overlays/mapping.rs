@@ -25,6 +25,21 @@ pub struct ResolvedMappings {
 /// Normalize lexically: resolving symlinks would turn managed target links
 /// into source paths and make reverse routing impossible.
 pub(crate) fn absolute(path: &Path) -> Result<PathBuf> {
+    // std canonicalization uses verbatim Windows paths, while libgit2 reports
+    // ordinary drive/UNC prefixes. They must share one component namespace.
+    #[cfg(windows)]
+    let ordinary = {
+        let raw = path.to_string_lossy();
+        if let Some(tail) = raw.strip_prefix(r"\\?\UNC\") {
+            PathBuf::from(format!(r"\\{tail}"))
+        } else if let Some(tail) = raw.strip_prefix(r"\\?\") {
+            PathBuf::from(tail)
+        } else {
+            path.to_path_buf()
+        }
+    };
+    #[cfg(windows)]
+    let path = ordinary.as_path();
     let path = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -57,7 +72,7 @@ pub(crate) fn physical(path: &Path) -> Result<PathBuf> {
                 for part in suffix.iter().rev() {
                     resolved.push(part);
                 }
-                return Ok(resolved);
+                return absolute(&resolved);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 suffix.push(
@@ -70,6 +85,16 @@ pub(crate) fn physical(path: &Path) -> Result<PathBuf> {
             }
             Err(error) => return Err(error).context("failed to inspect physical path"),
         }
+    }
+}
+
+/// Resolve aliases in existing parents, but never dereference the selected
+/// leaf: an added symlink must still name its deployment location, not source.
+pub(crate) fn location(path: &Path) -> Result<PathBuf> {
+    let path = absolute(path)?;
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => Ok(physical(parent)?.join(name)),
+        _ => physical(&path),
     }
 }
 
@@ -228,6 +253,22 @@ impl ResolvedMappings {
         {
             return Ok(logical.to_path_buf());
         }
+        // CWD and Git discovery can spell a configured ancestor differently
+        // (/private/var on macOS or long/verbatim paths on Windows).
+        let identity = location(&target)?;
+        for (source, destination) in &self.directories {
+            if let Ok(tail) = identity.strip_prefix(location(destination)?) {
+                let logical = source.join(tail);
+                if location(&self.target_for(&logical))? == identity {
+                    return Ok(logical);
+                }
+            }
+        }
+        if let Ok(logical) = identity.strip_prefix(location(&self.base)?)
+            && location(&self.target_for(logical))? == identity
+        {
+            return Ok(logical.to_path_buf());
+        }
         bail!(
             "{} is not included in {} or its mapped targets",
             target.display(),
@@ -243,6 +284,41 @@ mod tests {
     use crate::overlays::Repository;
     use assert_fs::prelude::*;
     use rstest::rstest;
+
+    #[test]
+    fn reverse_alias_routing_preserves_a_symlink_leaf_identity() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        temp.child("real/client").create_dir_all().unwrap();
+        symlink::symlink_dir(temp.child("real").path(), temp.child("alias").path()).unwrap();
+        temp.child("outside").write_str("external").unwrap();
+        symlink::symlink_file(
+            temp.child("outside").path(),
+            temp.child("real/client/link").path(),
+        )
+        .unwrap();
+        temp.child("ov/over.toml")
+            .write_str(&format!(
+                "target='~/workspace'\n[map.config]\ntarget={:?}\n",
+                temp.child("alias/client").path().to_string_lossy()
+            ))
+            .unwrap();
+        let overlay = Repository::new(temp.path().to_path_buf())
+            .get("ov")
+            .unwrap();
+        let ctx = Context::builder().root(temp.path().join("home")).build();
+        let routing = overlay.resolve_mappings(&ctx).unwrap();
+        assert_eq!(
+            routing
+                .logical_path_for(temp.child("real/client/link").path())
+                .unwrap(),
+            Path::new("config/link")
+        );
+        assert!(
+            routing
+                .logical_path_for(temp.child("outside").path())
+                .is_err()
+        );
+    }
 
     #[test]
     fn mappings_replace_prefixes_and_reverse_without_shadowed_fallbacks() {

@@ -103,13 +103,18 @@ fn resolve_scope(
                 continue;
             }
         };
+        let routing = overlay.resolve_mappings(&ctx)?;
+        let Ok(logical) = routing.logical_path_for(&cwd) else {
+            continue;
+        };
+        let routed_cwd = routing.target_for(&logical);
         for entry in desired
             .entries()
             .iter()
             .filter(|entry| entry.intent.is_virtual_checkout())
         {
             let specificity = entry.target.components().count();
-            if crate::stage::owns(entry, &cwd)
+            if crate::stage::owns(entry, &routed_cwd)
                 && best.as_ref().is_none_or(|(depth, ..)| specificity > *depth)
             {
                 let Provenance::Overlay { source, .. } = &entry.provenance else {
