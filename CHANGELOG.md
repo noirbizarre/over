@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/noirbizarre/over/compare/0.1.0..0.2.0) - 2026-11-04
+
+### 💫 Features
+
+- **overlays**  🚨 **breaking** Add directory mappings and checkout staging ([#176](https://github.com/noirbizarre/over/issues/176)) - ([5446810](https://github.com/noirbizarre/over/commit/54468104e3e4456415eae9b50b99bfdeba8b024f))
+
+### 🏗️ Build
+
+- **deps** Bump the rust-dependencies group with 4 updates ([#175](https://github.com/noirbizarre/over/issues/175)) - ([4c7d98f](https://github.com/noirbizarre/over/commit/4c7d98f6bfcf302a43b7d3b8439ca376b7d59786))
+- **deps** Bump the rust-dependencies group with 2 updates ([#171](https://github.com/noirbizarre/over/issues/171)) - ([382d7bc](https://github.com/noirbizarre/over/commit/382d7bc8cf963b56327001fb908f137ce5edcbda))
+- **deps** Bump rstest from 0.27.0 to 0.28.0 ([#172](https://github.com/noirbizarre/over/issues/172)) - ([0315aa2](https://github.com/noirbizarre/over/commit/0315aa2ff5c789adb606877d30d92c88d5ddda44))
+- **deps** Bump noyalib from 0.0.57 to 0.0.58 ([#173](https://github.com/noirbizarre/over/issues/173)) - ([0205549](https://github.com/noirbizarre/over/commit/0205549b9d68d8137af32c5480144f80da167162))
+
 ## 0.1.0 - 2026-10-22
 
 ### 💫 Features
