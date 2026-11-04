@@ -8,7 +8,10 @@ use walkdir::WalkDir;
 use crate::actions::git::config::ROOT_PATH;
 use crate::actions::{partial, symlink};
 use crate::exec;
-use crate::overlays::{self, MaterializationKind, Overlay};
+use crate::overlays::{
+    self, MaterializationKind, Overlay,
+    mapping::{self, ResolvedMappings},
+};
 
 use super::entry::{DesiredEntry, MaterializationIntent, Provenance};
 
@@ -45,7 +48,8 @@ impl DesiredTree {
     /// remains the entry point for whole-overlay status/diff (#12/#109),
     /// which need every `uses` dependency's entries too.
     pub fn build_own(ctx: &exec::Context, overlay: &Overlay) -> Result<Self> {
-        let target = overlay.resolve_target(ctx)?;
+        // Stage selections are absolute; relative roots must share their namespace.
+        let target = mapping::absolute(&overlay.resolve_target(ctx)?)?;
         let mut entries = collect_own_entries(ctx, overlay, &target)?;
         // Same deterministic ordering as `build()`.
         entries.sort_by(|a, b| a.target.cmp(&b.target));
@@ -96,7 +100,7 @@ fn build_inner(
     }
     stack.push(overlay.name.clone());
 
-    let target = overlay.resolve_target(ctx)?;
+    let target = mapping::absolute(&overlay.resolve_target(ctx)?)?;
 
     if let Some(uses) = &overlay.uses {
         if ctx.no_uses {
@@ -138,6 +142,7 @@ fn collect_own_entries(
     target: &Path,
 ) -> Result<Vec<DesiredEntry>> {
     let mut entries = Vec::new();
+    let routing = overlay.resolve_mappings(ctx)?;
 
     // #141: the whole overlay resolves to a virtual checkout (via
     // `defaults.materialization = "checkout"`, or an explicit `path = "."`
@@ -153,14 +158,18 @@ fn collect_own_entries(
                 overlay: overlay.name.clone(),
                 source: overlay.root.clone(),
             },
-            intent: MaterializationIntent::VirtualCheckout,
+            intent: checkout_intent(&routing, Path::new("")),
             permissions: None,
         });
-        build_git_entries(overlay, target, &mut entries);
+        for source in routing.directories.keys() {
+            walk_overlay_tree(overlay, &routing, source, &mut entries)?;
+        }
+        build_git_entries(overlay, &routing, &mut entries);
         let ctx_with_target =
             ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
         build_symlink_sidecars(&ctx_with_target, overlay, target, &mut entries)?;
         build_partial_sidecars(&ctx_with_target, overlay, &mut entries)?;
+        finalize_entries(overlay, &routing, &mut entries)?;
         return Ok(entries);
     }
 
@@ -177,9 +186,12 @@ fn collect_own_entries(
         permissions: None,
     });
 
-    build_git_entries(overlay, target, &mut entries);
+    build_git_entries(overlay, &routing, &mut entries);
 
-    walk_overlay_tree(overlay, target, &mut entries)?;
+    walk_overlay_tree(overlay, &routing, Path::new(""), &mut entries)?;
+    for source in routing.directories.keys() {
+        walk_overlay_tree(overlay, &routing, source, &mut entries)?;
+    }
 
     // Mirrors the same resolved-overlay bookkeeping `Overlay::apply` uses so
     // `.link.*` sidecar templates get the same (limited) `{{ overlays[...] }}`
@@ -189,7 +201,75 @@ fn collect_own_entries(
     build_symlink_sidecars(&ctx_with_target, overlay, target, &mut entries)?;
     build_partial_sidecars(&ctx_with_target, overlay, &mut entries)?;
 
+    finalize_entries(overlay, &routing, &mut entries)?;
     Ok(entries)
+}
+
+fn finalize_entries(
+    overlay: &Overlay,
+    routing: &ResolvedMappings,
+    entries: &mut [DesiredEntry],
+) -> Result<()> {
+    if overlay.map.is_empty() {
+        return Ok(());
+    }
+    let independent: Vec<_> = entries
+        .iter()
+        .filter(|entry| !matches!(entry.intent, MaterializationIntent::Directory))
+        .map(|entry| (entry.target.clone(), entry.intent.clone()))
+        .collect();
+    for entry in entries {
+        if entry.intent.is_virtual_checkout() {
+            let mut scope = entry.intent.checkout_scope();
+            for (target, _) in &independent {
+                if target != &entry.target
+                    && let Ok(relative) = target.strip_prefix(&entry.target)
+                {
+                    scope.target_excludes.push(relative.to_path_buf());
+                }
+            }
+            scope.target_excludes.sort();
+            scope.target_excludes.dedup();
+            if !scope.target_excludes.is_empty() {
+                entry.intent = MaterializationIntent::ScopedVirtualCheckout(scope);
+            }
+        }
+        if matches!(
+            entry.intent,
+            MaterializationIntent::SymlinkDirectory { .. } | MaterializationIntent::Checkout
+        ) {
+            let physical_entry = match &entry.intent {
+                MaterializationIntent::SymlinkDirectory { source, .. } => {
+                    mapping::physical_destination(&entry.target, source)?
+                }
+                _ => mapping::physical(&entry.target)?,
+            };
+            for destination in routing.directories.values() {
+                // Lexically distinct aliases must not punch holes into indivisible units.
+                let source = routing.logical_path_for(destination)?;
+                let physical_destination =
+                    mapping::physical_destination(destination, &overlay.root.join(source))?;
+                anyhow::ensure!(
+                    destination == &entry.target
+                        || (!destination.starts_with(&entry.target)
+                            && !physical_destination.starts_with(&physical_entry)),
+                    "mapped destination '{}' lies inside indivisible target '{}'",
+                    destination.display(),
+                    entry.target.display()
+                );
+            }
+        }
+    }
+    for (index, (target, _)) in independent.iter().enumerate() {
+        anyhow::ensure!(
+            !independent[index + 1..]
+                .iter()
+                .any(|(other, _)| other == target),
+            "multiple entries own mapped target '{}'",
+            target.display()
+        );
+    }
+    Ok(())
 }
 
 /// Git-managed paths declared via `overlay.git`: materialized by
@@ -199,15 +279,19 @@ fn collect_own_entries(
 /// (#141, see its doc) — both can coexist at different paths within the
 /// same overlay, including when the overlay root itself resolves to a
 /// virtual checkout.
-fn build_git_entries(overlay: &Overlay, target: &Path, entries: &mut Vec<DesiredEntry>) {
+fn build_git_entries(
+    overlay: &Overlay,
+    routing: &ResolvedMappings,
+    entries: &mut Vec<DesiredEntry>,
+) {
     let Some(git_repos) = &overlay.git else {
         return;
     };
     for (repo_key, config) in git_repos {
         let repo_target = if repo_key == ROOT_PATH {
-            target.to_path_buf()
+            routing.base.clone()
         } else {
-            target.join(repo_key)
+            routing.target_for(Path::new(repo_key))
         };
         entries.push(DesiredEntry {
             target: repo_target,
@@ -228,7 +312,8 @@ fn build_git_entries(overlay: &Overlay, target: &Path, entries: &mut Vec<Desired
 /// before #13 moved materialization behind a `Plan`.
 fn walk_overlay_tree(
     overlay: &Overlay,
-    target: &Path,
+    routing: &ResolvedMappings,
+    start: &Path,
     entries: &mut Vec<DesiredEntry>,
 ) -> Result<()> {
     let exclude = GlobBuilder::new(&overlays::GLOB_PATTERN)
@@ -244,7 +329,29 @@ fn walk_overlay_tree(
         .build()?
         .compile_matcher();
 
-    let mut walker = WalkDir::new(&overlay.root).min_depth(1).into_iter();
+    let walk_root = overlay.root.join(start);
+    // An absent mapped directory can be populated later by reverse add.
+    if !walk_root.exists() {
+        if !start.as_os_str().is_empty() && !overlay.is_excluded(start) {
+            entries.push(DesiredEntry {
+                target: routing.target_for(start),
+                provenance: Provenance::Overlay {
+                    overlay: overlay.name.clone(),
+                    source: walk_root,
+                },
+                intent: if overlay.materialization_for(start) == MaterializationKind::Checkout {
+                    checkout_intent(routing, start)
+                } else {
+                    MaterializationIntent::Directory
+                },
+                permissions: None,
+            });
+        }
+        return Ok(());
+    }
+    let mut walker = WalkDir::new(&walk_root)
+        .min_depth(usize::from(start.as_os_str().is_empty()))
+        .into_iter();
     while let Some(entry) = walker.next() {
         let entry = match entry {
             Ok(e) => e,
@@ -265,11 +372,21 @@ fn walk_overlay_tree(
             Err(_) => continue,
         };
 
+        if rel_path != start && routing.directories.contains_key(rel_path) {
+            walker.skip_current_dir();
+            continue;
+        }
+
         if overlay.is_excluded(rel_path) {
             continue;
         }
 
-        let entry_target = target.join(rel_path);
+        let entry_target = routing.target_for(rel_path);
+        anyhow::ensure!(
+            routing.logical_path_for(&entry_target)? == rel_path,
+            "residual path '{}' collides with a mapped destination",
+            rel_path.display()
+        );
 
         // A directory resolved to `SymlinkDirectory` or `Checkout` — via a
         // `rules` entry, `defaults.materialization`, or a legacy
@@ -307,7 +424,7 @@ fn walk_overlay_tree(
                             overlay: overlay.name.clone(),
                             source: path.to_path_buf(),
                         },
-                        intent: MaterializationIntent::VirtualCheckout,
+                        intent: checkout_intent(routing, rel_path),
                         permissions: None,
                     });
                     walker.skip_current_dir();
@@ -351,17 +468,18 @@ fn walk_overlay_tree(
 fn build_symlink_sidecars(
     ctx: &exec::Context,
     overlay: &Overlay,
-    target: &Path,
+    _target: &Path,
     entries: &mut Vec<DesiredEntry>,
 ) -> Result<()> {
     let symlinks = symlink::discover_symlinks(&overlay.root)?;
+    let routing = overlay.resolve_mappings(ctx)?;
     for (name, config) in symlinks {
         let resolved_str = symlink::render_symlink_target(&config.target, ctx)?;
         let resolved = PathBuf::from(&resolved_str);
         let is_dir = resolved.is_dir()
             || resolved_str.ends_with(std::path::MAIN_SEPARATOR_STR)
             || resolved_str.ends_with('/');
-        let entry_target = target.join(&name);
+        let entry_target = routing.target_for(Path::new(&name));
         let config_path = sidecar_config_path(&overlay.root, &name);
 
         let provenance = Provenance::SymlinkSidecar {
@@ -393,6 +511,34 @@ fn build_symlink_sidecars(
         });
     }
     Ok(())
+}
+
+fn checkout_intent(routing: &ResolvedMappings, logical: &Path) -> MaterializationIntent {
+    let target = routing.target_for(logical);
+    let source_excludes: Vec<_> = routing
+        .directories
+        .keys()
+        .filter(|source| source.as_path() != logical)
+        .filter_map(|source| source.strip_prefix(logical).ok().map(Path::to_path_buf))
+        .collect();
+    let mut target_excludes = source_excludes.clone();
+    for destination in routing.directories.values() {
+        if destination != &target
+            && let Ok(tail) = destination.strip_prefix(&target)
+        {
+            target_excludes.push(tail.to_path_buf());
+        }
+    }
+    target_excludes.sort();
+    target_excludes.dedup();
+    if source_excludes.is_empty() && target_excludes.is_empty() {
+        MaterializationIntent::VirtualCheckout
+    } else {
+        MaterializationIntent::ScopedVirtualCheckout(super::CheckoutScope {
+            source_excludes,
+            target_excludes,
+        })
+    }
 }
 
 /// Reconstruct the sidecar file path for a symlink `stem`, since
@@ -481,6 +627,30 @@ mod tests {
         let td = TempDir::new().unwrap();
         let repo = Repository::new(td.path().to_path_buf());
         (td, repo)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_mapped_alias_cannot_enter_an_indivisible_git_checkout() {
+        let (temp, repo) = repo_and_root();
+        temp.child("home/base").create_dir_all().unwrap();
+        std::os::unix::fs::symlink(temp.path().join("home/base"), temp.path().join("alias"))
+            .unwrap();
+        temp.child("ov/over.toml")
+            .write_str(&format!(
+                "target='~/base'\ngit='https://example.com/repo.git'\n[map.config]\ntarget='{}'",
+                temp.path().join("alias/new").display()
+            ))
+            .unwrap();
+        let overlay = repo.get("ov").unwrap();
+        let ctx = ctx(temp.path().join("home"), repo);
+        assert!(
+            DesiredTree::build_own(&ctx, &overlay)
+                .unwrap_err()
+                .to_string()
+                .contains("indivisible target")
+        );
+        assert!(!temp.path().join("home/base/new").exists());
     }
 
     fn ctx(root: PathBuf, repo: Repository) -> exec::Ctx {

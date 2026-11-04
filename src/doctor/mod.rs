@@ -208,7 +208,10 @@ pub async fn check(repo: &Repository, opts: &Options) -> Result<Report> {
         let Some(desired) = build_desired_tree(repo, &opts.root, overlay, opts.no_uses)? else {
             continue;
         };
-        let targets = git_exclude::managed_targets(&desired);
+        report
+            .xdg_state
+            .extend(checks::association_findings(&desired));
+        let targets = git_exclude::managed_targets(&desired)?;
         if targets.is_empty() {
             continue;
         }
@@ -232,7 +235,9 @@ pub async fn check(repo: &Repository, opts: &Options) -> Result<Report> {
     }
 
     // Stale XDG state bookkeeping.
-    report.xdg_state = checks::xdg_state_findings(repo).await?;
+    report
+        .xdg_state
+        .extend(checks::xdg_state_findings(repo).await?);
 
     Ok(report)
 }

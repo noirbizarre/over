@@ -47,46 +47,54 @@ pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
         );
     };
 
+    state::verify(entry, &record)?;
+    let scope = entry.intent.checkout_scope();
     let (repo, managed_path) = git::discover_source(source)?;
 
     let base_tree = git::base_tree(&repo, Some(&record.base_oid))?;
-    let base_subtree = git::managed_subtree(&repo, &base_tree, &managed_path)?;
+    let base_subtree = git::scoped_subtree(&repo, &base_tree, &managed_path, &scope)?;
     let base_blobs = git::tracked_blobs(&base_subtree)?;
 
-    let local_changes = git::diff_target_against_tree(&entry.target, &base_blobs)?;
+    let local_changes = git::diff_scoped_target(&entry.target, &base_blobs, &scope)?;
 
     let head_tree = git::base_tree(&repo, None)?;
-    let head_subtree = git::managed_subtree(&repo, &head_tree, &managed_path)?;
+    let head_subtree = git::scoped_subtree(&repo, &head_tree, &managed_path, &scope)?;
     let head_blobs = git::tracked_blobs(&head_subtree)?;
 
     let source_drifted = head_subtree.id() != base_subtree.id();
 
-    Ok(match (local_changes.is_empty(), source_drifted) {
-        (true, false) => Status::Applied,
-        (false, false) => Status::Modified,
-        (true, true) => {
-            // `commits_between` needs commits, not trees, to walk history.
-            let base_commit = repo.find_commit(Oid::from_str(&record.base_oid)?)?;
-            let head_commit = repo.head()?.peel_to_commit()?;
-            Status::Behind(git::commits_between(
-                &repo,
-                base_commit.id(),
-                head_commit.id(),
-            )?)
-        }
-        (false, true) => {
-            if conflicting_paths(&base_blobs, &head_blobs, &local_changes).is_empty() {
+    let staged = git::staged_changes(&repo, &managed_path, &scope)?;
+    Ok(
+        match (
+            local_changes.is_empty() && staged.is_empty(),
+            source_drifted,
+        ) {
+            (true, false) => Status::Applied,
+            (false, false) => Status::Modified,
+            (true, true) => {
+                // `commits_between` needs commits, not trees, to walk history.
                 let base_commit = repo.find_commit(Oid::from_str(&record.base_oid)?)?;
                 let head_commit = repo.head()?.peel_to_commit()?;
-                Status::Diverged {
-                    ahead: local_changes.len(),
-                    behind: git::commits_between(&repo, base_commit.id(), head_commit.id())?,
-                }
-            } else {
-                Status::Conflict
+                Status::Behind(git::commits_between(
+                    &repo,
+                    base_commit.id(),
+                    head_commit.id(),
+                )?)
             }
-        }
-    })
+            (false, true) => {
+                if conflicting_paths(&base_blobs, &head_blobs, &local_changes).is_empty() {
+                    let base_commit = repo.find_commit(Oid::from_str(&record.base_oid)?)?;
+                    let head_commit = repo.head()?.peel_to_commit()?;
+                    Status::Diverged {
+                        ahead: local_changes.len(),
+                        behind: git::commits_between(&repo, base_commit.id(), head_commit.id())?,
+                    }
+                } else {
+                    Status::Conflict
+                }
+            }
+        },
+    )
 }
 
 /// Paths that changed both locally and in the source repository since
@@ -103,15 +111,17 @@ pub(crate) fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
              (see desired::tree::{{collect_own_entries,walk_overlay_tree}})"
         );
     };
+    state::verify(entry, &record)?;
+    let scope = entry.intent.checkout_scope();
     let (repo, managed_path) = git::discover_source(source)?;
 
     let base_tree = git::base_tree(&repo, Some(&record.base_oid))?;
-    let base_subtree = git::managed_subtree(&repo, &base_tree, &managed_path)?;
+    let base_subtree = git::scoped_subtree(&repo, &base_tree, &managed_path, &scope)?;
     let base_blobs = git::tracked_blobs(&base_subtree)?;
-    let local_changes = git::diff_target_against_tree(&entry.target, &base_blobs)?;
+    let local_changes = git::diff_scoped_target(&entry.target, &base_blobs, &scope)?;
 
     let head_tree = git::base_tree(&repo, None)?;
-    let head_subtree = git::managed_subtree(&repo, &head_tree, &managed_path)?;
+    let head_subtree = git::scoped_subtree(&repo, &head_tree, &managed_path, &scope)?;
     let head_blobs = git::tracked_blobs(&head_subtree)?;
 
     Ok(conflicting_paths(&base_blobs, &head_blobs, &local_changes))
@@ -122,6 +132,7 @@ pub(crate) fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
 /// list underneath the aggregate [`Status`] line, and what `over commit`
 /// stages. Empty for a checkout with no recorded association (mirrors
 /// [`inspect`]'s own `Missing`/`Broken` fallback).
+#[cfg(test)]
 pub(crate) fn file_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
     let Some(record) = state::record_for_blocking(&entry.target)? else {
         return Ok(Vec::new());
@@ -132,11 +143,42 @@ pub(crate) fn file_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
              (see desired::tree::{{collect_own_entries,walk_overlay_tree}})"
         );
     };
+    state::verify(entry, &record)?;
+    let scope = entry.intent.checkout_scope();
     let (repo, managed_path) = git::discover_source(source)?;
     let base_tree = git::base_tree(&repo, Some(&record.base_oid))?;
-    let base_subtree = git::managed_subtree(&repo, &base_tree, &managed_path)?;
+    let base_subtree = git::scoped_subtree(&repo, &base_tree, &managed_path, &scope)?;
     let base_blobs = git::tracked_blobs(&base_subtree)?;
-    git::diff_target_against_tree(&entry.target, &base_blobs)
+    git::diff_scoped_target(&entry.target, &base_blobs, &scope)
+}
+
+pub(crate) fn staged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
+    let Provenance::Overlay { source, .. } = &entry.provenance else {
+        unreachable!()
+    };
+    let (repo, managed) = git::discover_source(source)?;
+    git::staged_changes(&repo, &managed, &entry.intent.checkout_scope())
+}
+
+pub(crate) fn unstaged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
+    let Provenance::Overlay { source, .. } = &entry.provenance else {
+        unreachable!()
+    };
+    let (repo, managed) = git::discover_source(source)?;
+    let scope = entry.intent.checkout_scope();
+    let mut blobs = BTreeMap::new();
+    for indexed in repo.index()?.iter() {
+        let path = std::path::Path::new(std::str::from_utf8(&indexed.path)?);
+        if let Ok(relative) = path.strip_prefix(&managed)
+            && scope.owns_source(relative)
+            && scope.owns_target(relative)
+            && !git::is_overlay_metadata(relative)
+            && git::is_supported_mode(indexed.mode)
+        {
+            blobs.insert(relative.to_path_buf(), indexed.id);
+        }
+    }
+    git::diff_scoped_target(&entry.target, &blobs, &scope)
 }
 
 /// Paths that changed both locally (since `base`) and in the source
@@ -162,10 +204,10 @@ fn conflicting_paths(
             // for a path `local` also touched is unsafe to auto-resolve,
             // unless `local` already matches exactly what `head` moved to.
             FileChangeKind::Modified | FileChangeKind::Added | FileChangeKind::Deleted => {
-                head_blobs.get(&change.path).is_some_and(|head_oid| {
-                    base_blobs.get(&change.path) != Some(head_oid)
-                        && change.local_oid != Some(*head_oid)
-                })
+                // A source deletion is a change too; treating a missing HEAD
+                // blob as "no conflict" would lose a simultaneous local edit.
+                let head = head_blobs.get(&change.path).copied();
+                base_blobs.get(&change.path).copied() != head && change.local_oid != head
             }
         })
         .map(|change| change.path.clone())
@@ -269,6 +311,7 @@ mod tests {
                 base_oid,
                 created_at: 0,
                 last_commit_at: None,
+                ..Default::default()
             },
         )
         .await

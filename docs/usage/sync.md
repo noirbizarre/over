@@ -97,10 +97,16 @@ overlay from.
 - Only the source repository moved (nothing local to lose) -> the target
   is refreshed automatically (`--pull-only`/`--push-only` still apply:
   gated on the pull direction).
-- Only the target has local edits -> asks for confirmation (and a commit
-  message) before committing them into the source repository — the same
+- Only the target has staged changes, with no unstaged edits -> asks for
+  confirmation (and a commit message) before committing them into the source repository — the same
   as running `over commit` yourself. Declining, or passing `--no-prompt`,
   leaves both sides untouched and reports the checkout as blocked.
+- Unstaged target edits -> reports the checkout as blocked. Select changes
+  with `over add` and commit them with `over commit` first.
+- Source advancement alongside independent local edits -> updates only
+  source-changed paths after checking target and index snapshots. Local
+  edits and staged snapshots remain intact. Already-converged content only
+  needs its checkpoint advanced, including after a plain source Git commit.
 - The *same* file changed on both sides, to different content -> reported
   as a conflict, never auto-resolved; resolve manually (edit the target
   and/or the source repository directly), then re-run.

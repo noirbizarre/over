@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use clap::Args;
 use dirs::home_dir;
 
-use crate::cli::common::resolve_inputs;
+use crate::cli::common::resolve_inputs_with_missing;
 use crate::exec::Context;
 use crate::git_exclude;
 use crate::overlays::Repository;
@@ -80,7 +80,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .overlay(overlay.clone())
         .build();
 
-    let resolved = resolve_inputs(&args.files)?;
+    let resolved = resolve_inputs_with_missing(&args.files, true)?;
 
     overlay.add_files(&ctx, &resolved).await.inspect_err(|e| {
         ui::warn(format!(

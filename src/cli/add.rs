@@ -7,7 +7,7 @@ use dirs::home_dir;
 
 use crate::actions::symlink::SymlinkConfig;
 use crate::cli::CLI;
-use crate::cli::common::resolve_inputs;
+use crate::cli::common::resolve_inputs_with_missing;
 use crate::exec::Context;
 use crate::overlays::Repository;
 use crate::ui;
@@ -79,12 +79,16 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .overlay(overlay.clone())
         .build();
 
-    let resolved = resolve_inputs(&args.files)?;
+    let resolved = resolve_inputs_with_missing(&args.files, true)?;
+    let routing = overlay.resolve_mappings(&ctx)?;
+    for path in &resolved {
+        routing.logical_path_for(path)?;
+    }
 
     let (symlinks, regulars): (Vec<_>, Vec<_>) = resolved.iter().partition(|p| p.is_symlink());
 
     for symlink_path in &symlinks {
-        add_symlink(&overlay, &home, symlink_path, cli)?;
+        add_symlink(&overlay, &home, symlink_path, &ctx)?;
     }
 
     if !regulars.is_empty() {
@@ -109,10 +113,25 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
 fn add_symlink(
     overlay: &crate::overlays::Overlay,
-    home: &PathBuf,
-    symlink_path: &PathBuf,
-    _cli: &CLI,
+    home: &Path,
+    symlink_path: &Path,
+    ctx: &crate::exec::Context,
 ) -> Result<()> {
+    let rel_path = overlay
+        .resolve_mappings(ctx)?
+        .logical_path_for(symlink_path)?;
+    let desired = crate::desired::DesiredTree::build_own(ctx, overlay)?;
+    anyhow::ensure!(
+        !desired
+            .entries()
+            .iter()
+            .any(|entry| entry.intent.is_virtual_checkout()
+                && crate::stage::owns(entry, symlink_path)),
+        "cannot stage a symlink in a virtual checkout"
+    );
+    if ctx.dry_run {
+        return Ok(());
+    }
     let link_target = std::fs::read_link(symlink_path)
         .map_err(|e| anyhow!("failed to read symlink {}: {}", symlink_path.display(), e))?;
 
@@ -127,7 +146,6 @@ fn add_symlink(
         .interact_text()
         .map_err(|e| anyhow!("target input cancelled: {}", e))?;
 
-    let rel_path = symlink_path.strip_prefix(home).unwrap_or(symlink_path);
     let link_config_name = rel_path.to_string_lossy();
     let config_path = overlay.root.join(format!("{}.link.toml", link_config_name));
 

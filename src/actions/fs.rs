@@ -227,16 +227,12 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
     if ctx.debug {
         ui::info(format!("{:#?}", src)).ok();
     }
-    let root = overlay.resolve_target(&ctx)?;
+    let routing = overlay.resolve_mappings(&ctx)?;
+    let root = &routing.base;
     if ctx.debug {
         ui::info(format!("{:#?}", root)).ok();
     }
-    let rel_path = match src.strip_prefix(&root) {
-        Ok(tail) => tail,
-        Err(_) => {
-            anyhow::bail!("{} is not included in {}", src.display(), root.display());
-        }
-    };
+    let rel_path = routing.logical_path_for(src)?;
     let target = overlay.root.join(rel_path);
 
     // Ensure parent directories exist in the overlay before moving the file
@@ -289,13 +285,8 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
     } else {
         dir.to_path_buf()
     };
-    let root = overlay.resolve_target(&ctx)?;
-    let rel_path = match src.strip_prefix(&root) {
-        Ok(tail) => tail.to_path_buf(),
-        Err(_) => {
-            anyhow::bail!("{} is not included in {}", src.display(), root.display());
-        }
-    };
+    let routing = overlay.resolve_mappings(&ctx)?;
+    let rel_path = routing.logical_path_for(&src)?;
 
     if overlay.is_link_dir(&rel_path) {
         // Symlink the entire directory as a unit
@@ -330,10 +321,12 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
         // than walking directly inside this `async fn`.
         let walk_src = src.clone();
         let walk_overlay = overlay.clone();
+        let walk_routing = routing.clone();
         let files: Vec<PathBuf> = spawn_blocking(move || {
             WalkDir::new(&walk_src)
                 .min_depth(1)
                 .into_iter()
+                .filter_entry(|entry| !entry.path().starts_with(&walk_overlay.root))
                 .filter_map(|entry| match entry {
                     Ok(e) => Some(e),
                     Err(e) => {
@@ -341,13 +334,13 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
                         None
                     }
                 })
-                .filter(|e| e.path().is_file())
+                .filter(|e| e.file_type().is_file())
                 .filter(|e| {
-                    let rel = match e.path().strip_prefix(&walk_src) {
+                    let rel = match walk_routing.logical_path_for(e.path()) {
                         Ok(r) => r,
                         Err(_) => return false,
                     };
-                    !walk_overlay.is_excluded(rel)
+                    !walk_overlay.is_excluded(&rel)
                 })
                 .map(|e| e.path().to_path_buf())
                 .collect()
@@ -401,6 +394,7 @@ impl EnsureLink {
 impl fmt::Display for EnsureLink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(overlay) = self.ctx.overlay.as_ref()
+            && overlay.map.is_empty()
             && let Ok(rel_path) = self.source.strip_prefix(&overlay.root)
         {
             let rel_str = rel_path.to_string_lossy();
@@ -456,6 +450,9 @@ impl Action for EnsureLink {
                 if !resolve_file_conflict(&ctx2, &source, &target)? {
                     return Ok(()); // Skipped
                 }
+            }
+            if let Some(parent) = target.parent() {
+                create_dir_all(parent)?;
             }
             symlink_file(source.as_path(), target.as_path())?;
             Ok(())
@@ -576,6 +573,7 @@ impl EnsureDirLink {
 impl fmt::Display for EnsureDirLink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(overlay) = self.ctx.overlay.as_ref()
+            && overlay.map.is_empty()
             && let Ok(rel_path) = self.source.strip_prefix(&overlay.root)
         {
             let rel_str = rel_path.to_string_lossy();
@@ -632,6 +630,9 @@ impl Action for EnsureDirLink {
                     return Ok(()); // Skipped
                 }
             }
+            if let Some(parent) = target.parent() {
+                create_dir_all(parent)?;
+            }
             symlink_dir(source.as_path(), target.as_path())?;
             Ok(())
         })
@@ -658,6 +659,7 @@ impl MoveFile {
 impl fmt::Display for MoveFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(overlay) = self.ctx.overlay.as_ref()
+            && overlay.map.is_empty()
             && let Ok(source_root) = overlay.resolve_target(&self.ctx)
             && let Ok(rel_path) = self.source.strip_prefix(&source_root)
         {

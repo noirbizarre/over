@@ -1,5 +1,5 @@
-//! `over commit` (#141): record changes made directly in a virtual
-//! checkout back into the overlay's own source repository.
+//! `over commit`: record staged virtual-checkout snapshots in the overlay's
+//! own source repository, preserving unstaged target and unrelated index changes.
 //!
 //! Reused by both `cli::commit` (the standalone command) and `crate::sync`
 //! (which offers to commit dirty virtual-checkout files before
@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::desired::{DesiredEntry, MaterializationIntent, Provenance};
+use crate::desired::{DesiredEntry, Provenance};
 use crate::materialize::virtual_checkout::git;
 use crate::materialize::virtual_checkout::state::{self, VirtualCheckoutRecord};
 use crate::status;
@@ -101,21 +101,28 @@ impl fmt::Display for CommitOutcome {
     }
 }
 
-/// Commit every locally changed, non-conflicting file under `entry`'s
-/// virtual checkout into its source repository, updating the checkout's
-/// recorded `base_oid` to the new commit. No-ops (informationally) when
-/// there's nothing to commit or a conflict blocks it — never partially
-/// commits some files while silently dropping conflicting ones.
+/// Commit staged, non-conflicting paths owned by this virtual checkout.
+/// Advance its checkpoint to committed content, leaving further target edits
+/// unstaged. Unrelated index entries are preserved.
 pub async fn commit(entry: &DesiredEntry, opts: &CommitOptions) -> Result<CommitOutcome> {
-    if !matches!(entry.intent, MaterializationIntent::VirtualCheckout) {
+    if !entry.intent.is_virtual_checkout() {
         return Ok(CommitOutcome::NotVirtualCheckout);
     }
 
-    let entry = entry.clone();
+    commit_entries(std::slice::from_ref(entry), opts).await
+}
+
+/// Commit mapped and residual units together so one source repository gets one
+/// coherent staged snapshot, rather than a commit per physical destination.
+pub async fn commit_entries(
+    entries: &[DesiredEntry],
+    opts: &CommitOptions,
+) -> Result<CommitOutcome> {
+    let entries = entries.to_vec();
     let opts = opts.clone();
     let (outcome, persist) =
-        tokio::task::spawn_blocking(move || commit_blocking(&entry, &opts)).await??;
-    if let Some((target, record)) = persist {
+        tokio::task::spawn_blocking(move || commit_blocking(&entries, &opts)).await??;
+    for (target, record) in persist {
         state::persist(&target, record).await?;
     }
     Ok(outcome)
@@ -126,49 +133,88 @@ pub async fn commit(entry: &DesiredEntry, opts: &CommitOptions) -> Result<Commit
 /// `async`, so it all runs inside one `spawn_blocking` call.
 #[allow(clippy::type_complexity)]
 fn commit_blocking(
-    entry: &DesiredEntry,
+    entries: &[DesiredEntry],
     opts: &CommitOptions,
-) -> Result<(CommitOutcome, Option<(PathBuf, VirtualCheckoutRecord)>)> {
-    let conflicting_files = status::virtual_checkout::conflicts(entry)?;
-    if !conflicting_files.is_empty() {
-        return Ok((CommitOutcome::Blocked { conflicting_files }, None));
-    }
+) -> Result<(CommitOutcome, Vec<(PathBuf, VirtualCheckoutRecord)>)> {
+    let mut repository = None;
+    let mut paths = Vec::new();
+    let mut changes = Vec::new();
+    let mut records = Vec::new();
+    for entry in entries {
+        let conflicting_files = status::virtual_checkout::conflicts(entry)?;
+        if !conflicting_files.is_empty() {
+            return Ok((CommitOutcome::Blocked { conflicting_files }, Vec::new()));
+        }
 
-    let file_changes = status::virtual_checkout::file_changes(entry)?;
-    if file_changes.is_empty() {
-        return Ok((CommitOutcome::NothingToCommit, None));
-    }
-
-    let Some(mut record) = state::record_for_blocking(&entry.target)? else {
-        anyhow::bail!(
-            "no virtual checkout association recorded for '{}' — was it materialized by \
+        let Some(record) = state::record_for_blocking(&entry.target)? else {
+            anyhow::bail!(
+                "no virtual checkout association recorded for '{}' — was it materialized by \
              `over apply`?",
-            entry.target.display(),
-        );
-    };
-    let Provenance::Overlay { source, .. } = &entry.provenance else {
-        unreachable!(
-            "VirtualCheckout entries only ever carry Provenance::Overlay \
+                entry.target.display(),
+            );
+        };
+        let Provenance::Overlay { source, .. } = &entry.provenance else {
+            unreachable!(
+                "VirtualCheckout entries only ever carry Provenance::Overlay \
              (see desired::tree::{{collect_own_entries,walk_overlay_tree}})"
-        );
-    };
+            );
+        };
 
-    let (repo, managed_path) = git::discover_source(source)?;
+        let (repo, managed_path) = git::discover_source(source)?;
+        state::verify(entry, &record)?;
+        let scope = entry.intent.checkout_scope();
+        git::ensure_supported_staged(&repo, &managed_path, &scope)?;
+        let file_changes = git::staged_changes(&repo, &managed_path, &scope)?;
+        if file_changes.is_empty() {
+            continue;
+        }
+        let base = git::base_tree(&repo, Some(&record.base_oid))?;
+        let head = git::base_tree(&repo, None)?;
+        anyhow::ensure!(
+            git::scoped_subtree(&repo, &base, &managed_path, &scope)?.id()
+                == git::scoped_subtree(&repo, &head, &managed_path, &scope)?.id(),
+            "checkout '{}' is behind its source; sync before committing",
+            entry.target.display()
+        );
+        drop(base);
+        drop(head);
+        if let Some(existing) = &repository {
+            let existing: &git2::Repository = existing;
+            anyhow::ensure!(
+                existing.path() == repo.path(),
+                "checkout units belong to different source repositories"
+            );
+        } else {
+            repository = Some(repo);
+        }
+        paths.extend(
+            file_changes
+                .iter()
+                .map(|change| managed_path.join(&change.path)),
+        );
+        changes.extend(file_changes);
+        records.push((entry.target.clone(), record));
+    }
+    let Some(repo) = repository else {
+        return Ok((CommitOutcome::NothingToCommit, Vec::new()));
+    };
     let message = opts
         .message
         .clone()
-        .unwrap_or_else(|| default_message(&file_changes));
-    let oid = git::commit_changes(&repo, &managed_path, &entry.target, &file_changes, &message)?;
+        .unwrap_or_else(|| default_message(&changes));
+    let oid = git::commit_staged(&repo, &paths, &message)?;
 
-    record.base_oid = oid.to_string();
-    record.last_commit_at = Some(crate::materialize::virtual_checkout::now());
+    for (_, record) in &mut records {
+        record.base_oid = oid.to_string();
+        record.last_commit_at = Some(crate::materialize::virtual_checkout::now());
+    }
 
     Ok((
         CommitOutcome::Committed {
             oid: oid.to_string(),
-            files: file_changes.len(),
+            files: changes.len(),
         },
-        Some((entry.target.clone(), record)),
+        records,
     ))
 }
 
@@ -186,6 +232,7 @@ fn default_message(changes: &[git::FileChange]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::desired::MaterializationIntent;
     use crate::materialize::virtual_checkout::state::VirtualCheckoutRecord;
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
@@ -265,6 +312,7 @@ mod tests {
                 base_oid,
                 created_at: 0,
                 last_commit_at: None,
+                ..Default::default()
             },
         )
         .await
@@ -311,6 +359,10 @@ mod tests {
         materialize_and_record(td.path(), target.path()).await;
 
         fs::write(target.path().join("a.txt"), "edited\n").unwrap();
+        let mut index = repo.index().unwrap();
+        let indexed = index.get_path(std::path::Path::new("a.txt"), 0).unwrap();
+        index.add_frombuffer(&indexed, b"edited\n").unwrap();
+        index.write().unwrap();
 
         let e = entry(target.path().to_path_buf(), td.path().to_path_buf());
         let outcome = commit(
@@ -382,12 +434,19 @@ mod tests {
                 base_oid,
                 created_at: 0,
                 last_commit_at: None,
+                ..Default::default()
             },
         )
         .await
         .unwrap();
 
         fs::write(sub_target.join("a.txt"), "edited\n").unwrap();
+        let mut index = repo.index().unwrap();
+        let indexed = index
+            .get_path(std::path::Path::new("sub/a.txt"), 0)
+            .unwrap();
+        index.add_frombuffer(&indexed, b"edited\n").unwrap();
+        index.write().unwrap();
 
         let e = entry(sub_target.clone(), td.path().join("sub"));
         let outcome = commit(&e, &CommitOptions::default()).await.unwrap();
@@ -456,6 +515,214 @@ mod tests {
             fs::read_to_string(target.path().join("a.txt")).unwrap(),
             "local edit"
         );
+    }
+
+    fn stage_bytes(repo: &git2::Repository, path: &str, bytes: &[u8]) {
+        let mut index = repo.index().unwrap();
+        let indexed = index.get_path(std::path::Path::new(path), 0).unwrap();
+        index.add_frombuffer(&indexed, bytes).unwrap();
+        index.write().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[rstest::rstest]
+    #[case(0o600)]
+    #[case(0o700)]
+    #[tokio::test]
+    async fn committing_private_source_files_preserves_their_access_bits(#[case] mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _xdg = isolate_xdg_state();
+        let source = TempDir::new().unwrap();
+        source.child("secret").write_str("original").unwrap();
+        fs::set_permissions(
+            source.path().join("secret"),
+            fs::Permissions::from_mode(mode),
+        )
+        .unwrap();
+        let repo = init_committed_repo(source.path());
+        let target = TempDir::new().unwrap();
+        materialize_and_record(source.path(), target.path()).await;
+        fs::write(target.path().join("secret"), "staged").unwrap();
+        stage_bytes(&repo, "secret", b"staged");
+        let e = entry(target.path().to_path_buf(), source.path().to_path_buf());
+
+        let outcome = commit(&e, &CommitOptions::default()).await.unwrap();
+
+        assert!(matches!(outcome, CommitOutcome::Committed { .. }));
+        assert_eq!(fs::read(source.path().join("secret")).unwrap(), b"staged");
+        assert_eq!(
+            fs::metadata(source.path().join("secret"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            mode
+        );
+        let record = state::record_for_blocking(target.path()).unwrap().unwrap();
+        assert_eq!(
+            record.base_oid,
+            repo.head().unwrap().target().unwrap().to_string()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn source_chmod_after_staging_is_rejected_without_mutation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _xdg = isolate_xdg_state();
+        let source = TempDir::new().unwrap();
+        source.child("secret").write_str("original").unwrap();
+        fs::set_permissions(
+            source.path().join("secret"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let repo = init_committed_repo(source.path());
+        let target = TempDir::new().unwrap();
+        materialize_and_record(source.path(), target.path()).await;
+        stage_bytes(&repo, "secret", b"staged");
+        fs::write(target.path().join("secret"), "later target edit").unwrap();
+        fs::set_permissions(
+            source.path().join("secret"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let head = repo.head().unwrap().target().unwrap();
+        let index = fs::read(repo.path().join("index")).unwrap();
+        let record = state::record_for_blocking(target.path()).unwrap().unwrap();
+        let e = entry(target.path().to_path_buf(), source.path().to_path_buf());
+
+        let error = commit(&e, &CommitOptions::default()).await.unwrap_err();
+
+        assert!(error.to_string().contains("unstaged edits"));
+        assert_eq!(repo.head().unwrap().target().unwrap(), head);
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+        assert_eq!(fs::read(source.path().join("secret")).unwrap(), b"original");
+        assert_eq!(
+            fs::metadata(source.path().join("secret"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::read(target.path().join("secret")).unwrap(),
+            b"later target edit"
+        );
+        let after = state::record_for_blocking(target.path()).unwrap().unwrap();
+        assert_eq!(after.base_oid, record.base_oid);
+        assert_eq!(after.last_commit_at, record.last_commit_at);
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn source_obstructions_and_commit_failures_preserve_all_checkout_state(
+        #[case] lock_head: bool,
+    ) {
+        let _xdg = isolate_xdg_state();
+        let source = TempDir::new().unwrap();
+        source.child("a").write_str("original a").unwrap();
+        source.child("b").write_str("original b").unwrap();
+        source
+            .child("unrelated")
+            .write_str("unrelated original")
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(source.path().join("a"), fs::Permissions::from_mode(0o600))
+                .unwrap();
+            fs::set_permissions(source.path().join("b"), fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let repo = init_committed_repo(source.path());
+        let target = TempDir::new().unwrap();
+        materialize_and_record(source.path(), target.path()).await;
+        for path in ["a", "b"] {
+            stage_bytes(&repo, path, b"staged");
+            fs::write(target.path().join(path), "later target edit").unwrap();
+        }
+        // Metadata is outside the checkout's commit selection, so this staged
+        // entry proves a failed transaction doesn't reset the whole index.
+        source
+            .child("over.toml")
+            .write_str("unrelated staged")
+            .unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("over.toml")).unwrap();
+        index.write().unwrap();
+        fs::write(source.path().join("unrelated"), "unrelated worktree edit").unwrap();
+        if lock_head {
+            // A ref lock makes libgit2 fail after source writes were applied,
+            // exercising rollback rather than just the preflight guard.
+            let reference = repo.head().unwrap();
+            let lock = repo
+                .path()
+                .join(format!("{}.lock", reference.name().unwrap()));
+            fs::write(lock, "occupied").unwrap();
+        } else {
+            fs::remove_file(source.path().join("b")).unwrap();
+            fs::create_dir(source.path().join("b")).unwrap();
+            fs::write(source.path().join("b/keep"), "obstruction").unwrap();
+        }
+        let head = repo.head().unwrap().target().unwrap();
+        let index = fs::read(repo.path().join("index")).unwrap();
+        let record = state::record_for_blocking(target.path()).unwrap().unwrap();
+        let e = entry(target.path().to_path_buf(), source.path().to_path_buf());
+
+        assert!(commit(&e, &CommitOptions::default()).await.is_err());
+
+        assert_eq!(repo.head().unwrap().target().unwrap(), head);
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+        assert_eq!(fs::read(source.path().join("a")).unwrap(), b"original a");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(source.path().join("a"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            if lock_head {
+                assert_eq!(
+                    fs::metadata(source.path().join("b"))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o700
+                );
+            }
+        }
+        if lock_head {
+            assert_eq!(fs::read(source.path().join("b")).unwrap(), b"original b");
+        } else {
+            assert_eq!(
+                fs::read(source.path().join("b/keep")).unwrap(),
+                b"obstruction"
+            );
+        }
+        for path in ["a", "b"] {
+            assert_eq!(
+                fs::read(target.path().join(path)).unwrap(),
+                b"later target edit"
+            );
+        }
+        assert_eq!(
+            fs::read(source.path().join("unrelated")).unwrap(),
+            b"unrelated worktree edit"
+        );
+        let after = state::record_for_blocking(target.path()).unwrap().unwrap();
+        assert_eq!(after.base_oid, record.base_oid);
+        assert_eq!(after.last_commit_at, record.last_commit_at);
     }
 
     #[test]

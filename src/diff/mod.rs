@@ -38,7 +38,6 @@ use anyhow::{Context as _, Result};
 use crate::actions::partial::{self, BlockState};
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent, Provenance};
 use crate::materialize::virtual_checkout::git as vc_git;
-use crate::materialize::virtual_checkout::state as vc_state;
 use crate::plan::actual;
 use crate::plan::{ActualState, Operation, Plan};
 use crate::status::{self, Status};
@@ -86,6 +85,7 @@ pub enum Change {
 /// re-exposed here since that type is crate-private plumbing).
 #[derive(Debug, Clone)]
 pub struct VirtualCheckoutFileChange {
+    pub staged: bool,
     pub path: std::path::PathBuf,
     pub kind: VirtualCheckoutFileKind,
     /// `Some` for [`VirtualCheckoutFileKind::Modified`] (base content vs.
@@ -103,7 +103,11 @@ pub enum VirtualCheckoutFileKind {
 
 impl fmt::Display for VirtualCheckoutFileChange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let path = self.path.display();
+        let path = format!(
+            "{} ({})",
+            self.path.display(),
+            if self.staged { "staged" } else { "unstaged" }
+        );
         match self.kind {
             VirtualCheckoutFileKind::Added => write!(f, "  {} added: {path}", emojis::CHECKMARK),
             VirtualCheckoutFileKind::Deleted => {
@@ -223,7 +227,7 @@ impl Report {
         for step in plan.steps() {
             let change = if matches!(step.entry.intent, MaterializationIntent::Checkout) {
                 classify_checkout(&step.entry)?
-            } else if matches!(step.entry.intent, MaterializationIntent::VirtualCheckout) {
+            } else if step.entry.intent.is_virtual_checkout() {
                 classify_virtual_checkout(&step.entry)?
             } else {
                 classify_fs(&step.entry, &step.operation)?
@@ -374,12 +378,10 @@ fn classify_virtual_checkout(entry: &DesiredEntry) -> Result<Change> {
         _ => {}
     }
 
-    let file_changes = status::virtual_checkout::file_changes(entry)?;
-    let files = if file_changes.is_empty() {
-        Vec::new()
-    } else {
-        build_virtual_checkout_file_diffs(entry, &file_changes)?
-    };
+    let staged = status::virtual_checkout::staged_changes(entry)?;
+    let unstaged = status::virtual_checkout::unstaged_changes(entry)?;
+    let mut files = build_virtual_checkout_file_diffs(entry, &staged, true)?;
+    files.extend(build_virtual_checkout_file_diffs(entry, &unstaged, false)?);
     Ok(Change::VirtualCheckout { status, files })
 }
 
@@ -389,6 +391,7 @@ fn classify_virtual_checkout(entry: &DesiredEntry) -> Result<Change> {
 fn build_virtual_checkout_file_diffs(
     entry: &DesiredEntry,
     file_changes: &[vc_git::FileChange],
+    staged: bool,
 ) -> Result<Vec<VirtualCheckoutFileChange>> {
     let Provenance::Overlay { source, .. } = &entry.provenance else {
         unreachable!(
@@ -396,8 +399,6 @@ fn build_virtual_checkout_file_diffs(
              (see desired::tree::{{collect_own_entries,walk_overlay_tree}})"
         );
     };
-    let record = vc_state::record_for_blocking(&entry.target)?;
-
     // Only needed for `Modified` files (base blob content); resolved
     // lazily so a checkout with only added/deleted files never has to
     // discover the source repository at all.
@@ -416,15 +417,25 @@ fn build_virtual_checkout_file_diffs(
 
         let diff = if change.kind == vc_git::FileChangeKind::Modified {
             if base_blobs.is_none() {
-                let record = record
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("no recorded virtual checkout association"))?;
                 let (repo, managed_path) = vc_git::discover_source(source)?;
-                let blobs = {
-                    let tree = vc_git::base_tree(&repo, Some(&record.base_oid))?;
-                    let subtree = vc_git::managed_subtree(&repo, &tree, &managed_path)?;
-                    vc_git::tracked_blobs(&subtree)?
-                };
+                let mut blobs = std::collections::BTreeMap::new();
+                if staged {
+                    let tree = vc_git::base_tree(&repo, None)?;
+                    let subtree = vc_git::scoped_subtree(
+                        &repo,
+                        &tree,
+                        &managed_path,
+                        &entry.intent.checkout_scope(),
+                    )?;
+                    blobs = vc_git::tracked_blobs(&subtree)?;
+                } else {
+                    for indexed in repo.index()?.iter() {
+                        let path = std::path::Path::new(std::str::from_utf8(&indexed.path)?);
+                        if let Ok(relative) = path.strip_prefix(&managed_path) {
+                            blobs.insert(relative.to_path_buf(), indexed.id);
+                        }
+                    }
+                }
                 base_blobs = Some((repo, blobs));
             }
             let (repo, blobs) = base_blobs.as_ref().expect("just populated above");
@@ -432,8 +443,17 @@ fn build_virtual_checkout_file_diffs(
                 Some(oid) => {
                     let base_content = vc_git::read_blob(repo, *oid)?;
                     let on_disk = entry.target.join(&change.path);
-                    let actual = fs::read(&on_disk)
-                        .with_context(|| format!("failed to read {}", on_disk.display()))?;
+                    let actual = if staged {
+                        vc_git::read_blob(
+                            repo,
+                            change
+                                .local_oid
+                                .context("staged modification has no blob")?,
+                        )?
+                    } else {
+                        fs::read(&on_disk)
+                            .with_context(|| format!("failed to read {}", on_disk.display()))?
+                    };
                     Some(
                         match (String::from_utf8(base_content), String::from_utf8(actual)) {
                             (Ok(old), Ok(new)) => ContentDiff::from_texts(&old, &new),
@@ -448,6 +468,7 @@ fn build_virtual_checkout_file_diffs(
         };
 
         result.push(VirtualCheckoutFileChange {
+            staged,
             path: change.path.clone(),
             kind,
             diff,
@@ -1156,6 +1177,7 @@ mod tests {
                 base_oid,
                 created_at: 0,
                 last_commit_at: None,
+                ..Default::default()
             },
         )
         .await

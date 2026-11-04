@@ -2675,6 +2675,16 @@ fn virtual_checkout_commit_records_a_commit_in_the_source_repository() -> TestRe
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
+        .args(["add", "--overlay", "dotfiles", "--root"])
+        .arg(root.path())
+        .arg(root.path().join("file.txt"))
+        .env("XDG_STATE_HOME", xdg_state_home.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&canonical_tmp)
         .args([
             "commit",
             "dotfiles",

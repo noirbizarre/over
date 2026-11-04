@@ -74,6 +74,10 @@ pub struct Overlay {
 
     pub target: String,
 
+    /// Directory prefixes relocated independently of the base target.
+    #[serde(default)]
+    pub map: std::collections::BTreeMap<String, super::mapping::DirectoryMapping>,
+
     pub uses: Option<Vec<String>>,
 
     #[serde(
@@ -183,21 +187,14 @@ impl Overlay {
     }
 
     pub fn resolve_target(&self, ctx: &exec::Context) -> Result<PathBuf> {
-        let path = PathBuf::from(
-            exec::templates::render_string(self.target.as_str(), ctx).with_context(|| {
-                format!(
-                    "failed to render target template '{}' for overlay '{}'",
-                    self.target, self.name
-                )
-            })?,
-        );
+        super::mapping::render_target(&self.target, ctx)
+    }
 
-        let path_str = path.to_string_lossy();
-        Ok(match path_str.as_ref() {
-            p if !p.starts_with("~") => path,
-            "~" => ctx.root.clone(),
-            _ => ctx.root.join(path.strip_prefix("~").unwrap_or(&path)),
-        })
+    pub fn resolve_mappings(
+        &self,
+        ctx: &exec::Context,
+    ) -> Result<super::mapping::ResolvedMappings> {
+        super::mapping::ResolvedMappings::new(self, ctx)
     }
 
     /// Resolve the effective materialization for a directory at
@@ -327,12 +324,17 @@ impl Overlay {
             // built from this overlay's own DesiredTree (no `uses`
             // recursion here: that's handled above, one overlay at a time,
             // so each dependency keeps its own banner/cycle-check).
-            actions::git::clone_repositories(ctx.clone(), self, &target).await?;
-
             let ctx_with_target =
                 ctx.with_resolved_overlay(self.name.clone(), target.to_string_lossy().to_string());
             let desired = DesiredTree::build_own(&ctx_with_target, self)?;
-            let plan = Plan::build(&desired)?;
+            let mut plan = Plan::build(&desired)?;
+            // Classify every ownership scope before cloning can mutate a destination.
+            actions::git::clone_repositories(ctx.clone(), self, &target).await?;
+            if self.git.is_some() {
+                // Cloning may already perform a legacy-checkout migration;
+                // never execute the stale pre-clone destructive operation.
+                plan = Plan::build(&desired)?;
+            }
             if ctx.verbose || ctx.dry_run {
                 ui::info(format!("{plan}")).ok();
             }
@@ -348,7 +350,7 @@ impl Overlay {
             // it only ever touches `over`'s own marker block, never the
             // repo's tracked state.
             if !ctx.dry_run {
-                let managed = git_exclude::managed_targets(&desired);
+                let managed = git_exclude::managed_targets(&desired)?;
                 if !managed.is_empty() {
                     git_exclude::reconcile(&managed).with_context(|| {
                         format!(
@@ -378,15 +380,13 @@ impl Overlay {
     }
 
     pub async fn add_file(&self, ctx: &Ctx, file: &PathBuf) -> Result<()> {
-        let _ = self.resolve_target(ctx)?;
-        actions::fs::add_file(ctx.clone(), self, file).await?;
-        Ok(())
+        self.add_files(ctx, std::slice::from_ref(file)).await
     }
 
     pub async fn add_files(&self, ctx: &Ctx, files: &[PathBuf]) -> Result<()> {
-        let _ = self.resolve_target(ctx)?;
-        for file in files {
-            actions::fs::add_path(ctx.clone(), self, file).await?;
+        let remaining = crate::stage::add(ctx, self, files).await?;
+        for file in remaining {
+            actions::fs::add_path(ctx.clone(), self, &file).await?;
         }
         Ok(())
     }

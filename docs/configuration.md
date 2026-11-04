@@ -68,6 +68,65 @@ single default overlay would leave those sections inconsistently scoped
 with the Git-exclude section. `doctor`'s `NAME` argument only narrows which
 overlay's `.git/info/exclude` drift gets checked; there is no `--all` flag.
 
+## Directory Target Mappings
+
+An overlay can redirect selected directories while keeping its other files
+under the usual `target`:
+
+```yaml
+target: ~/Workspace/Client
+map:
+  etc:
+    target: /etc/client
+  config:
+    target: ~/.config/client
+```
+
+For an overlay named `workspace/client`:
+
+| Overlay path | Applied path |
+| --- | --- |
+| `etc/config.toml` | `/etc/client/config.toml` |
+| `config/settings.json` | `~/.config/client/settings.json` |
+| `main/app` | `~/Workspace/Client/main/app` |
+
+The mapped source prefixes are replaced, so `~/Workspace/Client/etc` and
+`~/Workspace/Client/config` are not created. [`over add`](usage/add.md) uses
+the inverse routing: `/etc/client/other.yaml` belongs to
+`workspace/client/etc/other.yaml`.
+
+- Keys name literal relative directories, without `.` or `..` components.
+  Nested keys such as `config` and `config/editor` are rejected. A source
+  directory may be absent until files are added.
+- Absolute destinations remain absolute. `~` means the execution-context
+  root (`--root`, otherwise the home directory). Relative destinations are
+  resolved under the overlay's resolved `target`. Mapping targets support
+  the same templates as the base target.
+- Mapping entries cascade by source key; a nearer descriptor overrides the
+  same key and preserves other inherited mappings.
+- Mapped destinations cannot overlap one another, contain the base target,
+  overlap the overlay source, or collide with residual managed content.
+  A destination below the base target is supported.
+- Rules, excludes, and permissions keep their original overlay-relative
+  names. Each mapped root is a new materialization boundary, resolved using
+  its own matching rule or the default strategy.
+- A mapped root can be a whole-directory symlink. A mapping inside another
+  whole-directory symlink is rejected because that symlink owns its entire
+  subtree.
+- `.link.*` placement and declared `git` paths use the same routing.
+  `.partial.*` files retain their explicitly declared destinations.
+
+With `defaults.materialization: checkout`, the residual overlay and each
+mapped directory become separate virtual checkout units. Mapped directories
+are excluded from the residual checkout; status, sync, commit, and unapply
+respect these boundaries even when a mapped destination sits below the
+base target. See [ADR-025](adr/025-directory-mappings-and-checkout-staging.md).
+
+Before adding or changing mappings on an existing virtual checkout, commit
+or resolve its changes and unapply it with the **old configuration**. Then
+edit the mapping and apply again. An existing checkout association is not
+silently reused with different ownership boundaries.
+
 ## Materialization Rules
 
 By default, every file in an overlay is symlinked individually and every

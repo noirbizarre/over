@@ -101,7 +101,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     // is "managed" by `over` any more once unapply has run over it. Skipped
     // under `--dry-run` (nothing was actually removed to unexclude).
     if !ctx.dry_run {
-        let managed = git_exclude::managed_targets(&desired);
+        let managed = git_exclude::managed_targets(&desired)?;
         if !managed.is_empty() {
             git_exclude::unreconcile(&managed).with_context(|| {
                 format!(

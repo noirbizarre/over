@@ -2,6 +2,9 @@
 
 Show overlay status for the current git repository.
 
+Repository paths honor the overlay's directory mappings. Source directories
+mapped elsewhere are not listed as unapplied in the current repository.
+
 ```text
 Usage: over git status [OPTIONS]
 

@@ -101,16 +101,13 @@ pub fn repo_relative_path(overlay: &Overlay, root: &Path, repo_workdir: &Path) -
         .repository(Repository::new(PathBuf::new()))
         .overlay(overlay.clone())
         .build();
-    let target = overlay.resolve_target(&ctx)?;
-
-    repo_workdir
-        .strip_prefix(&target)
-        .map(|p| p.to_path_buf())
-        .map_err(|_| {
+    overlay
+        .resolve_mappings(&ctx)?
+        .logical_path_for(repo_workdir)
+        .map_err(|error| {
             anyhow!(
-                "repository {} is not under overlay target {}",
-                repo_workdir.display(),
-                target.display(),
+                "repository {} is not under overlay target or mappings: {error}",
+                repo_workdir.display()
             )
         })
 }

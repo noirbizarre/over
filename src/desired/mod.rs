@@ -55,5 +55,5 @@
 mod entry;
 mod tree;
 
-pub use entry::{DesiredEntry, EntryKind, MaterializationIntent, Provenance};
+pub use entry::{CheckoutScope, DesiredEntry, EntryKind, MaterializationIntent, Provenance};
 pub use tree::DesiredTree;

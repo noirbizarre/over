@@ -30,7 +30,16 @@ pub fn expand_tilde(s: &str) -> PathBuf {
 
 /// Resolve a list of input strings (which may be globs, tildes, relative paths,
 /// directories, or plain files) into a flat list of absolute paths.
+#[cfg(test)]
 pub fn resolve_inputs(inputs: &[String]) -> Result<Vec<PathBuf>> {
+    resolve_inputs_with_missing(inputs, false)
+}
+
+/// Checkout staging accepts missing literal paths to record tracked deletions.
+pub(crate) fn resolve_inputs_with_missing(
+    inputs: &[String],
+    allow_missing: bool,
+) -> Result<Vec<PathBuf>> {
     let cwd = current_dir()?;
     let mut resolved = Vec::new();
 
@@ -62,7 +71,7 @@ pub fn resolve_inputs(inputs: &[String]) -> Result<Vec<PathBuf>> {
             } else {
                 expanded
             };
-            if !abs.exists() {
+            if !allow_missing && !abs.exists() {
                 bail!("{} does not exist", abs.display());
             }
             resolved.push(abs);

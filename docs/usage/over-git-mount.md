@@ -1,5 +1,9 @@
 # `over git mount`
 
+The repository path is reverse-routed through configured directory
+mappings before being recorded in the overlay's logical namespace. Its
+destination can be outside the overlay's base target.
+
 Mount the current git repository to an overlay: record the association in
 the repository's `.git/config` (`over.overlay`), so later `over git add`/
 `over git status` calls in this repository know which overlay to use.

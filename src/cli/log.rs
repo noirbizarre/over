@@ -6,7 +6,7 @@ use dirs::home_dir;
 use git2::{Commit, DiffOptions, Repository as GitRepository};
 
 use crate::cli::CLI;
-use crate::desired::{DesiredTree, MaterializationIntent, Provenance};
+use crate::desired::{CheckoutScope, DesiredTree, Provenance};
 use crate::exec::Context;
 use crate::materialize::virtual_checkout::git as vc_git;
 use crate::overlays::{Overlay, Repository};
@@ -56,7 +56,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     ))
     .ok();
 
-    for entry in log_entries(&git_repo, &managed_path, args.limit)? {
+    for entry in log_scoped_entries(&git_repo, &managed_path, args.limit)? {
         ui::info(format!("  {entry}")).ok();
     }
 
@@ -66,11 +66,17 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 /// What `over log` scopes its history to: either a specific overlay's
 /// virtual checkout (source repository + the managed path within it), or,
 /// when no overlay is named/guessable, the whole source repository.
+#[derive(Clone)]
+struct HistoryScope {
+    managed: PathBuf,
+    scope: CheckoutScope,
+}
+
 fn resolve_scope(
     repo: &Repository,
     root: &Path,
     name: Option<&str>,
-) -> Result<(GitRepository, PathBuf, String)> {
+) -> Result<(GitRepository, Vec<HistoryScope>, String)> {
     if let Some(name) = name {
         let overlay = repo.get(name)?;
         return checkout_scope(repo, root, &overlay)
@@ -82,36 +88,69 @@ fn resolve_scope(
     // (by longest/most-specific resolved target) whose virtual checkout
     // contains the current directory.
     let cwd = std::env::current_dir().context("failed to determine current directory")?;
-    let mut best: Option<(PathBuf, Overlay)> = None;
+    let mut best: Option<(usize, GitRepository, HistoryScope, String)> = None;
     for overlay in repo.overlays()? {
         let ctx = Context::builder()
             .root(root.to_path_buf())
             .repository(repo.clone())
             .overlay(overlay.clone())
             .build();
-        let Ok(target) = overlay.resolve_target(&ctx) else {
-            continue;
+        let desired = match DesiredTree::build_own(&ctx, &overlay) {
+            Ok(desired) => desired,
+            Err(error) => {
+                // Inference must not make unrelated machine-specific configs mandatory.
+                tracing::debug!(overlay = %overlay.name, %error, "skipping unresolved history candidate");
+                continue;
+            }
         };
-        if cwd.starts_with(&target)
-            && best.as_ref().is_none_or(|(best_target, _)| {
-                target.components().count() > best_target.components().count()
-            })
+        for entry in desired
+            .entries()
+            .iter()
+            .filter(|entry| entry.intent.is_virtual_checkout())
         {
-            best = Some((target, overlay));
+            let specificity = entry.target.components().count();
+            if crate::stage::owns(entry, &cwd)
+                && best.as_ref().is_none_or(|(depth, ..)| specificity > *depth)
+            {
+                let Provenance::Overlay { source, .. } = &entry.provenance else {
+                    unreachable!()
+                };
+                let (git_repo, managed) = match vc_git::discover_source(source) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        tracing::debug!(overlay = %overlay.name, %error, "skipping unresolved history source");
+                        continue;
+                    }
+                };
+                best = Some((
+                    specificity,
+                    git_repo,
+                    HistoryScope {
+                        managed,
+                        scope: entry.intent.checkout_scope(),
+                    },
+                    overlay.name.clone(),
+                ));
+            }
         }
     }
 
-    if let Some((_, overlay)) = best
-        && let Ok((git_repo, managed_path)) = checkout_scope(repo, root, &overlay)
-    {
-        return Ok((git_repo, managed_path, overlay.name.clone()));
+    if let Some((_, git_repo, scope, name)) = best {
+        return Ok((git_repo, vec![scope], name));
     }
 
     // Nothing matched (or matched but isn't checkout-materialized): fall
     // back to the whole repository's own history.
     let git_repo = GitRepository::discover(&repo.root)
         .with_context(|| format!("'{}' is not inside a git repository", repo.root.display()))?;
-    Ok((git_repo, PathBuf::new(), repo.root.display().to_string()))
+    Ok((
+        git_repo,
+        vec![HistoryScope {
+            managed: PathBuf::new(),
+            scope: CheckoutScope::default(),
+        }],
+        repo.root.display().to_string(),
+    ))
 }
 
 /// Resolve `overlay`'s virtual checkout (source repository + managed
@@ -121,7 +160,7 @@ fn checkout_scope(
     repo: &Repository,
     root: &Path,
     overlay: &Overlay,
-) -> Result<(GitRepository, PathBuf)> {
+) -> Result<(GitRepository, Vec<HistoryScope>)> {
     let ctx = Context::builder()
         .root(root.to_path_buf())
         .repository(repo.clone())
@@ -131,18 +170,37 @@ fn checkout_scope(
     let ctx = ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
     let desired = DesiredTree::build_own(&ctx, overlay)?;
 
-    let entry = desired
+    let mut repository: Option<GitRepository> = None;
+    let mut scopes = Vec::new();
+    for entry in desired
         .entries()
         .iter()
-        .find(|e| matches!(e.intent, MaterializationIntent::VirtualCheckout))
-        .ok_or_else(|| anyhow!("no `checkout` materialization rule applies to this overlay"))?;
-    let Provenance::Overlay { source, .. } = &entry.provenance else {
-        unreachable!(
-            "VirtualCheckout entries only ever carry Provenance::Overlay \
+        .filter(|entry| entry.intent.is_virtual_checkout())
+    {
+        let Provenance::Overlay { source, .. } = &entry.provenance else {
+            unreachable!(
+                "VirtualCheckout entries only ever carry Provenance::Overlay \
              (see desired::tree::{{collect_own_entries,walk_overlay_tree}})"
-        );
-    };
-    vc_git::discover_source(source)
+            );
+        };
+        let (repo, managed) = vc_git::discover_source(source)?;
+        if let Some(existing) = &repository {
+            anyhow::ensure!(
+                existing.path() == repo.path(),
+                "checkout scopes belong to different repositories"
+            );
+        } else {
+            repository = Some(repo);
+        }
+        scopes.push(HistoryScope {
+            managed,
+            scope: entry.intent.checkout_scope(),
+        });
+    }
+    Ok((
+        repository.context("no `checkout` materialization rule applies to this overlay")?,
+        scopes,
+    ))
 }
 
 /// One rendered commit line.
@@ -196,7 +254,23 @@ impl LogEntry {
 /// `managed_path` when non-empty (a commit is included if its tree diff
 /// against its first parent touches anything under that path — root
 /// commits are compared against an empty tree). Capped at `limit`.
+#[cfg(test)]
 fn log_entries(repo: &GitRepository, managed_path: &Path, limit: usize) -> Result<Vec<LogEntry>> {
+    log_scoped_entries(
+        repo,
+        &[HistoryScope {
+            managed: managed_path.to_path_buf(),
+            scope: CheckoutScope::default(),
+        }],
+        limit,
+    )
+}
+
+fn log_scoped_entries(
+    repo: &GitRepository,
+    scopes: &[HistoryScope],
+    limit: usize,
+) -> Result<Vec<LogEntry>> {
     let mut revwalk = repo.revwalk()?;
     revwalk.push_head()?;
     revwalk.set_sorting(git2::Sort::TIME)?;
@@ -205,9 +279,11 @@ fn log_entries(repo: &GitRepository, managed_path: &Path, limit: usize) -> Resul
     for oid in revwalk {
         let oid = oid?;
         let commit = repo.find_commit(oid)?;
-        if !managed_path.as_os_str().is_empty()
-            && !commit_touches_path(repo, &commit, managed_path)?
-        {
+        let mut touches = false;
+        for scope in scopes {
+            touches |= commit_touches_scope(repo, &commit, scope)?;
+        }
+        if !touches {
             continue;
         }
         entries.push(LogEntry::from_commit(&commit));
@@ -221,16 +297,30 @@ fn log_entries(repo: &GitRepository, managed_path: &Path, limit: usize) -> Resul
 /// Whether `commit` changed anything under `path`, compared against its
 /// first parent (or an empty tree for a root commit) — mirrors `git log --
 /// <path>`'s own notion of "touches".
-fn commit_touches_path(repo: &GitRepository, commit: &Commit, path: &Path) -> Result<bool> {
+fn commit_touches_scope(
+    repo: &GitRepository,
+    commit: &Commit,
+    scope: &HistoryScope,
+) -> Result<bool> {
     let tree = commit.tree()?;
     let parent_tree = match commit.parent(0) {
         Ok(parent) => Some(parent.tree()?),
         Err(_) => None,
     };
     let mut opts = DiffOptions::new();
-    opts.pathspec(path.to_string_lossy().as_ref());
+    if !scope.managed.as_os_str().is_empty() {
+        opts.pathspec(scope.managed.to_string_lossy().as_ref());
+    }
     let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
-    Ok(diff.deltas().len() > 0)
+    Ok(diff.deltas().any(|delta| {
+        [delta.old_file().path(), delta.new_file().path()]
+            .into_iter()
+            .flatten()
+            .any(|path| {
+                path.strip_prefix(&scope.managed)
+                    .is_ok_and(|relative| scope.scope.owns_source(relative))
+            })
+    }))
 }
 
 /// Minimal, dependency-free UTC calendar formatting for a
@@ -338,6 +428,38 @@ mod tests {
         cfg.set_str("user.email", "test@test.com").unwrap();
         drop(cfg);
         repo
+    }
+
+    #[rstest]
+    #[case("target='~'\n[map.'../invalid']\ntarget='elsewhere'", "mapping source")]
+    #[case("target='{{ missing_variable('", "render")]
+    fn unnamed_history_skips_invalid_candidates_but_named_history_reports_them(
+        #[case] config: &str,
+        #[case] error: &str,
+        #[values(false, true)] infer: bool,
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let (git_repo, _) = setup_nested_checkout_overlay(tmp.path());
+        tmp.child("invalid/over.toml").write_str(config).unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        // Matching the real cwd avoids process-global cwd changes while testing inference.
+        let root = if infer {
+            std::env::current_dir().unwrap()
+        } else {
+            tmp.path().join("unrelated-target")
+        };
+        let (resolved, scopes, label) = resolve_scope(&repo, &root, None).unwrap();
+        assert_eq!(resolved.path(), git_repo.path());
+        assert_eq!(scopes.len(), 1);
+        if infer {
+            assert_eq!(label, "dotfiles");
+            assert_eq!(scopes[0].managed, Path::new("dotfiles"));
+        } else {
+            assert_eq!(label, tmp.path().display().to_string());
+            assert!(scopes[0].managed.as_os_str().is_empty());
+        }
+        let explicit_error = resolve_scope(&repo, &root, Some("invalid")).err().unwrap();
+        assert!(format!("{explicit_error:#}").contains(error));
     }
 
     #[rstest]

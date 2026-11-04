@@ -2,6 +2,10 @@
 
 **Status:** accepted
 
+The ownership and automatic-recording decisions below are amended by
+[ADR-025](025-directory-mappings-and-checkout-staging.md): mappings partition
+checkouts, and `over add` stages snapshots before a staged-only `over commit`.
+
 ## Context
 
 Issue #141 asks for a second, distinct materialization mode: an overlay's

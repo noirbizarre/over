@@ -1,0 +1,414 @@
+//! Bidirectional directory routing, independent of materialization strategy.
+
+use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
+
+use anyhow::{Context as _, Result, bail, ensure};
+use serde::{Deserialize, Serialize};
+
+use crate::exec;
+
+use super::{MaterializationKind, Overlay};
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryMapping {
+    pub target: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedMappings {
+    pub base: PathBuf,
+    pub directories: BTreeMap<PathBuf, PathBuf>,
+}
+
+/// Normalize lexically: resolving symlinks would turn managed target links
+/// into source paths and make reverse routing impossible.
+pub(crate) fn absolute(path: &Path) -> Result<PathBuf> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(part),
+        }
+    }
+    Ok(normalized)
+}
+
+/// Resolve existing ancestors even when the destination has not been created.
+/// Validation uses physical identity; routing must retain the lexical spelling.
+pub(crate) fn physical(path: &Path) -> Result<PathBuf> {
+    let mut ancestor = absolute(path)?;
+    let mut suffix = Vec::new();
+    loop {
+        match ancestor.symlink_metadata() {
+            Ok(_) => {
+                let mut resolved = ancestor.canonicalize().with_context(|| {
+                    format!("failed to resolve physical path '{}'", ancestor.display())
+                })?;
+                for part in suffix.iter().rev() {
+                    resolved.push(part);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                suffix.push(
+                    ancestor
+                        .file_name()
+                        .context("path has no existing ancestor")?
+                        .to_os_string(),
+                );
+                ancestor.pop();
+            }
+            Err(error) => return Err(error).context("failed to inspect physical path"),
+        }
+    }
+}
+
+/// An already-deployed managed symlink owns its link location, not its source.
+pub(crate) fn physical_destination(target: &Path, source: &Path) -> Result<PathBuf> {
+    if target.is_symlink() {
+        let resolved = physical(target)?;
+        if resolved == physical(source)? {
+            let target = absolute(target)?;
+            return Ok(physical(target.parent().context("target has no parent")?)?
+                .join(target.file_name().context("target has no filename")?));
+        }
+        return Ok(resolved);
+    }
+    physical(target)
+}
+
+pub(crate) fn render_target(raw: &str, ctx: &exec::Context) -> Result<PathBuf> {
+    let rendered = exec::templates::render_string(raw, ctx)
+        .with_context(|| format!("failed to render target template '{raw}'"))?;
+    Ok(if rendered == "~" {
+        ctx.root.clone()
+    } else if let Some(tail) = rendered.strip_prefix("~/") {
+        ctx.root.join(tail)
+    } else {
+        PathBuf::from(rendered)
+    })
+}
+
+/// Context-free checks also used by lint, which must not render machine-specific
+/// templates merely to diagnose an invalid source namespace.
+pub(crate) fn validate_sources(overlay: &Overlay) -> Result<()> {
+    let mut sources: Vec<PathBuf> = Vec::new();
+    for (key, config) in &overlay.map {
+        let source = PathBuf::from(key);
+        ensure!(
+            !source.as_os_str().is_empty()
+                && source
+                    .components()
+                    .all(|part| matches!(part, Component::Normal(_)))
+                && !key.split('/').any(|part| part == "." || part.is_empty()),
+            "mapping source '{key}' must be a relative directory without '.' or '..'"
+        );
+        match overlay.root.join(&source).symlink_metadata() {
+            Ok(metadata) => ensure!(
+                metadata.is_dir(),
+                "mapping source '{key}' must be a directory"
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to inspect mapping '{key}'"));
+            }
+        }
+        ensure!(
+            !config.target.trim().is_empty(),
+            "mapping '{key}' has an empty target"
+        );
+        for other in &sources {
+            ensure!(
+                !source.starts_with(other) && !other.starts_with(&source),
+                "nested mapping sources '{}' and '{key}' are not supported",
+                other.display()
+            );
+        }
+        // A symlink owns its complete subtree; it cannot leave a hole for a map.
+        let mut ancestor = source.parent();
+        while let Some(path) = ancestor {
+            // The overlay root is a scaffold, not a directory symlink unit.
+            if path.as_os_str().is_empty() {
+                break;
+            }
+            ensure!(
+                overlay.materialization_for(path) != MaterializationKind::SymlinkDirectory,
+                "mapping '{key}' is inside whole-directory symlink '{}'",
+                path.display()
+            );
+            ancestor = path.parent();
+        }
+        sources.push(source);
+    }
+    Ok(())
+}
+
+impl ResolvedMappings {
+    pub fn new(overlay: &Overlay, ctx: &exec::Context) -> Result<Self> {
+        validate_sources(overlay)?;
+        let base = absolute(&overlay.resolve_target(ctx)?)?;
+        let mut directories: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
+        let mut physical_targets: Vec<PathBuf> = Vec::new();
+        for (key, config) in &overlay.map {
+            let source = PathBuf::from(key);
+            let rendered = render_target(&config.target, ctx)?;
+            let target = absolute(&base.join(rendered))?;
+            let physical_target = physical_destination(&target, &overlay.root.join(&source))?;
+            let physical_base = physical(&base)?;
+            ensure!(
+                !base.starts_with(&target) && !physical_base.starts_with(&physical_target),
+                "mapping '{key}' target '{}' contains or equals the overlay target",
+                target.display()
+            );
+            let root = absolute(&overlay.root)?;
+            let physical_root = physical(&root)?;
+            ensure!(
+                !target.starts_with(&root)
+                    && !root.starts_with(&target)
+                    && !physical_target.starts_with(&physical_root)
+                    && !physical_root.starts_with(&physical_target),
+                "mapping '{key}' target overlaps the overlay source"
+            );
+            for other_target in directories.values() {
+                ensure!(
+                    !target.starts_with(other_target) && !other_target.starts_with(&target),
+                    "mapping targets '{}' and '{}' overlap",
+                    other_target.display(),
+                    target.display()
+                );
+            }
+            for other in &physical_targets {
+                ensure!(
+                    !physical_target.starts_with(other) && !other.starts_with(&physical_target),
+                    "mapping targets physically overlap at '{}' and '{}'",
+                    other.display(),
+                    physical_target.display()
+                );
+            }
+            physical_targets.push(physical_target);
+            directories.insert(source, target);
+        }
+        Ok(Self { base, directories })
+    }
+
+    pub fn target_for(&self, logical: &Path) -> PathBuf {
+        for (source, target) in &self.directories {
+            if let Ok(tail) = logical.strip_prefix(source) {
+                // A trailing separator makes symlink creation treat a missing
+                // destination as an existing directory rather than a link name.
+                return if tail.as_os_str().is_empty() {
+                    target.clone()
+                } else {
+                    target.join(tail)
+                };
+            }
+        }
+        self.base.join(logical)
+    }
+
+    pub fn logical_path_for(&self, target: &Path) -> Result<PathBuf> {
+        let target = absolute(target)?;
+        for (source, destination) in &self.directories {
+            if let Ok(tail) = target.strip_prefix(destination) {
+                return Ok(source.join(tail));
+            }
+        }
+        if let Ok(logical) = target.strip_prefix(&self.base)
+            && self.target_for(logical) == target
+        {
+            return Ok(logical.to_path_buf());
+        }
+        bail!(
+            "{} is not included in {} or its mapped targets",
+            target.display(),
+            self.base.display()
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exec::Context;
+    use crate::overlays::Repository;
+    use assert_fs::prelude::*;
+    use rstest::rstest;
+
+    #[test]
+    fn mappings_replace_prefixes_and_reverse_without_shadowed_fallbacks() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        temp.child("ov/over.yaml").write_str("target: ~/Workspace/Client\nmap:\n  etc:\n    target: ~/system/client\n  config:\n    target: settings\n").unwrap();
+        let repo = Repository::new(temp.path().to_path_buf());
+        let overlay = repo.get("ov").unwrap();
+        let ctx = Context::builder()
+            .root(temp.path().join("home"))
+            .repository(repo)
+            .build();
+        let routing = overlay.resolve_mappings(&ctx).unwrap();
+        for logical in ["etc/config.toml", "config/settings.json", "main/app"] {
+            let target = routing.target_for(Path::new(logical));
+            assert_eq!(
+                routing.logical_path_for(&target).unwrap(),
+                Path::new(logical)
+            );
+        }
+        assert_eq!(
+            routing.target_for(Path::new("config/a")),
+            temp.path().join("home/Workspace/Client/settings/a")
+        );
+        assert_eq!(
+            routing.target_for(Path::new("etc/a")),
+            temp.path().join("home/system/client/a")
+        );
+        assert!(
+            routing
+                .logical_path_for(&routing.base.join("config/a"))
+                .is_err()
+        );
+        assert!(
+            routing
+                .logical_path_for(&routing.base.join("etc/a"))
+                .is_err()
+        );
+    }
+
+    #[rstest]
+    #[case(
+        "[map.config]\ntarget='/tmp/client'\n[map.'config/editor']\ntarget='/tmp/editor'",
+        "nested mapping"
+    )]
+    #[case("[map.'../config']\ntarget='/tmp/client'", "relative directory")]
+    #[case(
+        "[map.config]\ntarget='/tmp/client'\n[map.etc]\ntarget='/tmp/client/etc'",
+        "targets"
+    )]
+    fn invalid_mapping_namespaces_are_rejected(#[case] mapping: &str, #[case] error: &str) {
+        let temp = assert_fs::TempDir::new().unwrap();
+        temp.child("ov/over.toml")
+            .write_str(&format!("target='~/target'\n{mapping}"))
+            .unwrap();
+        let repo = Repository::new(temp.path().to_path_buf());
+        let overlay = repo.get("ov").unwrap();
+        let ctx = Context::builder().root(temp.path().join("home")).build();
+        assert!(
+            overlay
+                .resolve_mappings(&ctx)
+                .unwrap_err()
+                .to_string()
+                .contains(error)
+        );
+    }
+
+    #[test]
+    fn nearer_mapping_targets_override_inherited_keys_and_preserve_siblings() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        temp.child("over.toml")
+            .write_str("[map.config]\ntarget='settings'\n[map.etc]\ntarget='system'")
+            .unwrap();
+        temp.child("ov/over.yaml")
+            .write_str("map:\n  config:\n    target: custom\n")
+            .unwrap();
+        let overlay = Repository::new(temp.path().to_path_buf())
+            .get("ov")
+            .unwrap();
+        assert_eq!(overlay.map["config"].target, "custom");
+        assert_eq!(overlay.map["etc"].target, "system");
+    }
+
+    #[cfg(unix)]
+    #[rstest]
+    #[case("real/new", "alias/new")]
+    #[case("real/new", "alias/new/nested")]
+    fn absent_mapped_leaves_cannot_overlap_through_an_ancestor_alias(
+        #[case] first: &str,
+        #[case] second: &str,
+    ) {
+        let temp = assert_fs::TempDir::new().unwrap();
+        temp.child("real").create_dir_all().unwrap();
+        std::os::unix::fs::symlink(temp.path().join("real"), temp.path().join("alias")).unwrap();
+        temp.child("ov/over.toml")
+            .write_str(&format!(
+                "target='~/base'\n[map.config]\ntarget='{}'\n[map.etc]\ntarget='{}'",
+                temp.path().join(first).display(),
+                temp.path().join(second).display()
+            ))
+            .unwrap();
+        let overlay = Repository::new(temp.path().to_path_buf())
+            .get("ov")
+            .unwrap();
+        let ctx = Context::builder().root(temp.path().join("home")).build();
+        assert!(
+            overlay
+                .resolve_mappings(&ctx)
+                .unwrap_err()
+                .to_string()
+                .contains("physically overlap")
+        );
+        assert!(!temp.path().join("real/new").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absent_mapped_leaves_cannot_enter_the_source_through_an_alias() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        temp.child("ov").create_dir_all().unwrap();
+        std::os::unix::fs::symlink(temp.path().join("ov"), temp.path().join("alias")).unwrap();
+        temp.child("ov/over.toml")
+            .write_str(&format!(
+                "target='~/base'\n[map.config]\ntarget='{}'",
+                temp.path().join("alias/new").display()
+            ))
+            .unwrap();
+        let overlay = Repository::new(temp.path().to_path_buf())
+            .get("ov")
+            .unwrap();
+        let ctx = Context::builder().root(temp.path().join("home")).build();
+        assert!(
+            overlay
+                .resolve_mappings(&ctx)
+                .unwrap_err()
+                .to_string()
+                .contains("overlaps the overlay source")
+        );
+        assert!(!temp.path().join("ov/new").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn physical_validation_preserves_lexical_routing_and_deployed_directory_links() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        temp.child("real").create_dir_all().unwrap();
+        temp.child("ov/config/file").write_str("source").unwrap();
+        std::os::unix::fs::symlink(temp.path().join("real"), temp.path().join("alias")).unwrap();
+        temp.child("ov/over.toml")
+            .write_str(&format!(
+                "target='~/base'\nlink_dirs=['config']\n[map.config]\ntarget='{}'",
+                temp.path().join("alias/new").display()
+            ))
+            .unwrap();
+        let overlay = Repository::new(temp.path().to_path_buf())
+            .get("ov")
+            .unwrap();
+        let ctx = Context::builder().root(temp.path().join("home")).build();
+        let routing = overlay.resolve_mappings(&ctx).unwrap();
+        let target = temp.path().join("alias/new/file");
+        assert_eq!(routing.target_for(Path::new("config/file")), target);
+        assert_eq!(
+            routing.logical_path_for(&target).unwrap(),
+            Path::new("config/file")
+        );
+        std::os::unix::fs::symlink(temp.path().join("ov/config"), temp.path().join("real/new"))
+            .unwrap();
+        assert!(overlay.resolve_mappings(&ctx).is_ok());
+    }
+}

@@ -26,6 +26,7 @@ use crate::plan::actual::{self, ActualState};
 use crate::ui::{self, emojis, style};
 
 pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Result<()> {
+    let routing = overlay.resolve_mappings(&ctx)?;
     if let Some(git_repos) = &overlay.git {
         ui::info(format!(
             "{} {}",
@@ -38,7 +39,7 @@ pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Resul
             let target = if path == ROOT_PATH {
                 to.to_path_buf()
             } else {
-                to.join(path)
+                routing.target_for(Path::new(path))
             };
             let repo_config = repo_config.clone();
             let overlay_name = overlay.name.clone();
