@@ -22,7 +22,12 @@ impl Fixture {
         write(
             &source,
             "ov/over.toml",
-            &format!("target = '~/target'\n{config}"),
+            // Git commands use the native home directory on Windows; an absolute
+            // fixture target keeps them isolated without relying on HOME overrides.
+            &format!(
+                "target = {:?}\n{config}",
+                home.join("target").to_string_lossy()
+            ),
         );
         Self { temp, source, home }
     }
@@ -30,8 +35,6 @@ impl Fixture {
     fn command(&self, command: &str) -> Command {
         let mut cmd = Command::cargo_bin("over").unwrap();
         cmd.env("XDG_STATE_HOME", self.temp.path().join("state"))
-            // Windows resolves the home directory from USERPROFILE, not HOME.
-            .env("USERPROFILE", &self.home)
             .arg("--home")
             .arg(&self.source)
             .arg(command);
