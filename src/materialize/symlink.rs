@@ -293,6 +293,18 @@ async fn materialize_migration(
         return Ok(());
     }
 
+    if let MaterializationIntent::SymlinkDirectory { source, .. } = &entry.intent
+        && let Provenance::Overlay { overlay, .. } = &entry.provenance
+        && !ctx.repository.root.as_os_str().is_empty()
+        && source.starts_with(&ctx.repository.root)
+    {
+        let overlay = ctx.repository.get(overlay)?;
+        let policy = crate::overlays::ignore::SourcePolicy::new(&ctx.repository.root, &overlay)?;
+        // Recheck disposal at execution time too: filtered cleanliness alone
+        // cannot authorize removing ignored files added after classification.
+        policy.validate_directory_link(&entry.target, source)?;
+    }
+
     if matches!(from, MaterializationIntent::Checkout) {
         match status::git::inspect_checkout(&entry.target)? {
             Status::Applied => {}

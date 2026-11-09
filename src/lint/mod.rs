@@ -604,7 +604,12 @@ pub fn lint_repository(repo: &Repository) -> LintResult {
         match Overlay::new(repo, dir) {
             Ok(overlay) => {
                 // Run per-overlay checks
-                diagnostics.extend(checks::check_overlay(&overlay));
+                match crate::overlays::ignore::SourcePolicy::new(&repo.root, &overlay) {
+                    Ok(policy) => {
+                        diagnostics.extend(checks::check_overlay_selected(&overlay, Some(&policy)))
+                    }
+                    Err(error) => diagnostics.push(Diagnostic::error(name, format!("{error:#}"))),
+                }
                 parsed_overlays.insert(name.clone(), overlay);
             }
             Err(err) => {

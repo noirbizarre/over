@@ -350,15 +350,12 @@ impl Overlay {
             // it only ever touches `over`'s own marker block, never the
             // repo's tracked state.
             if !ctx.dry_run {
-                let managed = git_exclude::managed_targets(&desired)?;
-                if !managed.is_empty() {
-                    git_exclude::reconcile(&managed).with_context(|| {
-                        format!(
-                            "failed to reconcile git excludes for overlay '{}'",
-                            self.name
-                        )
-                    })?;
-                }
+                git_exclude::reconcile_desired(&desired).with_context(|| {
+                    format!(
+                        "failed to reconcile git excludes for overlay '{}'",
+                        self.name
+                    )
+                })?;
             }
 
             stack.pop();

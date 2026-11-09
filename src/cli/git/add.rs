@@ -98,14 +98,9 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     // (#146) — so a path is never managed by two different exclude
     // conventions.
     if !resolved.is_empty() && !args.dry_run {
-        let targets: Vec<git_exclude::ManagedTarget> = resolved
-            .iter()
-            .map(|p| git_exclude::ManagedTarget {
-                target: p.clone(),
-                overlay: overlay.name.clone(),
-            })
-            .collect();
-        let report = git_exclude::reconcile(&targets)?;
+        // A directory selection can contain unmanaged ignored children.
+        let desired = crate::desired::DesiredTree::build_own(&ctx, &overlay)?;
+        let report = git_exclude::reconcile_desired(&desired)?;
 
         if cli.verbose && !report.updated.is_empty() {
             let updated: Vec<String> = report

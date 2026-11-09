@@ -413,7 +413,7 @@ pub(crate) fn walk_owned_files(root: &Path, scope: &CheckoutScope) -> Result<Vec
             entry
                 .path()
                 .strip_prefix(root)
-                .is_ok_and(|path| scope.owns_target(path))
+                .is_ok_and(|path| scope.owns_target_kind(path, entry.file_type().is_dir()))
         })
     {
         let entry = entry.with_context(|| format!("failed to walk '{}'", root.display()))?;
@@ -434,10 +434,22 @@ pub(crate) fn has_owned_content(root: &Path, scope: &CheckoutScope) -> Result<bo
             entry
                 .path()
                 .strip_prefix(root)
-                .is_ok_and(|path| scope.owns_target(path))
+                .is_ok_and(|path| scope.owns_target_kind(path, entry.file_type().is_dir()))
         })
     {
         if !entry?.file_type().is_dir() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whole-directory disposal needs a raw inventory: a filtered clean status
+/// intentionally says nothing about ignored or independently owned content.
+pub(crate) fn has_unowned_content(root: &Path, scope: &CheckoutScope) -> Result<bool> {
+    for entry in walkdir::WalkDir::new(root).min_depth(1) {
+        let entry = entry?;
+        if !scope.owns_target_kind(entry.path().strip_prefix(root)?, entry.file_type().is_dir()) {
             return Ok(true);
         }
     }
@@ -448,26 +460,11 @@ pub(crate) fn has_owned_content(root: &Path, scope: &CheckoutScope) -> Result<bo
 /// `over`'s own metadata rather than managed content: the overlay
 /// descriptor (`over.{toml,yaml,yml}`) or a `.link.*`/`.partial.*`
 /// sidecar. These must never be materialized as ordinary checked-out
-/// files, mirroring the exact exclusion
-/// `desired::tree::walk_overlay_tree` already applies for symlink
-/// materialization — without it, a virtual checkout's root would include
-/// its own `over.toml` as regular content. Per-overlay `exclude` glob
-/// patterns are a documented follow-up (ADR-022): only this fixed,
-/// config-independent metadata is excluded so far.
+/// files, mirroring symlink materialization. User selection is applied
+/// separately through the operation's source policy, including to historical
+/// trees and index entries that no longer exist in the source working tree.
 pub(crate) fn is_overlay_metadata(rel_path: &Path) -> bool {
-    [
-        crate::overlays::GLOB_PATTERN.as_str(),
-        "**/*.link.{toml,yaml,yml}",
-        "**/*.partial.{toml,yaml,yml}",
-    ]
-    .iter()
-    .any(|pattern| {
-        globset::GlobBuilder::new(pattern)
-            .literal_separator(true)
-            .build()
-            .ok()
-            .is_some_and(|glob| glob.compile_matcher().is_match(rel_path))
-    })
+    crate::overlays::ignore::is_control_file(rel_path)
 }
 
 /// Every regular-file blob in `tree`, recursively, keyed by its path
@@ -642,9 +639,14 @@ pub(crate) fn ensure_supported_staged(
         });
     }
     for (path, old) in unsupported {
+        // Gitlinks are directory entries even when absent from today's worktree.
+        let is_dir = old.1 == 0o160000
+            || index
+                .get_path(&path, 0)
+                .is_some_and(|entry| entry.mode == 0o160000);
         if let Ok(relative) = path.strip_prefix(managed)
-            && scope.owns_source(relative)
-            && scope.owns_target(relative)
+            && scope.owns_source_kind(relative, is_dir)
+            && scope.owns_target_kind(relative, is_dir)
             && !is_overlay_metadata(relative)
         {
             anyhow::ensure!(

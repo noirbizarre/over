@@ -59,6 +59,13 @@ pub struct PartialConfig {
 /// too — a managed block with nothing in it is a no-op that shouldn't
 /// exist).
 pub fn discover_partials(overlay_root: &Path) -> Result<Vec<(String, PartialConfig)>> {
+    discover_partials_selected(overlay_root, None)
+}
+
+pub fn discover_partials_selected(
+    overlay_root: &Path,
+    policy: Option<&crate::overlays::ignore::SourcePolicy>,
+) -> Result<Vec<(String, PartialConfig)>> {
     use globset::GlobBuilder;
     use walkdir::WalkDir;
 
@@ -72,6 +79,9 @@ pub fn discover_partials(overlay_root: &Path) -> Result<Vec<(String, PartialConf
 
     for entry in WalkDir::new(overlay_root)
         .into_iter()
+        .filter_entry(|entry| {
+            policy.is_none_or(|policy| !policy.is_ignored(entry.path(), entry.file_type().is_dir()))
+        })
         .filter_map(|e| e.ok())
     {
         let path = entry.path();
