@@ -115,6 +115,28 @@ jobs:
           pattern: asset-*
           merge-multiple: true
           path: dist
+      # Both channels exercise the same reproducible prefix layout; Windows keeps its .exe.
+      - name: Package the Unix binaries
+        run: |
+          export LC_ALL=C
+          umask 022
+          epoch=$(git log -1 --format=%ct)
+          assets=(linux-amd64 linux-arm64 linux-amd64-musl darwin-amd64 darwin-arm64 )
+          for asset in "${assets[@]}"; do
+            name="over-${TAG}-${asset}"
+            root="stage/${name}"
+            put() { if [ -f "$2" ]; then install -D -m "$1" "$2" "${root}/$3"; fi; }
+            install -D -m 755 "dist/over_${TAG}_${asset}" "${root}/bin/over"
+            install -D -m 644 LICENSE "${root}/share/doc/over/LICENSE"
+            install -D -m 644 README.md "${root}/share/doc/over/README.md"
+            for page in stage/man/*.1; do put 644 "$page" "share/man/man1/$(basename "$page")"; done
+            put 644 stage/completions/over.bash "share/bash-completion/completions/over"
+            put 644 stage/completions/_over "share/zsh/site-functions/_over"
+            put 644 stage/completions/over.fish "share/fish/vendor_completions.d/over.fish"
+            tar -C stage --sort=name --format=gnu --mtime="@${epoch}" \
+              --owner=0 --group=0 --numeric-owner -cf - "$name" \
+              | gzip -n -9 > "dist/over_${TAG}_${asset}.tar.gz"
+          done
       - name: Checksums
         working-directory: dist
         run: sha256sum -- * > SHA256SUMS
