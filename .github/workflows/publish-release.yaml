@@ -1,179 +1,159 @@
 
 name: 📦 Publish Release
-
-# Dispatched by `gh ship release` on the tag it just created — naming the run
-# after it tells the two apart in the Actions run list, where "Publish
-# Release" alone would not.
-run-name: 📦 Publish Release ${{ inputs.tag }}
+run-name: 📦 Publish Release ${{ inputs.ref || github.ref }}
 
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: The tag being released
-        required: true
+      ref:
+        description: Run tag or commit SHA; leave blank for a manual main rebuild
+        required: false
         type: string
-
   workflow_call:
     inputs:
-      tag:
+      ref:
         required: true
         type: string
 
-# The upload authenticates as a GitHub App and carries its own permissions.
-# These cover `actions/checkout` alone, which only reads.
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 env:
   CARGO_TERM_COLOR: always
-  # Retries against a flaky registry/network rather than failing a release
-  # build outright, and no incremental cache — this is a one-shot build, so
-  # there is nothing later to reuse it.
   CARGO_INCREMENTAL: "0"
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   CARGO_NET_RETRY: "10"
   RUSTUP_MAX_RETRIES: "10"
-  # Same bar CI's clippy job already holds the code to; a release binary
-  # should not ship a warning CI would have failed on for anyone else.
   RUSTFLAGS: -D warnings
+  # gh-ship runs on the version tag; main CI publishes to the rolling channel.
+  TAG: ${{ startsWith(inputs.ref || github.ref, 'refs/tags/') && github.ref_name || vars.PRERELEASE_NAME || 'development' }}
 
 jobs:
+
   build:
-    name: 🏗️ ${{ matrix.target }}
-    runs-on: ${{ matrix.runner }}
+    name: 🏗️ Build (${{ matrix.build.label }})
+    runs-on: ${{ matrix.build.runner }}
     strategy:
       fail-fast: false
       matrix:
-        # `ext` is emitted on every leg, empty where it does not apply. Omitting
-        # it on the non-Windows ones would make `${{ matrix.ext }}` reference a
-        # property that is not in the matrix type whenever no Windows target is
-        # selected — an actionlint error, not a runtime one, so it would only
-        # surface in the consuming project's CI.
-        include:
-          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-latest, asset: linux-amd64, cross: true, ext: "" }
-          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-latest, asset: linux-arm64, cross: true, ext: "" }
-          - { target: x86_64-unknown-linux-musl, runner: ubuntu-latest, asset: linux-amd64-musl, cross: true, ext: "" }
-          - { target: x86_64-apple-darwin, runner: macos-latest, asset: darwin-amd64, cross: false, ext: "" }
-          - { target: aarch64-apple-darwin, runner: macos-latest, asset: darwin-arm64, cross: false, ext: "" }
-          - { target: x86_64-pc-windows-msvc, runner: windows-latest, asset: windows-amd64, cross: false, ext: ".exe" }
+        build:
+          - { label: linux-amd64, target: x86_64-unknown-linux-gnu, runner: ubuntu-latest, cross: true }
+          - { label: linux-arm64, target: aarch64-unknown-linux-gnu, runner: ubuntu-latest, cross: true }
+          - { label: linux-amd64-musl, target: x86_64-unknown-linux-musl, runner: ubuntu-latest, cross: true }
+          - { label: darwin-amd64, target: x86_64-apple-darwin, runner: macos-latest }
+          - { label: darwin-arm64, target: aarch64-apple-darwin, runner: macos-latest }
+          - { label: windows-amd64, target: x86_64-pc-windows-msvc, runner: windows-latest, ext: ".exe" }
     steps:
       - uses: actions/checkout@v7
         with:
-          # Build exactly what is being released, not a branch tip that
-          # may have moved since.
-          ref: ${{ inputs.tag }}
-          # The upload authenticates via a separately-installed `gh`; nothing
-          # in this job shells out to `git push`.
+          # Every matrix leg uses the immutable run commit, even if a tag or main moves later.
+          ref: ${{ github.sha }}
           persist-credentials: false
-
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.build.target }}
+      # Bootstrap the toolchain before relocating temporary storage, but keep cache cleanup before drive teardown.
+      - name: Tune Windows runner
+        uses: ./.github/actions/setup-windows
+        if: runner.os == 'Windows'
       - uses: Swatinem/rust-cache@v2
-
-      # `cross` is only needed on the Linux legs, so it is installed
-      # conditionally here rather than added to mise.toml, which would pull it
-      # onto every runner in the matrix. It also supplies the cross C toolchain
-      # that any vendored C dependency needs.
+        with:
+          key: release-${{ matrix.build.target }}
       - uses: taiki-e/install-action@cross
-        if: matrix.cross
-
-      # `vendored` builds libgit2 and OpenSSL from source rather than linking
-      # whatever the cross-compilation image happens to ship, so every target
-      # gets identical Git semantics and a statically-linked TLS stack — the
-      # same reason Dockerfile builds with it.
-
-      # Without this a standalone MSVC binary can fail to start on a machine
-      # that lacks the matching Visual C++ Redistributable — exactly the
-      # machine a downloaded release binary targets. Static linking trades a
-      # few hundred KB for not depending on that being installed.
+        if: matrix.build.cross
+      # Standalone Windows binaries must start without a separately installed redistributable.
       - name: Statically link the MSVC C runtime
-        if: endsWith(matrix.target, 'windows-msvc')
-        shell: bash
-        run: echo "RUSTFLAGS=${RUSTFLAGS} -C target-feature=+crt-static" >> "${GITHUB_ENV}"
-
-      - name: Build
-        shell: bash
+        if: endsWith(matrix.build.target, 'windows-msvc')
+        run: echo "RUSTFLAGS=${RUSTFLAGS} -C target-feature=+crt-static" >> "$GITHUB_ENV"
+      - name: Verify Windows build storage
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./.github/actions/setup-windows/verify.ps1
+      - name: Build and stage the asset
+        env:
+          TARGET: ${{ matrix.build.target }}
+          LABEL: ${{ matrix.build.label }}
+          CROSS: ${{ matrix.build.cross }}
+          EXT: ${{ matrix.build.ext }}
         run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --locked --target ${{ matrix.target }} --features vendored
+          if [ "${CROSS:-}" = true ]; then
+            cross build --release --locked --target "$TARGET" --features vendored
           else
-            cargo build --release --locked --target ${{ matrix.target }} --features vendored
+            cargo build --release --locked --target "$TARGET" --features vendored
           fi
-
-      # The base template ships a single bare binary as the asset, but
-      # Homebrew/AUR (packaging/) and the docs already expect a
-      # `.tar.gz`/`.zip` archive at `over_<version>_<asset>` — kept as an
-      # archive rather than reverted to a bare binary so those stay valid.
-      - name: Stage the asset
-        shell: bash
-        run: |
+          # Homebrew, AUR and binstall expect archives with the binary at the root.
           mkdir -p dist staging
-          cp "target/${{ matrix.target }}/release/over${{ matrix.ext }}" staging/
-          name="over_${{ inputs.tag }}_${{ matrix.asset }}"
-          if [ -n "${{ matrix.ext }}" ]; then
-            # `zip` is absent from the Windows runners; 7-Zip is preinstalled.
-            # `-tzip` because the default format would be .7z despite the name.
+          cp "target/${TARGET}/release/over${EXT:-}" staging/
+          name="over_${TAG}_${LABEL}"
+          if [ -n "${EXT:-}" ]; then
+            # Windows runners provide 7-Zip rather than zip.
             (cd staging && 7z a -tzip "../dist/$name.zip" .)
           else
-            # `-C staging .` so the archive holds the binary at its root
-            # rather than `staging/over`, which extractors would recreate.
             tar -C staging -czf "dist/$name.tar.gz" .
           fi
-
       - uses: actions/upload-artifact@v7
         with:
-          name: asset-${{ matrix.asset }}
+          name: asset-${{ matrix.build.label }}
           path: dist/*
           if-no-files-found: error
+          retention-days: 7
 
   publish:
     name: 🚀 Publish
     needs: build
     runs-on: ubuntu-latest
-
-    # This is the deployment. Declaring a `url:` registers it in the
-    # repository's deployment list and links straight to what shipped.
-    # The environment is `release` because that is where the release
-    # secrets live.
+    # Only uploads serialize; builds remain parallel and no partial upload is cancelled.
+    concurrency:
+      group: publish-release
+      cancel-in-progress: false
     environment:
       name: release
-      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
-
+      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.TAG }}
     steps:
-      # An installation token, revoked when this job ends. It cannot live in
-      # the job's `env:` — a step output is not resolvable there — so the one
-      # `gh` step below sets it itself.
-      - uses: actions/create-github-app-token@v3
-        id: app-token
-        with:
-          client-id: ${{ vars.APP_CLIENT_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag }}
-          # The upload below authenticates with the App token, not a
-          # persisted checkout credential.
+          ref: ${{ github.sha }}
           persist-credentials: false
-
       - uses: actions/download-artifact@v8
         with:
           pattern: asset-*
           merge-multiple: true
           path: dist
-
       - name: Checksums
         working-directory: dist
-        # `--` so an asset whose name begins with a dash is treated as a
-        # file rather than an option (shellcheck SC2035).
         run: sha256sum -- * > SHA256SUMS
-
-      # The release already exists as a DRAFT: gh-ship created it before
-      # dispatching this workflow, and will undraft it once we succeed.
-      # That ordering is what lets assets land before anyone is notified.
-      - name: Upload assets to the draft release
-        run: gh release upload "${{ inputs.tag }}" dist/* --clobber
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - name: Ensure the prerelease exists
+        if: ${{ !startsWith(inputs.ref || github.ref, 'refs/tags/') }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" \
+              --notes 'Development build' --prerelease --latest=false
+      - name: Upload assets to the release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh release upload "$TAG" dist/* --clobber
+      - name: Update the rolling prerelease tag
+        if: ${{ !startsWith(inputs.ref || github.ref, 'refs/tags/') }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: >-
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}"
+          -f sha="$GITHUB_SHA" -F force=true --silent
+      - name: Finalize the prerelease
+        if: ${{ !startsWith(inputs.ref || github.ref, 'refs/tags/') }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh release edit "$TAG" --title "$TAG" --prerelease --draft=false --latest=false \
+            --notes "Main SHA: ${GITHUB_SHA}. CI: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"

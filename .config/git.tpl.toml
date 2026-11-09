@@ -7,6 +7,8 @@
 source = "https://github.com/noirbizarre/rust.tpl"
 
 [answers]
+archive = true
+aur = false
 author = "Axel H. <noirbizarre@gmail.com>"
 bin_name = "over"
 categories = "command-line-utilities, filesystem, development-tools"
@@ -16,11 +18,18 @@ crate = "over"
 description = "A git-based file overlay manager (dotfiles as overlays)"
 docs = true
 docs_accent = "indigo"
+gh_ship_token_mode = "app"
+homebrew = false
 keywords = "dotfiles, overlay, git, symlink, cli"
+kind = "library-and-binary"
+man_pages = false
+mbx = false
 msrv = true
 msrv_version = "1.98"
 owner = "noirbizarre"
 publish = false
+rolling_prerelease = false
+service = false
 targets = [
   "x86_64-unknown-linux-gnu",
   "aarch64-unknown-linux-gnu",
