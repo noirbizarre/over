@@ -582,24 +582,57 @@ fn diagnostics_from_anyhow_error(
 
 /// Run all lint checks across all overlays in a repository.
 pub fn lint_repository(repo: &Repository) -> LintResult {
+    lint_dirs(repo, discover_overlay_dirs(repo), false, true)
+}
+
+/// Lint one overlay, optionally including its transitive `uses` dependencies.
+pub fn lint_overlay(
+    repo: &Repository,
+    name: &str,
+    include_uses: bool,
+) -> anyhow::Result<LintResult> {
+    // Components remove harmless `./` and trailing separators without requiring
+    // a descriptor to parse before lint can produce its friendlier diagnostics.
+    let relative: PathBuf = Path::new(name)
+        .components()
+        .filter(|component| *component != std::path::Component::CurDir)
+        .collect();
+    let dir = repo.root.join(&relative);
+    anyhow::ensure!(
+        dir.is_dir(),
+        "overlay '{name}' not found (no such directory: {})",
+        dir.display()
+    );
+    let name = dir
+        .strip_prefix(&repo.root)?
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("overlay path is not valid UTF-8"))?
+        .replace('\\', "/");
+    Ok(lint_dirs(repo, vec![(dir, name)], true, include_uses))
+}
+
+fn lint_dirs(
+    repo: &Repository,
+    mut dirs: Vec<(PathBuf, String)>,
+    scoped: bool,
+    include_uses: bool,
+) -> LintResult {
     let mut diagnostics = Vec::new();
-    let dirs = discover_overlay_dirs(repo);
-    // Root-only fields must still be checked when discovery selects child overlays.
-    if !dirs.iter().any(|(dir, _)| dir == &repo.root)
-        && let Err(error) = repo.canonical_repository()
-    {
-        diagnostics.push(Diagnostic::error(".", format!("{error:#}")));
-    }
     let mut parsed_overlays: HashMap<String, Overlay> = HashMap::new();
     let mut failed_overlays: HashSet<String> = HashSet::new();
     let all_names: HashSet<String> = dirs.iter().map(|(_, name)| name.clone()).collect();
+    let mut visited = HashSet::new();
 
-    for (dir, name) in &dirs {
+    while let Some((dir, name)) = dirs.pop() {
+        // Mark failed loads too, so shared broken dependencies are reported once.
+        if !visited.insert(name.clone()) {
+            continue;
+        }
         // Check for multiple descriptor formats
-        diagnostics.extend(check_multiple_descriptors(dir, name));
+        diagnostics.extend(check_multiple_descriptors(&dir, &name));
 
         // Pre-validate config keys against known schema
-        let prevalidation = prevalidate_descriptor(dir, name);
+        let prevalidation = prevalidate_descriptor(&dir, &name);
         let has_unknown_keys = prevalidation.iter().any(|d| d.severity == Severity::Error);
         diagnostics.extend(prevalidation);
 
@@ -610,20 +643,28 @@ pub fn lint_repository(repo: &Repository) -> LintResult {
         }
 
         // Try to parse the overlay
-        let descriptor_file = find_descriptor_file(dir);
-        match Overlay::new(repo, dir) {
+        let descriptor_file = find_descriptor_file(&dir);
+        match Overlay::new(repo, &dir) {
             Ok(overlay) => {
-                if dir == &repo.root
+                if dir == repo.root
                     && let Err(error) = repo.canonical_repository()
                 {
-                    diagnostics.push(Diagnostic::error(name, format!("{error:#}")));
+                    diagnostics.push(Diagnostic::error(&name, format!("{error:#}")));
                 }
                 // Run per-overlay checks
                 match crate::overlays::ignore::SourcePolicy::new(&repo.root, &overlay) {
                     Ok(policy) => {
                         diagnostics.extend(checks::check_overlay_selected(&overlay, Some(&policy)))
                     }
-                    Err(error) => diagnostics.push(Diagnostic::error(name, format!("{error:#}"))),
+                    Err(error) => diagnostics.push(Diagnostic::error(&name, format!("{error:#}"))),
+                }
+                if scoped && include_uses {
+                    for dep in overlay.uses.iter().flatten() {
+                        let dir = repo.root.join(dep);
+                        if dir.is_dir() {
+                            dirs.push((dir, dep.clone()));
+                        }
+                    }
                 }
                 parsed_overlays.insert(name.clone(), overlay);
             }
@@ -631,11 +672,19 @@ pub fn lint_repository(repo: &Repository) -> LintResult {
                 failed_overlays.insert(name.clone());
                 diagnostics.extend(diagnostics_from_anyhow_error(
                     &err,
-                    name,
+                    &name,
                     descriptor_file.as_deref(),
                 ));
             }
         }
+    }
+
+    // Root-only fields still matter for child selections, but must not be
+    // reported twice if dependency traversal already checked the root.
+    if !visited.contains("")
+        && let Err(error) = repo.canonical_repository()
+    {
+        diagnostics.push(Diagnostic::error(".", format!("{error:#}")));
     }
 
     // Cross-overlay checks: uses references
@@ -653,6 +702,9 @@ pub fn lint_repository(repo: &Repository) -> LintResult {
                         )
                         .with_hint(format!("fix the configuration errors in \"{dep}\" first")),
                     );
+                } else if scoped && !include_uses && repo.root.join(dep).is_dir() {
+                    // Existence is enough when the dependency was intentionally
+                    // excluded; parsing it here would defeat `--no-uses`.
                 } else if all_names.contains(dep) {
                     // Discovered but somehow not in either set (shouldn't happen, defensive)
                     diagnostics.push(Diagnostic::error(
@@ -714,6 +766,174 @@ mod tests {
         let td = TempDir::new().unwrap();
         let repo = Repository::new(td.path().to_path_buf());
         (td, repo)
+    }
+
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn scoped_lint_excludes_unrelated_broken_overlays(#[case] include_uses: bool) {
+        let (td, repo) = setup_repo();
+        td.child("clean").create_dir_all().unwrap();
+        td.child("broken/over.toml")
+            .write_str("targt = '~'")
+            .unwrap();
+
+        let result = lint_overlay(&repo, "clean", include_uses).unwrap();
+        assert!(result.diagnostics.is_empty());
+        assert!(lint_repository(&repo).has_errors());
+    }
+
+    #[rstest]
+    fn transitive_shared_dependencies_are_linted_once() {
+        let (td, repo) = setup_repo();
+        for (name, config) in [
+            ("selected", "uses = ['left', 'right']"),
+            ("left", "uses = ['shared']"),
+            ("right", "uses = ['shared']"),
+            ("shared", "targt = '~'"),
+        ] {
+            td.child(format!("{name}/over.toml"))
+                .write_str(config)
+                .unwrap();
+        }
+
+        let result = lint_overlay(&repo, "selected", true).unwrap();
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .filter(|d| d.overlay == "shared")
+                .count(),
+            1
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("failed to parse"))
+        );
+        assert!(
+            lint_overlay(&repo, "selected", false)
+                .unwrap()
+                .diagnostics
+                .is_empty()
+        );
+    }
+
+    #[rstest]
+    fn excluding_uses_still_reports_missing_direct_references() {
+        let (td, repo) = setup_repo();
+        td.child("selected/over.toml")
+            .write_str("uses = ['missing']")
+            .unwrap();
+        let result = lint_overlay(&repo, "selected", false).unwrap();
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("non-existent overlay"))
+        );
+    }
+
+    #[rstest]
+    fn dependency_cycles_are_only_checked_when_dependencies_are_included() {
+        let (td, repo) = setup_repo();
+        td.child("a/over.toml").write_str("uses = ['b']").unwrap();
+        td.child("b/over.toml").write_str("uses = ['a']").unwrap();
+        assert!(
+            lint_overlay(&repo, "a", true)
+                .unwrap()
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("cycle detected"))
+        );
+        assert!(
+            lint_overlay(&repo, "a", false)
+                .unwrap()
+                .diagnostics
+                .is_empty()
+        );
+    }
+
+    #[rstest]
+    #[case(".")]
+    #[case("./parent/")]
+    #[case("parent/child")]
+    fn explicit_selection_accepts_root_parent_and_descriptorless_directories(#[case] name: &str) {
+        let (td, repo) = setup_repo();
+        td.child("over.toml").write_str("target = '~'").unwrap();
+        td.child("parent/child").create_dir_all().unwrap();
+        let result = lint_overlay(&repo, name, true).unwrap();
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[rstest]
+    fn selected_broken_descriptors_keep_typo_hints() {
+        let (td, repo) = setup_repo();
+        td.child("broken/over.toml")
+            .write_str("targt = '~'")
+            .unwrap();
+        let result = lint_overlay(&repo, "broken", true).unwrap();
+        assert!(result.has_errors());
+        assert!(result.diagnostics.iter().any(|d| {
+            d.hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("target"))
+        }));
+        assert!(
+            lint_overlay(&repo, "missing", true)
+                .unwrap_err()
+                .to_string()
+                .contains("not found")
+        );
+    }
+
+    #[rstest]
+    fn descriptorless_selections_follow_inherited_uses() {
+        let (td, repo) = setup_repo();
+        td.child("hosts/over.toml")
+            .write_str("uses = ['dependency']")
+            .unwrap();
+        td.child("hosts/laptop").create_dir_all().unwrap();
+        td.child("dependency/over.toml")
+            .write_str("targt = '~'")
+            .unwrap();
+        assert!(
+            lint_overlay(&repo, "hosts/laptop", true)
+                .unwrap()
+                .has_errors()
+        );
+        assert!(
+            lint_overlay(&repo, "hosts/laptop", false)
+                .unwrap()
+                .diagnostics
+                .is_empty()
+        );
+    }
+
+    #[rstest]
+    fn scoped_lint_keeps_root_only_validation() {
+        let (td, repo) = setup_repo();
+        td.child("over.yaml")
+            .write_str("repository: false\n")
+            .unwrap();
+        td.child("child").create_dir_all().unwrap();
+        let result = lint_overlay(&repo, "child", false).unwrap();
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("repository"))
+        );
+    }
+
+    #[rstest]
+    fn excluding_dependencies_keeps_self_reference_checks() {
+        let (td, repo) = setup_repo();
+        td.child("selected/over.toml")
+            .write_str("uses = ['selected']")
+            .unwrap();
+        assert!(lint_overlay(&repo, "selected", false).unwrap().has_errors());
     }
 
     #[rstest]

@@ -363,6 +363,49 @@ fn lint_cycle_detection() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn named_lint_follows_uses_unless_disabled() -> TestResult {
+    let tmp = TempDir::new()?;
+    for (name, config) in [
+        ("selected", "uses = ['dependency']"),
+        ("dependency", "targt = '~'"),
+        ("unrelated", "targt = '~'"),
+    ] {
+        fs::create_dir_all(tmp.path().join(name))?;
+        fs::write(tmp.path().join(name).join("over.toml"), config)?;
+    }
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["lint", "selected"])
+        .assert()
+        .failure()
+        .stdout(contains("dependency"))
+        .stdout(contains("unrelated").not());
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["lint", "selected", "--no-uses"])
+        .assert()
+        .success()
+        .stdout(contains("No issues found"));
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["lint", "--no-uses"])
+        .assert()
+        .failure()
+        .stdout(contains("unrelated"));
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["lint", "missing"])
+        .assert()
+        .failure()
+        .stderr(contains("not found"));
+    Ok(())
+}
+
 // ── doctor integration tests (#149) ──────────────────────────────────────
 
 #[test]

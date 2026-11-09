@@ -2,18 +2,29 @@ use anyhow::{Result, bail};
 use clap::Args;
 
 use crate::cli::CLI;
-use crate::lint::lint_repository;
+use crate::lint::{lint_overlay, lint_repository};
 use crate::overlays::Repository;
 use crate::ui;
 use crate::ui::style;
 
 #[derive(Args, Debug)]
-pub struct Params {}
+pub struct Params {
+    /// Check only this overlay and its uses dependencies
+    #[arg(value_name = "OVERLAY")]
+    pub overlay: Option<String>,
 
-pub async fn execute(cli: &CLI, _args: &Params) -> Result<()> {
+    /// Skip linting the selected overlay's uses dependencies
+    #[arg(long)]
+    pub no_uses: bool,
+}
+
+pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let home = cli.resolve_home()?;
     let repo = Repository::new(home);
-    let result = lint_repository(&repo);
+    let result = match &args.overlay {
+        Some(name) => lint_overlay(&repo, name, !args.no_uses)?,
+        None => lint_repository(&repo),
+    };
 
     if result.diagnostics.is_empty() {
         ui::info(format!("{}", style::green("No issues found"))).ok();
