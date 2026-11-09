@@ -145,7 +145,7 @@ fn all_targets_keep_host_data_without_leaking_other_targets_metadata() -> TestRe
         .args(["status", "--all", "--root"])
         .arg(target.path())
         .assert()
-        .success()
+        .code(1)
         .stdout(contains("alpha-workstation"))
         .stdout(contains("beta-workstation-clean"));
     // Omitting NAME still selects the default operational target.

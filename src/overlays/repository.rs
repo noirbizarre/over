@@ -64,14 +64,32 @@ impl Repository {
     /// Returns a list of all overlays in the repository.
     /// Badly formatted overlay files are skipped with a warning.
     pub fn overlays(&self) -> Result<Vec<Overlay>> {
+        self.discover_overlays(false)?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+    }
+
+    /// Inspection must not mistake skipped invalid overlays for a healthy selection.
+    pub fn inspect_overlays(&self) -> Result<Vec<Result<Overlay>>> {
+        self.discover_overlays(true)
+    }
+
+    fn discover_overlays(&self, strict: bool) -> Result<Vec<Result<Overlay>>> {
         let glob = GlobBuilder::new(&GLOB_PATTERN)
             .literal_separator(true)
             .build()?
             .compile_matcher();
 
-        let mut dirs: Vec<PathBuf> = WalkDir::new(&self.root)
+        let entries = WalkDir::new(&self.root)
             .into_iter()
-            .filter_map(Result::ok)
+            .filter_map(|entry| match entry {
+                Ok(entry) => Some(Ok(entry)),
+                Err(error) if strict => Some(Err(error)),
+                Err(_) => None,
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut dirs: Vec<PathBuf> = entries
+            .into_iter()
             .filter(|e| {
                 e.path()
                     .strip_prefix(&self.root)
@@ -85,7 +103,14 @@ impl Repository {
         // dedup by resolved path since a directory can be found by both
         // mechanisms (e.g. a root-declared dir that also has its own
         // descriptor).
-        dirs.extend(self.declared_overlay_dirs());
+        dirs.extend(if strict {
+            resolve_declared_dirs(
+                &self.root,
+                &self.root_config()?.overlays.unwrap_or_default(),
+            )
+        } else {
+            self.declared_overlay_dirs()
+        });
         dirs.sort();
         dirs.dedup();
 
@@ -98,7 +123,8 @@ impl Repository {
             match Overlay::new(self, dir)
                 .with_context(|| format!("failed to load overlay at {}", dir.display()))
             {
-                Ok(overlay) => overlays.push(overlay),
+                Ok(overlay) => overlays.push(Ok(overlay)),
+                Err(e) if strict => overlays.push(Err(e)),
                 Err(e) => {
                     tracing::warn!("skipping badly formatted overlay {}: {}", dir.display(), e,);
                 }
@@ -177,7 +203,7 @@ impl Repository {
             return Ok(None);
         };
         let name = exec::templates::render_string(&raw, ctx)
-            .with_context(|| format!("failed to render default_overlay template '{raw}'"))?;
+            .context("failed to render default_overlay template")?;
         let overlay = self
             .get(&name)
             .with_context(|| format!("configured default_overlay '{name}' not found"))?;

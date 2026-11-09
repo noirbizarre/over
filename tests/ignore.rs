@@ -436,7 +436,7 @@ fn removing_an_ignore_rule_resumes_conflict_checks_for_preserved_content() {
         .args(["ov", "--verbose", "--root"])
         .arg(&fixture.home)
         .assert()
-        .success()
+        .code(1)
         .stdout(contains("secret"));
     fixture
         .command("sync")

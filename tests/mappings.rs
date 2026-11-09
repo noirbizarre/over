@@ -123,6 +123,96 @@ fn commit_all(repo: &git2::Repository, message: &str) {
     .unwrap();
 }
 
+fn filesystem_snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    walkdir::WalkDir::new(root)
+        .into_iter()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let contents = if entry.file_type().is_symlink() {
+                fs::read_link(entry.path())
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_bytes()
+                    .to_vec()
+            } else if entry.file_type().is_file() {
+                fs::read(entry.path()).unwrap()
+            } else {
+                Vec::new()
+            };
+            (
+                entry.path().strip_prefix(root).unwrap().to_owned(),
+                contents,
+            )
+        })
+        .collect()
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn status_and_show_do_not_write_filtered_git_objects_targets_or_state(#[case] applied: bool) {
+    let fixture = Fixture::new(true);
+    if applied {
+        fixture.apply();
+        // Remove sentinels so a reader that quietly recreates them is observable.
+        for entry in walkdir::WalkDir::new(fixture.temp.path().join("state")) {
+            let entry = entry.unwrap();
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "lock")
+            {
+                fs::remove_file(entry.path()).unwrap();
+            }
+        }
+        fs::write(fixture.config.join("file"), "local edit\n").unwrap();
+        // Apply has not built the filtered residual tree for this new revision;
+        // inspection must not persist it merely to compare source drift.
+        fs::write(
+            fixture.source.join("workspace/client/main/file"),
+            "source advance\n",
+        )
+        .unwrap();
+        commit_all(&fixture.repo(), "advance residual source after apply");
+    }
+    let before = filesystem_snapshot(fixture.temp.path());
+    for command in ["status", "show"] {
+        fixture
+            .command(command)
+            .args(["workspace/client", "--verbose", "--root"])
+            .arg(&fixture.home)
+            .assert()
+            .code(1)
+            .stdout(contains("Configuration:"))
+            .stdout(contains("map: config"));
+        assert_eq!(filesystem_snapshot(fixture.temp.path()), before);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_source_executable_bit_change_remains_behind_in_read_only_checkout_status() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    fs::set_permissions(
+        fixture.source.join("workspace/client/etc/file"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    commit_all(&fixture.repo(), "make source executable");
+    let before = filesystem_snapshot(fixture.temp.path());
+    fixture
+        .command("status")
+        .args(["workspace/client", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .code(1)
+        .stdout(contains("1 behind"));
+    assert_eq!(filesystem_snapshot(fixture.temp.path()), before);
+}
+
 #[test]
 fn mapped_symlinks_apply_and_reverse_add_without_base_prefix_copies() {
     let fixture = Fixture::new(false);
@@ -193,7 +283,7 @@ fn mapped_checkout_add_stages_snapshots_and_commit_preserves_unstaged_edits() {
         .args(["workspace/client", "--verbose", "--root"])
         .arg(&fixture.home)
         .assert()
-        .success()
+        .code(1)
         .stdout(contains("file (staged)"))
         .stdout(contains("file (unstaged)"));
     fixture
@@ -281,7 +371,7 @@ fn mapped_source_drift_syncs_only_its_own_checkout() {
         .args(["workspace/client", "--root"])
         .arg(&fixture.home)
         .assert()
-        .success()
+        .code(1)
         .stdout(contains("2 applied"))
         .stdout(contains("1 behind"));
     fixture

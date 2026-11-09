@@ -8,15 +8,15 @@
 //!
 //! Deliberately read-only: building a [`Report`] never mutates the
 //! filesystem or any git repository, exactly like [`Plan::build`].
-//! Persistent metadata (`$XDG_STATE_HOME/over`) is not involved — status
-//! must stay fully reconstructible from disk/git/config alone, per the
-//! issue's own requirement.
+//! Virtual checkouts read their recorded association from XDG state without
+//! creating locks, migrating on disk, or persisting inspection results.
 //!
 //! Also surfaces `.git/info/exclude` drift/conflicts among the report's
 //! managed targets (#148, part of #142), via
 //! [`crate::git_exclude::diagnose`] — see [`Report::exclude_problems`].
 
 pub mod git;
+pub mod overlay;
 pub(crate) mod virtual_checkout;
 
 use std::fmt;
@@ -144,33 +144,6 @@ impl fmt::Display for EntryStatus {
                 style::yellow("diverged:"),
                 target,
             )?,
-        }
-
-        // #141: list the specific added/modified/deleted files underneath
-        // a virtual checkout's aggregate line — the per-file detail
-        // `over status` needs beyond a single status word. Best-effort:
-        // a lookup failure here just means one less line of detail, never
-        // a panic from `Display` (which can't propagate a `Result`).
-        if self.entry.intent.is_virtual_checkout()
-            && matches!(
-                self.status,
-                Status::Modified | Status::Diverged { .. } | Status::Conflict
-            )
-        {
-            for (label, changes) in [
-                ("staged", virtual_checkout::staged_changes(&self.entry)),
-                ("unstaged", virtual_checkout::unstaged_changes(&self.entry)),
-            ] {
-                let changes = changes.map_err(|_| fmt::Error)?;
-                for change in changes {
-                    write!(
-                        f,
-                        "\n    {} {} ({label})",
-                        file_change_symbol(change.kind),
-                        change.path.display()
-                    )?;
-                }
-            }
         }
 
         Ok(())
@@ -328,9 +301,8 @@ impl Report {
     }
 
     /// Whether anything in this report needs attention (everything except
-    /// `Applied`, plus any exclude-block problem). Informational only —
-    /// `over status` never fails the process just because entries need
-    /// attention, mirroring `git status`.
+    /// `Applied`, plus any exclude-block problem). The canonical status CLI
+    /// uses this to choose its exit status.
     pub fn needs_attention(&self) -> bool {
         self.entries.iter().any(|e| e.status.needs_attention())
             || self.exclude_problems.iter().any(|p| p.needs_attention())
@@ -695,7 +667,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn virtual_checkout_modified_display_lists_the_changed_file() {
+    async fn virtual_checkout_display_is_pure_and_details_are_available_during_inspection() {
         use crate::materialize::virtual_checkout::{git as vc_git, state as vc_state};
 
         let _xdg = isolate_xdg_state();
@@ -763,7 +735,13 @@ mod tests {
         assert_eq!(entry_status.status, Status::Modified);
         let display = format!("{entry_status}");
         assert!(display.contains("modified:"));
-        assert!(display.contains("M a.txt"));
+        let changes = virtual_checkout::unstaged_changes(&entry).unwrap();
+        assert_eq!(changes[0].path, std::path::Path::new("a.txt"));
+        // Rendering remains valid after inspection resources disappear.
+        drop(head_tree);
+        drop(source_repo);
+        fs::remove_dir_all(td.path()).unwrap();
+        assert_eq!(format!("{entry_status}"), display);
     }
 
     #[test]

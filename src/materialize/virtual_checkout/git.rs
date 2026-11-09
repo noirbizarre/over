@@ -75,11 +75,20 @@ pub(crate) fn scoped_subtree<'repo>(
     managed_path: &Path,
     scope: &CheckoutScope,
 ) -> Result<Tree<'repo>> {
-    let subtree = if !managed_path.as_os_str().is_empty() && tree.get_path(managed_path).is_err() {
-        repo.find_tree(repo.treebuilder(None)?.write()?)?
-    } else {
-        managed_subtree(repo, tree, managed_path)?
-    };
+    build_content_tree(repo, &scoped_entries(repo, tree, managed_path, scope)?)
+}
+
+/// Inspect ownership without persisting synthetic tree objects in the source repo.
+pub(crate) fn scoped_entries(
+    repo: &Repository,
+    tree: &Tree<'_>,
+    managed_path: &Path,
+    scope: &CheckoutScope,
+) -> Result<BTreeMap<PathBuf, (Oid, i32)>> {
+    if !managed_path.as_os_str().is_empty() && tree.get_path(managed_path).is_err() {
+        return Ok(BTreeMap::new());
+    }
+    let subtree = managed_subtree(repo, tree, managed_path)?;
     let mut entries = tracked_entries(&subtree)?;
     entries.retain(|path, _| scope.owns_source(path));
     for path in entries.keys() {
@@ -89,7 +98,7 @@ pub(crate) fn scoped_subtree<'repo>(
             path.display()
         );
     }
-    build_content_tree(repo, &entries)
+    Ok(entries)
 }
 
 /// The tree to materialize/compare against: the commit at `base_oid` if
@@ -565,8 +574,7 @@ pub(crate) fn staged_changes(
     scope: &CheckoutScope,
 ) -> Result<Vec<FileChange>> {
     let head = base_tree(repo, None)?;
-    let view = scoped_subtree(repo, &head, managed, scope)?;
-    let head_entries = tracked_entries(&view)?;
+    let head_entries = scoped_entries(repo, &head, managed, scope)?;
     let index = repo.index()?;
     anyhow::ensure!(
         !index.has_conflicts(),

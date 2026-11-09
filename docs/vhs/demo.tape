@@ -97,7 +97,7 @@ Type "over list --tree"
 Enter
 Sleep 1500ms
 
-Type "over show hosts/demo"
+Type "over status hosts/demo"
 Enter
 Sleep 1500ms
 

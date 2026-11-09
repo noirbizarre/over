@@ -52,16 +52,17 @@ pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
     let (repo, managed_path) = git::discover_source(source)?;
 
     let base_tree = git::base_tree(&repo, Some(&record.base_oid))?;
-    let base_subtree = git::scoped_subtree(&repo, &base_tree, &managed_path, &scope)?;
-    let base_blobs = git::tracked_blobs(&base_subtree)?;
+    let base_entries = git::scoped_entries(&repo, &base_tree, &managed_path, &scope)?;
+    let base_blobs = blob_ids(&base_entries);
 
     let local_changes = git::diff_scoped_target(&entry.target, &base_blobs, &scope)?;
 
     let head_tree = git::base_tree(&repo, None)?;
-    let head_subtree = git::scoped_subtree(&repo, &head_tree, &managed_path, &scope)?;
-    let head_blobs = git::tracked_blobs(&head_subtree)?;
+    let head_entries = git::scoped_entries(&repo, &head_tree, &managed_path, &scope)?;
+    let head_blobs = blob_ids(&head_entries);
 
-    let source_drifted = head_subtree.id() != base_subtree.id();
+    // Include executable-bit drift, as the previous filtered-tree comparison did.
+    let source_drifted = head_entries != base_entries;
 
     let staged = git::staged_changes(&repo, &managed_path, &scope)?;
     Ok(
@@ -116,13 +117,21 @@ pub(crate) fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
     let (repo, managed_path) = git::discover_source(source)?;
 
     let base_tree = git::base_tree(&repo, Some(&record.base_oid))?;
-    let base_subtree = git::scoped_subtree(&repo, &base_tree, &managed_path, &scope)?;
-    let base_blobs = git::tracked_blobs(&base_subtree)?;
+    let base_blobs = blob_ids(&git::scoped_entries(
+        &repo,
+        &base_tree,
+        &managed_path,
+        &scope,
+    )?);
     let local_changes = git::diff_scoped_target(&entry.target, &base_blobs, &scope)?;
 
     let head_tree = git::base_tree(&repo, None)?;
-    let head_subtree = git::scoped_subtree(&repo, &head_tree, &managed_path, &scope)?;
-    let head_blobs = git::tracked_blobs(&head_subtree)?;
+    let head_blobs = blob_ids(&git::scoped_entries(
+        &repo,
+        &head_tree,
+        &managed_path,
+        &scope,
+    )?);
 
     Ok(conflicting_paths(&base_blobs, &head_blobs, &local_changes))
 }
@@ -147,8 +156,12 @@ pub(crate) fn file_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
     let scope = entry.intent.checkout_scope();
     let (repo, managed_path) = git::discover_source(source)?;
     let base_tree = git::base_tree(&repo, Some(&record.base_oid))?;
-    let base_subtree = git::scoped_subtree(&repo, &base_tree, &managed_path, &scope)?;
-    let base_blobs = git::tracked_blobs(&base_subtree)?;
+    let base_blobs = blob_ids(&git::scoped_entries(
+        &repo,
+        &base_tree,
+        &managed_path,
+        &scope,
+    )?);
     git::diff_scoped_target(&entry.target, &base_blobs, &scope)
 }
 
@@ -158,6 +171,13 @@ pub(crate) fn staged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
     };
     let (repo, managed) = git::discover_source(source)?;
     git::staged_changes(&repo, &managed, &entry.intent.checkout_scope())
+}
+
+fn blob_ids(entries: &BTreeMap<PathBuf, (Oid, i32)>) -> BTreeMap<PathBuf, Oid> {
+    entries
+        .iter()
+        .map(|(path, (oid, _))| (path.clone(), *oid))
+        .collect()
 }
 
 pub(crate) fn unstaged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {

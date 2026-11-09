@@ -65,7 +65,7 @@ fn show_overlay() -> TestResult {
 /// whole command/assert boilerplate per case.
 #[rstest]
 #[case::list(&["list"], "list command")]
-#[case::show(&["show", "dev"], "show command")]
+#[case::show(&["show", "dev"], "CLI args")]
 fn subcommand_debug_output_logs_command_name(
     #[case] args: &[&str],
     #[case] expected: &str,
@@ -617,6 +617,7 @@ fn doctor_reports_a_stale_xdg_sync_record() -> TestResult {
 #[test]
 fn status_reports_missing_before_apply() -> TestResult {
     let repo = setup_overlay_repo();
+    fs::write(repo.path().join("dev/file.txt"), b"content")?;
     let root = TempDir::new()?;
     Command::cargo_bin("over")?
         .arg("--home")
@@ -624,8 +625,10 @@ fn status_reports_missing_before_apply() -> TestResult {
         .args(["status", "dev", "--root"])
         .arg(root.path())
         .assert()
-        .success()
-        .stdout(contains("missing"));
+        .code(1)
+        .stdout(contains("1 missing"))
+        .stdout(contains("Configuration:"))
+        .stdout(contains("source:"));
     Ok(())
 }
 
@@ -668,7 +671,7 @@ fn status_reports_conflict_for_existing_file() -> TestResult {
         .args(["status", "dev", "--root"])
         .arg(root.path())
         .assert()
-        .success()
+        .code(1)
         .stdout(contains("conflict"));
     Ok(())
 }
@@ -1481,10 +1484,11 @@ fn show_overlay_with_target() -> TestResult {
         .arg(tmp.path())
         .args(["show", "myoverlay"])
         .assert()
-        .success()
+        .code(1)
         .stdout(contains("myoverlay"))
         .stdout(contains(&target_str))
-        .stdout(contains("My test overlay"));
+        .stdout(contains("My test overlay"))
+        .stdout(contains("Configuration:"));
     Ok(())
 }
 
@@ -1957,11 +1961,11 @@ url = "https://github.com/user/myapp.git"
         .arg(tmp.path())
         .args(["show", "gitoverlay"])
         .assert()
-        .success()
+        .code(1)
         .stdout(contains("gitoverlay"))
-        .stdout(contains("git repositories:"))
+        .stdout(contains("git:"))
         .stdout(contains("myapp"))
-        .stdout(contains("https://github.com/user/myapp.git"));
+        .stdout(contains("https://github.com/user/myapp.git").not());
     Ok(())
 }
 
@@ -1982,11 +1986,11 @@ mode = "symlink-directory"
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(tmp.path())
-        .args(["show", "linkdir_overlay"])
+        .args(["show", "linkdir_overlay", "--verbose"])
         .assert()
         .success()
         .stdout(contains("linkdir_overlay"))
-        .stdout(contains("mode: symlink-directory"))
+        .stdout(contains("mode=symlink-directory"))
         .stdout(contains(".config/nvim"));
     Ok(())
 }
@@ -2011,13 +2015,13 @@ mode = "symlink"
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(tmp.path())
-        .args(["show", "rules_overlay"])
+        .args(["show", "rules_overlay", "--verbose"])
         .assert()
         .success()
         .stdout(contains("rules_overlay"))
         .stdout(contains("mode: symlink-directory"))
-        .stdout(contains("rules:"))
-        .stdout(contains("special: mode: symlink"));
+        .stdout(contains("rule 1:"))
+        .stdout(contains("special mode=symlink"));
     Ok(())
 }
 
@@ -2678,7 +2682,7 @@ fn virtual_checkout_status_and_diff_report_local_modification() -> TestResult {
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
-        .success()
+        .code(1)
         .stdout(contains("modified"))
         .stdout(contains("M file.txt"));
 

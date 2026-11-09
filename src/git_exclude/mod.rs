@@ -229,8 +229,9 @@ pub fn managed_targets(desired: &DesiredTree) -> Result<Vec<ManagedTarget>> {
             };
             let (repo, managed) = git::discover_source(source)?;
             let head = git::base_tree(&repo, None)?;
-            let view = git::scoped_subtree(&repo, &head, &managed, scope)?;
-            let mut paths: BTreeSet<_> = git::tracked_blobs(&view)?.into_keys().collect();
+            let mut paths: BTreeSet<_> = git::scoped_entries(&repo, &head, &managed, scope)?
+                .into_keys()
+                .collect();
             // Newly added checkout files belong to the source index before HEAD;
             // keep host Git from staging the same content in another repository.
             for indexed in repo.index()?.iter() {

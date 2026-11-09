@@ -276,7 +276,7 @@ fn dry_run_and_read_only_commands_never_execute_hooks() {
         .arg("--dry-run")
         .assert()
         .success();
-    for operation in ["status", "diff"] {
+    for operation in ["status", "show", "diff"] {
         fixture
             .command()
             .arg(operation)
@@ -288,6 +288,63 @@ fn dry_run_and_read_only_commands_never_execute_hooks() {
     }
     fixture.command().arg("lint").assert().success();
     assert_eq!(fixture.trace(), "");
+}
+
+#[test]
+fn status_and_show_report_sections_without_exposing_or_executing_secret_values() {
+    let fixture = Fixture::new();
+    fixture.config(
+        "over.yaml",
+        json!({"target": "~", "hooks": {"post-apply": ["echo ROOT_SECRET >> \"$HOOK_TRACE\""]}}),
+    );
+    fixture.config("selected/over.yaml", json!({
+        "data": {"token": "DATA_SECRET"},
+        "hooks": {"post-apply": ["echo HOOK_SECRET >> \"$HOOK_TRACE\""]},
+        "install": {"pre": ["echo INSTALL_SECRET >> \"$HOOK_TRACE\""], "apt": ["PACKAGE_SECRET"]},
+        "git": {"plugin": {"url": "https://user:REMOTE_SECRET@example.invalid/plugin.git", "config": {"custom.token": "CONFIG_SECRET"}}}
+    }));
+    for verb in ["status", "show"] {
+        let output = fixture
+            .command()
+            .args(["--debug", verb, "selected", "--verbose", "--root"])
+            .arg(&fixture.target)
+            .assert()
+            .code(1)
+            .stdout(contains("install: configured"))
+            .stdout(contains("post-apply: 1"))
+            .stdout(contains("git: plugin"))
+            .get_output()
+            .clone();
+        for bytes in [&output.stdout, &output.stderr] {
+            let text = String::from_utf8_lossy(bytes);
+            for secret in [
+                "ROOT_SECRET",
+                "DATA_SECRET",
+                "HOOK_SECRET",
+                "INSTALL_SECRET",
+                "PACKAGE_SECRET",
+                "REMOTE_SECRET",
+                "CONFIG_SECRET",
+            ] {
+                assert!(!text.contains(secret), "leaked {secret}: {text}");
+            }
+        }
+    }
+    assert_eq!(fixture.trace(), "");
+    fixture.config(
+        "selected/over.yaml",
+        json!({"install": {"apt": {"packages": 42, "pre": ["INVALID_SECRET"]}}}),
+    );
+    let output = fixture
+        .command()
+        .args(["--debug", "status", "selected", "--root"])
+        .arg(&fixture.target)
+        .assert()
+        .code(1)
+        .get_output()
+        .clone();
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("INVALID_SECRET"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("INVALID_SECRET"));
 }
 
 #[test]

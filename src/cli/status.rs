@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
@@ -5,13 +6,11 @@ use clap::Args;
 use dirs::home_dir;
 
 use crate::cli::CLI;
-use crate::desired::DesiredTree;
 use crate::exec::Context;
 use crate::overlays::{Overlay, Repository};
-use crate::status::Report;
+use crate::status::Counts;
+use crate::status::overlay::{OverlayReport, ResolvedConfiguration};
 use crate::ui;
-use crate::ui::{emojis, style};
-use crate::utils::short_path;
 
 #[derive(Args, Debug)]
 pub struct Params {
@@ -49,82 +48,192 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .ok_or_else(|| anyhow!("could not determine home directory"))?;
 
     let overlays = match (&args.name, args.all) {
-        (Some(name), _) => vec![repo.get(name)?],
-        (None, true) => repo.overlays()?,
+        (Some(name), _) => vec![repo.get(name).map_err(|error| anyhow!("{error}"))],
+        (None, true) => repo
+            .inspect_overlays()
+            .map_err(|error| anyhow!("{error}"))?,
         (None, false) => {
             let ctx = Context::builder()
                 .root(root.clone())
                 .repository(repo.clone())
                 .build();
-            match repo.default_overlay(&ctx)? {
-                Some(overlay) => vec![overlay],
-                None => repo.overlays()?,
+            // Drop secret-bearing parser/template causes while preserving diagnostic context.
+            match repo
+                .default_overlay(&ctx)
+                .map_err(|error| anyhow!("{error}"))?
+            {
+                Some(overlay) => vec![Ok(overlay)],
+                None => repo
+                    .inspect_overlays()
+                    .map_err(|error| anyhow!("{error}"))?,
             }
         }
     };
 
     if overlays.is_empty() {
-        ui::info("No overlays found.").ok();
+        ui::info("No overlays found.")?;
         return Ok(());
     }
 
+    let mut healthy = 0;
+    let mut unhealthy = 0;
+    let mut failed = 0;
+    let mut failures = Vec::new();
+    let mut counts = Counts::default();
+    let mut exclude_problems = 0;
     for overlay in &overlays {
-        print_overlay_status(cli, &repo, &root, overlay, args.no_uses)?;
+        let snapshot = overlay
+            .as_ref()
+            .map_err(|error| anyhow!("{error}"))
+            .and_then(|overlay| inspect_overlay(&repo, &root, overlay, args.no_uses));
+        match snapshot {
+            Ok(snapshot) => {
+                write_output(&render_overlay(&snapshot, cli.verbose))?;
+                match &snapshot.health {
+                    Ok(report) => {
+                        let current = report.counts();
+                        exclude_problems += report
+                            .exclude_problems()
+                            .iter()
+                            .filter(|problem| problem.needs_attention())
+                            .count();
+                        counts.applied += current.applied;
+                        counts.missing += current.missing;
+                        counts.modified += current.modified;
+                        counts.broken += current.broken;
+                        counts.conflict += current.conflict;
+                        counts.ahead += current.ahead;
+                        counts.behind += current.behind;
+                        counts.diverged += current.diverged;
+                        if report.needs_attention() {
+                            unhealthy += 1;
+                        } else {
+                            healthy += 1;
+                        }
+                    }
+                    Err(error) => {
+                        failures.push(error.to_string());
+                        failed += 1;
+                    }
+                }
+            }
+            Err(error) => {
+                write_output(&format!("Check failed: {error}\n"))?;
+                failures.push(error.to_string());
+                failed += 1;
+            }
+        }
     }
-
+    if overlays.len() > 1 {
+        write_output(&format!(
+            "Overall: {} overlays; {healthy} fully applied, {unhealthy} need attention, {failed} could not be checked\n  {counts}\n  {exclude_problems} exclude problem(s)\n  Entry counts are summed per overlay, including shared dependencies.",
+            overlays.len()
+        ))?;
+    }
+    if unhealthy + failed > 0 {
+        return Err(anyhow!(
+            "selected overlays are not fully applied ({unhealthy} need attention, {failed} could not be checked){}",
+            if failures.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", failures.join("; "))
+            }
+        ));
+    }
     Ok(())
 }
 
-fn print_overlay_status(
-    cli: &CLI,
+fn inspect_overlay(
     repo: &Repository,
     root: &Path,
     overlay: &Overlay,
     no_uses: bool,
-) -> Result<()> {
+) -> Result<OverlayReport> {
     let ctx = Context::builder()
         .root(root.to_path_buf())
         .repository(repo.clone())
         .overlay(overlay.clone())
         .no_uses(no_uses)
         .build();
-    let ctx = ctx.resolve_data()?;
-    let target = overlay.resolve_target(&ctx)?;
+    let ctx = ctx
+        .resolve_data()
+        .map_err(|error| anyhow!("cannot resolve overlay '{}': {error}", overlay.name))?;
+    let target = overlay
+        .resolve_target(&ctx)
+        .map_err(|_| anyhow!("cannot resolve target for overlay '{}'", overlay.name))?;
     let ctx = ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
 
-    // Full `uses` graph (not `build_own`): status reports on everything an
-    // overlay pulls in, exactly like `Overlay::apply` reconciles it.
-    let desired = DesiredTree::build(&ctx, overlay)?;
-    let report = Report::build(&desired)?;
+    OverlayReport::inspect(ctx, overlay)
+        .map_err(|error| anyhow!("cannot inspect overlay '{}': {error}", overlay.name))
+}
 
-    ui::info(format!(
-        "{} {} {} {} {}",
-        emojis::PACKAGE,
-        style::white_b("Overlay"),
-        style::cyan(&overlay.name),
-        style::white_b("->"),
-        style::cyan(&short_path(&target.to_string_lossy())),
-    ))
-    .ok();
-    ui::info(format!("  {}", report.counts())).ok();
+fn render_configuration(
+    configuration: &ResolvedConfiguration,
+    verbose: bool,
+    lines: &mut Vec<String>,
+) {
+    lines.push(format!("  source: {}", configuration.source.display()));
+    lines.push(format!("  target: {}", configuration.target.display()));
+    lines.extend(configuration.summary.iter().map(|line| format!("  {line}")));
+    if verbose {
+        lines.extend(
+            configuration
+                .details
+                .iter()
+                .map(|line| format!("    {line}")),
+        );
+    }
+}
 
-    for entry_status in report.entries() {
-        if cli.verbose || entry_status.status.needs_attention() {
-            ui::info(format!("  {entry_status}")).ok();
+fn render_overlay(snapshot: &OverlayReport, verbose: bool) -> String {
+    let mut lines = vec![
+        format!("Overlay {}", snapshot.configuration.name),
+        "Configuration:".into(),
+    ];
+    render_configuration(&snapshot.configuration, verbose, &mut lines);
+    if verbose {
+        for dependency in &snapshot.dependencies {
+            lines.push(format!("Dependency {}:", dependency.name));
+            render_configuration(dependency, true, &mut lines);
         }
     }
-
-    // #148: `.git/info/exclude` drift/conflicts among this overlay's
-    // managed targets — same verbose/needs-attention gating as entries
-    // above, informational only.
-    for problem in report.exclude_problems() {
-        if cli.verbose || problem.needs_attention() {
-            ui::info(format!("  {problem}")).ok();
+    lines.push("Reconciliation:".into());
+    match &snapshot.health {
+        Ok(report) => {
+            lines.push(format!(
+                "  {} — {}",
+                if report.needs_attention() {
+                    "Needs attention"
+                } else {
+                    "Fully applied"
+                },
+                report.counts()
+            ));
+            for (entry, details) in report.entries().iter().zip(&snapshot.entry_details) {
+                if verbose || entry.status.needs_attention() {
+                    lines.push(format!("  {entry}"));
+                    lines.extend(details.iter().map(|line| format!("    {line}")));
+                }
+            }
+            for problem in report.exclude_problems() {
+                if verbose || problem.needs_attention() {
+                    lines.push(format!("  {problem}"));
+                }
+            }
         }
+        Err(error) => lines.push(format!("  Check failed: {error}")),
     }
-    ui::info("").ok();
+    lines.push(String::new());
+    lines.join("\n")
+}
 
-    Ok(())
+fn write_output(output: &str) -> Result<()> {
+    // Even forced console color must not leak ANSI escapes into captured status.
+    if !std::io::stdout().is_terminal() || std::env::var_os("NO_COLOR").is_some() {
+        ui::info(console::strip_ansi_codes(output))
+    } else {
+        ui::info(output)
+    }
 }
 
 #[cfg(test)]
@@ -149,6 +258,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rendering_a_collected_overlay_report_never_reopens_its_source_or_target() {
+        let tmp = TempDir::new().unwrap();
+        tmp.child("ov/over.yaml")
+            .write_str("target: '~/target'")
+            .unwrap();
+        tmp.child("ov/file").write_str("managed").unwrap();
+        let repo = Repository::new(tmp.path().to_owned());
+        let overlay = repo.get("ov").unwrap();
+        let snapshot = inspect_overlay(&repo, &tmp.path().join("home"), &overlay, false).unwrap();
+        let before = render_overlay(&snapshot, true);
+        tmp.close().unwrap();
+        assert_eq!(render_overlay(&snapshot, true), before);
+    }
+
     #[tokio::test]
     async fn status_empty_repository() {
         let tmp = TempDir::new().unwrap();
@@ -168,7 +292,7 @@ mod tests {
 
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
-        assert!(result.is_ok());
+        assert!(result.is_err());
         assert!(!root.path().join("sub").exists());
     }
 
@@ -205,10 +329,9 @@ mod tests {
 
     /// End-to-end smoke test for #148: a managed target landing inside a
     /// git repository with no `.git/info/exclude` block yet must not
-    /// error — `execute` stays `Ok` (informational only), and the block
-    /// must not be created as a side effect of running `over status`.
+    /// create the block as a side effect, even though it returns an unhealthy exit.
     #[tokio::test]
-    async fn status_reports_a_missing_exclude_block_without_erroring_or_writing() {
+    async fn status_reports_a_missing_exclude_block_with_failure_without_writing() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -220,7 +343,7 @@ mod tests {
 
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
-        assert!(result.is_ok());
+        assert!(result.is_err());
 
         // `git init` itself pre-populates `info/exclude` with a commented
         // template — assert our own marker never lands in it, rather than
@@ -246,7 +369,7 @@ mod tests {
 
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 
     #[tokio::test]

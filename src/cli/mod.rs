@@ -19,7 +19,6 @@ mod lint;
 mod list;
 mod log;
 mod new;
-mod show;
 mod status;
 mod sync;
 mod unapply;
@@ -72,9 +71,6 @@ pub enum Commands {
     #[clap(name = "list", about = "List known overlays", alias = "ls")]
     List(list::Params),
 
-    #[clap(name = "show", about = "Display details about an overlay")]
-    Show(show::Params),
-
     #[clap(name = "data", about = "Export resolved overlay data as JSON")]
     Data(data::Params),
 
@@ -95,7 +91,8 @@ pub enum Commands {
 
     #[clap(
         name = "status",
-        about = "Show the reconciliation status of overlays against actual state"
+        visible_alias = "show",
+        about = "Show resolved overlay configuration and reconciliation health"
     )]
     Status(status::Params),
 
@@ -171,9 +168,6 @@ pub async fn main() -> Result<()> {
         }
         Some(Commands::Completion(ref opt)) => {
             completion::execute(&args, opt).await?;
-        }
-        Some(Commands::Show(ref opt)) => {
-            show::execute(&args, opt).await?;
         }
         Some(Commands::Data(ref opt)) => {
             data::execute(&args, opt).await?;
@@ -296,7 +290,7 @@ mod tests {
     #[test]
     fn cli_show_subcommand() {
         let args = CLI::parse_from(["over", "show", "myoverlay"]);
-        assert!(matches!(args.cmd, Some(Commands::Show(_))));
+        assert!(matches!(args.cmd, Some(Commands::Status(_))));
     }
 
     #[test]
