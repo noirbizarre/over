@@ -72,6 +72,10 @@ pub struct Overlay {
 
     pub description: Option<String>,
 
+    /// Consumer-owned metadata, inherited just like other descriptor fields.
+    #[serde(default)]
+    pub data: super::DataMap,
+
     pub target: String,
 
     /// Directory prefixes relocated independently of the base target.
@@ -169,6 +173,11 @@ impl Overlay {
         // Reverse so that ancestor configs are added first (lower priority)
         // and overlay-specific config is added last (higher priority / overrides)
         sources.reverse();
+
+        for source in &sources {
+            super::data::validate_source(source)
+                .with_context(|| format!("invalid data in descriptor source {source:?}"))?;
+        }
 
         let s = Config::builder()
             .add_source(sources)

@@ -280,6 +280,8 @@ fn check_cycles(overlays: &HashMap<String, &Overlay>) -> Vec<Diagnostic> {
 /// Valid user-facing top-level keys in an overlay descriptor.
 /// Internal keys (`name`, `root`) set by code are excluded.
 const VALID_OVERLAY_KEYS: &[&str] = &[
+    "data",
+    "default_overlay",
     "defaults",
     "description",
     "exclude",

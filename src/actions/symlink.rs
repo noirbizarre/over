@@ -236,6 +236,7 @@ pub fn discover_symlinks(overlay_root: &Path) -> Result<Vec<(String, SymlinkConf
 /// available when rendering an overlay's own `target =` template.
 #[derive(Serialize)]
 struct SymlinkTemplateContext<'a> {
+    data: &'a crate::overlays::DataMap,
     env: HashMap<String, String>,
     overlays: &'a HashMap<String, String>,
     machine: &'a MachineInfo,
@@ -243,6 +244,7 @@ struct SymlinkTemplateContext<'a> {
 
 pub fn render_symlink_target(template: &str, ctx: &Context) -> Result<String> {
     let state = SymlinkTemplateContext {
+        data: &ctx.data,
         env: std::env::vars().collect(),
         overlays: ctx.resolved_overlays.as_ref(),
         machine: &ctx.machine,

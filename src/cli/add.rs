@@ -80,6 +80,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .build();
 
     let resolved = resolve_inputs_with_missing(&args.files, true)?;
+    let ctx = ctx.resolve_data()?;
     let routing = overlay.resolve_mappings(&ctx)?;
     for path in &resolved {
         routing.logical_path_for(path)?;

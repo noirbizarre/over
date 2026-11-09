@@ -268,6 +268,7 @@ fn build_desired_tree(
         .overlay(overlay.clone())
         .no_uses(no_uses)
         .build();
+    let ctx = ctx.resolve_data()?;
     let Ok(target) = overlay.resolve_target(&ctx) else {
         return Ok(None);
     };

@@ -28,7 +28,7 @@ pub struct Params {
     #[clap(long, help = "Fail on conflict instead of prompting")]
     no_prompt: bool,
 
-    #[clap(long, help = "Do not process uses")]
+    #[clap(long, help = "Skip dependency operations, retaining dependency data")]
     no_uses: bool,
 
     #[clap(long, short, help = "Install associated applications")]
@@ -73,7 +73,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         tracing::debug!(?overlay, "resolved overlay");
     }
 
-    let ctx = ctx.with_overlay(overlay.clone());
+    let ctx = ctx.with_overlay(overlay.clone()).resolve_data()?;
 
     if args.install {
         actions::install::install(&ctx, &overlay).await?;

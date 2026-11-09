@@ -18,7 +18,7 @@ pub struct Params {
     #[clap(short, long, help = "The target root directory (~)")]
     root: Option<PathBuf>,
 
-    #[clap(long, help = "Do not process uses")]
+    #[clap(long, help = "Skip dependency operations, retaining dependency data")]
     no_uses: bool,
 
     #[clap(

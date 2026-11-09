@@ -23,14 +23,14 @@ pub struct Params {
     #[clap(short, long, help = "The target root directory (~)")]
     root: Option<PathBuf>,
 
-    #[clap(long, help = "Do not process uses")]
+    #[clap(long, help = "Skip dependency operations, retaining dependency data")]
     no_uses: bool,
 
     #[clap(
         long,
         short,
         conflicts_with = "name",
-        help = "Check every overlay, ignoring any configured default_overlay"
+        help = "Check every overlay, retaining configured default_overlay data"
     )]
     all: bool,
 }
@@ -88,6 +88,7 @@ fn print_overlay_status(
         .overlay(overlay.clone())
         .no_uses(no_uses)
         .build();
+    let ctx = ctx.resolve_data()?;
     let target = overlay.resolve_target(&ctx)?;
     let ctx = ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
 

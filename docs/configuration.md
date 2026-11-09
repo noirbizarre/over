@@ -61,12 +61,130 @@ render, is a hard error — never a silent fallback to another selection
 method. See
 [ADR-019](adr/019-default-overlay-selection-extends-templating-to-overlay-choice.md).
 
+The default also selects the execution's host **data context**. An explicit
+`NAME` overrides the command target, but retains the default overlay's metadata
+and its transitive dependencies. A broken default therefore fails data resolution
+even with an explicit `NAME` or `--all`. The default's files and packages are not
+processed merely because its data is included.
+
 [`over doctor`](usage/doctor.md) deliberately does not participate in this:
 its Overlay configuration and XDG state sections always cover every overlay
 in the repository regardless of `NAME`, so narrowing the whole report to a
 single default overlay would leave those sections inconsistently scoped
 with the Git-exclude section. `doctor`'s `NAME` argument only narrows which
 overlay's `.git/info/exclude` drift gets checked; there is no `--all` flag.
+Its destination rendering still uses the default data context.
+
+## Consumer Metadata (`data`)
+
+Descriptors may carry arbitrary consumer-owned metadata under `data`:
+
+```yaml
+data:
+  hostname: workstation
+  hardware:
+    gpu: nvidia
+  provisioning:
+    archlinux:
+      kernel: linux
+      filesystem: btrfs
+```
+
+`data` must be a mapping when present; omitting it is equivalent to an empty
+mapping. Nested values may be mappings, lists, scalars, or null. Over validates
+the top-level mapping, while consumers validate their own namespaces, such as
+`data.provisioning.archlinux`. Over's configuration (`target`, `uses`, `exclude`,
+etc.) stays outside `data`; metadata does not configure Over itself.
+
+### Resolution and Precedence
+
+Each overlay first inherits `data` through the normal ancestor descriptor cascade.
+The execution context then composes those effective mappings:
+
+1. Traverse the configured default overlay's transitive `uses` dependencies,
+   depth-first in list order, before the default overlay itself.
+2. Traverse the selected command overlay's closure in the same way, skipping
+   overlays already visited. Newly encountered selected dependencies can override
+   earlier default contributions; shared dependencies are not replayed.
+3. Merge the selected overlay itself last, even if the default depends on it.
+   Each overlay contributes exactly once.
+
+Later contributions have higher priority. Later siblings in `uses` override
+earlier siblings. The selected overlay's effective mapping includes inherited
+values, so even an inherited selected value can override a host-specific value.
+
+Mappings merge recursively. All other conflicts use the higher-priority value:
+lists replace whole lists, scalars replace scalars or mappings, and an explicit
+null replaces a previous value while retaining the key. An absent key leaves
+the previous value intact. For example:
+
+```yaml
+# Lower priority
+data:
+  hardware: {gpu: integrated, architecture: x86_64}
+  packages: [one, two]
+  optional: enabled
+```
+
+```yaml
+# Higher priority
+data:
+  hardware: {gpu: nvidia}
+  packages: [three]
+  optional: null
+```
+
+The result retains `hardware.architecture`, changes `hardware.gpu` to `nvidia`,
+replaces `packages` with `[three]`, and keeps `optional` with a null value.
+Top-level `data: null` is invalid; null values inside the mapping are allowed.
+
+Without a configured default, explicit selection includes only the selected
+overlay and its dependencies. Without either, existing interactive/all-overlay
+selection behavior applies. Commands processing all overlays resolve a separate
+context per target; unrelated overlays' data is not pooled together.
+`--no-uses` skips dependency **operations**, but metadata always includes complete
+dependency closures. Invalid defaults, missing dependencies, and dependency cycles
+are resolution errors, including when dependency operations are skipped.
+
+### Templates and External Tools
+
+Existing path templates can read nested values:
+
+```jinja2
+{{ data.hostname }}
+{{ data.hardware.gpu }}
+{{ data.provisioning.archlinux.kernel }}
+```
+
+This works in overlay targets, directory mapping targets, `.link.*` targets,
+and `.partial.*` targets. Data is read-only during rendering; metadata strings
+are literal values rather than additional templates. File bodies and partial
+content remain literal. `default_overlay` is resolved using the bootstrap
+context (for example, `machine.hostname`) before metadata is composed; it cannot
+depend on the data it selects.
+
+External Rust consumers can use the same public resolver without parsing files
+or invoking CLI selection:
+
+```rust
+use over::exec::Context;
+use over::overlays::Repository;
+
+fn example() -> anyhow::Result<()> {
+    let repository = Repository::new("/path/to/overlays".into());
+    let context = Context::builder().repository(repository.clone()).build();
+    let selected = repository.get("base")?;
+    let data = repository.resolve_data(&context, Some(&selected))?;
+    // Pass None instead to resolve only the configured default/host context.
+    let prepared = context.with_overlay(selected).resolve_data()?;
+    assert_eq!(prepared.data, data);
+    Ok(())
+}
+```
+
+`DataMap` and `DataValue` are exported from `over::overlays`. Call
+`Context::resolve_data` before rendering targets or executing library operations;
+context copies for dependency overlays preserve that selected-root snapshot.
 
 ## Directory Target Mappings
 

@@ -14,8 +14,8 @@ Options:
   -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
   -r, --root <ROOT>  The target root directory (~)
   -d, --debug        Toggle debug traces
-      --no-uses      Do not process uses
-  -a, --all          Diff every overlay, ignoring any configured default_overlay
+      --no-uses      Skip dependency operations, retaining dependency data
+  -a, --all          Diff every overlay, retaining configured default_overlay data
   -v, --verbose      Toggle verbose output
   -h, --help         Print help
 ```
@@ -24,6 +24,10 @@ When `NAME` is omitted, a configured `default_overlay` (see
 [Default Overlay Selection](../configuration.md#default-overlay-selection))
 narrows the report to just that overlay; pass `--all` to report on every
 overlay regardless.
+
+Explicit `NAME` and `--all` retain the configured default's
+[data context](../configuration.md#consumer-metadata-data). Each target resolves
+its own metadata separately. `--no-uses` skips dependency entries, not their data.
 
 `diff` reuses the same `DesiredTree`/`Plan` reconciliation model as
 [`over status`](status.md), but goes one step further: instead of just

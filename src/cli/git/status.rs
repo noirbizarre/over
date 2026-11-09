@@ -32,7 +32,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
 
     // Use the main repo root (not worktree) for overlay path computation
     let root = home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?;
-    let rel_path = repo_relative_path(&overlay, &root, &repo_root)?;
+    let rel_path = repo_relative_path(&over_repo, &overlay, &root, &repo_root)?;
 
     ui::info(format!(
         "{} {} {}",
@@ -101,6 +101,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
         .repository(over_repo)
         .overlay(overlay.clone())
         .build();
+    let ctx = ctx.resolve_data()?;
     let routing = overlay.resolve_mappings(&ctx)?;
     let desired = crate::desired::DesiredTree::build_own(&ctx, &overlay)?;
     let checkout_entries: Vec<_> = desired

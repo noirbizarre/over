@@ -432,8 +432,8 @@ fn check_symlinks(overlay: &Overlay) -> Vec<Diagnostic> {
                 format!("symlink `{name}`: `target` is empty"),
             ));
         } else {
-            let test_state = std::collections::HashMap::<String, String>::new();
-            if let Err(e) = crate::exec::templates::render_string(&config.target, &test_state) {
+            // Runtime namespaces need not exist on the machine running lint.
+            if let Err(e) = crate::exec::templates::create_env().template_from_str(&config.target) {
                 diagnostics.push(Diagnostic::error(
                     &overlay.name,
                     format!("symlink `{name}`: invalid template in `target`: {e}"),
@@ -476,9 +476,8 @@ fn check_partials(overlay: &Overlay) -> Vec<Diagnostic> {
         // entry with an empty `target`/`content` before it ever reaches
         // `partials`, so neither can ever be empty here — the only thing
         // left worth flagging statically is a `target` template that
-        // won't render.
-        let test_state = std::collections::HashMap::<String, String>::new();
-        if let Err(e) = crate::exec::templates::render_string(&config.target, &test_state) {
+        // cannot compile, independently of the runtime metadata context.
+        if let Err(e) = crate::exec::templates::create_env().template_from_str(&config.target) {
             diagnostics.push(Diagnostic::error(
                 &overlay.name,
                 format!("partial `{name}`: invalid template in `target`: {e}"),

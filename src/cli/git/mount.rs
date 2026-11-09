@@ -96,7 +96,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     // Compute relative path from overlay target to repo root (not worktree)
     let root = home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?;
-    let rel_path = repo_relative_path(&overlay, &root, &repo_root)?;
+    let rel_path = repo_relative_path(&over_repo, &overlay, &root, &repo_root)?;
     let rel_path_str = rel_path
         .to_str()
         .ok_or_else(|| anyhow!("repository path is not valid UTF-8"))?;

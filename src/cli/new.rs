@@ -146,6 +146,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             .overlay(overlay.clone())
             .build();
 
+        let ctx = ctx.resolve_data()?;
         overlay.add_files(&ctx, &files_to_absorb).await?;
     }
 

@@ -18,7 +18,7 @@ Options:
   -f, --force        Overwrite without prompting
   -v, --verbose      Toggle verbose output
       --no-prompt    Fail on conflict instead of prompting
-      --no-uses      Do not process uses
+      --no-uses      Skip dependency operations, retaining dependency data
   -i, --install      Install associated applications
   -h, --help         Print help
 ```
@@ -27,7 +27,9 @@ Options:
   any) is used instead of prompting interactively — see
   [Default Overlay Selection](../configuration.md#default-overlay-selection).
 - `--no-uses` applies only the named overlay, skipping every overlay it
-  `uses`.
+  `uses` operationally. Metadata still includes all transitive dependencies.
+- The configured default's [data context](../configuration.md#consumer-metadata-data)
+  remains available with an explicit `NAME`; this does not apply the default's files.
 - `--install` additionally runs the `install` section (see
   [Install Configuration](../install-config.md)); without it, `apply` only
   links files.
