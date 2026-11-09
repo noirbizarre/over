@@ -62,9 +62,22 @@ CLI wiring keeps explicit CLI selection strictly first, per #113's ask:
   the positional `NAME`) is the explicit opt-out, always producing
   "every overlay" regardless of a configured default.
 
-In all five commands, an explicit `NAME` short-circuits before
-`default_overlay` is even resolved — a misconfigured default never
-breaks an invocation that didn't need it.
+An explicit `NAME` short-circuits default **target selection**. As amended by
+\#179, execution data resolution independently resolves `default_overlay`,
+even with an explicit target or `--all`: a misconfigured default now fails
+that preparation step. Explicit selection continues to determine the command
+target; the default supplies metadata rather than extra operational entries.
+
+Descriptor `data` inherits through the existing ancestor cascade, then composes
+over the default and selected dependency closures. Each closure uses dependency-first
+DFS in declared `uses` order, default closure first, with shared overlays visited
+once. The explicitly selected root contributes last even if it was reached from
+the default closure. Mappings merge recursively, while other values (including
+lists and null) replace lower-priority values. This metadata composition does not
+change ADR-008's filesystem flat union. `--no-uses` only skips dependency operations;
+metadata closure resolution remains complete. See
+[Consumer Metadata](../configuration.md#consumer-metadata-data) for the full contract
+and public API.
 
 ## Consequences
 
@@ -73,7 +86,7 @@ resolves wrong") now also covers overlay *selection*, not only path
 resolution — a broken `default_overlay` template can send commands to
 the wrong overlay or fail outright, not just place files somewhere
 unexpected. The scope is still narrow (one field, resolved once per
-invocation, always validated against `Repository::get` before use).
+resolution, always validated against `Repository::get` before use).
 
 `status`/`diff`/`sync` gain a real, user-visible behavior change: once
 `default_overlay` is configured, a bare `over status` (etc.) reports on

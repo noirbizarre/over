@@ -57,7 +57,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     // Validate that the repo root is under the overlay target.
     // Use main repo root (not worktree) for the overlay path computation.
     let root = home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?;
-    let _rel_path = repo_relative_path(&overlay, &root, &repo_root)?;
+    let _rel_path = repo_relative_path(&over_repo, &overlay, &root, &repo_root)?;
 
     ui::info(format!(
         "{} {} {} {} {}",
@@ -80,6 +80,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .overlay(overlay.clone())
         .build();
 
+    let ctx = ctx.resolve_data()?;
     let resolved = resolve_inputs_with_missing(&args.files, true)?;
 
     overlay.add_files(&ctx, &resolved).await.inspect_err(|e| {

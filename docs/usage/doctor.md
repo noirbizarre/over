@@ -14,7 +14,7 @@ Options:
   -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
   -r, --root <ROOT>  The target root directory (~)
   -d, --debug        Toggle debug traces
-      --no-uses      Do not process uses
+      --no-uses      Skip dependency operations, retaining dependency data
       --fix          Repair malformed git-exclude blocks (over's own corrupted markers only)
   -v, --verbose      Toggle verbose output
   -h, --help         Print help
@@ -40,9 +40,12 @@ Unlike [`over status`](status.md)/[`over diff`](diff.md)/[`over
 sync`](sync.md), `NAME` here only narrows the Git-exclude section to a
 single overlay's managed targets — Overlay configuration and XDG state
 always cover every overlay in the repository. A configured
-`default_overlay` is therefore never consulted, and there is no `--all`
+`default_overlay` does not select doctor's targets, and there is no `--all`
 flag: since only one of four sections could ever be narrowed, doctor always
-reports on everything unless you name a specific overlay.
+reports on everything unless you name a specific overlay. Destination rendering
+still resolves the configured default's [data context](../configuration.md#consumer-metadata-data);
+an invalid default fails data resolution. `--no-uses` skips dependency entries,
+but retains their metadata.
 
 ## `--fix`
 

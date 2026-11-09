@@ -95,6 +95,7 @@ fn resolve_scope(
             .repository(repo.clone())
             .overlay(overlay.clone())
             .build();
+        let ctx = ctx.resolve_data()?;
         let desired = match DesiredTree::build_own(&ctx, &overlay) {
             Ok(desired) => desired,
             Err(error) => {
@@ -171,6 +172,7 @@ fn checkout_scope(
         .repository(repo.clone())
         .overlay(overlay.clone())
         .build();
+    let ctx = ctx.resolve_data()?;
     let target = overlay.resolve_target(&ctx)?;
     let ctx = ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
     let desired = DesiredTree::build_own(&ctx, overlay)?;

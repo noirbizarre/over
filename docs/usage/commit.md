@@ -24,6 +24,10 @@ When `NAME` is omitted, the repository's configured `default_overlay` (if
 any) is used instead of prompting interactively — see
 [Default Overlay Selection](../configuration.md#default-overlay-selection).
 
+An explicit `NAME` retains the configured default's
+[data context](../configuration.md#consumer-metadata-data) for path rendering.
+Only the selected overlay's own checkout entries are committed.
+
 ## What it does
 
 For the named overlay's own virtual checkout entries (never a `uses`

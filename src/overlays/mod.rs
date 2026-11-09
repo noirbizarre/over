@@ -13,6 +13,7 @@ pub(crate) const DEFAULT_TARGET: &str = "~";
 /// Overlay files extensions
 pub(crate) const EXTENSIONS: &[&str] = &["yml", "yaml", "toml"];
 
+pub mod data;
 pub mod discovery;
 pub mod mapping;
 pub mod overlay;
@@ -20,6 +21,7 @@ pub mod permissions;
 pub mod repository;
 pub mod rules;
 
+pub use data::{DataMap, DataValue};
 pub use discovery::OverlayDeclaration;
 pub use overlay::Overlay;
 pub use permissions::{FileMode, PermissionRule};

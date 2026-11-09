@@ -65,7 +65,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         tracing::debug!(?overlay, "resolved overlay");
     }
 
-    let ctx = ctx.with_overlay(overlay.clone());
+    let ctx = ctx.with_overlay(overlay.clone()).resolve_data()?;
     let target = overlay.resolve_target(&ctx)?;
     let ctx = ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
 

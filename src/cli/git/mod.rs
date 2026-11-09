@@ -94,13 +94,18 @@ pub fn set_overlay_config(repo: &git2::Repository, name: &str) -> Result<()> {
 ///
 /// For example, if the overlay target is `~` and the repo is at `~/projects/myapp`,
 /// this returns `projects/myapp`.
-pub fn repo_relative_path(overlay: &Overlay, root: &Path, repo_workdir: &Path) -> Result<PathBuf> {
-    // Resolve the overlay target (using a minimal context for template rendering)
+pub fn repo_relative_path(
+    over_repo: &Repository,
+    overlay: &Overlay,
+    root: &Path,
+    repo_workdir: &Path,
+) -> Result<PathBuf> {
     let ctx = crate::exec::Context::builder()
         .root(root.to_path_buf())
-        .repository(Repository::new(PathBuf::new()))
+        .repository(over_repo.clone())
         .overlay(overlay.clone())
         .build();
+    let ctx = ctx.resolve_data()?;
     overlay
         .resolve_mappings(&ctx)?
         .logical_path_for(repo_workdir)
@@ -236,7 +241,7 @@ mod tests {
         let repo_dir = td.path().join("projects").join("myapp");
         fs::create_dir_all(&repo_dir).unwrap();
 
-        let rel = repo_relative_path(&overlay, td.path(), &repo_dir).unwrap();
+        let rel = repo_relative_path(&over_repo, &overlay, td.path(), &repo_dir).unwrap();
         assert_eq!(rel, PathBuf::from("projects/myapp"));
     }
 
@@ -259,7 +264,7 @@ mod tests {
         let overlay = over_repo.get("overlay").unwrap();
 
         let repo_dir = PathBuf::from("elsewhere");
-        let result = repo_relative_path(&overlay, td.path(), &repo_dir);
+        let result = repo_relative_path(&over_repo, &overlay, td.path(), &repo_dir);
         assert!(result.is_err());
     }
 

@@ -6,7 +6,7 @@ use gethostname::gethostname;
 use indicatif::{MultiProgress, ProgressBar};
 use serde::Serialize;
 
-use crate::overlays::{Overlay, Repository};
+use crate::overlays::{DataMap, Overlay, Repository};
 use crate::utils;
 
 /// Machine facts exposed to templates as `{{ machine.* }}` (OS, arch,
@@ -70,7 +70,7 @@ pub struct Context {
     /// Disable interactive prompts (fail on conflict)
     pub no_prompt: bool,
 
-    /// Do not process uses (skip overlay composition)
+    /// Skip operational overlay composition, retaining dependency metadata.
     pub no_uses: bool,
 
     /// Target root (~)
@@ -82,6 +82,9 @@ pub struct Context {
 
     /// Facts about the current machine, available to all templates.
     pub machine: MachineInfo,
+
+    /// Resolved consumer metadata for the selected execution root.
+    pub data: DataMap,
 
     #[serde(skip)]
     pub progress: Option<Progress>,
@@ -130,11 +133,17 @@ pub struct ContextBuilder {
     repository: Repository,
     overlay: Option<Overlay>,
     machine: MachineInfo,
+    data: DataMap,
     progress: Option<Progress>,
     resolved_overlays: Arc<HashMap<String, String>>,
 }
 
 impl ContextBuilder {
+    pub fn data(mut self, data: DataMap) -> Self {
+        self.data = data;
+        self
+    }
+
     pub fn dry_run(mut self, v: bool) -> Self {
         self.dry_run = v;
         self
@@ -207,6 +216,7 @@ impl ContextBuilder {
             repository: self.repository,
             overlay: self.overlay,
             machine: self.machine,
+            data: self.data,
             progress: self.progress,
             resolved_overlays: self.resolved_overlays,
         })
@@ -214,6 +224,15 @@ impl ContextBuilder {
 }
 
 impl Context {
+    /// Prepare metadata before rendering paths; dependency context copies keep
+    /// this snapshot so they cannot discard the command target's overrides.
+    pub fn resolve_data(&self) -> anyhow::Result<Ctx> {
+        Ok(Arc::new(Self {
+            data: self.repository.resolve_data(self, self.overlay.as_ref())?,
+            ..self.clone_for_overlay_update()
+        }))
+    }
+
     /// Create a new [`ContextBuilder`] with default values.
     pub fn builder() -> ContextBuilder {
         ContextBuilder::default()
@@ -231,6 +250,7 @@ impl Context {
             repository: self.repository.clone(),
             overlay: Some(overlay),
             machine: self.machine.clone(),
+            data: self.data.clone(),
             progress: self.progress.clone(),
             resolved_overlays: self.resolved_overlays.clone(),
         })
@@ -249,6 +269,7 @@ impl Context {
             overlay: self.overlay.clone(),
             machine: self.machine.clone(),
             progress: Some(Progress::Progress(progress)),
+            data: self.data.clone(),
             resolved_overlays: self.resolved_overlays.clone(),
         })
     }
@@ -266,6 +287,7 @@ impl Context {
             overlay: self.overlay.clone(),
             machine: self.machine.clone(),
             progress: Some(Progress::MultiProgress(progress)),
+            data: self.data.clone(),
             resolved_overlays: self.resolved_overlays.clone(),
         })
     }
@@ -299,6 +321,7 @@ impl Context {
             repository: self.repository.clone(),
             overlay: self.overlay.clone(),
             machine: self.machine.clone(),
+            data: self.data.clone(),
             progress: self.progress.clone(),
             resolved_overlays: self.resolved_overlays.clone(),
         }

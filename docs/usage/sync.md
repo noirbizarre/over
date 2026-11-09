@@ -14,8 +14,8 @@ Options:
   -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
   -r, --root <ROOT>  The target root directory (~)
   -d, --debug        Toggle debug traces
-      --no-uses      Do not process uses
-  -a, --all          Sync every overlay, ignoring any configured default_overlay
+      --no-uses      Skip dependency operations, retaining dependency data
+  -a, --all          Sync every overlay, retaining configured default_overlay data
   -v, --verbose      Toggle verbose output
       --pull-only    Only pull upstream changes into the checkout
       --push-only    Only push local commits to the overlay source
@@ -30,6 +30,10 @@ When `NAME` is omitted, a configured `default_overlay` (see
 [Default Overlay Selection](../configuration.md#default-overlay-selection))
 narrows the sync to just that overlay; pass `--all` to sync every overlay
 regardless.
+
+Explicit `NAME` and `--all` retain the configured default's
+[data context](../configuration.md#consumer-metadata-data). Each target resolves
+its own metadata separately. `--no-uses` skips dependency operations, not their data.
 
 ## Scope: the overlay's root git entry only
 

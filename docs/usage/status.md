@@ -12,8 +12,8 @@ Options:
   -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
   -r, --root <ROOT>  The target root directory (~)
   -d, --debug        Toggle debug traces
-      --no-uses      Do not process uses
-  -a, --all          Check every overlay, ignoring any configured default_overlay
+      --no-uses      Skip dependency operations, retaining dependency data
+  -a, --all          Check every overlay, retaining configured default_overlay data
   -v, --verbose      Toggle verbose output
   -h, --help         Print help
 ```
@@ -22,6 +22,10 @@ When `NAME` is omitted, a configured `default_overlay` (see
 [Default Overlay Selection](../configuration.md#default-overlay-selection))
 narrows the report to just that overlay; pass `--all` to report on every
 overlay regardless.
+
+Explicit `NAME` and `--all` retain the configured default's
+[data context](../configuration.md#consumer-metadata-data). Each target resolves
+its own metadata separately. `--no-uses` skips dependency entries, not their data.
 
 Each entry is classified into one of 8 statuses (referenced by `over diff`
 and `over unapply` too):
