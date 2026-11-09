@@ -18,6 +18,7 @@ pub mod discovery;
 pub mod ignore;
 pub mod mapping;
 pub mod overlay;
+mod paths;
 pub mod permissions;
 pub mod repository;
 pub mod rules;
@@ -25,9 +26,9 @@ pub mod rules;
 pub use data::{DataMap, DataValue};
 pub use discovery::OverlayDeclaration;
 pub use overlay::Overlay;
-pub use permissions::{FileMode, PermissionRule};
+pub use permissions::FileMode;
 pub use repository::Repository;
-pub use rules::{Defaults, MaterializationKind, MaterializationRule};
+pub use rules::{MaterializationKind, Rule};
 
 /// Overlay files search pattern
 pub static GLOB_PATTERN: LazyLock<String> =

@@ -252,11 +252,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ov = tmp.path().join("dotfiles");
         fs::create_dir_all(&ov).unwrap();
-        fs::write(
-            ov.join("over.toml"),
-            "target = \"~\"\n[defaults]\nmaterialization = \"checkout\"",
-        )
-        .unwrap();
+        fs::write(ov.join("over.toml"), "target = \"~\"\nmode = \"checkout\"").unwrap();
         fs::write(ov.join("a.txt"), "original\n").unwrap();
         init_committed_repo(&ov);
 
@@ -315,11 +311,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ov = tmp.path().join("dotfiles");
         fs::create_dir_all(&ov).unwrap();
-        fs::write(
-            ov.join("over.toml"),
-            "target = \"~\"\n[defaults]\nmaterialization = \"checkout\"",
-        )
-        .unwrap();
+        fs::write(ov.join("over.toml"), "target = \"~\"\nmode = \"checkout\"").unwrap();
         fs::write(ov.join("a.txt"), "original\n").unwrap();
         init_committed_repo(&ov);
 
@@ -349,11 +341,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ov = tmp.path().join("dotfiles");
         fs::create_dir_all(&ov).unwrap();
-        fs::write(
-            ov.join("over.toml"),
-            "target = \"~\"\n[defaults]\nmaterialization = \"checkout\"",
-        )
-        .unwrap();
+        fs::write(ov.join("over.toml"), "target = \"~\"\nmode = \"checkout\"").unwrap();
         fs::write(ov.join("a.txt"), "original\n").unwrap();
         init_committed_repo(&ov);
 
@@ -399,11 +387,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ov = tmp.path().join("dotfiles");
         fs::create_dir_all(&ov).unwrap();
-        fs::write(
-            ov.join("over.toml"),
-            "target = \"~\"\n[defaults]\nmaterialization = \"checkout\"",
-        )
-        .unwrap();
+        fs::write(ov.join("over.toml"), "target = \"~\"\nmode = \"checkout\"").unwrap();
         fs::write(ov.join("a.txt"), "original\n").unwrap();
         init_committed_repo(&ov);
 

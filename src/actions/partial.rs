@@ -6,7 +6,7 @@
 //!
 //! Deliberately independent of #61 (full file templating): `content` is
 //! used verbatim, never rendered. #65 does resolve a hierarchical
-//! `permissions`/`defaults.mode` rule for the target's declared mode (see
+//! permission baseline or shared rule for the target's declared mode (see
 //! `crate::overlays::permissions` and ADR-020) — the one hierarchical-rule
 //! concern this module honors, applied via [`EnsurePartialBlock::with_permissions`].
 //!

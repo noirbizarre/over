@@ -46,7 +46,7 @@ labelling an entry as needing attention, it shows *what* differs —
   (non-root) `git` entry instead only shows a `Conflict` when its declared
   configuration itself has drifted — see
   [ADR-021](../adr/021-declared-git-repositories-report-provisioning-not-content-status.md);
-- for a **virtual checkout** (`materialization = "checkout"`, no `.git` at
+- for a **virtual checkout** (`mode = "checkout"`, no `.git` at
   the target — see [ADR-022](../adr/022-virtual-checkout-materialization.md)),
   the same aggregate status `over status` reports, plus a real line-level
   content diff for each modified file and a plain added/deleted marker for

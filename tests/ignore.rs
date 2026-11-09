@@ -119,10 +119,11 @@ fn root_and_nested_ignores_filter_before_parsing_without_leaking_to_siblings() {
         "!keep.pem\n/local\nlink.link.toml\n",
     );
     write(&fixture.source, "ov/link.link.toml", "not valid [");
+    let referent = fixture.temp.path().join("nonexistent/selected");
     write(
         &fixture.source,
         "ov/link.link.yaml",
-        "target: /nonexistent/selected\n",
+        &format!("target: {}\n", serde_json::to_string(&referent).unwrap()),
     );
 
     fixture.apply("ov");
@@ -133,10 +134,7 @@ fn root_and_nested_ignores_filter_before_parsing_without_leaking_to_siblings() {
     assert!(!target.join("local").exists());
     assert!(!target.join("deep/keep.pem").exists());
     assert!(target.join("file").is_symlink());
-    assert_eq!(
-        fs::read_link(target.join("link")).unwrap(),
-        Path::new("/nonexistent/selected")
-    );
+    assert_eq!(fs::read_link(target.join("link")).unwrap(), referent);
     for metadata in [
         "over.toml",
         ".overignore",
@@ -205,7 +203,7 @@ fn reverse_add_skips_ignored_children_and_rejects_an_explicit_ignored_selection(
 
 #[test]
 fn atomic_directory_links_reject_ignored_descendants_before_apply_or_reverse_add() {
-    let fixture = Fixture::new("link_dirs = ['app']\n");
+    let fixture = Fixture::new("[[rules]]\npath = 'app'\nmode = 'symlink-directory'\n");
     write(&fixture.source, ".overignore", "*.pem\n");
     write(&fixture.source, "ov/app/secret.pem", "source secret");
     write(&fixture.home, "target/app/secret.pem", "target secret");
@@ -232,12 +230,9 @@ fn atomic_directory_links_reject_ignored_descendants_before_apply_or_reverse_add
 }
 
 #[rstest]
-#[case("[defaults]\nmaterialization = 'checkout'\n", "app")]
-#[case("[[rules]]\npath = 'app'\nmaterialization = 'checkout'\n", "app")]
-#[case(
-    "[defaults]\nmaterialization = 'checkout'\n[map.app]\ntarget = 'routed'\n",
-    "routed"
-)]
+#[case("mode = 'checkout'\n", "app")]
+#[case("[[rules]]\npath = 'app'\nmode = 'checkout'\n", "app")]
+#[case("mode = 'checkout'\n[map.app]\ntarget = '~/target/routed'\n", "routed")]
 fn checkout_workflows_preserve_newly_ignored_files_and_staged_changes(
     #[case] config: &str,
     #[case] destination: &str,
@@ -341,7 +336,7 @@ fn checkout_workflows_preserve_newly_ignored_files_and_staged_changes(
 
 #[test]
 fn checkout_initial_projection_never_materializes_ignored_tracked_files_or_metadata() {
-    let fixture = Fixture::new("[defaults]\nmaterialization = 'checkout'\n");
+    let fixture = Fixture::new("mode = 'checkout'\n");
     write(
         &fixture.source,
         ".overignore",
@@ -365,7 +360,7 @@ fn checkout_initial_projection_never_materializes_ignored_tracked_files_or_metad
 
 #[test]
 fn changing_to_an_atomic_symlink_cannot_discard_ignored_target_only_content() {
-    let fixture = Fixture::new("[[rules]]\npath = 'app'\nmaterialization = 'checkout'\n");
+    let fixture = Fixture::new("[[rules]]\npath = 'app'\nmode = 'checkout'\n");
     write(&fixture.source, "ov/app/file", "selected");
     let repo = git2::Repository::init(&fixture.source).unwrap();
     commit_all(&repo);
@@ -375,7 +370,7 @@ fn changing_to_an_atomic_symlink_cannot_discard_ignored_target_only_content() {
     write(
         &fixture.source,
         "ov/over.toml",
-        "target = '~/target'\nlink_dirs = ['app']\n",
+        "target = '~/target'\n[[rules]]\npath = 'app'\nmode = 'symlink-directory'\n",
     );
     fixture
         .command("apply")
@@ -403,7 +398,7 @@ fn migrating_a_legacy_symlink_directory_to_checkout_preserves_newly_ignored_link
     write(
         &fixture.source,
         "ov/over.toml",
-        "target = '~/target'\n[[rules]]\npath = 'app'\nmaterialization = 'checkout'\n",
+        "target = '~/target'\n[[rules]]\npath = 'app'\nmode = 'checkout'\n",
     );
     let mut command = fixture.command("apply");
     command
@@ -428,7 +423,7 @@ fn migrating_a_legacy_symlink_directory_to_checkout_preserves_newly_ignored_link
 
 #[test]
 fn removing_an_ignore_rule_resumes_conflict_checks_for_preserved_content() {
-    let fixture = Fixture::new("[defaults]\nmaterialization = 'checkout'\n");
+    let fixture = Fixture::new("mode = 'checkout'\n");
     write(&fixture.source, ".overignore", "secret\n");
     write(&fixture.source, "ov/secret", "source secret");
     let repo = git2::Repository::init(&fixture.source).unwrap();
@@ -498,10 +493,10 @@ fn git_add_and_status_respect_ignores_without_hiding_unmanaged_host_files() {
 
 #[rstest]
 #[case("")]
-#[case("[defaults]\nmaterialization = 'checkout'\n")]
+#[case("mode = 'checkout'\n")]
 fn a_mapped_start_cannot_bypass_an_ignored_parent_directory(#[case] materialization: &str) {
     let fixture = Fixture::new(&format!(
-        "{materialization}[map.'parent/app']\ntarget = 'routed'\n"
+        "{materialization}[map.'parent/app']\ntarget = '~/target/routed'\n"
     ));
     write(&fixture.source, ".overignore", "parent/\n");
     write(&fixture.source, "ov/parent/app/.overignore", "!file\n");
@@ -534,7 +529,7 @@ fn descriptor_less_dependencies_inherit_root_rules_and_keep_their_own_negations(
 
 #[test]
 fn source_only_commits_to_ignored_paths_do_not_make_a_checkout_behind() {
-    let fixture = Fixture::new("[defaults]\nmaterialization = 'checkout'\n");
+    let fixture = Fixture::new("mode = 'checkout'\n");
     write(&fixture.source, "ov/file", "selected");
     write(&fixture.source, "ov/secret", "original");
     let repo = git2::Repository::init(&fixture.source).unwrap();
@@ -588,8 +583,8 @@ fn unapply_clears_old_host_exclusions_when_every_file_is_newly_ignored() {
 #[rstest]
 #[case("", "apply")]
 #[case("", "unapply")]
-#[case("[defaults]\nmaterialization = 'checkout'\n", "apply")]
-#[case("[defaults]\nmaterialization = 'checkout'\n", "unapply")]
+#[case("mode = 'checkout'\n", "apply")]
+#[case("mode = 'checkout'\n", "unapply")]
 fn newly_ignored_files_at_the_host_repository_root_lose_their_exclusions(
     #[case] config: &str,
     #[case] operation: &str,
@@ -624,7 +619,7 @@ fn newly_ignored_files_at_the_host_repository_root_lose_their_exclusions(
 fn git_add_excludes_newly_staged_checkout_files_from_the_host_repository(
     #[case] with_ignore: bool,
 ) {
-    let fixture = Fixture::new("exclude = ['.git']\n[defaults]\nmaterialization = 'checkout'\n");
+    let fixture = Fixture::new("exclude = ['.git']\nmode = 'checkout'\n");
     write(&fixture.source, "ov/file", "original");
     if with_ignore {
         write(&fixture.source, ".overignore", "*.pem\n");

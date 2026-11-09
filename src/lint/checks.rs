@@ -28,15 +28,11 @@ pub fn check_overlay_selected(
     diagnostics.extend(check_uses(overlay));
     diagnostics.extend(check_empty_exclude(overlay));
     diagnostics.extend(check_invalid_exclude_globs(overlay));
-    diagnostics.extend(check_empty_link_dirs(overlay));
-    diagnostics.extend(check_invalid_link_dirs_globs(overlay));
     diagnostics.extend(check_empty_rules(overlay));
     diagnostics.extend(check_invalid_rules_globs(overlay));
     diagnostics.extend(check_duplicate_rule_paths(overlay));
     diagnostics.extend(check_rules_paths_exist(overlay));
-    diagnostics.extend(check_empty_permissions(overlay));
-    diagnostics.extend(check_invalid_permission_globs(overlay));
-    diagnostics.extend(check_duplicate_permission_rule_paths(overlay));
+    diagnostics.extend(check_terminal_rules(overlay));
     diagnostics.extend(check_git(overlay));
     diagnostics.extend(check_symlinks_selected(overlay, policy));
     diagnostics.extend(check_partials_selected(overlay, policy));
@@ -120,39 +116,6 @@ fn check_invalid_exclude_globs(overlay: &Overlay) -> Vec<Diagnostic> {
     diagnostics
 }
 
-// ── link_dirs checks ─────────────────────────────────────────────────────
-
-fn check_empty_link_dirs(overlay: &Overlay) -> Vec<Diagnostic> {
-    if matches!(&overlay.link_dirs, Some(list) if list.is_empty()) {
-        vec![
-            Diagnostic::warning(&overlay.name, "empty `link_dirs` list is redundant")
-                .with_hint("remove the `link_dirs` field or add glob patterns"),
-        ]
-    } else {
-        Vec::new()
-    }
-}
-
-fn check_invalid_link_dirs_globs(overlay: &Overlay) -> Vec<Diagnostic> {
-    let Some(link_dirs) = &overlay.link_dirs else {
-        return Vec::new();
-    };
-
-    let mut diagnostics = Vec::new();
-    for pattern in link_dirs {
-        if let Err(err) = GlobBuilder::new(pattern).literal_separator(true).build() {
-            diagnostics.push(
-                Diagnostic::error(
-                    &overlay.name,
-                    format!("invalid glob pattern in `link_dirs`: \"{pattern}\""),
-                )
-                .with_hint(format!("{err}")),
-            );
-        }
-    }
-    diagnostics
-}
-
 // ── materialization rules checks (#113/#126) ────────────────────────────
 
 fn check_empty_rules(overlay: &Overlay) -> Vec<Diagnostic> {
@@ -173,11 +136,11 @@ fn check_invalid_rules_globs(overlay: &Overlay) -> Vec<Diagnostic> {
 
     let mut diagnostics = Vec::new();
     for rule in rules {
-        if let Err(err) = GlobBuilder::new(&rule.path).literal_separator(true).build() {
+        if let Err(err) = rule.validate() {
             diagnostics.push(
                 Diagnostic::error(
                     &overlay.name,
-                    format!("invalid glob pattern in `rules`: \"{}\"", rule.path),
+                    format!("invalid selector in `rules`: \"{}\"", rule.path),
                 )
                 .with_hint(format!("{err}")),
             );
@@ -186,28 +149,30 @@ fn check_invalid_rules_globs(overlay: &Overlay) -> Vec<Diagnostic> {
     diagnostics
 }
 
-/// A rule whose `path` exactly duplicates an earlier one always shadows
-/// it (`rules::resolve` breaks specificity ties by keeping the last
-/// match), so the earlier entry can never take effect.
+/// Report provably shadowed properties within a scope; other scopes intentionally override.
 fn check_duplicate_rule_paths(overlay: &Overlay) -> Vec<Diagnostic> {
-    let Some(rules) = &overlay.rules else {
-        return Vec::new();
-    };
-
     let mut diagnostics = Vec::new();
-    let mut seen = HashSet::new();
-    for rule in rules {
-        if !seen.insert(&rule.path) {
-            diagnostics.push(
-                Diagnostic::warning(
-                    &overlay.name,
-                    format!(
-                        "duplicate rule path \"{}\"; only the last entry ever applies",
-                        rule.path
-                    ),
-                )
-                .with_hint("remove the redundant rule"),
-            );
+    for scope in &overlay.scopes {
+        for (index, rule) in scope.rules.iter().enumerate() {
+            for (later_index, later) in scope.rules.iter().enumerate().skip(index + 1) {
+                // Glob-language containment is not implied by a textual prefix.
+                if rule.is_glob()
+                    || later.is_glob()
+                    || !rule.path.eq(&later.path)
+                        && !std::path::Path::new(&rule.path).starts_with(&later.path)
+                        && later.path != "."
+                {
+                    continue;
+                }
+                let mode_shadowed = rule.mode.is_some() && later.mode.is_some();
+                let permissions_shadowed =
+                    rule.permissions.is_some() && later.permissions.is_some();
+                if mode_shadowed || permissions_shadowed {
+                    diagnostics.push(Diagnostic::warning(&overlay.name, format!("duplicate rule path or shadowed prefix '{}': rule {} overrides {} from rule {} in {}", rule.path, later_index + 1, if mode_shadowed && permissions_shadowed { "mode and permissions" } else if mode_shadowed { "mode" } else { "permissions" }, index + 1, scope.descriptor.display()))
+                        .with_file(scope.descriptor.to_string_lossy().into_owned()).with_hint("remove the ineffective property or reorder the rules"));
+                    break;
+                }
+            }
         }
     }
     diagnostics
@@ -217,28 +182,25 @@ fn check_duplicate_rule_paths(overlay: &Overlay) -> Vec<Diagnostic> {
 /// typo or leftover from a rename — flag it rather than silently doing
 /// nothing.
 fn check_rules_paths_exist(overlay: &Overlay) -> Vec<Diagnostic> {
-    let Some(rules) = &overlay.rules else {
-        return Vec::new();
-    };
-
     let mut diagnostics = Vec::new();
-    for rule in rules {
-        let Ok(glob) = GlobBuilder::new(&rule.path).literal_separator(true).build() else {
+    for (scope, rule) in overlay
+        .scopes
+        .iter()
+        .flat_map(|scope| scope.rules.iter().map(move |rule| (scope, rule)))
+    {
+        if rule.mode.is_none() || rule.validate().is_err() {
             // Already reported by `check_invalid_rules_globs`.
             continue;
-        };
-        let matcher = glob.compile_matcher();
+        }
         let exists = WalkDir::new(&overlay.root)
-            .min_depth(1)
             .into_iter()
             .filter_map(Result::ok)
-            .any(|e| {
-                e.path()
-                    .strip_prefix(&overlay.root)
-                    .ok()
-                    .is_some_and(|rel| matcher.is_match(rel))
-            });
-        if !exists {
+            .any(|e| scope.matches(rule, e.path(), e.file_type().is_dir()));
+        // An ancestor scope may intentionally configure another overlay's tree.
+        if !exists
+            && (scope.root == overlay.root
+                || !rule.is_glob() && scope.root.join(&rule.path).starts_with(&overlay.root))
+        {
             diagnostics.push(
                 Diagnostic::warning(
                     &overlay.name,
@@ -261,60 +223,94 @@ fn check_rules_paths_exist(overlay: &Overlay) -> Vec<Diagnostic> {
 // a real path in the overlay's walked tree, so "exists in the walked
 // tree" doesn't apply the same way.
 
-fn check_empty_permissions(overlay: &Overlay) -> Vec<Diagnostic> {
-    if matches!(&overlay.permissions, Some(list) if list.is_empty()) {
-        vec![
-            Diagnostic::warning(&overlay.name, "empty `permissions` list is redundant")
-                .with_hint("remove the `permissions` field or add path overrides"),
-        ]
-    } else {
-        Vec::new()
-    }
-}
-
-fn check_invalid_permission_globs(overlay: &Overlay) -> Vec<Diagnostic> {
-    let Some(permissions) = &overlay.permissions else {
-        return Vec::new();
-    };
-
+/// Checkout mappings form separate traversal roots; permissions on partials are independent.
+fn check_terminal_rules(overlay: &Overlay) -> Vec<Diagnostic> {
+    use crate::overlays::MaterializationKind;
     let mut diagnostics = Vec::new();
-    for rule in permissions {
-        if let Err(err) = GlobBuilder::new(&rule.path).literal_separator(true).build() {
-            diagnostics.push(
-                Diagnostic::error(
-                    &overlay.name,
-                    format!("invalid glob pattern in `permissions`: \"{}\"", rule.path),
-                )
-                .with_hint(format!("{err}")),
-            );
-        }
-    }
-    diagnostics
-}
-
-/// A rule whose `path` exactly duplicates an earlier one always shadows it
-/// (`permissions::resolve` breaks specificity ties by keeping the last
-/// match, mirroring `rules::resolve`), so the earlier entry can never take
-/// effect.
-fn check_duplicate_permission_rule_paths(overlay: &Overlay) -> Vec<Diagnostic> {
-    let Some(permissions) = &overlay.permissions else {
-        return Vec::new();
-    };
-
-    let mut diagnostics = Vec::new();
-    let mut seen = HashSet::new();
-    for rule in permissions {
-        if !seen.insert(&rule.path) {
-            diagnostics.push(
-                Diagnostic::warning(
-                    &overlay.name,
-                    format!(
-                        "duplicate permission rule path \"{}\"; only the last entry ever applies",
-                        rule.path
-                    ),
-                )
-                .with_hint("remove the redundant rule"),
-            );
+    for scope in &overlay.scopes {
+        for (index, rule) in scope
+            .rules
+            .iter()
+            .enumerate()
+            .filter(|(_, rule)| rule.mode.is_some())
+        {
+            let mut candidates = vec![crate::overlays::mapping::lexical(
+                &scope.root.join(&rule.path),
+            )];
+            if rule.is_glob() {
+                candidates = WalkDir::new(&overlay.root)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .filter(|entry| {
+                        entry.file_type().is_dir() && scope.matches(rule, entry.path(), true)
+                    })
+                    .map(|entry| entry.into_path())
+                    .collect();
+            }
+            for candidate in candidates {
+                if candidate.is_file() && rule.mode != Some(MaterializationKind::Symlink) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            &overlay.name,
+                            format!(
+                                "rule {} ('{}') in {} selects a file, but {} requires a directory",
+                                index + 1,
+                                rule.path,
+                                scope.descriptor.display(),
+                                rule.mode.expect("mode-filtered rule")
+                            ),
+                        )
+                        .with_file(scope.descriptor.to_string_lossy().into_owned())
+                        .with_hint("select the containing directory or use mode: symlink"),
+                    );
+                    continue;
+                }
+                let Ok(relative) = candidate.strip_prefix(&overlay.root) else {
+                    continue;
+                };
+                let mapped = overlay
+                    .map
+                    .keys()
+                    .map(std::path::Path::new)
+                    .filter(|path| relative.starts_with(path))
+                    .max_by_key(|path| path.components().count());
+                for ancestor in relative.ancestors().skip(1) {
+                    if mapped.is_some_and(|path| !ancestor.starts_with(path)) {
+                        break;
+                    }
+                    let mode = overlay.materialization_for(ancestor);
+                    if mode == MaterializationKind::Symlink
+                        || (ancestor.as_os_str().is_empty()
+                            && mode == MaterializationKind::SymlinkDirectory)
+                    {
+                        continue;
+                    }
+                    // Only final modes determine traversal; a later assignment may reopen a boundary.
+                    let boundary = crate::overlays::rules::mode_origin(overlay, ancestor);
+                    // A recursive directory glob may select nested boundaries in the same rule.
+                    // The outermost match owns those descendants; the declaration still takes effect.
+                    if boundary.is_some_and(|(owner, rule_index)| {
+                        std::ptr::eq(owner, scope) && rule_index == Some(index)
+                    }) {
+                        break;
+                    }
+                    let origin = boundary
+                        .map(|(scope, index)| match index {
+                            Some(index) => format!(
+                                "{} rule {} ('{}')",
+                                scope.descriptor.display(),
+                                index + 1,
+                                scope.rules[index].path
+                            ),
+                            None => format!("{} mode baseline", scope.descriptor.display()),
+                        })
+                        .unwrap_or_else(|| "implicit mode".into());
+                    diagnostics.push(Diagnostic::error(&overlay.name, format!("rule {} ('{}') in {} is unreachable below '{}' ({mode}), selected by {origin}", index + 1, rule.path, scope.descriptor.display(), ancestor.display()))
+                        .with_hint("remove the descendant mode override or change the ancestor mode to symlink")
+                        .with_file(scope.descriptor.to_string_lossy().into_owned()));
+                    break;
+                }
+            }
         }
     }
     diagnostics
@@ -615,29 +611,33 @@ mod tests {
         assert!(diags.is_empty());
     }
 
-    // ── link_dirs checks ─────────────────────────────────────────────────
+    // ── terminal boundaries ──────────────────────────────────────────────
 
     #[rstest]
-    fn empty_link_dirs_list_warns() {
-        let overlay = setup_overlay("target = \"~\"\nlink_dirs = []");
-        let diags = check_empty_link_dirs(&overlay);
+    fn empty_shared_rules_list_warns() {
+        let overlay = setup_overlay("target = \"~\"\nrules = []");
+        let diags = check_empty_rules(&overlay);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Warning);
     }
 
     #[rstest]
-    fn invalid_glob_in_link_dirs_errors() {
-        let overlay = setup_overlay("target = \"~\"\nlink_dirs = [\"[invalid\"]");
-        let diags = check_invalid_link_dirs_globs(&overlay);
+    fn a_terminal_directory_reports_descendant_mode_overrides() {
+        let overlay = setup_overlay(
+            "mode = 'symlink'\n[[rules]]\npath = 'config'\nmode = 'symlink-directory'\n[[rules]]\npath = 'config/editor'\nmode = 'checkout'",
+        );
+        let diags = check_terminal_rules(&overlay);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Error);
-        assert!(diags[0].message.contains("invalid glob"));
+        assert!(diags[0].message.contains("unreachable"));
     }
 
     #[rstest]
-    fn valid_glob_in_link_dirs_produces_no_diagnostic() {
-        let overlay = setup_overlay("target = \"~\"\nlink_dirs = [\".config/*\"]");
-        let diags = check_invalid_link_dirs_globs(&overlay);
+    fn reopening_a_directory_makes_descendant_rules_reachable() {
+        let overlay = setup_overlay(
+            "[[rules]]\npath = 'config'\nmode = 'symlink-directory'\n[[rules]]\npath = 'config'\nmode = 'symlink'\n[[rules]]\npath = 'config/editor'\nmode = 'checkout'",
+        );
+        let diags = check_terminal_rules(&overlay);
         assert!(diags.is_empty());
     }
 
@@ -652,20 +652,18 @@ mod tests {
     }
 
     #[rstest]
-    fn invalid_glob_in_rule_path_errors() {
-        let overlay = setup_overlay(
-            "target = \"~\"\n[[rules]]\npath = \"[invalid\"\nmaterialization = \"symlink\"",
-        );
-        let diags = check_invalid_rules_globs(&overlay);
+    fn checkout_boundaries_report_descendant_mode_overrides() {
+        let overlay =
+            setup_overlay("mode = 'checkout'\n[[rules]]\npath = 'config'\nmode = 'symlink'");
+        let diags = check_terminal_rules(&overlay);
         assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].severity, Severity::Error);
-        assert!(diags[0].message.contains("invalid glob"));
+        assert!(diags[0].message.contains("checkout"));
     }
 
     #[rstest]
     fn valid_glob_in_rule_path_produces_no_diagnostic() {
         let overlay = setup_overlay(
-            "target = \"~\"\n[[rules]]\npath = \".config/*\"\nmaterialization = \"symlink-directory\"",
+            "target = \"~\"\n[[rules]]\npath = \".config/*\"\nmode = \"symlink-directory\"",
         );
         let diags = check_invalid_rules_globs(&overlay);
         assert!(diags.is_empty());
@@ -678,11 +676,11 @@ mod tests {
 target = "~"
 [[rules]]
 path = "dup"
-materialization = "symlink"
+mode = "symlink"
 
 [[rules]]
 path = "dup"
-materialization = "symlink-directory"
+mode = "symlink-directory"
 "#,
         );
         let diags = check_duplicate_rule_paths(&overlay);
@@ -694,7 +692,7 @@ materialization = "symlink-directory"
     #[rstest]
     fn nonexistent_rule_path_warns() {
         let overlay = setup_overlay(
-            "target = \"~\"\n[[rules]]\npath = \"missing\"\nmaterialization = \"symlink-directory\"",
+            "target = \"~\"\n[[rules]]\npath = \"missing\"\nmode = \"symlink-directory\"",
         );
         let diags = check_rules_paths_exist(&overlay);
         assert_eq!(diags.len(), 1);
@@ -703,12 +701,9 @@ materialization = "symlink-directory"
     }
 
     #[rstest]
-    fn rule_path_existence_check_skips_already_reported_invalid_globs() {
-        // An invalid glob is already reported by `check_invalid_rules_globs`
-        // — `check_rules_paths_exist` must skip it rather than double-report.
-        let overlay = setup_overlay(
-            "target = \"~\"\n[[rules]]\npath = \"[invalid\"\nmaterialization = \"symlink-directory\"",
-        );
+    fn permission_only_paths_need_not_exist_in_the_walked_tree() {
+        let overlay =
+            setup_overlay("target = \"~\"\n[[rules]]\npath = \"ssh/agent\"\npermissions = \"600\"");
         let diags = check_rules_paths_exist(&overlay);
         assert!(diags.is_empty());
     }
@@ -716,7 +711,7 @@ materialization = "symlink-directory"
     #[rstest]
     fn existing_rule_path_produces_no_diagnostic() {
         let overlay = setup_overlay(
-            "target = \"~\"\n[[rules]]\npath = \"present\"\nmaterialization = \"symlink-directory\"",
+            "target = \"~\"\n[[rules]]\npath = \"present\"\nmode = \"symlink-directory\"",
         );
         std::fs::create_dir_all(overlay.root.join("present")).unwrap();
         let diags = check_rules_paths_exist(&overlay);
@@ -726,28 +721,25 @@ materialization = "symlink-directory"
     // ── permission rules checks (#65) ─────────────────────────────────────
 
     #[rstest]
-    fn empty_permissions_list_warns() {
-        let overlay = setup_overlay("target = \"~\"\npermissions = []");
-        let diags = check_empty_permissions(&overlay);
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].severity, Severity::Warning);
+    fn permission_overrides_below_checkout_remain_reachable_for_partials() {
+        let overlay =
+            setup_overlay("mode = 'checkout'\n[[rules]]\npath = 'ssh/agent'\npermissions = '600'");
+        assert!(check_terminal_rules(&overlay).is_empty());
     }
 
     #[rstest]
-    fn invalid_glob_in_permission_path_errors() {
-        let overlay =
-            setup_overlay("target = \"~\"\n[[permissions]]\npath = \"[invalid\"\nmode = \"600\"");
-        let diags = check_invalid_permission_globs(&overlay);
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].severity, Severity::Error);
-        assert!(diags[0].message.contains("invalid glob"));
+    fn independent_properties_at_the_same_path_are_not_duplicates() {
+        let overlay = setup_overlay(
+            "[[rules]]\npath = 'ssh'\nmode = 'symlink'\n[[rules]]\npath = 'ssh'\npermissions = '600'",
+        );
+        assert!(check_duplicate_rule_paths(&overlay).is_empty());
     }
 
     #[rstest]
-    fn valid_glob_in_permission_path_produces_no_diagnostic() {
+    fn permission_prefixes_produce_no_invalid_selector_diagnostic() {
         let overlay =
-            setup_overlay("target = \"~\"\n[[permissions]]\npath = \"secrets/*\"\nmode = \"600\"");
-        let diags = check_invalid_permission_globs(&overlay);
+            setup_overlay("target = \"~\"\n[[rules]]\npath = \"secrets\"\npermissions = \"600\"");
+        let diags = check_invalid_rules_globs(&overlay);
         assert!(diags.is_empty());
     }
 
@@ -756,19 +748,19 @@ materialization = "symlink-directory"
         let overlay = setup_overlay(
             r#"
 target = "~"
-[[permissions]]
+[[rules]]
 path = "dup"
-mode = "600"
+permissions = "600"
 
-[[permissions]]
+[[rules]]
 path = "dup"
-mode = "644"
+permissions = "644"
 "#,
         );
-        let diags = check_duplicate_permission_rule_paths(&overlay);
+        let diags = check_duplicate_rule_paths(&overlay);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Warning);
-        assert!(diags[0].message.contains("duplicate permission rule path"));
+        assert!(diags[0].message.contains("duplicate rule path"));
     }
 
     // ── git checks ───────────────────────────────────────────────────────
@@ -890,9 +882,9 @@ worktree = true
 
     #[rstest]
     fn overlay_with_multiple_issues_aggregates_all_warnings() {
-        let overlay = setup_overlay("target = \"~\"\nuses = []\nexclude = []\nlink_dirs = []");
+        let overlay = setup_overlay("target = \"~\"\nuses = []\nexclude = []\nrules = []");
         let diags = check_overlay(&overlay);
-        // empty uses + empty exclude + empty link_dirs = 3 warnings
+        // Each explicitly empty collection should receive its own actionable warning.
         assert_eq!(diags.len(), 3);
         assert!(diags.iter().all(|d| d.severity == Severity::Warning));
     }

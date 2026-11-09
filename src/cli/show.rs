@@ -41,20 +41,29 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if let Some(uses) = &overlay.uses {
         ui::info(format!("  uses:   {}", uses.join(", "))).ok();
     }
-    if let Some(link_dirs) = &overlay.link_dirs {
-        ui::info(format!("  link_dirs: {}", link_dirs.join(", "))).ok();
-    }
-    if let Some(defaults) = &overlay.defaults {
-        ui::info(format!(
-            "  defaults: materialization = {}",
-            defaults.materialization
-        ))
-        .ok();
-    }
-    if let Some(rules) = &overlay.rules {
-        ui::info("  rules:").ok();
-        for rule in rules {
-            ui::info(format!("    {}: {}", rule.path, rule.materialization)).ok();
+    for scope in &overlay.scopes {
+        if scope.mode.is_none() && scope.permissions.is_none() && scope.rules.is_empty() {
+            continue;
+        }
+        ui::info(format!("  policy ({}):", scope.descriptor.display())).ok();
+        if let Some(mode) = scope.mode {
+            ui::info(format!("    mode: {mode}")).ok();
+        }
+        if let Some(permissions) = scope.permissions {
+            ui::info(format!("    permissions: {permissions}")).ok();
+        }
+        if !scope.rules.is_empty() {
+            ui::info("    rules:").ok();
+        }
+        for rule in &scope.rules {
+            let mut properties = Vec::new();
+            if let Some(mode) = rule.mode {
+                properties.push(format!("mode: {mode}"));
+            }
+            if let Some(permissions) = rule.permissions {
+                properties.push(format!("permissions: {permissions}"));
+            }
+            ui::info(format!("    {}: {}", rule.path, properties.join(", "))).ok();
         }
     }
     if let Some(git) = &overlay.git {
