@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
-use config::{Config, File, FileFormat, FileSourceFile};
+use config::{Config, File, FileFormat, FileSourceFile, Source};
 use globset::GlobBuilder;
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +66,9 @@ where
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Overlay {
+    /// Executable commands never inherit through the descriptor cascade.
+    #[serde(skip)]
+    pub hooks: crate::hooks::Hooks,
     pub name: String,
 
     pub root: PathBuf,
@@ -174,7 +177,19 @@ impl Overlay {
         // and overlay-specific config is added last (higher priority / overrides)
         sources.reverse();
 
-        for source in &sources {
+        let mut local_hooks = crate::hooks::Hooks::default();
+        for (index, source) in sources.iter().enumerate() {
+            // Validate separately before the cascade can hide an invalid parent hook.
+            let values = source.collect().map_err(|_| {
+                anyhow::anyhow!("descriptor syntax error (source contents omitted)")
+            })?;
+            if let Some(value) = values.get("hooks") {
+                let hooks = value.clone().try_deserialize::<crate::hooks::Hooks>()?;
+                // Root hooks remain repository-scoped, including for a root overlay.
+                if index + 1 == sources.len() && root != repository.root {
+                    local_hooks = hooks;
+                }
+            }
             super::data::validate_source(source)
                 .with_context(|| format!("invalid data in descriptor source {source:?}"))?;
         }
@@ -187,12 +202,14 @@ impl Overlay {
             .build()
             .with_context(|| format!("invalid overlay descriptor in '{}'", root.display(),))?;
 
-        s.try_deserialize().with_context(|| {
+        let mut overlay: Self = s.try_deserialize().with_context(|| {
             format!(
                 "invalid overlay descriptor for '{}': check required fields (target)",
                 name,
             )
-        })
+        })?;
+        overlay.hooks = local_hooks;
+        Ok(overlay)
     }
 
     pub fn resolve_target(&self, ctx: &exec::Context) -> Result<PathBuf> {
@@ -271,118 +288,164 @@ impl Overlay {
     pub async fn apply(&self, ctx: &Ctx) -> Result<()> {
         let mut visited = HashSet::new();
         let mut stack = Vec::new();
-        self.apply_inner(ctx, &mut visited, &mut stack).await
+        let mut participants = Vec::new();
+        self.collect_participants(ctx, &mut visited, &mut stack, &mut participants)?;
+        let root_hooks = ctx.repository.hooks()?;
+        let hooks_enabled =
+            !root_hooks.is_empty() || participants.iter().any(|overlay| !overlay.hooks.is_empty());
+        if hooks_enabled {
+            // New executable configuration requires an explicit validated repository;
+            // descriptor-less repositories without hooks retain their existing behavior.
+            ctx.repository.validate_initialization()?;
+        }
+        let mut applied = Vec::new();
+        for overlay in &participants {
+            let overlay_ctx = ctx.with_overlay(overlay.clone());
+            overlay.apply_own(&overlay_ctx).await?;
+            applied.push((overlay, overlay.resolve_target(&overlay_ctx)?));
+        }
+        if ctx.dry_run || !hooks_enabled || crate::hooks::nested() {
+            return Ok(());
+        }
+        // Defer all hooks until every participant succeeds, including later siblings.
+        let selected_target = self.resolve_target(ctx)?;
+        crate::hooks::run(
+            &root_hooks,
+            crate::hooks::Event::PostApply,
+            crate::hooks::HookContext {
+                repository: &ctx.repository.root,
+                cwd: &ctx.repository.root,
+                scope: "repository root",
+                overlay: Some((&self.name, &self.root, &selected_target)),
+                target_root: Some(&ctx.root),
+            },
+        )
+        .await?;
+        for (overlay, target) in applied {
+            crate::hooks::run(
+                &overlay.hooks,
+                crate::hooks::Event::PostApply,
+                crate::hooks::HookContext {
+                    repository: &ctx.repository.root,
+                    cwd: &overlay.root,
+                    scope: &format!("overlay '{}'", overlay.name),
+                    overlay: Some((&overlay.name, &overlay.root, &target)),
+                    target_root: Some(&ctx.root),
+                },
+            )
+            .await?;
+        }
+        Ok(())
     }
 
-    fn apply_inner<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-        visited: &'a mut HashSet<String>,
-        stack: &'a mut Vec<String>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>> {
-        Box::pin(async move {
-            // Already fully applied via another dependency path — skip silently
-            if visited.contains(&self.name) {
-                return Ok(());
-            }
-            // Currently in the recursion stack — true cycle
-            if stack.contains(&self.name) {
-                stack.push(self.name.clone());
-                anyhow::bail!(
-                    "Cycle detected: overlay '{}' forms a cycle (path: {})",
-                    self.name,
-                    stack.join(" -> ")
-                );
-            }
+    fn collect_participants(
+        &self,
+        ctx: &Ctx,
+        visited: &mut HashSet<String>,
+        stack: &mut Vec<String>,
+        participants: &mut Vec<Self>,
+    ) -> Result<()> {
+        // Already included via another dependency path — skip silently.
+        if visited.contains(&self.name) {
+            return Ok(());
+        }
+        // Currently in the recursion stack — true cycle
+        if stack.contains(&self.name) {
             stack.push(self.name.clone());
+            anyhow::bail!(
+                "Cycle detected: overlay '{}' forms a cycle (path: {})",
+                self.name,
+                stack.join(" -> ")
+            );
+        }
+        stack.push(self.name.clone());
 
-            let target = self.resolve_target(ctx)?;
-            ui::info(format!(
-                "{} {} {} {} {}",
-                emojis::PACKAGE,
-                style::white_b("Applying overlay"),
-                style::cyan(&self.name),
-                style::white_b("to"),
-                style::cyan(&target.to_string_lossy()),
-            ))
-            .ok();
-            if let Some(uses) = &self.uses {
-                if ctx.no_uses {
-                    tracing::debug!(overlay = %self.name, "skipping uses (--no-uses)");
-                } else {
-                    for name in uses {
-                        let overlay = ctx
-                            .repository
-                            .get(name)
-                            .with_context(|| format!("used overlay '{}' not found", name))?;
-                        if ctx.debug {
-                            tracing::debug!(?overlay, "used overlay");
-                        }
-                        overlay
-                            .apply_inner(&ctx.with_overlay(overlay.clone()), visited, stack)
-                            .await?;
-                    }
+        if ctx.no_uses {
+            tracing::debug!(overlay = %self.name, "skipping uses (--no-uses)");
+        } else {
+            for name in self.uses.iter().flatten() {
+                let overlay = ctx
+                    .repository
+                    .get(name)
+                    .with_context(|| format!("used overlay '{name}' not found"))?;
+                if ctx.debug {
+                    tracing::debug!(?overlay, "used overlay");
                 }
+                overlay.collect_participants(ctx, visited, stack, participants)?;
             }
+        }
+        stack.pop();
+        visited.insert(self.name.clone());
+        // Keep a snapshot so hooks cannot change configuration for later hooks.
+        participants.push(self.clone());
+        Ok(())
+    }
 
-            // Git checkouts stay outside the plan (cloning is presence-only
-            // and runs before the Plan even though #110's
-            // CheckoutMaterializer classifies MaterializationIntent::Checkout
-            // like any other intent); everything else — the overlay's own
-            // directory, files, and `.link.*` sidecars — goes through a Plan
-            // built from this overlay's own DesiredTree (no `uses`
-            // recursion here: that's handled above, one overlay at a time,
-            // so each dependency keeps its own banner/cycle-check).
-            let ctx_with_target =
-                ctx.with_resolved_overlay(self.name.clone(), target.to_string_lossy().to_string());
-            let desired = DesiredTree::build_own(&ctx_with_target, self)?;
-            let mut plan = Plan::build(&desired)?;
-            // Classify every ownership scope before cloning can mutate a destination.
-            actions::git::clone_repositories(ctx.clone(), self, &target).await?;
-            if self.git.is_some() {
-                // Cloning may already perform a legacy-checkout migration;
-                // never execute the stale pre-clone destructive operation.
-                plan = Plan::build(&desired)?;
-            }
-            if ctx.verbose || ctx.dry_run {
-                ui::info(format!("{plan}")).ok();
-            }
-            plan.execute(ctx_with_target).await?;
+    async fn apply_own(&self, ctx: &Ctx) -> Result<()> {
+        let target = self.resolve_target(ctx)?;
+        ui::info(format!(
+            "{} {} {} {} {}",
+            emojis::PACKAGE,
+            style::white_b("Applying overlay"),
+            style::cyan(&self.name),
+            style::white_b("to"),
+            style::cyan(&target.to_string_lossy()),
+        ))
+        .ok();
 
-            // #146: exclude this overlay's managed paths (symlinks,
-            // checkouts) from any git repository they landed in, so a
-            // target repo's `git status` stops listing them as untracked.
-            // Skipped on `--dry-run` (nothing was actually materialized to
-            // exclude). Real I/O failures propagate like any other apply
-            // step; tracked-path conflicts and malformed blocks are
-            // reported as warnings by `reconcile` itself, never as errors —
-            // it only ever touches `over`'s own marker block, never the
-            // repo's tracked state.
-            if !ctx.dry_run {
-                git_exclude::reconcile_desired(&desired).with_context(|| {
-                    format!(
-                        "failed to reconcile git excludes for overlay '{}'",
-                        self.name
-                    )
-                })?;
-            }
+        // Git checkouts stay outside the plan (cloning is presence-only
+        // and runs before the Plan even though #110's
+        // CheckoutMaterializer classifies MaterializationIntent::Checkout
+        // like any other intent); everything else — the overlay's own
+        // directory, files, and `.link.*` sidecars — goes through a Plan
+        // built from this overlay's own DesiredTree (no `uses`
+        // recursion here: participants were resolved before materialization).
+        let ctx_with_target =
+            ctx.with_resolved_overlay(self.name.clone(), target.to_string_lossy().to_string());
+        let desired = DesiredTree::build_own(&ctx_with_target, self)?;
+        let mut plan = Plan::build(&desired)?;
+        // Classify every ownership scope before cloning can mutate a destination.
+        actions::git::clone_repositories(ctx.clone(), self, &target).await?;
+        if self.git.is_some() {
+            // Cloning may already perform a legacy-checkout migration;
+            // never execute the stale pre-clone destructive operation.
+            plan = Plan::build(&desired)?;
+        }
+        if ctx.verbose || ctx.dry_run {
+            ui::info(format!("{plan}")).ok();
+        }
+        plan.execute(ctx_with_target).await?;
 
-            stack.pop();
-            visited.insert(self.name.clone());
+        // #146: exclude this overlay's managed paths (symlinks,
+        // checkouts) from any git repository they landed in, so a
+        // target repo's `git status` stops listing them as untracked.
+        // Skipped on `--dry-run` (nothing was actually materialized to
+        // exclude). Real I/O failures propagate like any other apply
+        // step; tracked-path conflicts and malformed blocks are
+        // reported as warnings by `reconcile` itself, never as errors —
+        // it only ever touches `over`'s own marker block, never the
+        // repo's tracked state.
+        if !ctx.dry_run {
+            git_exclude::reconcile_desired(&desired).with_context(|| {
+                format!(
+                    "failed to reconcile git excludes for overlay '{}'",
+                    self.name
+                )
+            })?;
+        }
 
-            ui::info(format!(
-                "{} {} {} {} {} {}",
-                emojis::SPARKLE,
-                style::white_b("Applied overlay"),
-                style::cyan(&self.name),
-                style::white_b("to"),
-                style::cyan(&target.to_string_lossy()),
-                style::white_b("with success"),
-            ))
-            .ok();
+        ui::info(format!(
+            "{} {} {} {} {} {}",
+            emojis::SPARKLE,
+            style::white_b("Applied overlay"),
+            style::cyan(&self.name),
+            style::white_b("to"),
+            style::cyan(&target.to_string_lossy()),
+            style::white_b("with success"),
+        ))
+        .ok();
 
-            Ok(())
-        })
+        Ok(())
     }
 
     pub async fn add_file(&self, ctx: &Ctx, file: &PathBuf) -> Result<()> {

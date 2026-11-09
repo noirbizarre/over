@@ -35,6 +35,10 @@ impl Repository {
         Ok(self.root_config()?.repository)
     }
 
+    pub fn hooks(&self) -> Result<crate::hooks::Hooks> {
+        Ok(self.root_config()?.hooks)
+    }
+
     /// Bootstrap requires an explicit root descriptor, unlike overlay discovery.
     pub fn validate_initialization(&self) -> Result<Option<String>> {
         let descriptors = EXTENSIONS
@@ -196,9 +200,10 @@ impl Repository {
         let cfg = Config::builder()
             .add_source(File::with_name(path).required(false))
             .build()
-            .with_context(|| {
-                format!(
-                    "failed to load repository root config '{}'",
+            .map_err(|_| {
+                // Parser excerpts can contain executable commands with embedded secrets.
+                anyhow::anyhow!(
+                    "failed to load repository root config '{}': check descriptor syntax (source contents omitted)",
                     basename.display()
                 )
             })?;
@@ -222,6 +227,8 @@ impl Repository {
 /// cascaded to overlays (ADR-018) — see [`Repository::root_config`].
 #[derive(Debug, Deserialize, Default)]
 struct RootConfig {
+    #[serde(default)]
+    hooks: crate::hooks::Hooks,
     format: Option<Format>,
     overlays: Option<Vec<OverlayDeclaration>>,
     default_overlay: Option<String>,

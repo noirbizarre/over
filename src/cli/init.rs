@@ -51,6 +51,31 @@ pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
         .await
         .context("origin update task failed")??;
     }
+    // Do not discover child overlays until bootstrap tools have unlocked them.
+    let repository = crate::overlays::Repository::new(result.destination.clone());
+    let hooks = repository.hooks()?;
+    let events: &[crate::hooks::Event] = if result.cloned {
+        &[
+            crate::hooks::Event::PostClone,
+            crate::hooks::Event::PostInit,
+        ]
+    } else {
+        &[crate::hooks::Event::PostInit]
+    };
+    for event in events {
+        crate::hooks::run(
+            &hooks,
+            *event,
+            crate::hooks::HookContext {
+                repository: &repository.root,
+                cwd: &repository.root,
+                scope: "repository root",
+                overlay: None,
+                target_root: None,
+            },
+        )
+        .await?;
+    }
     ui::info(format!(
         "{} Over repository at {}",
         if result.cloned {

@@ -11,6 +11,7 @@ pub mod diff;
 pub mod doctor;
 pub mod exec;
 pub mod git_exclude;
+pub mod hooks;
 pub mod lint;
 pub mod materialize;
 pub mod overlays;
