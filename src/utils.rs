@@ -142,9 +142,9 @@ mod tests {
 
     #[test]
     fn resolve_home_with_explicit_path() {
-        let explicit = PathBuf::from("/custom/over");
+        let explicit = std::env::temp_dir().join("custom-over");
         let result = resolve_home(Some(&explicit)).unwrap();
-        assert_eq!(result, PathBuf::from("/custom/over"));
+        assert_eq!(result, explicit);
     }
 
     #[test]

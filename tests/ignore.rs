@@ -119,10 +119,11 @@ fn root_and_nested_ignores_filter_before_parsing_without_leaking_to_siblings() {
         "!keep.pem\n/local\nlink.link.toml\n",
     );
     write(&fixture.source, "ov/link.link.toml", "not valid [");
+    let referent = fixture.temp.path().join("nonexistent/selected");
     write(
         &fixture.source,
         "ov/link.link.yaml",
-        "target: /nonexistent/selected\n",
+        &format!("target: {}\n", serde_json::to_string(&referent).unwrap()),
     );
 
     fixture.apply("ov");
@@ -133,10 +134,7 @@ fn root_and_nested_ignores_filter_before_parsing_without_leaking_to_siblings() {
     assert!(!target.join("local").exists());
     assert!(!target.join("deep/keep.pem").exists());
     assert!(target.join("file").is_symlink());
-    assert_eq!(
-        fs::read_link(target.join("link")).unwrap(),
-        Path::new("/nonexistent/selected")
-    );
+    assert_eq!(fs::read_link(target.join("link")).unwrap(), referent);
     for metadata in [
         "over.toml",
         ".overignore",

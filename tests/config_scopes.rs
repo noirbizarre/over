@@ -91,19 +91,23 @@ fn inherited_cargo_paths_and_local_git_sources_keep_the_declaring_root() {
     let overlay = Repository::new(temp.path().into()).get("ov").unwrap();
     let install = overlay.install.unwrap();
     assert_eq!(
-        install.cargo.unwrap().packages[0].path.as_deref(),
-        temp.path().join("crates/root").to_str()
+        install.cargo.unwrap().packages[0]
+            .path
+            .as_deref()
+            .map(Path::new),
+        Some(temp.path().join("crates/root").as_path())
     );
     assert_eq!(
         install.platforms["linux"].cargo.as_ref().unwrap().packages[0]
             .path
-            .as_deref(),
-        temp.path().join("crates/linux").to_str()
+            .as_deref()
+            .map(Path::new),
+        Some(temp.path().join("crates/linux").as_path())
     );
     let git = overlay.git.unwrap();
     assert_eq!(
-        git["vendor"].url,
-        temp.path().join("local/repository").to_string_lossy()
+        Path::new(&git["vendor"].url),
+        temp.path().join("local/repository")
     );
 }
 

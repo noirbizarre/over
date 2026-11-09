@@ -936,6 +936,7 @@ mod tests {
     #[rstest]
     fn symlink_sidecar_file_target_produces_symlink_file_entry() {
         let (td, repo) = repo_and_root();
+        let referent = td.path().join("nvim-config");
         let overlay_dir = td.child("ov");
         overlay_dir.create_dir_all().unwrap();
         overlay_dir
@@ -944,7 +945,7 @@ mod tests {
             .unwrap();
         overlay_dir
             .child("nvim.link.toml")
-            .write_str("target = \"/opt/nvim-config\"")
+            .write_str(&format!("target = {:?}", referent.to_str().unwrap()))
             .unwrap();
 
         let overlay = repo.get("ov").unwrap();
@@ -959,7 +960,7 @@ mod tests {
             .expect("nvim entry present");
         match &entry.intent {
             MaterializationIntent::SymlinkFile { source, link_type } => {
-                assert_eq!(source, &PathBuf::from("/opt/nvim-config"));
+                assert_eq!(source, &referent);
                 assert_eq!(*link_type, LinkType::Soft);
             }
             other => panic!("unexpected intent: {other:?}"),
@@ -972,8 +973,8 @@ mod tests {
                 ..
             } => {
                 assert_eq!(config, &overlay.root.join("nvim.link.toml"));
-                assert_eq!(template, "/opt/nvim-config");
-                assert_eq!(resolved, &PathBuf::from("/opt/nvim-config"));
+                assert_eq!(template, referent.to_str().unwrap());
+                assert_eq!(resolved, &referent);
             }
             other => panic!("unexpected provenance: {other:?}"),
         }

@@ -994,6 +994,7 @@ branch = "main"
     #[tokio::test]
     async fn apply_creates_symlink_from_link_sidecar_descriptor() {
         let (td, repo) = repo_and_root();
+        let referent = td.path().join("test_symlink_target");
         let overlay_dir = td.child("ov_symlink");
         overlay_dir.create_dir_all().unwrap();
         overlay_dir
@@ -1002,7 +1003,7 @@ branch = "main"
             .unwrap();
         overlay_dir
             .child("test.link.toml")
-            .write_str("target = \"/tmp/test_symlink_target\"")
+            .write_str(&format!("target = {:?}", referent.to_str().unwrap()))
             .unwrap();
 
         let overlay = repo.get("ov_symlink").unwrap();
@@ -1019,15 +1020,13 @@ branch = "main"
             target_path.is_symlink(),
             "symlink should be created at target"
         );
-        assert_eq!(
-            fs::read_link(&target_path).unwrap(),
-            PathBuf::from("/tmp/test_symlink_target")
-        );
+        assert_eq!(fs::read_link(&target_path).unwrap(), referent);
     }
 
     #[tokio::test]
     async fn apply_symlink_sidecar_filename_determines_target_name() {
         let (td, repo) = repo_and_root();
+        let referent = td.path().join("test_symlink_src");
         let overlay_dir = td.child("ov_sympl");
         overlay_dir.create_dir_all().unwrap();
         overlay_dir
@@ -1036,7 +1035,7 @@ branch = "main"
             .unwrap();
         overlay_dir
             .child("templated.link.toml")
-            .write_str("target = \"/tmp/test_symlink_src\"")
+            .write_str(&format!("target = {:?}", referent.to_str().unwrap()))
             .unwrap();
 
         let overlay = repo.get("ov_sympl").unwrap();
@@ -1053,10 +1052,7 @@ branch = "main"
             target_path.is_symlink(),
             "symlink should be created at overlay target"
         );
-        assert_eq!(
-            fs::read_link(&target_path).unwrap(),
-            PathBuf::from("/tmp/test_symlink_src")
-        );
+        assert_eq!(fs::read_link(&target_path).unwrap(), referent);
     }
 
     // ── exclude: string or list deserialization ──────────────────────────

@@ -214,16 +214,18 @@ mod tests {
 
     #[test]
     fn resolve_home_with_flag() {
-        let args = CLI::parse_from(["over", "--home", "/tmp/test-home"]);
+        let expected = std::env::temp_dir().join("test-home");
+        let args = CLI::parse_from(["over", "--home", expected.to_str().unwrap()]);
         let home = args.resolve_home().unwrap();
-        assert_eq!(home, PathBuf::from("/tmp/test-home"));
+        assert_eq!(home, expected);
     }
 
     #[test]
     fn resolve_home_with_short_flag() {
-        let args = CLI::parse_from(["over", "-H", "/tmp/short-home"]);
+        let expected = std::env::temp_dir().join("short-home");
+        let args = CLI::parse_from(["over", "-H", expected.to_str().unwrap()]);
         let home = args.resolve_home().unwrap();
-        assert_eq!(home, PathBuf::from("/tmp/short-home"));
+        assert_eq!(home, expected);
     }
 
     #[test]
