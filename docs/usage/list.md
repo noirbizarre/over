@@ -16,7 +16,7 @@ Options:
 `--tree` (`-t`) groups overlays by their directory hierarchy:
 
 ```text
-.over
+.dotfiles
 ├── git
 ├── shell
 │   ├── bash

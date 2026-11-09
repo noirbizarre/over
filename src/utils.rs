@@ -7,14 +7,14 @@ use dirs::home_dir;
 
 /// Resolve the over home directory.
 ///
-/// Uses `explicit` if provided, otherwise falls back to `~/.over`.
+/// Uses `explicit` if provided, otherwise falls back to `~/.dotfiles`.
 pub fn resolve_home(explicit: Option<&PathBuf>) -> Result<PathBuf> {
     if let Some(home) = explicit {
         Ok(home.clone())
     } else {
         let default = home_dir()
             .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?
-            .join(".over");
+            .join(".dotfiles");
         Ok(default)
     }
 }
@@ -147,9 +147,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_home_defaults_to_dot_over() {
+    fn resolve_home_defaults_to_dotfiles() {
         let result = resolve_home(None).unwrap();
-        let expected = home_dir().unwrap().join(".over");
+        let expected = home_dir().unwrap().join(".dotfiles");
         assert_eq!(result, expected);
     }
 

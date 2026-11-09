@@ -2,7 +2,7 @@
 
 ## Root Configuration
 
-`over` supports a root configuration file at `~/.over/over.toml` (or
+`over` supports a root configuration file at `~/.dotfiles/over.toml` (or
 `over.yaml`/`over.yml`). This file controls global preferences that apply
 across all overlays.
 
@@ -11,13 +11,13 @@ across all overlays.
 The `format` field sets the default descriptor format used by `over new`
 when creating new overlays. Accepted values are `toml` (default) and `yaml`.
 
-TOML (`~/.over/over.toml`):
+TOML (`~/.dotfiles/over.toml`):
 
 ```toml
 format = "yaml"
 ```
 
-YAML (`~/.over/over.yaml`):
+YAML (`~/.dotfiles/over.yaml`):
 
 ```yaml
 format: yaml
@@ -32,6 +32,30 @@ Format resolution priority (highest to lowest):
 This preference only governs what `over new` **writes**. Reading an overlay
 tolerates any of `.toml`/`.yaml`/`.yml` regardless of this setting — see
 [ADR-003](adr/003-overlay-descriptors-tolerate-any-format-on-read.md).
+
+### Canonical Git Repository
+
+The optional root-only `repository` field declares the canonical Git remote,
+independently of the source used for the initial clone:
+
+```toml
+repository = "git@github.com:user/dotfiles.git"
+```
+
+```yaml
+repository: git@github.com:user/dotfiles.git
+```
+
+This is a literal Git remote, not a project homepage or a template. SSH URLs,
+SCP-style SSH, HTTPS, `file://` URLs and local repository paths are accepted.
+Relative local paths follow Git's normal resolution rules. Empty values,
+non-string values, control characters and template expressions are errors.
+Nested descriptors cannot override the canonical remote.
+
+[`over init`](usage/init.md) sets a fresh clone's `origin` to this value without
+connecting to it. With no `repository` field, the clone's origin is preserved.
+Existing checkouts require confirmation or `--set-origin` before origin changes.
+Explicit origin push URLs are preserved and continue to govern pushes.
 
 ### Default Overlay Selection
 
@@ -193,7 +217,7 @@ to exclude source files throughout the project. Add another `.overignore`
 inside an overlay or a nested directory for rules local to that subtree:
 
 ```text
-~/.over/
+~/.dotfiles/
 ├── over.toml
 ├── .overignore
 └── overlays/

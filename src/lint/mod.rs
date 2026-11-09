@@ -292,6 +292,7 @@ const VALID_OVERLAY_KEYS: &[&str] = &[
     "map",
     "overlays",
     "permissions",
+    "repository",
     "rules",
     "target",
     "uses",
@@ -582,6 +583,12 @@ fn diagnostics_from_anyhow_error(
 pub fn lint_repository(repo: &Repository) -> LintResult {
     let mut diagnostics = Vec::new();
     let dirs = discover_overlay_dirs(repo);
+    // Root-only fields must still be checked when discovery selects child overlays.
+    if !dirs.iter().any(|(dir, _)| dir == &repo.root)
+        && let Err(error) = repo.canonical_repository()
+    {
+        diagnostics.push(Diagnostic::error(".", format!("{error:#}")));
+    }
     let mut parsed_overlays: HashMap<String, Overlay> = HashMap::new();
     let mut failed_overlays: HashSet<String> = HashSet::new();
     let all_names: HashSet<String> = dirs.iter().map(|(_, name)| name.clone()).collect();
@@ -605,6 +612,11 @@ pub fn lint_repository(repo: &Repository) -> LintResult {
         let descriptor_file = find_descriptor_file(dir);
         match Overlay::new(repo, dir) {
             Ok(overlay) => {
+                if dir == &repo.root
+                    && let Err(error) = repo.canonical_repository()
+                {
+                    diagnostics.push(Diagnostic::error(name, format!("{error:#}")));
+                }
                 // Run per-overlay checks
                 match crate::overlays::ignore::SourcePolicy::new(&repo.root, &overlay) {
                     Ok(policy) => {

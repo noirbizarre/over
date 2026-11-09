@@ -1,4 +1,5 @@
 pub mod config;
+pub mod init;
 pub(crate) mod sync;
 
 use std::collections::HashMap;

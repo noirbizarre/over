@@ -4,7 +4,7 @@ set -euo pipefail
 # Feature options (injected as env vars by devcontainer CLI)
 OVERLAY="${OVERLAY:-}"
 REPOSITORY="${REPOSITORY:-}"
-OVERHOME="${OVERHOME:-"~/.over"}"
+OVERHOME="${OVERHOME:-"~/.dotfiles"}"
 VERSION="${VERSION:-latest}"
 
 OVER_IMAGE="ghcr.io/noirbizarre/over"
