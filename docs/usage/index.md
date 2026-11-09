@@ -12,13 +12,13 @@ workflows.
 | [`over add`](add.md) | Add files or directories to an overlay |
 | [`over new`](new.md) | Create a new overlay |
 | [`over list`](list.md) (`ls`) | List known overlays |
-| [`over show`](show.md) | Display details about an overlay |
+| [`over show`](show.md) | Compatibility alias for `over status` |
 | [`over data`](data.md) | Export resolved overlay data as JSON |
 | [`over apply`](apply.md) | Apply a given overlay |
 | [`over lint`](lint.md) | Check overlays for configuration issues |
 | [`over doctor`](doctor.md) | Check the environment and overlays for issues |
 | [`over completion`](completion.md) | Generate shell completion scripts |
-| [`over status`](status.md) | Get the current repository/directory overlays status |
+| [`over status`](status.md) | Inspect resolved configuration and reconciliation health |
 | [`over diff`](diff.md) | Show differences between desired and actual overlay state |
 | [`over sync`](sync.md) | Reconcile a checkout-materialized overlay with its git source |
 | [`over unapply`](unapply.md) | Remove a given overlay's own entries from the target |

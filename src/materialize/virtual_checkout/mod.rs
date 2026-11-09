@@ -76,7 +76,7 @@ impl Materializer for VirtualCheckoutMaterializer {
             };
             let (repo, managed) = git::discover_source(source)?;
             let head = git::base_tree(&repo, None)?;
-            git::scoped_subtree(&repo, &head, &managed, &scope)?;
+            git::scoped_entries(&repo, &head, &managed, &scope)?;
         }
 
         // A stale symlink (a rule changed from `SymlinkFile`/`SymlinkDirectory`

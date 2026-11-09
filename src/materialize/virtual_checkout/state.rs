@@ -97,7 +97,7 @@ pub(crate) fn verify_live_target_in(
     let crate::desired::Provenance::Overlay { overlay, source } = &entry.provenance else {
         anyhow::bail!("virtual checkout has no overlay source");
     };
-    let state = state_file.load_blocking()?;
+    let state = state_file.inspect_blocking()?;
     let desired_key = key_for(&entry.target);
     for (target, record) in &state.checkouts {
         if target == &desired_key || &record.overlay != overlay {
@@ -177,7 +177,7 @@ pub(crate) fn record_for_blocking_in(
     state_file: &StateFile<VirtualCheckoutState>,
     target: &Path,
 ) -> Result<Option<VirtualCheckoutRecord>> {
-    let state = state_file.load_blocking()?;
+    let state = state_file.inspect_blocking()?;
     Ok(state.checkouts.get(&key_for(target)).cloned())
 }
 
@@ -189,7 +189,7 @@ pub(crate) async fn record_for_in(
     state_file: &StateFile<VirtualCheckoutState>,
     target: &Path,
 ) -> Result<Option<VirtualCheckoutRecord>> {
-    let state = state_file.load().await?;
+    let state = state_file.inspect().await?;
     Ok(state.checkouts.get(&key_for(target)).cloned())
 }
 

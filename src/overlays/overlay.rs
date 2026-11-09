@@ -108,6 +108,9 @@ pub struct Overlay {
     pub(crate) target_origin: PathBuf,
     #[serde(skip)]
     pub(crate) mapping_origins: std::collections::BTreeMap<String, PathBuf>,
+    /// Reporting metadata contains declaration paths, never configuration values.
+    #[serde(skip)]
+    pub(crate) field_origins: std::collections::BTreeMap<String, PathBuf>,
 }
 
 impl fmt::Display for Overlay {
@@ -166,6 +169,7 @@ impl Overlay {
         let mut scoped_sources = Vec::new();
         let mut mapping_origins = std::collections::BTreeMap::new();
         let mut target_origin = root.to_path_buf();
+        let mut field_origins = std::collections::BTreeMap::new();
         let directories: Vec<_> = root
             .ancestors()
             .take_while(|path| path.starts_with(&repository.root))
@@ -251,6 +255,11 @@ impl Overlay {
                 })
                 .transpose()?;
             let origin = super::paths::absolute_origin(directory)?;
+            for key in ["target", "uses", "install", "git"] {
+                if values.contains_key(key) {
+                    field_origins.insert(key.to_owned(), descriptor.clone());
+                }
+            }
             scopes.push(PolicyScope {
                 root: origin.clone(),
                 descriptor,
@@ -311,6 +320,7 @@ impl Overlay {
         overlay.scopes = scopes;
         overlay.target_origin = target_origin;
         overlay.mapping_origins = mapping_origins;
+        overlay.field_origins = field_origins;
         Ok(overlay)
     }
 

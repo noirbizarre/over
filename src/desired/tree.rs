@@ -360,13 +360,8 @@ fn walk_overlay_tree(
         .min_depth(usize::from(start.as_os_str().is_empty()))
         .into_iter();
     while let Some(entry) = walker.next() {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!("skipping entry due to error: {}", e);
-                continue;
-            }
-        };
+        // An incomplete source walk cannot produce a trustworthy health report or plan.
+        let entry = entry?;
         let path = entry.path();
         if !policy.includes(path, entry.file_type().is_dir()) {
             if entry.file_type().is_dir() {
@@ -1560,22 +1555,12 @@ mod tests {
         assert_eq!(tree.len(), 0);
     }
 
-    /// Install a tracing subscriber so `tracing::warn!` bodies (the
-    /// `WalkDir` error branch below) actually execute during the test.
-    fn init_test_tracing() {
-        let _ = tracing_subscriber::fmt()
-            .with_test_writer()
-            .with_max_level(tracing::Level::TRACE)
-            .try_init();
-    }
-
     #[rstest]
     #[cfg(unix)]
-    fn unreadable_subdirectory_is_skipped_with_a_warning() {
+    fn an_unreadable_source_directory_prevents_a_false_complete_report() {
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
-        init_test_tracing();
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov");
         overlay_dir.create_dir_all().unwrap();
@@ -1588,6 +1573,8 @@ mod tests {
         bad_dir.create_dir_all().unwrap();
         bad_dir.child("hidden.txt").write_str("secret").unwrap();
         fs::set_permissions(bad_dir.path(), fs::Permissions::from_mode(0o000)).unwrap();
+        // Privileged runners can read mode-000 directories, so cannot exercise this failure.
+        let inaccessible = fs::read_dir(bad_dir.path()).is_err();
 
         let overlay = repo.get("ov").unwrap();
         let c = ctx(td.path().to_path_buf(), repo.clone());
@@ -1596,13 +1583,8 @@ mod tests {
         // Restore permissions for cleanup regardless of outcome.
         fs::set_permissions(bad_dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
 
-        let tree = result.expect("build should succeed despite unreadable entries");
-        let root = td.path().to_path_buf();
-        assert!(
-            tree.entries()
-                .iter()
-                .any(|e| e.target == root.join("good.txt")),
-            "good.txt should still be discovered"
-        );
+        if inaccessible {
+            assert!(result.is_err());
+        }
     }
 }

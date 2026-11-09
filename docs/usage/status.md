@@ -1,6 +1,8 @@
 # `over status`
 
-Get the current repository/directory overlays status.
+Inspect resolved overlay configuration and reconciliation health, even before
+the overlay has ever been applied. `over show` is a compatibility alias with
+the same options, output, and exit status.
 
 ```text
 Usage: over status [OPTIONS] [NAME]
@@ -22,10 +24,57 @@ When `NAME` is omitted, a configured `default_overlay` (see
 [Default Overlay Selection](../configuration.md#default-overlay-selection))
 narrows the report to just that overlay; pass `--all` to report on every
 overlay regardless.
+Without a configured default, omitting `NAME` selects every overlay.
 
 Explicit `NAME` and `--all` retain the configured default's
 [data context](../configuration.md#consumer-metadata-data). Each target resolves
 its own metadata separately. `--no-uses` skips dependency entries, not their data.
+
+## Resolved configuration
+
+Each overlay has separate **Configuration** and **Reconciliation** sections.
+Configuration includes the source root, resolved target and its origin,
+dependencies in composition order, directory mappings with resolved destinations,
+materialization baseline and rule count, declared Git destinations, and install
+and lifecycle-hook summaries. These describe intent even when targets are missing.
+
+Use `--verbose` to expand dependency configuration, policy scopes, selectors,
+permissions and excludes in cascade order. Scopes name their declaring descriptor;
+mapping origins name their declaration directory. Install and Git summaries name
+the latest contributing descriptor; individual merged settings can also inherit
+from earlier scopes. Hooks are local to their overlay or repository, not inherited.
+
+Unhealthy paths show their source or sidecar/declaration, owning overlay,
+materialization intent, and responsible rule/scope where available. Healthy paths
+are summarized by default and expanded with `--verbose`.
+
+Scripts, consumer data values, package options, remote URLs and arbitrary Git
+configuration values are omitted. Install sections and hooks are described by
+presence/counts without executing commands or consulting external providers.
+
+## Exit status and read-only behavior
+
+- `0`: every selected overlay is fully applied, including its exclude blocks,
+  or the repository has no overlays.
+- `1`: any selected overlay needs attention or cannot be checked, including
+  unknown names and invalid configuration. An `Ahead` checkout also needs attention.
+- Invalid command-line arguments use the argument parser's error exit status (`2`).
+
+Multiple selections receive individual reports and an overall summary, including
+failed checks. Entry counts are summed per overlay report; a shared dependency
+may therefore contribute to several reports. A failure in one overlay does not
+prevent checking other discoverable overlays.
+
+Status never applies, repairs, installs, runs hooks, fetches, or writes target
+files, Git objects/index/config/excludes, or XDG state/lock files. Virtual-checkout
+association metadata is read as a snapshot; older state schemas migrate only in
+memory. `NO_COLOR` and redirected stdout produce readable output without ANSI
+color escapes, even if color is otherwise forced.
+
+Use [`over diff`](diff.md) for changes and content diffs; status explains the
+resolved configuration and whether it is healthy.
+
+## Reconciliation states
 
 Each entry is classified into one of 8 statuses (referenced by `over diff`
 and `over unapply` too):
@@ -34,7 +83,7 @@ and `over unapply` too):
 |--------|---------|
 | `Applied` | Target matches desired intent — nothing to do. |
 | `Missing` | Target doesn't exist yet. |
-| `Modified` | A git checkout has uncommitted changes. |
+| `Modified` | A checkout has local/staged changes, or a managed file's permissions need repair. |
 | `Broken` | A dangling soft symlink, or a checkout path that isn't a valid git repo. |
 | `Conflict` | Target exists and doesn't match desired intent, or a git checkout has a merge/rebase/cherry-pick in progress. |
 | `Ahead` | A git checkout is ahead of its upstream. |
@@ -62,7 +111,7 @@ changes (e.g. its `url`), it's reported `Conflict` until the next `over
 apply` reconciles it. See
 [ADR-021](../adr/021-declared-git-repositories-report-provisioning-not-content-status.md).
 
-## Virtual checkouts (`mode = "checkout"`)
+## Virtual checkouts (`mode = "checkout"`) {#virtual-checkouts-mode--checkout}
 
 A subtree (or the whole overlay, via `mode = "checkout"`
 or a `path = "."` rule) can be materialized as a **virtual
@@ -84,8 +133,8 @@ target:
 | `Conflict` | The *same* file changed both locally and in the source repository, to different content — resolve manually, then re-run. |
 | `Missing` / `Broken` | Not materialized yet, or its recorded association is gone — run `over apply`. |
 
-`--verbose` also lists the specific added/modified/deleted files
-underneath a virtual checkout's aggregate status line.
+Actionable modified, diverged, or conflicting virtual checkouts also list specific
+added/modified/deleted files underneath their aggregate status line.
 Files are labeled `(staged)` or `(unstaged)`; a file edited again after
 staging can appear in both lists. Mapped checkout units are inspected
 independently, so changes confined to a mapped sibling do not make the

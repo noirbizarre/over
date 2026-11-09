@@ -1,21 +1,16 @@
-# `over show`
+# `over show` (compatibility alias)
 
-Display details about an overlay.
+`over show` is a compatibility alias for [`over status`](status.md). Prefer
+`over status` in new workflows. Both names use one implementation and report
+resolved configuration together with reconciliation health, including before
+the first apply.
 
-Includes configured directory mappings as source-prefix/target pairs, along
-with the base target, scalar `mode` and `permissions` baselines, and shared
-rules in cascade order. Each policy scope names its declaring descriptor so
-inherited selectors can be interpreted relative to the correct root.
-
-```text
-Usage: over show [OPTIONS] <NAME>
-
-Arguments:
-  <NAME>  Name of the overlay to display
-
-Options:
-  -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
-  -d, --debug        Toggle debug traces
-  -v, --verbose      Toggle verbose output
-  -h, --help         Print help
+```sh
+over show desktop
+over show --all
+over show desktop --verbose
 ```
+
+Selection, `--root`, `--no-uses`, `--all`, verbosity, read-only behavior, and exit
+statuses are identical. In particular, `show` now returns `1` for missing,
+unhealthy, or uncheckable overlays; it is no longer a configuration-only command.

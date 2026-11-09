@@ -108,6 +108,18 @@ where
         Self::load_blocking_at(&self.path, &self.lock_path())
     }
 
+    /// Read an atomic old-or-new snapshot without creating a lock or state directory.
+    /// Migrations run only in memory; writers still serialize atomic replacements.
+    pub fn inspect_blocking(&self) -> Result<T> {
+        Self::read(&self.path)
+    }
+
+    /// Async snapshot counterpart for inspection that must remain strictly read-only.
+    pub async fn inspect(&self) -> Result<T> {
+        let path = self.path.clone();
+        spawn_blocking(move || Self::read(&path)).await?
+    }
+
     fn load_blocking_at(path: &std::path::Path, lock_path: &std::path::Path) -> Result<T> {
         // A shared lock is defense-in-depth beyond the atomic-rename
         // guarantee (helps on filesystems without atomic rename, e.g.
@@ -268,6 +280,40 @@ mod tests {
 
     impl VersionedState for Counter {
         const VERSION: u32 = 1;
+    }
+
+    #[tokio::test]
+    async fn snapshot_reads_never_create_missing_state_directories_or_locks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state: StateFile<Counter> = StateFile::new(tmp.path().join("absent/state.toml"));
+        assert_eq!(state.inspect_blocking().unwrap(), Counter::default());
+        assert_eq!(state.inspect().await.unwrap(), Counter::default());
+        assert!(!tmp.path().join("absent").exists());
+    }
+
+    #[test]
+    fn inspecting_legacy_state_migrates_only_in_memory_without_creating_a_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.toml");
+        let contents = "version = 1\n[state]\ncount = 7\n";
+        std::fs::write(&path, contents).unwrap();
+        let state: StateFile<Migrated> = StateFile::new(&path);
+        assert_eq!(state.inspect_blocking().unwrap().count, 7);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), contents);
+        assert!(!state.lock_path().exists());
+    }
+
+    #[rstest::rstest]
+    #[case("not valid toml")]
+    #[case("version = 99\n[state]\ncount = 7\n")]
+    fn inspecting_invalid_or_newer_state_fails_without_writing(#[case] contents: &str) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.toml");
+        std::fs::write(&path, contents).unwrap();
+        let state: StateFile<Counter> = StateFile::new(&path);
+        assert!(state.inspect_blocking().is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), contents);
+        assert!(!state.lock_path().exists());
     }
 
     #[tokio::test]

@@ -105,11 +105,15 @@ Overlays can also compose each other via `uses:`, and any field can be a
 template rendered against the current overlay/machine:
 
 ```console
-$ over show hosts/demo
-hosts/demo
-  root:   /home/you/dotfiles/hosts/demo
-  target: ~
-  uses:   apps/git
+$ over status hosts/demo
+Overlay hosts/demo
+Configuration:
+  source: /home/you/dotfiles/hosts/demo
+  target: /home/you
+  ...
+  composition: apps/git -> hosts/demo
+Reconciliation:
+  Fully applied — 2 applied, 0 missing, 0 modified, 0 broken, 0 conflict(s), 0 ahead, 0 behind, 0 diverged
 
 $ over apply hosts/demo --dry-run
 📦 Applying overlay hosts/demo to /home/you
@@ -208,13 +212,13 @@ over --help
 | `over add` | Add files or directories to an overlay |
 | `over new` | Create a new overlay |
 | `over list` (`ls`) | List known overlays |
-| `over show` | Display details about an overlay |
+| `over show` | Compatibility alias for `over status` |
 | `over data` | Export resolved overlay data as JSON |
 | `over apply` | Apply a given overlay |
 | `over lint` | Check overlays for configuration issues |
 | `over doctor` | Check the environment and overlays for issues |
 | `over completion` | Generate shell completion scripts |
-| `over status` | Get the current repository/directory overlays status |
+| `over status` | Inspect resolved configuration and reconciliation health |
 | `over diff` | Show differences between desired and actual overlay state |
 | `over sync` | Reconcile a checkout-materialized overlay with its git source |
 | `over unapply` | Remove a given overlay's own entries from the target |
