@@ -1,5 +1,33 @@
 # Configuration
 
+## Path Resolution
+
+Configured filesystem paths use the root associated with their declaring
+configuration. Paths in the repository-root `over.toml`/`over.yaml` are
+repository-root-relative; paths in an overlay descriptor are relative to that
+overlay's root. Intermediate descriptors use their own directory. Inherited
+values retain their declaring root even when a child overrides other fields.
+Over uses its existing repository/overlay context for this resolution, so
+invoking it from another working directory does not change configured paths.
+
+This convention applies to sources, destinations, rule paths, exclusion
+selectors, declared Git placement paths and local remotes, and Cargo package
+`path` values. Relative `.link.*` referents and `.partial.*` destinations use
+their owning overlay's root, including sidecars in nested directories.
+Absolute paths remain absolute. For templated destinations, Over renders the
+template first, then resolves a relative result. In destination fields, `~` means the execution-context
+root (`--root`, otherwise your home directory).
+
+For example, a root rule for `overlays/work/config` and a rule for `config`
+inside `overlays/work/over.yaml` select the same source tree. Root rules for
+`config` do not implicitly select every overlay's `config` directory.
+
+Overlay names in `uses`/`default_overlay` are repository-relative identifiers.
+Git refs, worktree names, transport URLs, arbitrary Git configuration, consumer
+`data`, and shell commands retain their own semantics. CLI-relative `--home`
+and `--root` arguments still refer to the invocation directory. `.overignore`
+patterns retain their ignore-file-relative semantics.
+
 ## Root Configuration
 
 `over` supports a root configuration file at `~/.dotfiles/over.toml` (or
@@ -48,7 +76,7 @@ repository: git@github.com:user/dotfiles.git
 
 This is a literal Git remote, not a project homepage or a template. SSH URLs,
 SCP-style SSH, HTTPS, `file://` URLs and local repository paths are accepted.
-Relative local paths follow Git's normal resolution rules. Empty values,
+Relative local paths use the repository root. Empty values,
 non-string values, control characters and template expressions are errors.
 Nested descriptors cannot override the canonical remote.
 
@@ -406,7 +434,7 @@ staging, committing, syncing, or removing it. Already staged ignored source
 changes remain in the source index. Removing a rule brings the path back
 under normal reconciliation and conflict checks.
 
-A whole-directory symlink (`symlink-directory` or `link_dirs`) cannot hide
+A whole-directory symlink (`symlink-directory`) cannot hide
 individual children. Over rejects it before making changes if it would
 expose ignored descendants or control metadata. Use individual file
 symlinks or `checkout` materialization for such directories. Reverse add
@@ -445,23 +473,23 @@ the inverse routing: `/etc/client/other.yaml` belongs to
   directory may be absent until files are added.
 - Absolute destinations remain absolute. `~` means the execution-context
   root (`--root`, otherwise the home directory). Relative destinations are
-  resolved under the overlay's resolved `target`. Mapping targets support
+  resolved from the declaring descriptor's root. Mapping targets support
   the same templates as the base target.
 - Mapping entries cascade by source key; a nearer descriptor overrides the
   same key and preserves other inherited mappings.
 - Mapped destinations cannot overlap one another, contain the base target,
   overlap the overlay source, or collide with residual managed content.
   A destination below the base target is supported.
-- Rules, excludes, and permissions keep their original overlay-relative
-  names. Each mapped root is a new materialization boundary, resolved using
-  its own matching rule or the default strategy.
+- Rules and excludes select source paths using their declaring scope, before
+  destination routing. Each mapped root is a new materialization boundary,
+  resolved using its own effective mode.
 - A mapped root can be a whole-directory symlink. A mapping inside another
   whole-directory symlink is rejected because that symlink owns its entire
   subtree.
 - `.link.*` placement and declared `git` paths use the same routing.
   `.partial.*` files retain their explicitly declared destinations.
 
-With `defaults.materialization: checkout`, the residual overlay and each
+With `mode: checkout`, the residual overlay and each
 mapped directory become separate virtual checkout units. Mapped directories
 are excluded from the residual checkout; status, sync, commit, and unapply
 respect these boundaries even when a mapped destination sits below the
@@ -474,63 +502,86 @@ silently reused with different ownership boundaries.
 
 ## Materialization Rules
 
-By default, every file in an overlay is symlinked individually and every
-directory is recursed into. Two fields, available both in the repository
-root config and in any overlay's own descriptor (they inherit through the
-same cascading chain as every other field — see
-[ADR-002](adr/002-overlay-is-a-directory-not-a-repository.md)), let you
-override this per overlay or per subtree:
+Both repository and overlay descriptors accept `mode` and ordered `rules`:
 
-```toml
-[defaults]
-materialization = "symlink"          # symlink | symlink-directory | checkout
-
-[[rules]]
-path = "some/directory"               # glob or literal, relative to the overlay root
-materialization = "symlink-directory"
+```yaml
+# Repository-root over.yaml
+mode: symlink
+rules:
+  - path: overlays/work/shared
+    mode: symlink-directory
+  - path: overlays/work/projects
+    mode: checkout
 ```
 
-- `defaults.materialization` sets the materialization applied to every
-  directory with no more specific `rules` match. `symlink` (the default)
-  recurses into the directory and symlinks each file individually.
-  `symlink-directory` symlinks the directory as a single unit — its
-  contents are not separately enumerated or tracked. `checkout` makes the
-  subtree a **virtual checkout** — ordinary, directly editable files with
-  no `.git` at the target — see [Virtual checkouts](usage/status.md#virtual-checkouts-materialization-checkout)
-  and [ADR-022](adr/022-virtual-checkout-materialization.md).
-- `rules` is a list of path/subtree overrides. `path` is a glob pattern (or
-  a literal path) relative to the overlay root. When more than one rule
-  matches the same path, the most specific one wins: a literal path always
-  outranks a glob, and among glob patterns the longer one wins.
-- A repository root `over.toml` setting `defaults`/`rules` becomes the
-  baseline for every overlay; any overlay along the cascading chain can
-  override either field entirely for its own tree (the nearest
-  descriptor that defines the field wins, same as `exclude`/`link_dirs`/
-  `git`/`uses`).
-- A file added to a source subtree still governed by a `symlink`
-  (file-level) rule is automatically picked up the next time `over`
-  inspects the overlay — there is no separate step to "add" it to the
-  rule.
+```yaml
+# overlays/work/over.yaml
+rules:
+  - path: config
+    mode: symlink
+  - path: tools/*
+    mode: symlink-directory
+```
 
-`link_dirs` (a list of glob patterns symlinked as a whole directory instead
-of walked file-by-file) still works and is equivalent to a `rules` entry
-with `materialization = "symlink-directory"` — both resolve through the
-same mechanism. See [ADR-017](adr/017-materialization-rules-generalize-link-dirs.md).
+All supported modes:
+
+| Mode | Behavior |
+| --- | --- |
+| `symlink` | Recurse into directories and symlink individual files. This is the implicit fallback. |
+| `symlink-directory` | Link a directory as one unit; do not enumerate its contents separately. |
+| `checkout` | Materialize a directory as ordinary editable files backed by the source repository, with no `.git` at the target. |
+
+The overlay root stays a directory scaffold with `symlink` or
+`symlink-directory`; the latter links child directories as units. Root
+`checkout` owns the whole overlay, apart from explicit mapped ownership units.
+Mode selection applies to directory units; files encountered during ordinary
+traversal are symlinked individually. Newly added source files are picked up
+automatically. See [virtual checkouts](usage/status.md#virtual-checkouts-mode-checkout).
+
+Resolution is an ordered cascade:
+
+1. Start with implicit `symlink`.
+2. Apply the root baseline, then root rules in declaration order.
+3. For every descriptor down to the selected overlay, apply its explicitly
+   declared baseline, then its rules in declaration order.
+
+The last matching assignment wins; specificity does not rank rules. A nearer
+`mode` baseline overrides earlier matching root rules. Omitting a baseline
+preserves inherited decisions. Child rule lists append to the cascade; even
+`rules: []` does not erase ancestor rules. `uses` composes independently
+configured overlays rather than adding configuration scopes.
+
+Literal `path` values are component-aware prefixes: `foo` selects `foo` and
+`foo/bar`, never `foobar`. `.` selects the declaring root and descendants.
+Globs are unsupported for `symlink`, `checkout`, and permissions-only rules.
+The sole exception is a rule explicitly selecting `mode: symlink-directory`:
+its glob selects directory boundaries. For example, `tools/*` links immediate
+child directories, not files or grandchildren. Exclusions and overlay discovery
+retain their existing glob languages.
+
+A final effective `symlink-directory` boundary prevents descendant rules from
+being applied inside that link. Checkout is also an atomic directory unit;
+descendant mode overrides do not split it. [`over lint`](usage/lint.md) reports
+unreachable overrides with the blocking declaration and a repair hint. A later
+same-path rule can reopen a boundary by selecting `symlink`; a descendant rule
+alone cannot. Existing mapped checkout units remain independently configurable.
+
+Removed configuration keys are rejected with migration guidance: replace the
+former materialization defaults with `mode`, and directory-link lists with
+`rules` selecting `mode: symlink-directory`. Relative mapping destinations now
+follow the general declaration-relative convention above.
 
 ## File Permissions
 
-`defaults.mode` and `permissions` mirror `defaults.materialization`/`rules`
-exactly (same cascading inheritance, same specificity precedence), but
-declare a desired permission mode instead of a materialization strategy:
+Scalar `permissions` declares an octal permission baseline. The same shared
+`rules` list can override permissions, mode, or both:
 
 ```toml
-[defaults]
-mode = "644"                          # octal string; applied when no more
-                                       # specific `permissions` entry matches
+permissions = "644"
 
-[[permissions]]
-path = "ssh/agent"                     # matches a partial sidecar's own stem
-mode = "600"
+[[rules]]
+path = "ssh/agent"
+permissions = "600"
 ```
 
 - Only meaningful for [Partial Files](#partial-files) — the one place
@@ -542,7 +593,10 @@ mode = "600"
 - `path` matches a `<name>.partial.{toml,yaml,yml}` sidecar's own stem
   (e.g. `ssh/agent` for `ssh/agent.partial.toml`), not its rendered
   `target`.
-- No `permissions`/`defaults.mode` at all (the default) leaves permissions
+- Mode and permission assignments cascade independently. A mode-only rule
+  leaves permissions intact and vice versa; the last matching assignment for
+  each property wins. Rules must set at least one property.
+- No `permissions` assignment at all leaves permissions
   entirely unmanaged — identical to pre-#65 behavior.
 - A drift (the block's content already matches, but the target's actual
   mode doesn't) is auto-fixed on the next `over apply`, reported by `over

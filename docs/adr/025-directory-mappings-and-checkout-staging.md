@@ -1,5 +1,10 @@
 # ADR-025: Directory mappings partition ownership; checkout adds stage snapshots
 
+> Path resolution amended by #190: mapping sources and destinations use the
+> declaring descriptor's root, retaining their origins through inheritance.
+> Relative destinations no longer use the deployment target as their base.
+> Checkout ownership and staged-snapshot safeguards below remain in effect.
+
 ## Status
 
 Accepted. Extends ADR-017 and amends ADR-022's commit workflow.

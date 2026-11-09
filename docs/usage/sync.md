@@ -89,7 +89,7 @@ See [ADR-014](../adr/014-bidirectional-checkout-synchronization.md) and
 [the roadmap](https://github.com/noirbizarre/over/issues/112) for the full
 design rationale.
 
-## Virtual checkouts (`materialization = "checkout"`)
+## Virtual checkouts (`mode = "checkout"`)
 
 A [virtual checkout](../adr/022-virtual-checkout-materialization.md) — no
 `.git` at the target, backed by the overlay's own source repository — is

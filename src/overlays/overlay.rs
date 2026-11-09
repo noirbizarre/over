@@ -18,8 +18,8 @@ use crate::plan::Plan;
 use crate::ui;
 use crate::ui::{emojis, style};
 
-use super::permissions::{self, FileMode, PermissionRule};
-use super::rules::{self, Defaults, MaterializationKind, MaterializationRule};
+use super::permissions::{self, FileMode};
+use super::rules::{self, MaterializationKind, PolicyScope, Rule};
 use super::{DEFAULT_TARGET, Repository};
 
 fn default_none() -> Option<Vec<String>> {
@@ -98,32 +98,16 @@ pub struct Overlay {
 
     pub install: Option<InstallConfig>,
 
-    /// Repository-/overlay-level default materialization applied to every
-    /// directory with no matching `rules` entry (#113/#126). Absent
-    /// entirely falls back to [`MaterializationKind::Symlink`] (today's
-    /// implicit default) — see [`rules::resolve`].
-    pub defaults: Option<Defaults>,
-
-    /// Path/subtree materialization overrides (#113/#126); most specific
-    /// match wins — see [`rules::resolve`]. `link_dirs` below is
-    /// equivalent to a `rules` entry with `materialization:
-    /// symlink-directory` and is resolved through the same mechanism
-    /// (ADR-017).
-    pub rules: Option<Vec<MaterializationRule>>,
-
-    /// Glob patterns for directories that should be symlinked as a unit
-    /// rather than recursed into when adding. Kept for backward
-    /// compatibility: internally equivalent to a `rules` entry with
-    /// `materialization: symlink-directory` (ADR-017) — prefer `rules`
-    /// for new configs; both resolve through [`rules::resolve`].
-    pub link_dirs: Option<Vec<String>>,
-
-    /// Path/subtree permission overrides (#65); most specific match wins —
-    /// see [`permissions::resolve`]. Only meaningful for entries `over`
-    /// writes content for directly (`PartialFile` today); symlinked
-    /// entries share their source's permission and are never looked up
-    /// this way (ADR-020).
-    pub permissions: Option<Vec<PermissionRule>>,
+    pub mode: Option<MaterializationKind>,
+    pub permissions: Option<FileMode>,
+    pub rules: Option<Vec<Rule>>,
+    /// Runtime policy retains declaration order and origins lost by ordinary merging.
+    #[serde(skip)]
+    pub scopes: Vec<PolicyScope>,
+    #[serde(skip)]
+    pub(crate) target_origin: PathBuf,
+    #[serde(skip)]
+    pub(crate) mapping_origins: std::collections::BTreeMap<String, PathBuf>,
 }
 
 impl fmt::Display for Overlay {
@@ -178,11 +162,125 @@ impl Overlay {
         sources.reverse();
 
         let mut local_hooks = crate::hooks::Hooks::default();
+        let mut scopes = Vec::new();
+        let mut scoped_sources = Vec::new();
+        let mut mapping_origins = std::collections::BTreeMap::new();
+        let mut target_origin = root.to_path_buf();
+        let directories: Vec<_> = root
+            .ancestors()
+            .take_while(|path| path.starts_with(&repository.root))
+            .collect();
         for (index, source) in sources.iter().enumerate() {
             // Validate separately before the cascade can hide an invalid parent hook.
-            let values = source.collect().map_err(|_| {
+            let mut values = source.collect().map_err(|_| {
                 anyhow::anyhow!("descriptor syntax error (source contents omitted)")
             })?;
+            let directory = directories[directories.len() - 1 - index];
+            let descriptor = super::EXTENSIONS
+                .iter()
+                .map(|extension| directory.join(format!("over.{extension}")))
+                .find(|path| path.is_file())
+                .unwrap_or_else(|| directory.join("over"));
+            for key in ["default", "defaults", "materialization", "link_dirs"] {
+                anyhow::ensure!(
+                    !values.contains_key(key),
+                    "{}: `{key}` is no longer supported; use `mode`, scalar `permissions`, and `rules` (directory links use `mode: symlink-directory`)",
+                    descriptor.display()
+                );
+            }
+            if let Some(value) = values.get("permissions") {
+                anyhow::ensure!(
+                    !matches!(value.kind, config::ValueKind::Array(_)),
+                    "{}: `permissions` must now be an octal string; move permission overrides into `rules` with a `permissions` property",
+                    descriptor.display()
+                );
+            }
+            if let Some(config::Value {
+                kind: config::ValueKind::Array(rules),
+                ..
+            }) = values.get("rules")
+            {
+                for (index, rule) in rules.iter().enumerate() {
+                    if let config::ValueKind::Table(fields) = &rule.kind {
+                        anyhow::ensure!(
+                            !fields.contains_key("materialization"),
+                            "{}: rule {} uses removed `materialization`; replace it with `mode`",
+                            descriptor.display(),
+                            index + 1
+                        );
+                    }
+                }
+            }
+            let mode = values
+                .get("mode")
+                .map(|value| value.clone().try_deserialize())
+                .transpose()?;
+            let permissions = values.get("permissions").map(|value| value.clone().try_deserialize::<FileMode>()).transpose().with_context(|| format!("{}: `permissions` must be an octal string; move path overrides into `rules`", descriptor.display()))?;
+            let rules = values
+                .get("rules")
+                .map(|value| value.clone().try_deserialize::<Vec<Rule>>())
+                .transpose()
+                .with_context(|| {
+                    format!(
+                        "{}: rules use `mode` and/or `permissions`, not `materialization`",
+                        descriptor.display()
+                    )
+                })?
+                .unwrap_or_default();
+            for (rule_index, rule) in rules.iter().enumerate() {
+                rule.validate().with_context(|| {
+                    format!("{}: rule {}", descriptor.display(), rule_index + 1)
+                })?;
+            }
+            let exclude = values
+                .get("exclude")
+                .map(|value| {
+                    #[derive(Deserialize)]
+                    #[serde(untagged)]
+                    enum Exclude {
+                        One(String),
+                        Many(Vec<String>),
+                    }
+                    value
+                        .clone()
+                        .try_deserialize::<Exclude>()
+                        .map(|value| match value {
+                            Exclude::One(value) => vec![value],
+                            Exclude::Many(values) => values,
+                        })
+                })
+                .transpose()?;
+            let origin = super::paths::absolute_origin(directory)?;
+            scopes.push(PolicyScope {
+                root: origin.clone(),
+                descriptor,
+                mode,
+                permissions,
+                rules,
+                exclude,
+            });
+            if values.contains_key("target") {
+                target_origin = origin.clone();
+            }
+            if let Some(value) = values.get_mut("map") {
+                let table = value.clone().into_table()?;
+                let mut normalized = config::Map::new();
+                for (key, mapping) in table {
+                    if let Some(logical) = super::paths::logical_path(&key, directory, root)? {
+                        if mapping.clone().into_table()?.contains_key("target") {
+                            mapping_origins.insert(logical.clone(), origin.clone());
+                        }
+                        normalized.insert(logical, mapping);
+                    }
+                }
+                value.kind = config::ValueKind::Table(normalized);
+            }
+            if let Some(value) = values.get_mut("install") {
+                super::paths::resolve_install_paths(value, &origin);
+            }
+            if let Some(value) = values.get_mut("git") {
+                super::paths::resolve_git_paths(value, &origin, root)?;
+            }
             if let Some(value) = values.get("hooks") {
                 let hooks = value.clone().try_deserialize::<crate::hooks::Hooks>()?;
                 // Root hooks remain repository-scoped, including for a root overlay.
@@ -192,10 +290,11 @@ impl Overlay {
             }
             super::data::validate_source(source)
                 .with_context(|| format!("invalid data in descriptor source {source:?}"))?;
+            scoped_sources.push(super::paths::ScopedSource(values));
         }
 
         let s = Config::builder()
-            .add_source(sources)
+            .add_source(scoped_sources)
             .set_override("name", name.clone())?
             .set_override("root", root.to_str())?
             .set_default("target", DEFAULT_TARGET)?
@@ -209,11 +308,14 @@ impl Overlay {
             )
         })?;
         overlay.hooks = local_hooks;
+        overlay.scopes = scopes;
+        overlay.target_origin = target_origin;
+        overlay.mapping_origins = mapping_origins;
         Ok(overlay)
     }
 
     pub fn resolve_target(&self, ctx: &exec::Context) -> Result<PathBuf> {
-        super::mapping::render_target(&self.target, ctx)
+        super::mapping::resolve_path(&self.target, &self.target_origin, ctx)
     }
 
     pub fn resolve_mappings(
@@ -223,24 +325,18 @@ impl Overlay {
         super::mapping::ResolvedMappings::new(self, ctx)
     }
 
-    /// Resolve the effective materialization for a directory at
-    /// `rel_path`: the most specific matching `rules` entry, else
-    /// `defaults.materialization`, else `Symlink` — see [`rules::resolve`].
+    /// Resolve a directory's mode using the ordered descriptor cascade.
     pub fn materialization_for(&self, rel_path: &Path) -> MaterializationKind {
         rules::resolve(self, rel_path)
     }
 
-    /// Whether a relative path should be symlinked as a whole directory
-    /// unit rather than recursed into. Broadened beyond a literal
-    /// `link_dirs` glob match to also honor `rules`/`defaults`
-    /// (#113/#126) — see [`Self::materialization_for`].
+    /// Whether a directory owns its subtree as one symlink unit.
     pub fn is_link_dir(&self, rel_path: &Path) -> bool {
         self.materialization_for(rel_path) == MaterializationKind::SymlinkDirectory
     }
 
-    /// Resolve the effective desired [`FileMode`] for `rel_path` (most
-    /// specific `permissions` entry, else `defaults.mode`, else `None`) —
-    /// see [`permissions::resolve`]. Only meaningful for entries `over`
+    /// Resolve permissions independently through the same ordered rules.
+    /// Only meaningful for entries `over`
     /// writes content for directly (`PartialFile`, #65); symlinked entries
     /// share their source's permission and are never looked up this way.
     pub fn permission_for(&self, rel_path: &Path) -> Option<FileMode> {
@@ -249,39 +345,50 @@ impl Overlay {
 
     /// Check if a relative path matches any `exclude` glob pattern.
     /// Returns `false` if no exclude patterns are configured.
-    /// Checks the full path, each leading prefix, and each trailing suffix
-    /// so that directory patterns (e.g. `.git`) match both the directory itself
-    /// and any nested contents (e.g. `.git/config`, `src/__pycache__/mod.pyc`).
+    /// Patterns stay anchored to their declaring scope; basename patterns
+    /// also match nested basenames within that scope.
     pub fn is_excluded(&self, rel_path: &Path) -> bool {
-        let patterns = match &self.exclude {
-            Some(p) if !p.is_empty() => p,
-            _ => return false,
+        let source = self
+            .scopes
+            .last()
+            .map(|scope| &scope.root)
+            .unwrap_or(&self.root)
+            .join(rel_path);
+        // Exclude lists keep their replacement inheritance, but never lose their declaring base.
+        let Some(scope) = self
+            .scopes
+            .iter()
+            .rev()
+            .find(|scope| scope.exclude.is_some())
+        else {
+            return false;
         };
-
-        // Collect all path variants to check: full path, prefixes, and suffixes
-        let components: Vec<_> = rel_path.components().collect();
-        let mut paths_to_check: Vec<PathBuf> = vec![rel_path.to_path_buf()];
-
-        // Prefixes: `.git`, `src/__pycache__`
-        for i in 1..components.len() {
-            paths_to_check.push(components[..i].iter().collect());
-        }
-
-        // Suffixes: `config`, `__pycache__/mod.pyc`
-        for i in 1..components.len() {
-            paths_to_check.push(components[i..].iter().collect());
-        }
-
-        for path in &paths_to_check {
-            for pattern in patterns {
-                if let Ok(glob) = GlobBuilder::new(pattern).literal_separator(true).build()
-                    && glob.compile_matcher().is_match(path)
-                {
-                    return true;
+        let Ok(relative) = source.strip_prefix(&scope.root) else {
+            return false;
+        };
+        for pattern in scope.exclude.iter().flatten() {
+            if let Ok(glob) = GlobBuilder::new(pattern).literal_separator(true).build() {
+                let matcher = glob.compile_matcher();
+                let candidate = if Path::new(pattern).is_absolute() {
+                    source.as_path()
+                } else {
+                    relative
+                };
+                for path in candidate.ancestors() {
+                    if matcher.is_match(path) {
+                        return true;
+                    }
+                    // Basename patterns retain their recursive meaning within the declaring scope.
+                    if !pattern.contains('/')
+                        && path
+                            .file_name()
+                            .is_some_and(|name| matcher.is_match(Path::new(name)))
+                    {
+                        return true;
+                    }
                 }
             }
         }
-
         false
     }
 
@@ -625,13 +732,13 @@ mod tests {
     }
 
     #[rstest]
-    fn is_link_dir_matches_configured_link_dirs_globs() {
+    fn directory_link_rules_match_literal_prefixes_and_directory_globs() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_ld");
         overlay_dir.create_dir_all().unwrap();
         overlay_dir
             .child("over.toml")
-            .write_str("target = \"~\"\nlink_dirs = [\".config/nvim\", \".local/share/*\"]")
+            .write_str("target = \"~\"\n[[rules]]\npath = '.config/nvim'\nmode = 'symlink-directory'\n[[rules]]\npath = '.local/share/*'\nmode = 'symlink-directory'")
             .unwrap();
         let overlay = repo.get("ov_ld").unwrap();
 
@@ -659,7 +766,7 @@ mod tests {
     }
 
     #[rstest]
-    fn is_link_dir_is_false_without_link_dirs_configured() {
+    fn directories_are_not_linked_as_units_without_a_mode_assignment() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov_ld_none");
         overlay_dir.create_dir_all().unwrap();
@@ -887,6 +994,7 @@ branch = "main"
     #[tokio::test]
     async fn apply_creates_symlink_from_link_sidecar_descriptor() {
         let (td, repo) = repo_and_root();
+        let referent = td.path().join("test_symlink_target");
         let overlay_dir = td.child("ov_symlink");
         overlay_dir.create_dir_all().unwrap();
         overlay_dir
@@ -895,7 +1003,7 @@ branch = "main"
             .unwrap();
         overlay_dir
             .child("test.link.toml")
-            .write_str("target = \"/tmp/test_symlink_target\"")
+            .write_str(&format!("target = {:?}", referent.to_str().unwrap()))
             .unwrap();
 
         let overlay = repo.get("ov_symlink").unwrap();
@@ -912,15 +1020,13 @@ branch = "main"
             target_path.is_symlink(),
             "symlink should be created at target"
         );
-        assert_eq!(
-            fs::read_link(&target_path).unwrap(),
-            PathBuf::from("/tmp/test_symlink_target")
-        );
+        assert_eq!(fs::read_link(&target_path).unwrap(), referent);
     }
 
     #[tokio::test]
     async fn apply_symlink_sidecar_filename_determines_target_name() {
         let (td, repo) = repo_and_root();
+        let referent = td.path().join("test_symlink_src");
         let overlay_dir = td.child("ov_sympl");
         overlay_dir.create_dir_all().unwrap();
         overlay_dir
@@ -929,7 +1035,7 @@ branch = "main"
             .unwrap();
         overlay_dir
             .child("templated.link.toml")
-            .write_str("target = \"/tmp/test_symlink_src\"")
+            .write_str(&format!("target = {:?}", referent.to_str().unwrap()))
             .unwrap();
 
         let overlay = repo.get("ov_sympl").unwrap();
@@ -946,10 +1052,7 @@ branch = "main"
             target_path.is_symlink(),
             "symlink should be created at overlay target"
         );
-        assert_eq!(
-            fs::read_link(&target_path).unwrap(),
-            PathBuf::from("/tmp/test_symlink_src")
-        );
+        assert_eq!(fs::read_link(&target_path).unwrap(), referent);
     }
 
     // ── exclude: string or list deserialization ──────────────────────────

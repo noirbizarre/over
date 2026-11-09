@@ -899,11 +899,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ov = tmp.path().join("dotfiles");
         fs::create_dir_all(&ov).unwrap();
-        fs::write(
-            ov.join("over.toml"),
-            "target = \"~\"\n[defaults]\nmaterialization = \"checkout\"",
-        )
-        .unwrap();
+        fs::write(ov.join("over.toml"), "target = \"~\"\nmode = \"checkout\"").unwrap();
         fs::write(ov.join("a.txt"), "content").unwrap();
         let repo = init_repo(&ov);
         commit_all(&repo, "initial");
@@ -941,11 +937,7 @@ mod tests {
     fn setup_nested_checkout_overlay(tmp: &std::path::Path) -> (GitRepository, PathBuf) {
         let ov = tmp.join("dotfiles");
         fs::create_dir_all(&ov).unwrap();
-        fs::write(
-            ov.join("over.toml"),
-            "target = \"~\"\n[defaults]\nmaterialization = \"checkout\"",
-        )
-        .unwrap();
+        fs::write(ov.join("over.toml"), "target = \"~\"\nmode = \"checkout\"").unwrap();
         fs::write(ov.join("a.txt"), "content").unwrap();
         let repo = init_repo(tmp);
         commit_all(&repo, "initial");

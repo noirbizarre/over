@@ -27,7 +27,7 @@ map:
 in `~/.config/client`. `over add --overlay workspace/client
 /etc/client/other.yaml` reverse-maps to `etc/other.yaml` in the overlay.
 
-Add `defaults: {materialization: checkout}` to use ordinary editable files
+Add `mode: checkout` to use ordinary editable files
 at all three destinations. In that mode, use `over add` to stage selected
 changes, then `over commit workspace/client` to record the staged snapshots.
 See [Directory Target Mappings](configuration.md#directory-target-mappings)

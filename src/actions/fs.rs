@@ -291,7 +291,7 @@ async fn add_file_selected(
 }
 
 /// Add a directory to an overlay, either as a whole directory symlink (if it
-/// resolves to `SymlinkDirectory` via `rules`/`defaults`/`link_dirs` — see
+/// resolves to `SymlinkDirectory` via the mode cascade — see
 /// `Overlay::is_link_dir`, #113/#126) or by recursing into it and adding
 /// each file individually.
 pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
@@ -976,7 +976,7 @@ mod tests {
         overlay_dir.create_dir_all().unwrap();
         overlay_dir
             .child("over.toml")
-            .write_str("target = \"~\"\nlink_dirs = [\"mydir\"]")
+            .write_str("target = \"~\"\n[[rules]]\npath = 'mydir'\nmode = 'symlink-directory'")
             .unwrap();
         let overlay = repo.get("ov_linkdir").unwrap();
         let c = ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));

@@ -893,7 +893,7 @@ mod tests {
         overlay_dir.create_dir_all().unwrap();
         overlay_dir
             .child("over.toml")
-            .write_str("target = \"~\"\nlink_dirs = [\"mydir\"]")
+            .write_str("target = \"~\"\n[[rules]]\npath = 'mydir'\nmode = 'symlink-directory'")
             .unwrap();
         overlay_dir.child("mydir/inner.txt").write_str("x").unwrap();
         fs::create_dir_all(td.path().join("mydir")).unwrap();

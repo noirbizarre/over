@@ -44,7 +44,7 @@
 //!   other intent, but `Overlay::apply` still clones git repositories
 //!   through the existing, separate `actions::git::clone_repositories`
 //!   *before* building the `Plan`, entirely orthogonal to this module.
-//! - `defaults:`/`rules:` configuration itself — #126, `crate::overlays::rules`.
+//! - `mode:`/`rules:` configuration itself — `crate::overlays::rules`.
 //!   [`Operation::Migrate`] (#129) reconciles what those rules resolve
 //!   *changing* between runs (symlink ↔ checkout, file-level ↔
 //!   directory-level symlink) without a `Plan`/`PlanStep` shape change, per

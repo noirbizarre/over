@@ -1,5 +1,9 @@
 # ADR-022: Virtual checkout materialization, distinct from `overlay.git`'s `Checkout`, amending ADR-017
 
+> Schema amended by #190: select virtual checkouts with `mode: checkout`,
+> at descriptor level or in shared ordered rules. Checkout units remain
+> atomic; ineffective descendant mode overrides are lint errors.
+
 **Status:** accepted
 
 The ownership and automatic-recording decisions below are amended by

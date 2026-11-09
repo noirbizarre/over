@@ -45,6 +45,11 @@ pub(crate) fn absolute(path: &Path) -> Result<PathBuf> {
     } else {
         std::env::current_dir()?.join(path)
     };
+    Ok(lexical(&path))
+}
+
+/// Shared lexical normalization avoids following managed symlinks while resolving selectors.
+pub(crate) fn lexical(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for part in path.components() {
         match part {
@@ -55,7 +60,7 @@ pub(crate) fn absolute(path: &Path) -> Result<PathBuf> {
             _ => normalized.push(part),
         }
     }
-    Ok(normalized)
+    normalized
 }
 
 /// Resolve existing ancestors even when the destination has not been created.
@@ -116,12 +121,17 @@ pub(crate) fn render_target(raw: &str, ctx: &exec::Context) -> Result<PathBuf> {
     let rendered = exec::templates::render_string(raw, ctx)
         .with_context(|| format!("failed to render target template '{raw}'"))?;
     Ok(if rendered == "~" {
-        ctx.root.clone()
+        absolute(&ctx.root)?
     } else if let Some(tail) = rendered.strip_prefix("~/") {
-        ctx.root.join(tail)
+        absolute(&ctx.root)?.join(tail)
     } else {
         PathBuf::from(rendered)
     })
+}
+
+/// Render before anchoring so a template producing a relative path keeps its declaration base.
+pub(crate) fn resolve_path(raw: &str, origin: &Path, ctx: &exec::Context) -> Result<PathBuf> {
+    Ok(lexical(&origin.join(render_target(raw, ctx)?)))
 }
 
 /// Context-free checks also used by lint, which must not render machine-specific
@@ -186,8 +196,8 @@ impl ResolvedMappings {
         let mut physical_targets: Vec<PathBuf> = Vec::new();
         for (key, config) in &overlay.map {
             let source = PathBuf::from(key);
-            let rendered = render_target(&config.target, ctx)?;
-            let target = absolute(&base.join(rendered))?;
+            let origin = overlay.mapping_origins.get(key).unwrap_or(&overlay.root);
+            let target = absolute(&resolve_path(&config.target, origin, ctx)?)?;
             let physical_target = physical_destination(&target, &overlay.root.join(&source))?;
             let physical_base = physical(&base)?;
             ensure!(
@@ -323,7 +333,7 @@ mod tests {
     #[test]
     fn mappings_replace_prefixes_and_reverse_without_shadowed_fallbacks() {
         let temp = assert_fs::TempDir::new().unwrap();
-        temp.child("ov/over.yaml").write_str("target: ~/Workspace/Client\nmap:\n  etc:\n    target: ~/system/client\n  config:\n    target: settings\n").unwrap();
+        temp.child("ov/over.yaml").write_str("target: ~/Workspace/Client\nmap:\n  etc:\n    target: ~/system/client\n  config:\n    target: ../settings\n").unwrap();
         let repo = Repository::new(temp.path().to_path_buf());
         let overlay = repo.get("ov").unwrap();
         let ctx = Context::builder()
@@ -340,7 +350,7 @@ mod tests {
         }
         assert_eq!(
             routing.target_for(Path::new("config/a")),
-            temp.path().join("home/Workspace/Client/settings/a")
+            temp.path().join("settings/a")
         );
         assert_eq!(
             routing.target_for(Path::new("etc/a")),
@@ -389,7 +399,7 @@ mod tests {
     fn nearer_mapping_targets_override_inherited_keys_and_preserve_siblings() {
         let temp = assert_fs::TempDir::new().unwrap();
         temp.child("over.toml")
-            .write_str("[map.config]\ntarget='settings'\n[map.etc]\ntarget='system'")
+            .write_str("[map.'ov/config']\ntarget='settings'\n[map.'ov/etc']\ntarget='system'")
             .unwrap();
         temp.child("ov/over.yaml")
             .write_str("map:\n  config:\n    target: custom\n")
@@ -468,7 +478,7 @@ mod tests {
         std::os::unix::fs::symlink(temp.path().join("real"), temp.path().join("alias")).unwrap();
         temp.child("ov/over.toml")
             .write_str(&format!(
-                "target='~/base'\nlink_dirs=['config']\n[map.config]\ntarget='{}'",
+                "target='~/base'\n[[rules]]\npath='config'\nmode='symlink-directory'\n[map.config]\ntarget='{}'",
                 temp.path().join("alias/new").display()
             ))
             .unwrap();

@@ -83,8 +83,7 @@ pub enum EntryKind {
 /// rather than an implicit delete/recreate).
 #[derive(Debug, Clone)]
 pub enum MaterializationIntent {
-    /// Plain `mkdir` — the default for directories that don't match
-    /// `link_dirs`.
+    /// Plain `mkdir` for a directory scaffold.
     Directory,
     /// Symlink a single file from `source` (file-level materialization).
     SymlinkFile {
@@ -92,7 +91,7 @@ pub enum MaterializationIntent {
         link_type: LinkType,
     },
     /// Symlink a whole directory from `source` as one unit
-    /// (`link_dirs`, or a `.link.*` sidecar resolving to a directory).
+    /// (a mode rule, or a `.link.*` sidecar resolving to a directory).
     SymlinkDirectory {
         source: PathBuf,
         link_type: LinkType,
@@ -199,8 +198,8 @@ pub struct DesiredEntry {
     pub target: PathBuf,
     pub provenance: Provenance,
     pub intent: MaterializationIntent,
-    /// Desired permission mode (#65), resolved from `overlay.defaults.mode`/
-    /// `overlay.permissions` — see [`crate::overlays::Overlay::permission_for`].
+    /// Desired permissions resolved from scalar baselines and shared rules —
+    /// see [`crate::overlays::Overlay::permission_for`].
     /// `None` for every intent except [`MaterializationIntent::PartialFile`]:
     /// symlinked entries share their overlay source's inode (there is no
     /// independent target permission to set without mutating that source,

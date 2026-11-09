@@ -1,5 +1,9 @@
 # ADR-006: Symlink-first apply, with two explicit widening escape hatches
 
+> Configuration amended by #190: `symlink-directory` rules replace the
+> historical directory-link list. See the
+> [current mode configuration](../configuration.md#materialization-rules).
+
 **Status:** accepted
 
 ## Context

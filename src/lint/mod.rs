@@ -282,15 +282,14 @@ fn check_cycles(overlays: &HashMap<String, &Overlay>) -> Vec<Diagnostic> {
 const VALID_OVERLAY_KEYS: &[&str] = &[
     "data",
     "default_overlay",
-    "defaults",
     "description",
     "exclude",
     "format",
     "git",
     "hooks",
     "install",
-    "link_dirs",
     "map",
+    "mode",
     "overlays",
     "permissions",
     "repository",
@@ -386,6 +385,12 @@ fn prevalidate_descriptor(dir: &Path, overlay_name: &str) -> Vec<Diagnostic> {
         for key in &keys {
             // Skip internal keys that are set by code overrides
             if key == "name" || key == "root" {
+                continue;
+            }
+            if ["default", "defaults", "materialization", "link_dirs"].contains(&key.as_str()) {
+                diagnostics.push(Diagnostic::error(overlay_name, format!("`{key}` is no longer supported in {}", filepath.display()))
+                    .with_file(filepath.to_string_lossy().into_owned())
+                    .with_hint("use scalar `mode`/`permissions` and `rules`; replace link_dirs with rules using mode: symlink-directory"));
                 continue;
             }
             if !VALID_OVERLAY_KEYS.contains(&key.as_str()) {
@@ -572,7 +577,7 @@ fn diagnostics_from_anyhow_error(
     }
 
     // Fallback: use the error chain but format it more cleanly
-    let root_msg = err.to_string();
+    let root_msg = format!("{err:#}");
     let mut diag = Diagnostic::error(overlay_name, root_msg);
     if let Some(file) = descriptor_file {
         diag = diag.with_file(file);
@@ -632,7 +637,11 @@ fn lint_dirs(
         diagnostics.extend(check_multiple_descriptors(&dir, &name));
 
         // Pre-validate config keys against known schema
-        let prevalidation = prevalidate_descriptor(&dir, &name);
+        let prevalidation: Vec<_> = dir
+            .ancestors()
+            .take_while(|path| path.starts_with(&repo.root))
+            .flat_map(|path| prevalidate_descriptor(path, &name))
+            .collect();
         let has_unknown_keys = prevalidation.iter().any(|d| d.severity == Severity::Error);
         diagnostics.extend(prevalidation);
 

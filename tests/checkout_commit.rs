@@ -27,7 +27,7 @@ impl Fixture {
         fs::write(source.join("sibling"), "sibling original").unwrap();
         fs::write(
             source.join("ov/over.yaml"),
-            "target: ~/checkout\ndefaults:\n  materialization: checkout\n",
+            "target: ~/checkout\nmode: checkout\n",
         )
         .unwrap();
         symlink("file", source.join("ov/link")).unwrap();

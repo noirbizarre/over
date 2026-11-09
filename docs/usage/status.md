@@ -62,10 +62,10 @@ changes (e.g. its `url`), it's reported `Conflict` until the next `over
 apply` reconciles it. See
 [ADR-021](../adr/021-declared-git-repositories-report-provisioning-not-content-status.md).
 
-## Virtual checkouts (`materialization = "checkout"`)
+## Virtual checkouts (`mode = "checkout"`)
 
-A subtree (or the whole overlay, via `defaults.materialization =
-"checkout"` or a `path = "."` rule) can be materialized as a **virtual
+A subtree (or the whole overlay, via `mode = "checkout"`
+or a `path = "."` rule) can be materialized as a **virtual
 checkout**: ordinary, directly editable files at the target, with no
 `.git` there at all, backed by the overlay's own source repository. See
 [ADR-022](../adr/022-virtual-checkout-materialization.md) for how this

@@ -1,5 +1,8 @@
 # ADR-011: Plan-then-execute reconciliation, amending ADR-005 and ADR-006
 
+> Configuration amended by #190: shared `mode` rules replace the historical
+> directory-link list; plan and execution remain configuration-agnostic.
+
 **Status:** accepted
 
 ## Context

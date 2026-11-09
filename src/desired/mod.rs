@@ -26,7 +26,7 @@
 //!
 //! [`DesiredTree::build`] walks an [`Overlay`](crate::overlays::Overlay) and
 //! everything it transitively `uses`, translating symlink-first rules
-//! (`defaults`/`rules`, `link_dirs`, `exclude`, `.link.*` sidecars,
+//! (`mode`/`rules`, `exclude`, `.link.*` sidecars,
 //! `.partial.*` sidecars (#66), `git`) into an explicit list of
 //! [`DesiredEntry`] values. It never touches the filesystem beyond
 //! read-only inspection already required by that resolution (e.g.
@@ -35,7 +35,7 @@
 //! ## What's deliberately *not* here
 //!
 //! - Overlay discovery without an `over.yml` marker — that's #127, layered
-//!   on top of this model later. (A `defaults:`/`rules:` configuration
+//!   on top of this model later. (A `mode:`/`rules:` configuration
 //!   syntax with path/subtree overrides *is* here — #126, resolved via
 //!   `Overlay::materialization_for`/`crate::overlays::rules` before this
 //!   module ever walks the overlay tree.)
