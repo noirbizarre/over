@@ -1,15 +1,15 @@
 use std::path::PathBuf;
 
-use config::{Config, File};
+use config::{Config, File, Source, ValueKind};
 use globset::GlobBuilder;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 
 use super::discovery::{OverlayDeclaration, resolve_declared_dirs};
 use super::overlay::Overlay;
-use super::{BASENAME, Format, GLOB_PATTERN};
+use super::{BASENAME, EXTENSIONS, Format, GLOB_PATTERN};
 use crate::exec;
 
 /// Manage all overlays
@@ -28,6 +28,29 @@ impl std::fmt::Display for Repository {
 impl Repository {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
+    }
+
+    /// Read the literal canonical Git remote from the root descriptor only.
+    pub fn canonical_repository(&self) -> Result<Option<String>> {
+        Ok(self.root_config()?.repository)
+    }
+
+    /// Bootstrap requires an explicit root descriptor, unlike overlay discovery.
+    pub fn validate_initialization(&self) -> Result<Option<String>> {
+        let descriptors = EXTENSIONS
+            .iter()
+            .filter(|ext| self.root.join(format!("{BASENAME}.{ext}")).exists())
+            .count();
+        if descriptors != 1 {
+            bail!(
+                "expected exactly one root over.toml, over.yaml or over.yml in {} (found {descriptors})",
+                self.root.display()
+            );
+        }
+        let canonical = self.canonical_repository()?;
+        // Validate inherited schema without rendering templates or resolving host data.
+        Overlay::new(self, &self.root)?;
+        Ok(canonical)
     }
 
     /// Returns a list of all overlays in the repository.
@@ -179,6 +202,17 @@ impl Repository {
                     basename.display()
                 )
             })?;
+        // config can coerce scalar values into strings; a remote must be literal text.
+        if let Some(value) = cfg.collect()?.get("repository") {
+            let ValueKind::String(remote) = &value.kind else {
+                bail!(
+                    "`repository` must be a Git remote string in {}",
+                    basename.display()
+                );
+            };
+            validate_repository_remote(remote)
+                .with_context(|| format!("invalid `repository` in {}", basename.display()))?;
+        }
         cfg.try_deserialize()
             .with_context(|| format!("invalid repository root config '{}'", basename.display()))
     }
@@ -191,6 +225,41 @@ struct RootConfig {
     format: Option<Format>,
     overlays: Option<Vec<OverlayDeclaration>>,
     default_overlay: Option<String>,
+    repository: Option<String>,
+}
+
+fn validate_repository_remote(remote: &str) -> Result<()> {
+    if remote.trim().is_empty()
+        || remote.trim() != remote
+        || remote.chars().any(char::is_control)
+        || remote.contains("{{")
+        || remote.contains("{%")
+    {
+        bail!("expected a nonempty literal Git remote without control characters or templates");
+    }
+    if let Some((scheme, address)) = remote.split_once("://") {
+        // Canonical SSH may be unreachable until apply; validate syntax, never connect.
+        if scheme.is_empty()
+            || !scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+            || address.is_empty()
+            || address.chars().any(char::is_whitespace)
+            || (scheme != "file" && address.starts_with('/'))
+        {
+            bail!("malformed Git remote URL");
+        }
+    } else if let Some((host, path)) = remote.split_once(':') {
+        // Drive-letter paths are local paths, not SCP-style SSH remotes.
+        let drive_path = host.len() == 1 && (path.starts_with('/') || path.starts_with('\\'));
+        if !drive_path
+            && (host.is_empty() || path.is_empty() || host.chars().any(char::is_whitespace))
+        {
+            bail!("malformed SCP-style Git remote");
+        }
+    }
+    git2::Remote::create_detached(remote)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -200,6 +269,21 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[rstest::rstest]
+    #[case("git@example.invalid:user/dotfiles.git")]
+    #[case("ssh://git@example.invalid/user/dotfiles.git")]
+    #[case("https://example.invalid/user/dotfiles.git")]
+    #[case("file:///media/usb/dotfiles.git")]
+    #[case("/media/usb/dotfiles.git")]
+    #[case("../dotfiles.git")]
+    #[case("/media/my usb/dotfiles.git")]
+    #[case("C:\\dotfiles.git")]
+    fn canonical_remote_validation_accepts_git_addresses_without_contacting_them(
+        #[case] remote: &str,
+    ) {
+        validate_repository_remote(remote).unwrap();
+    }
 
     #[test]
     fn display_shows_the_root_path() {

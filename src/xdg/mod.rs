@@ -1,7 +1,7 @@
 //! XDG Base Directory layout for `over`.
 //!
 //! Resolves the three directories `over` is allowed to touch outside of the
-//! overlay repository itself (`~/.over`, resolved separately by
+//! overlay repository itself (`~/.dotfiles`, resolved separately by
 //! [`crate::utils::resolve_home`]):
 //!
 //! - `config_dir` (`$XDG_CONFIG_HOME/over`) — reserved for future user

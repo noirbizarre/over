@@ -8,6 +8,7 @@ workflows.
 
 | Command | Description |
 |---|---|
+| [`over init`](init.md) | Clone or validate an Over repository and configure its canonical origin |
 | [`over add`](add.md) | Add files or directories to an overlay |
 | [`over new`](new.md) | Create a new overlay |
 | [`over list`](list.md) (`ls`) | List known overlays |
@@ -34,3 +35,9 @@ workflows.
 Every `over` subcommand, including the `git` group, accepts `-H`/`--home`
 (or the `OVER_HOME` environment variable) to point at the overlays root, and
 `-d`/`--debug`, `-v`/`--verbose` for diagnostics.
+
+The default repository location is `~/.dotfiles`. Resolution priority is
+`--home`, then `OVER_HOME`, then this default. Existing repositories previously
+stored at `~/.over` are not moved automatically: set `OVER_HOME=~/.over` or use
+`--home ~/.over` to continue using them. `over init` without a source validates
+the resolved location, regardless of the current working directory.

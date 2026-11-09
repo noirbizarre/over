@@ -66,6 +66,21 @@ Download a binary for your platform from the
 
 ## Quickstart
 
+Bootstrap an existing Over repository into `~/.dotfiles`, then explicitly apply
+an overlay:
+
+```sh
+over init https://github.com/user/dotfiles.git
+over apply hosts/my-machine
+```
+
+A root `repository: git@github.com:user/dotfiles.git` setting (or its TOML
+equivalent) switches the clone's origin to SSH without requiring SSH during
+bootstrap. A local source such as `/media/usb/dotfiles.git` works too.
+See [`over init`](docs/usage/init.md) for confirmation and retry behavior.
+Use `--home` or `OVER_HOME` to select another location; existing `~/.over`
+repositories remain usable through these overrides.
+
 Point `over` at an overlay repository — a plain directory, versioned with
 git — via `--home`/`OVER_HOME`, then create an overlay and add a file to it:
 

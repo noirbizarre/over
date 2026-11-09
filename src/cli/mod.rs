@@ -13,6 +13,7 @@ mod completion;
 mod diff;
 mod doctor;
 mod git;
+mod init;
 mod lint;
 mod list;
 mod log;
@@ -55,6 +56,12 @@ pub struct CLI {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    #[clap(
+        name = "init",
+        about = "Initialize an Over repository from a Git source"
+    )]
+    Init(init::Params),
+
     #[clap(name = "add", about = "Add files or directories to an overlay")]
     Add(add::Params),
 
@@ -123,7 +130,7 @@ pub enum Commands {
 }
 
 impl CLI {
-    /// Resolve the home directory: flag/env > default (~/.over)
+    /// Resolve the home directory: flag/env > default (~/.dotfiles)
     pub fn resolve_home(&self) -> Result<PathBuf> {
         crate::utils::resolve_home(self.home.as_ref())
     }
@@ -135,6 +142,9 @@ pub async fn main() -> Result<()> {
     crate::ui::init_tracing(args.verbose, args.debug);
 
     match args.cmd {
+        Some(Commands::Init(ref opt)) => {
+            init::execute(&args, opt).await?;
+        }
         Some(Commands::Add(ref opt)) => {
             add::execute(&args, opt).await?;
         }
@@ -215,7 +225,9 @@ mod tests {
         let args = CLI::parse_from(["over"]);
         let home = args.resolve_home().unwrap();
         assert!(home.is_absolute());
-        assert!(home.ends_with(".over") || home.ends_with(".dotfiles"));
+        if std::env::var_os("OVER_HOME").is_none() {
+            assert!(home.ends_with(".dotfiles"));
+        }
     }
 
     #[test]

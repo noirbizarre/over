@@ -17,6 +17,16 @@ full list of install channels and supported platforms.
 
 ## Usage
 
+Initialize an existing Over repository into `~/.dotfiles`, then apply explicitly:
+
+```sh
+over init https://github.com/user/dotfiles.git
+over apply hosts/my-machine
+```
+
+[`over init`](usage/init.md) also accepts local Git sources, and can switch the
+checkout to a canonical SSH origin declared in its root configuration.
+
 ```bash
 over --help
 ```
