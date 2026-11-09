@@ -223,6 +223,33 @@ fn intentionally_staged_symlink_changes_are_rejected_without_committing_regular_
 }
 
 #[test]
+fn ignored_unsupported_staged_changes_do_not_block_or_enter_selected_commits() {
+    let fixture = Fixture::new();
+    fs::write(fixture.source.join(".overignore"), "link\nmodule/\n").unwrap();
+    fixture.apply();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let old = repo.head().unwrap().peel_to_tree().unwrap();
+    let mut index = repo.index().unwrap();
+    let mut link = index.get_path(Path::new("ov/link"), 0).unwrap();
+    link.id = repo.blob(b"ignored staged destination").unwrap();
+    index.add(&link).unwrap();
+    index.remove_path(Path::new("ov/module")).unwrap();
+    index.write().unwrap();
+    fs::write(fixture.target.join("file"), "selected content").unwrap();
+    fixture.add();
+    let staged = fs::read(repo.path().join("index")).unwrap();
+    fixture.commit_command().assert().success();
+    let head = repo.head().unwrap().peel_to_tree().unwrap();
+    for path in ["ov/link", "ov/module"] {
+        assert_eq!(
+            head.get_path(Path::new(path)).unwrap().id(),
+            old.get_path(Path::new(path)).unwrap().id()
+        );
+    }
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), staged);
+}
+
+#[test]
 fn failed_source_preparation_preserves_head_sources_index_targets_and_checkpoint() {
     let fixture = Fixture::new();
     fs::create_dir(fixture.source.join("ov/locked")).unwrap();

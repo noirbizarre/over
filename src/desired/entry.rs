@@ -1,29 +1,60 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::actions::git::config::GitRepoConfig;
 use crate::actions::symlink::LinkType;
 use crate::overlays::FileMode;
+use crate::overlays::ignore::SourcePolicy;
 
 /// Ownership holes in an otherwise contiguous virtual checkout.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct CheckoutScope {
     pub source_excludes: Vec<PathBuf>,
     pub target_excludes: Vec<PathBuf>,
+    /// Current source selection is runtime policy, never persisted ownership.
+    #[serde(skip)]
+    pub source_policy: Option<(PathBuf, Arc<SourcePolicy>)>,
 }
 
+impl PartialEq for CheckoutScope {
+    fn eq(&self, other: &Self) -> bool {
+        // Editing ignore rules must not invalidate an existing checkout association.
+        self.source_excludes == other.source_excludes
+            && self.target_excludes == other.target_excludes
+    }
+}
+
+impl Eq for CheckoutScope {}
+
 impl CheckoutScope {
-    pub fn owns_source(&self, path: &std::path::Path) -> bool {
-        !self
-            .source_excludes
-            .iter()
-            .any(|root| path.starts_with(root))
+    pub fn owns_source(&self, path: &Path) -> bool {
+        self.owns_source_kind(path, false)
     }
 
-    pub fn owns_target(&self, path: &std::path::Path) -> bool {
-        !self
-            .target_excludes
-            .iter()
-            .any(|root| path.starts_with(root))
+    pub fn owns_source_kind(&self, path: &Path, is_dir: bool) -> bool {
+        self.selects(path, is_dir)
+            && !self
+                .source_excludes
+                .iter()
+                .any(|root| path.starts_with(root))
+    }
+
+    pub fn owns_target(&self, path: &Path) -> bool {
+        self.owns_target_kind(path, false)
+    }
+
+    pub fn owns_target_kind(&self, path: &Path, is_dir: bool) -> bool {
+        self.selects(path, is_dir)
+            && !self
+                .target_excludes
+                .iter()
+                .any(|root| path.starts_with(root))
+    }
+
+    fn selects(&self, path: &Path, is_dir: bool) -> bool {
+        self.source_policy
+            .as_ref()
+            .is_none_or(|(source, policy)| policy.includes(&source.join(path), is_dir))
     }
 }
 

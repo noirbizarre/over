@@ -186,6 +186,87 @@ fn example() -> anyhow::Result<()> {
 `Context::resolve_data` before rendering targets or executing library operations;
 context copies for dependency overlays preserve that selected-root snapshot.
 
+## Ignoring Files with `.overignore`
+
+Place `.overignore` beside the root `over.toml` (or `over.yaml`/`over.yml`)
+to exclude source files throughout the project. Add another `.overignore`
+inside an overlay or a nested directory for rules local to that subtree:
+
+```text
+~/.over/
+├── over.toml
+├── .overignore
+└── overlays/
+    ├── base/
+    │   ├── over.toml
+    │   └── .overignore
+    └── development/
+        └── over.toml
+```
+
+The root rules apply to both overlays. Rules in `overlays/base/.overignore`
+apply only to `base`, and never affect `development`. Descriptor-less
+overlays follow the same rules. Ignore patterns live exclusively in these
+files; there is no `ignore` configuration field.
+
+The syntax follows Git's `.gitignore` format:
+
+```gitignore
+# Build artifacts and local secrets
+target/
+dist/
+.cache/
+.env
+.env.*
+*.pem
+
+# Keep the example file
+!.env.example
+```
+
+- Patterns are relative to the directory containing their `.overignore`.
+  A leading `/` anchors a pattern there: root `/secrets` excludes only the
+  root's `secrets`, whereas an overlay's `/secrets` excludes that overlay's
+  `secrets`. A basename such as `*.pem` matches at any depth below its file.
+- `*` and `?` match within a path component; `**` matches across directories.
+  A trailing `/` matches directories, not regular files or symlinks.
+- Blank lines and lines beginning with `#` are ignored. Escape an initial
+  `#` or `!` with `\` to match it literally. Unescaped trailing spaces are
+  ignored; escape a trailing space to include it in the pattern.
+- The last matching rule wins within a file. Deeper rule files take
+  precedence over parent files. Prefix a pattern with `!` to re-include a
+  path, provided its parent directories are not excluded. For example,
+  `cache/` followed by `!cache/keep` still excludes `cache/keep`; reopen
+  `cache/` itself before selecting files inside it.
+
+Selection uses **source paths**, including for mapped destinations and
+virtual checkouts. It runs before sidecar parsing: ignoring an
+`app.link.toml` or `app.partial.yaml` suppresses that declaration, regardless
+of its rendered target. Descriptors, sidecars, and `.overignore` remain
+control metadata and are never deployed as ordinary files, even through
+negation. Ignoring content does not unregister overlays or disable their
+configuration loading.
+
+The existing `exclude` configuration retains its glob syntax and applies
+independently; `.overignore` negation cannot undo it. Over does not consult
+`.gitignore`, `.ignore`, global Git excludes, or `.overignore` files above
+the Over repository root. Symlinked `.overignore` files are not followed.
+
+Current source working-tree rules govern apply, status, diff, add, commit,
+sync, and unapply, including already tracked checkout content. When a new
+rule ignores an already deployed file, it becomes unmanaged: existing
+target content (including symlinks) stays in place. Over stops reporting,
+staging, committing, syncing, or removing it. Already staged ignored source
+changes remain in the source index. Removing a rule brings the path back
+under normal reconciliation and conflict checks.
+
+A whole-directory symlink (`symlink-directory` or `link_dirs`) cannot hide
+individual children. Over rejects it before making changes if it would
+expose ignored descendants or control metadata. Use individual file
+symlinks or `checkout` materialization for such directories. Reverse add
+performs the same check; recursive file-level add skips ignored children,
+and explicitly adding an ignored file reports an error.
+
 ## Directory Target Mappings
 
 An overlay can redirect selected directories while keeping its other files

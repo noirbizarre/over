@@ -33,6 +33,7 @@ fn add_blocking(ctx: &Ctx, overlay: &Overlay, selections: &[PathBuf]) -> Result<
         .cloned()
         .collect();
     let routing = overlay.resolve_mappings(ctx)?;
+    let policy = crate::overlays::ignore::SourcePolicy::new(&ctx.repository.root, overlay)?;
     let selections = selections
         .iter()
         .map(|path| {
@@ -43,7 +44,15 @@ fn add_blocking(ctx: &Ctx, overlay: &Overlay, selections: &[PathBuf]) -> Result<
         .collect::<Result<Vec<_>>>()?;
     let mut remaining = BTreeSet::new();
     for path in &selections {
-        routing.logical_path_for(path)?;
+        let logical = routing.logical_path_for(path)?;
+        ensure!(
+            policy.includes(&overlay.root.join(&logical), path.is_dir()),
+            "'{}' is ignored or is control metadata",
+            path.display()
+        );
+        if path.is_dir() && overlay.is_link_dir(&logical) {
+            policy.validate_directory_link(path, &overlay.root.join(&logical))?;
+        }
         if path.is_dir()
             && entries
                 .iter()
@@ -52,7 +61,12 @@ fn add_blocking(ctx: &Ctx, overlay: &Overlay, selections: &[PathBuf]) -> Result<
             for item in walkdir::WalkDir::new(path)
                 .min_depth(1)
                 .into_iter()
-                .filter_entry(|item| !item.path().starts_with(&overlay.root))
+                .filter_entry(|item| {
+                    !item.path().starts_with(&overlay.root)
+                        && routing.logical_path_for(item.path()).is_ok_and(|logical| {
+                            policy.includes(&overlay.root.join(logical), item.file_type().is_dir())
+                        })
+                })
             {
                 let item = item?;
                 if !item.file_type().is_dir()
@@ -60,7 +74,7 @@ fn add_blocking(ctx: &Ctx, overlay: &Overlay, selections: &[PathBuf]) -> Result<
                     && !entries.iter().any(|entry| owns(entry, item.path()))
                 {
                     let logical = routing.logical_path_for(item.path())?;
-                    if !overlay.is_excluded(&logical) {
+                    if policy.includes(&overlay.root.join(&logical), false) {
                         remaining.insert(item.path().to_path_buf());
                     }
                 }

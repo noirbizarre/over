@@ -219,6 +219,16 @@ fn resolve_dir_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool>
 }
 
 pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()> {
+    let policy = crate::overlays::ignore::SourcePolicy::new(&ctx.repository.root, overlay)?;
+    add_file_selected(ctx, overlay, file, &policy).await
+}
+
+async fn add_file_selected(
+    ctx: Ctx,
+    overlay: &Overlay,
+    file: &PathBuf,
+    policy: &crate::overlays::ignore::SourcePolicy,
+) -> Result<()> {
     let src = if file.is_relative() {
         &current_dir()?.join(file)
     } else {
@@ -234,6 +244,11 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
     }
     let rel_path = routing.logical_path_for(src)?;
     let target = overlay.root.join(rel_path);
+    anyhow::ensure!(
+        policy.includes(&target, false),
+        "'{}' is ignored or is control metadata",
+        src.display()
+    );
 
     // Ensure parent directories exist in the overlay before moving the file
     if let Some(parent) = target.parent()
@@ -287,8 +302,18 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
     };
     let routing = overlay.resolve_mappings(&ctx)?;
     let rel_path = routing.logical_path_for(&src)?;
+    let policy = std::sync::Arc::new(crate::overlays::ignore::SourcePolicy::new(
+        &ctx.repository.root,
+        overlay,
+    )?);
+    anyhow::ensure!(
+        policy.includes(&overlay.root.join(&rel_path), true),
+        "'{}' is ignored or is control metadata",
+        src.display()
+    );
 
     if overlay.is_link_dir(&rel_path) {
+        policy.validate_directory_link(&src, &overlay.root.join(&rel_path))?;
         // Symlink the entire directory as a unit
         let target = overlay.root.join(&rel_path);
 
@@ -322,11 +347,22 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
         let walk_src = src.clone();
         let walk_overlay = overlay.clone();
         let walk_routing = routing.clone();
+        let walk_policy = policy.clone();
         let files: Vec<PathBuf> = spawn_blocking(move || {
             WalkDir::new(&walk_src)
                 .min_depth(1)
                 .into_iter()
-                .filter_entry(|entry| !entry.path().starts_with(&walk_overlay.root))
+                .filter_entry(|entry| {
+                    !entry.path().starts_with(&walk_overlay.root)
+                        && walk_routing
+                            .logical_path_for(entry.path())
+                            .is_ok_and(|logical| {
+                                walk_policy.includes(
+                                    &walk_overlay.root.join(logical),
+                                    entry.file_type().is_dir(),
+                                )
+                            })
+                })
                 .filter_map(|entry| match entry {
                     Ok(e) => Some(e),
                     Err(e) => {
@@ -348,7 +384,7 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
         .await?;
 
         for file in files {
-            add_file(ctx.clone(), overlay, &file).await?;
+            add_file_selected(ctx.clone(), overlay, &file, &policy).await?;
         }
     }
 

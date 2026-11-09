@@ -31,6 +31,7 @@ use git2::Repository;
 
 use crate::actions::partial::{self, BlockState};
 use crate::desired::{DesiredTree, MaterializationIntent, Provenance};
+use crate::materialize::virtual_checkout::git;
 use crate::ui;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
@@ -226,13 +227,24 @@ pub fn managed_targets(desired: &DesiredTree) -> Result<Vec<ManagedTarget>> {
             let Provenance::Overlay { source, .. } = &entry.provenance else {
                 unreachable!()
             };
-            let (repo, managed) =
-                crate::materialize::virtual_checkout::git::discover_source(source)?;
-            let head = crate::materialize::virtual_checkout::git::base_tree(&repo, None)?;
-            let view = crate::materialize::virtual_checkout::git::scoped_subtree(
-                &repo, &head, &managed, scope,
-            )?;
-            for path in crate::materialize::virtual_checkout::git::tracked_blobs(&view)?.keys() {
+            let (repo, managed) = git::discover_source(source)?;
+            let head = git::base_tree(&repo, None)?;
+            let view = git::scoped_subtree(&repo, &head, &managed, scope)?;
+            let mut paths: BTreeSet<_> = git::tracked_blobs(&view)?.into_keys().collect();
+            // Newly added checkout files belong to the source index before HEAD;
+            // keep host Git from staging the same content in another repository.
+            for indexed in repo.index()?.iter() {
+                let path = Path::new(std::str::from_utf8(&indexed.path)?);
+                if let Ok(relative) = path.strip_prefix(&managed)
+                    && scope.owns_source(relative)
+                    && scope.owns_target(relative)
+                    && git::is_supported_mode(indexed.mode)
+                    && !git::is_overlay_metadata(relative)
+                {
+                    paths.insert(relative.to_path_buf());
+                }
+            }
+            for path in paths {
                 targets.push(ManagedTarget {
                     target: entry.target.join(path),
                     overlay: overlay_name(&entry.provenance).to_string(),
@@ -269,6 +281,10 @@ fn discover_enclosing_repo(target: &Path) -> Result<Option<Repository>> {
     let Some(start) = target.parent() else {
         return Ok(None);
     };
+    discover_repo_at(start)
+}
+
+fn discover_repo_at(start: &Path) -> Result<Option<Repository>> {
     let Some(ancestor) = nearest_existing_ancestor(start) else {
         return Ok(None);
     };
@@ -289,7 +305,7 @@ fn discover_enclosing_repo(target: &Path) -> Result<Option<Repository>> {
         Err(e) => Err(e).with_context(|| {
             format!(
                 "failed to discover a git repository enclosing '{}'",
-                target.display()
+                start.display()
             )
         }),
     }
@@ -379,6 +395,52 @@ pub fn reconcile(targets: &[ManagedTarget]) -> Result<ExcludeReport> {
         reconcile_group(repo, overlay, abs_targets, &mut report)?;
     }
 
+    Ok(report)
+}
+
+/// Include scaffolding as discovery anchors, so an entirely ignored overlay
+/// can remove its old block without excluding the scaffolding itself.
+pub fn reconcile_desired(desired: &DesiredTree) -> Result<ExcludeReport> {
+    let (repos, groups) = discover_desired_groups(desired)?;
+    let mut report = ExcludeReport::default();
+    for ((repo_key, overlay), targets) in groups {
+        reconcile_group(&repos[&repo_key], &overlay, &targets, &mut report)?;
+    }
+    Ok(report)
+}
+
+fn discover_desired_groups(desired: &DesiredTree) -> Result<DiscoveredGroups> {
+    let (mut repos, mut groups) = discover_groups(&managed_targets(desired)?)?;
+    for entry in desired.entries() {
+        // Scaffolding and virtual checkouts may be rooted at the host repository
+        // itself. Actual managed artifacts still require parent-only discovery
+        // so a declared Git checkout never excludes itself from its own repo.
+        let repo = if matches!(entry.intent, MaterializationIntent::Directory)
+            || entry.intent.is_virtual_checkout()
+        {
+            discover_repo_at(&entry.target)?
+        } else {
+            discover_enclosing_repo(&entry.target)?
+        };
+        if let Some(repo) = repo {
+            let key = repo.path().to_path_buf();
+            groups
+                .entry((key.clone(), overlay_name(&entry.provenance).to_string()))
+                .or_default();
+            repos.entry(key).or_insert(repo);
+        }
+    }
+    Ok((repos, groups))
+}
+
+/// Newly ignored deployments still need their old host exclude block removed,
+/// even when no selected file remains to identify the enclosing repository.
+pub fn unreconcile_desired(desired: &DesiredTree) -> Result<ExcludeReport> {
+    let (repos, groups) = discover_desired_groups(desired)?;
+    let mut report = ExcludeReport::default();
+    for (repo_key, overlay) in groups.keys() {
+        remove_group_block(&repos[repo_key], overlay, &mut report)?;
+    }
     Ok(report)
 }
 

@@ -1,15 +1,16 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use globset::GlobBuilder;
 use walkdir::WalkDir;
 
 use crate::actions::git::config::ROOT_PATH;
 use crate::actions::{partial, symlink};
 use crate::exec;
 use crate::overlays::{
-    self, MaterializationKind, Overlay,
+    MaterializationKind, Overlay,
+    ignore::SourcePolicy,
     mapping::{self, ResolvedMappings},
 };
 
@@ -143,6 +144,7 @@ fn collect_own_entries(
 ) -> Result<Vec<DesiredEntry>> {
     let mut entries = Vec::new();
     let routing = overlay.resolve_mappings(ctx)?;
+    let policy = Arc::new(SourcePolicy::new(&ctx.repository.root, overlay)?);
 
     // #141: the whole overlay resolves to a virtual checkout (via
     // `defaults.materialization = "checkout"`, or an explicit `path = "."`
@@ -162,13 +164,14 @@ fn collect_own_entries(
             permissions: None,
         });
         for source in routing.directories.keys() {
-            walk_overlay_tree(overlay, &routing, source, &mut entries)?;
+            walk_overlay_tree(overlay, &routing, &policy, source, &mut entries)?;
         }
         build_git_entries(overlay, &routing, &mut entries);
         let ctx_with_target =
             ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
-        build_symlink_sidecars(&ctx_with_target, overlay, target, &mut entries)?;
-        build_partial_sidecars(&ctx_with_target, overlay, &mut entries)?;
+        build_symlink_sidecars(&ctx_with_target, overlay, &policy, target, &mut entries)?;
+        build_partial_sidecars(&ctx_with_target, overlay, &policy, &mut entries)?;
+        attach_source_policy(&mut entries, &policy);
         finalize_entries(overlay, &routing, &mut entries)?;
         return Ok(entries);
     }
@@ -188,9 +191,9 @@ fn collect_own_entries(
 
     build_git_entries(overlay, &routing, &mut entries);
 
-    walk_overlay_tree(overlay, &routing, Path::new(""), &mut entries)?;
+    walk_overlay_tree(overlay, &routing, &policy, Path::new(""), &mut entries)?;
     for source in routing.directories.keys() {
-        walk_overlay_tree(overlay, &routing, source, &mut entries)?;
+        walk_overlay_tree(overlay, &routing, &policy, source, &mut entries)?;
     }
 
     // Mirrors the same resolved-overlay bookkeeping `Overlay::apply` uses so
@@ -198,11 +201,24 @@ fn collect_own_entries(
     // support as before #13.
     let ctx_with_target =
         ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
-    build_symlink_sidecars(&ctx_with_target, overlay, target, &mut entries)?;
-    build_partial_sidecars(&ctx_with_target, overlay, &mut entries)?;
+    build_symlink_sidecars(&ctx_with_target, overlay, &policy, target, &mut entries)?;
+    build_partial_sidecars(&ctx_with_target, overlay, &policy, &mut entries)?;
 
+    attach_source_policy(&mut entries, &policy);
     finalize_entries(overlay, &routing, &mut entries)?;
     Ok(entries)
+}
+
+fn attach_source_policy(entries: &mut [DesiredEntry], policy: &Arc<SourcePolicy>) {
+    for entry in entries {
+        if entry.intent.is_virtual_checkout()
+            && let Provenance::Overlay { source, .. } = &entry.provenance
+        {
+            let mut scope = entry.intent.checkout_scope();
+            scope.source_policy = Some((source.clone(), policy.clone()));
+            entry.intent = MaterializationIntent::ScopedVirtualCheckout(scope);
+        }
+    }
 }
 
 fn finalize_entries(
@@ -313,26 +329,17 @@ fn build_git_entries(
 fn walk_overlay_tree(
     overlay: &Overlay,
     routing: &ResolvedMappings,
+    policy: &SourcePolicy,
     start: &Path,
     entries: &mut Vec<DesiredEntry>,
 ) -> Result<()> {
-    let exclude = GlobBuilder::new(&overlays::GLOB_PATTERN)
-        .literal_separator(true)
-        .build()?
-        .compile_matcher();
-    let symlink_config = GlobBuilder::new("**/*.link.{toml,yaml,yml}")
-        .literal_separator(true)
-        .build()?
-        .compile_matcher();
-    let partial_config = GlobBuilder::new("**/*.partial.{toml,yaml,yml}")
-        .literal_separator(true)
-        .build()?
-        .compile_matcher();
-
     let walk_root = overlay.root.join(start);
+    if policy.is_ignored(&walk_root, true) {
+        return Ok(());
+    }
     // An absent mapped directory can be populated later by reverse add.
     if !walk_root.exists() {
-        if !start.as_os_str().is_empty() && !overlay.is_excluded(start) {
+        if !start.as_os_str().is_empty() && policy.includes(&walk_root, true) {
             entries.push(DesiredEntry {
                 target: routing.target_for(start),
                 provenance: Provenance::Overlay {
@@ -361,9 +368,10 @@ fn walk_overlay_tree(
             }
         };
         let path = entry.path();
-
-        if exclude.is_match(path) || symlink_config.is_match(path) || partial_config.is_match(path)
-        {
+        if !policy.includes(path, entry.file_type().is_dir()) {
+            if entry.file_type().is_dir() {
+                walker.skip_current_dir();
+            }
             continue;
         }
 
@@ -374,10 +382,6 @@ fn walk_overlay_tree(
 
         if rel_path != start && routing.directories.contains_key(rel_path) {
             walker.skip_current_dir();
-            continue;
-        }
-
-        if overlay.is_excluded(rel_path) {
             continue;
         }
 
@@ -397,6 +401,14 @@ fn walk_overlay_tree(
         if path.is_dir() {
             match overlay.materialization_for(rel_path) {
                 MaterializationKind::SymlinkDirectory => {
+                    policy.validate_directory_link(path, path)?;
+                    if entry_target
+                        .symlink_metadata()
+                        .is_ok_and(|metadata| metadata.is_dir())
+                    {
+                        // A clean managed view does not authorize deleting newly ignored target files.
+                        policy.validate_directory_link(&entry_target, path)?;
+                    }
                     entries.push(DesiredEntry {
                         target: entry_target,
                         provenance: Provenance::Overlay {
@@ -468,10 +480,11 @@ fn walk_overlay_tree(
 fn build_symlink_sidecars(
     ctx: &exec::Context,
     overlay: &Overlay,
+    policy: &SourcePolicy,
     _target: &Path,
     entries: &mut Vec<DesiredEntry>,
 ) -> Result<()> {
-    let symlinks = symlink::discover_symlinks(&overlay.root)?;
+    let symlinks = symlink::discover_symlinks_selected(&overlay.root, Some(policy))?;
     let routing = overlay.resolve_mappings(ctx)?;
     for (name, config) in symlinks {
         let resolved_str = symlink::render_symlink_target(&config.target, ctx)?;
@@ -480,7 +493,7 @@ fn build_symlink_sidecars(
             || resolved_str.ends_with(std::path::MAIN_SEPARATOR_STR)
             || resolved_str.ends_with('/');
         let entry_target = routing.target_for(Path::new(&name));
-        let config_path = sidecar_config_path(&overlay.root, &name);
+        let config_path = sidecar_config_path(&overlay.root, &name, policy);
 
         let provenance = Provenance::SymlinkSidecar {
             overlay: overlay.name.clone(),
@@ -489,6 +502,9 @@ fn build_symlink_sidecars(
             resolved: resolved.clone(),
         };
         let intent = if is_dir {
+            if resolved.starts_with(&overlay.root) {
+                policy.validate_directory_link(&resolved, &resolved)?;
+            }
             MaterializationIntent::SymlinkDirectory {
                 source: resolved,
                 link_type: config.r#type,
@@ -537,6 +553,7 @@ fn checkout_intent(routing: &ResolvedMappings, logical: &Path) -> Materializatio
         MaterializationIntent::ScopedVirtualCheckout(super::CheckoutScope {
             source_excludes,
             target_excludes,
+            source_policy: None,
         })
     }
 }
@@ -544,10 +561,10 @@ fn checkout_intent(routing: &ResolvedMappings, logical: &Path) -> Materializatio
 /// Reconstruct the sidecar file path for a symlink `stem`, since
 /// `discover_symlinks` only returns the stem and parsed config, not the
 /// originating file. Mirrors its own TOML > YAML > YML precedence.
-fn sidecar_config_path(overlay_root: &Path, stem: &str) -> PathBuf {
+fn sidecar_config_path(overlay_root: &Path, stem: &str, policy: &SourcePolicy) -> PathBuf {
     for ext in ["toml", "yaml", "yml"] {
         let candidate = overlay_root.join(format!("{stem}.link.{ext}"));
-        if candidate.exists() {
+        if candidate.exists() && !policy.is_ignored(&candidate, false) {
             return candidate;
         }
     }
@@ -571,12 +588,13 @@ fn sidecar_config_path(overlay_root: &Path, stem: &str) -> PathBuf {
 fn build_partial_sidecars(
     ctx: &exec::Context,
     overlay: &Overlay,
+    policy: &SourcePolicy,
     entries: &mut Vec<DesiredEntry>,
 ) -> Result<()> {
-    let partials = partial::discover_partials(&overlay.root)?;
+    let partials = partial::discover_partials_selected(&overlay.root, Some(policy))?;
     for (name, config) in partials {
         let resolved = symlink::render_symlink_target(&config.target, ctx)?;
-        let config_path = partial_sidecar_config_path(&overlay.root, &name);
+        let config_path = partial_sidecar_config_path(&overlay.root, &name, policy);
         let marker = config.marker.unwrap_or_else(|| name.clone());
         // The only intent `over` writes real target content for directly
         // (#65) — resolved against the sidecar's own overlay-relative stem
@@ -603,10 +621,10 @@ fn build_partial_sidecars(
 
 /// Reconstruct the sidecar file path for a partial `stem`, mirroring
 /// [`sidecar_config_path`]'s own TOML > YAML > YML precedence.
-fn partial_sidecar_config_path(overlay_root: &Path, stem: &str) -> PathBuf {
+fn partial_sidecar_config_path(overlay_root: &Path, stem: &str, policy: &SourcePolicy) -> PathBuf {
     for ext in ["toml", "yaml", "yml"] {
         let candidate = overlay_root.join(format!("{stem}.partial.{ext}"));
-        if candidate.exists() {
+        if candidate.exists() && !policy.is_ignored(&candidate, false) {
             return candidate;
         }
     }

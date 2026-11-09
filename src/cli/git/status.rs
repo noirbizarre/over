@@ -29,6 +29,10 @@ pub async fn execute(cli: &CLI) -> Result<()> {
     let overlay_name = get_overlay_config(&git_repo)?
         .ok_or_else(|| anyhow!("no overlay configured; run `over git mount` first"))?;
     let overlay = over_repo.get(&overlay_name)?;
+    let policy = std::sync::Arc::new(crate::overlays::ignore::SourcePolicy::new(
+        &over_repo.root,
+        &overlay,
+    )?);
 
     // Use the main repo root (not worktree) for overlay path computation
     let root = home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?;
@@ -87,9 +91,17 @@ pub async fn execute(cli: &CLI) -> Result<()> {
     // walking directly inside this `async fn`.
     let blocking_workdir = workdir.clone();
     let blocking_overlay_root = overlay_root_canonical.clone();
-    let mut managed_files =
-        spawn_blocking(move || find_managed_files(&blocking_workdir, &blocking_overlay_root))
-            .await?;
+    let blocking_policy = policy.clone();
+    let source = overlay.root.clone();
+    let mut managed_files = spawn_blocking(move || {
+        find_managed_files(
+            &blocking_workdir,
+            &blocking_overlay_root,
+            &source,
+            &blocking_policy,
+        )
+    })
+    .await?;
 
     // ── Overlay files not applied here ───────────────────────────────────
     // Walk the overlay directory for the relative path, find files without
@@ -140,6 +152,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
                 &blocking_overlay_root,
                 Some((&routing, &source)),
                 desired.entries(),
+                &policy,
             )
         })
         .await?
@@ -192,7 +205,12 @@ pub async fn execute(cli: &CLI) -> Result<()> {
 }
 
 /// Walk the repo working tree, find symlinks pointing into the overlay root.
-fn find_managed_files(workdir: &Path, overlay_root_canonical: &Path) -> Vec<String> {
+fn find_managed_files(
+    workdir: &Path,
+    overlay_root_canonical: &Path,
+    source: &Path,
+    policy: &crate::overlays::ignore::SourcePolicy,
+) -> Vec<String> {
     let mut managed_files = Vec::new();
     for entry in WalkDir::new(workdir)
         .min_depth(1)
@@ -213,6 +231,9 @@ fn find_managed_files(workdir: &Path, overlay_root_canonical: &Path) -> Vec<Stri
                 target.clone()
             };
             if target_canonical.starts_with(overlay_root_canonical)
+                && target_canonical
+                    .strip_prefix(overlay_root_canonical)
+                    .is_ok_and(|relative| policy.includes(&source.join(relative), path.is_dir()))
                 && let Ok(rel) = path.strip_prefix(workdir)
             {
                 managed_files.push(rel.display().to_string());
@@ -230,11 +251,13 @@ fn find_unapplied_files_routed(
     overlay_root_canonical: &Path,
     routing: Option<(&crate::overlays::mapping::ResolvedMappings, &Path)>,
     entries: &[crate::desired::DesiredEntry],
+    policy: &crate::overlays::ignore::SourcePolicy,
 ) -> Vec<String> {
     let mut unapplied_files = Vec::new();
     for entry in WalkDir::new(overlay_subdir)
         .min_depth(1)
         .into_iter()
+        .filter_entry(|entry| policy.includes(entry.path(), entry.file_type().is_dir()))
         .filter_map(|e| e.ok())
     {
         let path = entry.path();

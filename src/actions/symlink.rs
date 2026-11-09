@@ -151,6 +151,13 @@ impl Action for EnsureSymlink {
 }
 
 pub fn discover_symlinks(overlay_root: &Path) -> Result<Vec<(String, SymlinkConfig)>> {
+    discover_symlinks_selected(overlay_root, None)
+}
+
+pub fn discover_symlinks_selected(
+    overlay_root: &Path,
+    policy: Option<&crate::overlays::ignore::SourcePolicy>,
+) -> Result<Vec<(String, SymlinkConfig)>> {
     use globset::GlobBuilder;
     use walkdir::WalkDir;
 
@@ -164,6 +171,9 @@ pub fn discover_symlinks(overlay_root: &Path) -> Result<Vec<(String, SymlinkConf
 
     for entry in WalkDir::new(overlay_root)
         .into_iter()
+        .filter_entry(|entry| {
+            policy.is_none_or(|policy| !policy.is_ignored(entry.path(), entry.file_type().is_dir()))
+        })
         .filter_map(|e| e.ok())
     {
         let path = entry.path();

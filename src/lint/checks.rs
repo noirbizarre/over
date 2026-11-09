@@ -3,14 +3,22 @@ use std::collections::HashSet;
 use globset::GlobBuilder;
 use walkdir::WalkDir;
 
-use crate::actions::partial::discover_partials;
-use crate::actions::symlink::{LinkType, discover_symlinks};
+use crate::actions::partial::discover_partials_selected;
+use crate::actions::symlink::{LinkType, discover_symlinks_selected};
 use crate::overlays::Overlay;
 
 use super::Diagnostic;
 
 /// Run all per-overlay checks and return collected diagnostics.
+#[cfg(test)]
 pub fn check_overlay(overlay: &Overlay) -> Vec<Diagnostic> {
+    check_overlay_selected(overlay, None)
+}
+
+pub fn check_overlay_selected(
+    overlay: &Overlay,
+    policy: Option<&crate::overlays::ignore::SourcePolicy>,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     if let Err(error) = crate::overlays::mapping::validate_sources(overlay) {
@@ -30,8 +38,8 @@ pub fn check_overlay(overlay: &Overlay) -> Vec<Diagnostic> {
     diagnostics.extend(check_invalid_permission_globs(overlay));
     diagnostics.extend(check_duplicate_permission_rule_paths(overlay));
     diagnostics.extend(check_git(overlay));
-    diagnostics.extend(check_symlinks(overlay));
-    diagnostics.extend(check_partials(overlay));
+    diagnostics.extend(check_symlinks_selected(overlay, policy));
+    diagnostics.extend(check_partials_selected(overlay, policy));
 
     diagnostics
 }
@@ -411,10 +419,18 @@ fn check_git(overlay: &Overlay) -> Vec<Diagnostic> {
 
 // ── symlink checks ───────────────────────────────────────────────────────
 
+#[cfg(test)]
 fn check_symlinks(overlay: &Overlay) -> Vec<Diagnostic> {
+    check_symlinks_selected(overlay, None)
+}
+
+fn check_symlinks_selected(
+    overlay: &Overlay,
+    policy: Option<&crate::overlays::ignore::SourcePolicy>,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
-    let symlinks = match discover_symlinks(&overlay.root) {
+    let symlinks = match discover_symlinks_selected(&overlay.root, policy) {
         Ok(s) => s,
         Err(e) => {
             diagnostics.push(Diagnostic::error(
@@ -457,10 +473,18 @@ fn check_symlinks(overlay: &Overlay) -> Vec<Diagnostic> {
 
 // ── partial-file checks (#66) ────────────────────────────────────────────
 
+#[cfg(test)]
 fn check_partials(overlay: &Overlay) -> Vec<Diagnostic> {
+    check_partials_selected(overlay, None)
+}
+
+fn check_partials_selected(
+    overlay: &Overlay,
+    policy: Option<&crate::overlays::ignore::SourcePolicy>,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
-    let partials = match discover_partials(&overlay.root) {
+    let partials = match discover_partials_selected(&overlay.root, policy) {
         Ok(p) => p,
         Err(e) => {
             diagnostics.push(Diagnostic::error(

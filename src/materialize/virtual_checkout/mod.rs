@@ -70,7 +70,7 @@ impl Materializer for VirtualCheckoutMaterializer {
         state::verify_live_target(entry)?;
         let actual = actual::inspect(&entry.target)?;
         let scope = entry.intent.checkout_scope();
-        if !scope.target_excludes.is_empty() {
+        if !scope.target_excludes.is_empty() || scope.source_policy.is_some() {
             let Provenance::Overlay { source, .. } = &entry.provenance else {
                 unreachable!()
             };
@@ -109,7 +109,7 @@ impl Materializer for VirtualCheckoutMaterializer {
         // `CheckoutMaterializer`'s #130 handling) — anything else is a
         // genuine conflict, never silently adopted as a virtual checkout.
         if matches!(actual, ActualState::Directory)
-            && !scope.target_excludes.is_empty()
+            && (!scope.target_excludes.is_empty() || scope.source_policy.is_some())
             && !git::has_owned_content(&entry.target, &scope)?
         {
             return Ok(Operation::Create);
@@ -122,7 +122,7 @@ impl Materializer for VirtualCheckoutMaterializer {
             return Ok(Operation::Migrate {
                 from: MaterializationIntent::Directory,
                 to: entry.intent.clone(),
-                blocked: None,
+                blocked: git::has_unowned_content(&entry.target, &scope)?.then(|| "legacy directory contains ignored or unmanaged content; move it aside before changing materialization".into()),
             });
         }
 
@@ -147,6 +147,21 @@ impl Materializer for VirtualCheckoutMaterializer {
         }
 
         if matches!(step.operation, Operation::Migrate { blocked: None, .. }) {
+            if matches!(
+                step.operation,
+                Operation::Migrate {
+                    from: MaterializationIntent::Directory,
+                    ..
+                }
+            ) {
+                anyhow::ensure!(
+                    !git::has_unowned_content(
+                        &step.entry.target,
+                        &step.entry.intent.checkout_scope()
+                    )?,
+                    "cannot migrate a directory containing ignored or unmanaged content"
+                );
+            }
             let target = step.entry.target.clone();
             spawn_blocking(move || remove_target(&target)).await??;
         }

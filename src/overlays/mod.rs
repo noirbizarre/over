@@ -15,6 +15,7 @@ pub(crate) const EXTENSIONS: &[&str] = &["yml", "yaml", "toml"];
 
 pub mod data;
 pub mod discovery;
+pub mod ignore;
 pub mod mapping;
 pub mod overlay;
 pub mod permissions;

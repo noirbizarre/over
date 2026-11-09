@@ -1135,6 +1135,7 @@ dependencies = [
  "git2_credentials",
  "glob",
  "globset",
+ "ignore",
  "indicatif",
  "libz-sys",
  "minijinja",
