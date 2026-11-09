@@ -1,5 +1,10 @@
 # ADR-017: Materialization rules generalize `link_dirs` into path/subtree overrides, amending ADR-006
 
+> Amended by #190: current descriptors use scalar `mode`/`permissions` and
+> shared ordered rules with declaration-relative paths. `link_dirs` is removed;
+> directory-link rules alone may use globs. The historical design below is
+> superseded by the [configuration reference](../configuration.md#materialization-rules).
+
 **Status:** accepted
 
 ## Context

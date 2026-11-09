@@ -32,7 +32,11 @@ impl Repository {
 
     /// Read the literal canonical Git remote from the root descriptor only.
     pub fn canonical_repository(&self) -> Result<Option<String>> {
-        Ok(self.root_config()?.repository)
+        let mut remote = self.root_config()?.repository;
+        if let Some(remote) = &mut remote {
+            super::paths::resolve_remote(remote, &super::mapping::absolute(&self.root)?);
+        }
+        Ok(remote)
     }
 
     pub fn hooks(&self) -> Result<crate::hooks::Hooks> {

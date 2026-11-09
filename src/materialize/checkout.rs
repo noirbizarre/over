@@ -43,8 +43,7 @@ pub struct CheckoutMaterializer;
 /// need to know which kind it was). A directory-level symlink's target is
 /// itself a directory; anything else (a file, or a dangling link whose
 /// target no longer exists) is assumed file-level. Rule-driven symlinks
-/// are always soft (#126: `walk_overlay_tree` never resolves a `rules`/
-/// `defaults`/`link_dirs` match to a hard link).
+/// are always soft: only sidecar configuration can select a hard link.
 fn reconstruct_symlink_intent(points_to: &Path) -> MaterializationIntent {
     if points_to.is_dir() {
         MaterializationIntent::SymlinkDirectory {

@@ -31,8 +31,8 @@ impl Fixture {
             .unwrap();
         }
         fs::write(source.join("workspace/client/over.yaml"), format!(
-            "target: ~/Workspace/Client\n{}map:\n  etc:\n    target: {:?}\n  config:\n    target: .config/client\n",
-            if checkout { "defaults:\n  materialization: checkout\n" } else { "" }, etc.to_string_lossy()
+            "target: ~/Workspace/Client\n{}map:\n  etc:\n    target: {:?}\n  config:\n    target: ~/Workspace/Client/.config/client\n",
+            if checkout { "mode: checkout\n" } else { "" }, etc.to_string_lossy()
         )).unwrap();
         let repo = git2::Repository::init(&source).unwrap();
         repo.config().unwrap().set_str("user.name", "Test").unwrap();
@@ -319,7 +319,7 @@ fn mapped_whole_directory_symlinks_create_their_external_parents() {
     let fixture = Fixture::new(false);
     let descriptor = fixture.source.join("workspace/client/over.yaml");
     let mut config = fs::read_to_string(&descriptor).unwrap();
-    config.push_str("defaults:\n  materialization: symlink-directory\n");
+    config.push_str("mode: symlink-directory\n");
     fs::write(&descriptor, config).unwrap();
     fixture.apply();
     assert!(fixture.etc.is_symlink());
@@ -334,7 +334,7 @@ fn mapped_whole_directory_symlinks_create_their_external_parents() {
 fn mappings_inside_whole_directory_symlinks_are_rejected() {
     let fixture = Fixture::new(false);
     fs::create_dir_all(fixture.source.join("workspace/client/config/editor")).unwrap();
-    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/workspace\nrules:\n  - path: config\n    materialization: symlink-directory\nmap:\n  config/editor:\n    target: ~/editor\n").unwrap();
+    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/workspace\nrules:\n  - path: config\n    mode: symlink-directory\nmap:\n  config/editor:\n    target: ~/editor\n").unwrap();
     fixture
         .command("apply")
         .args(["workspace/client", "--no-prompt", "--root"])
@@ -381,7 +381,7 @@ fn mappings_partition_an_enclosing_subtree_checkout() {
         "mapped",
     )
     .unwrap();
-    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/Workspace/Client\nrules:\n  - path: main\n    materialization: checkout\n  - path: main/external\n    materialization: checkout\nmap:\n  main/external:\n    target: ~/external\n").unwrap();
+    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/Workspace/Client\nrules:\n  - path: main\n    mode: checkout\n  - path: main/external\n    mode: checkout\nmap:\n  main/external:\n    target: ~/external\n").unwrap();
     commit_all(&fixture.repo(), "subtree mapping");
     fixture.apply();
     assert_eq!(

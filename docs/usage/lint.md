@@ -37,3 +37,34 @@ pre-validates the raw keys first, so a typo (e.g. `targt` instead of
 `serde` error. It also continues past a broken overlay to report on anything
 that `uses` it, and flags cycles in the `uses` graph. See
 [ADR-009](../adr/009-lint-is-a-separate-tolerant-pass.md).
+
+## Mode and permission rules
+
+Lint validates the shared `rules` list and reports obsolete configuration keys
+with migration hints. A rule must set `mode`, `permissions`, or both. Literal
+paths select a path and its descendants, respecting component boundaries.
+Globs are accepted only for rules selecting `mode: symlink-directory`; they
+select directory boundaries. Other modes and permissions-only rules cannot
+use globs.
+
+For example, this descendant override is unreachable:
+
+```yaml
+rules:
+  - path: config
+    mode: symlink-directory
+  - path: config/editor
+    mode: symlink
+```
+
+Over cannot apply rules inside a single directory symlink. Lint identifies
+both declarations and suggests removing the descendant override or changing
+the ancestor mode to `symlink`. Checkout also owns an atomic directory unit;
+descendant mode overrides are reported unless they belong to an independently
+mapped unit. A later same-path assignment or scope baseline that reopens the
+ancestor is respected. Permission overrides for independently processed
+partial files are checked separately from ordinary directory traversal.
+
+Provably shadowed properties produce warnings; complementary mode-only and
+permissions-only assignments are valid. Unreachable mode overrides are errors
+and make lint exit unsuccessfully. Doctor includes the same lint findings.

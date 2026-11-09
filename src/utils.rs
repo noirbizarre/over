@@ -10,7 +10,8 @@ use dirs::home_dir;
 /// Uses `explicit` if provided, otherwise falls back to `~/.dotfiles`.
 pub fn resolve_home(explicit: Option<&PathBuf>) -> Result<PathBuf> {
     if let Some(home) = explicit {
-        Ok(home.clone())
+        // Invocation-relative CLI paths must become stable roots before configuration is resolved.
+        crate::overlays::mapping::absolute(home)
     } else {
         let default = home_dir()
             .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?

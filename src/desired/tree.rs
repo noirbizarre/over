@@ -147,7 +147,7 @@ fn collect_own_entries(
     let policy = Arc::new(SourcePolicy::new(&ctx.repository.root, overlay)?);
 
     // #141: the whole overlay resolves to a virtual checkout (via
-    // `defaults.materialization = "checkout"`, or an explicit `path = "."`
+    // `mode = "checkout"`, or an explicit `path = "."`
     // rule) — one entry owns the entire subtree; the base `Directory` entry
     // and the per-file/per-directory walk below are both skipped, since
     // `VirtualCheckoutMaterializer` handles the whole managed path itself
@@ -392,12 +392,7 @@ fn walk_overlay_tree(
             rel_path.display()
         );
 
-        // A directory resolved to `SymlinkDirectory` or `Checkout` — via a
-        // `rules` entry, `defaults.materialization`, or a legacy
-        // `link_dirs` match, all resolved through the same mechanism
-        // (#113/#126, `Overlay::materialization_for`) — is one
-        // materialization unit; its children are not separately
-        // enumerated.
+        // Terminal modes own their subtree; enumerating children would create overlapping units.
         if path.is_dir() {
             match overlay.materialization_for(rel_path) {
                 MaterializationKind::SymlinkDirectory => {
@@ -487,8 +482,8 @@ fn build_symlink_sidecars(
     let symlinks = symlink::discover_symlinks_selected(&overlay.root, Some(policy))?;
     let routing = overlay.resolve_mappings(ctx)?;
     for (name, config) in symlinks {
-        let resolved_str = symlink::render_symlink_target(&config.target, ctx)?;
-        let resolved = PathBuf::from(&resolved_str);
+        let resolved = crate::overlays::mapping::resolve_path(&config.target, &overlay.root, ctx)?;
+        let resolved_str = resolved.to_string_lossy();
         let is_dir = resolved.is_dir()
             || resolved_str.ends_with(std::path::MAIN_SEPARATOR_STR)
             || resolved_str.ends_with('/');
@@ -593,7 +588,7 @@ fn build_partial_sidecars(
 ) -> Result<()> {
     let partials = partial::discover_partials_selected(&overlay.root, Some(policy))?;
     for (name, config) in partials {
-        let resolved = symlink::render_symlink_target(&config.target, ctx)?;
+        let resolved = crate::overlays::mapping::resolve_path(&config.target, &overlay.root, ctx)?;
         let config_path = partial_sidecar_config_path(&overlay.root, &name, policy);
         let marker = config.marker.unwrap_or_else(|| name.clone());
         // The only intent `over` writes real target content for directly
@@ -604,7 +599,7 @@ fn build_partial_sidecars(
         let permissions = overlay.permission_for(Path::new(&name));
 
         entries.push(DesiredEntry {
-            target: PathBuf::from(resolved),
+            target: resolved,
             provenance: Provenance::PartialSidecar {
                 overlay: overlay.name.clone(),
                 config: config_path,
@@ -788,13 +783,13 @@ mod tests {
     }
 
     #[rstest]
-    fn link_dirs_produce_single_entry_without_children() {
+    fn a_directory_link_rule_produces_one_entry_without_children() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov");
         overlay_dir.create_dir_all().unwrap();
         overlay_dir
             .child("over.toml")
-            .write_str("target = \"~\"\nlink_dirs = [\"mydir\"]")
+            .write_str("target = \"~\"\n[[rules]]\npath = 'mydir'\nmode = 'symlink-directory'")
             .unwrap();
         overlay_dir.child("mydir").create_dir_all().unwrap();
         overlay_dir
@@ -828,9 +823,7 @@ mod tests {
         );
     }
 
-    /// #126: an explicit `rules` entry produces the same
-    /// `SymlinkDirectory` shape as `link_dirs`, through the same
-    /// resolution path.
+    /// Explicit rules select whole-directory ownership, not individual child links.
     #[rstest]
     fn a_materialization_rule_produces_a_symlink_directory_entry() {
         let (td, repo) = repo_and_root();
@@ -838,9 +831,7 @@ mod tests {
         overlay_dir.create_dir_all().unwrap();
         overlay_dir
             .child("over.toml")
-            .write_str(
-                "target = \"~\"\n[[rules]]\npath = \"mydir\"\nmaterialization = \"symlink-directory\"",
-            )
+            .write_str("target = \"~\"\n[[rules]]\npath = \"mydir\"\nmode = \"symlink-directory\"")
             .unwrap();
         overlay_dir.child("mydir").create_dir_all().unwrap();
         overlay_dir
@@ -870,16 +861,15 @@ mod tests {
         );
     }
 
-    /// #113: `defaults.materialization` applies repository-/overlay-wide,
-    /// to every directory with no more specific `rules` override.
+    /// The baseline applies to every directory without a later rule override.
     #[rstest]
-    fn defaults_materialization_applies_to_every_directory_without_a_rule() {
+    fn the_mode_baseline_applies_to_every_directory_without_a_rule() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov");
         overlay_dir.create_dir_all().unwrap();
         overlay_dir
             .child("over.toml")
-            .write_str("target = \"~\"\n[defaults]\nmaterialization = \"symlink-directory\"")
+            .write_str("target = \"~\"\nmode = \"symlink-directory\"")
             .unwrap();
         overlay_dir.child("sub").create_dir_all().unwrap();
         overlay_dir
@@ -1140,13 +1130,13 @@ mod tests {
     // ── #65: permission resolution ───────────────────────────────────────
 
     #[rstest]
-    fn partial_sidecar_resolves_permission_from_defaults() {
+    fn a_partial_sidecar_resolves_the_permission_baseline() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov");
         overlay_dir.create_dir_all().unwrap();
         overlay_dir
             .child("over.toml")
-            .write_str("target = \"~\"\n[defaults]\nmode = \"600\"")
+            .write_str("target = \"~\"\npermissions = \"600\"")
             .unwrap();
         let target_toml = td
             .path()
@@ -1174,14 +1164,14 @@ mod tests {
     }
 
     #[rstest]
-    fn partial_sidecar_specific_rule_overrides_defaults() {
+    fn a_partial_sidecar_rule_overrides_the_permission_baseline() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov");
         overlay_dir.create_dir_all().unwrap();
         overlay_dir
             .child("over.toml")
             .write_str(
-                "target = \"~\"\n[defaults]\nmode = \"644\"\n\n[[permissions]]\npath = \"aliases\"\nmode = \"600\"",
+                "target = \"~\"\npermissions = \"644\"\n\n[[rules]]\npath = \"aliases\"\npermissions = \"600\"",
             )
             .unwrap();
         let target_toml = td
@@ -1253,7 +1243,7 @@ mod tests {
         overlay_dir
             .child("over.toml")
             .write_str(
-                "target = \"~\"\n[defaults]\nmode = \"600\"\n\n[[permissions]]\npath = \"file.txt\"\nmode = \"600\"",
+                "target = \"~\"\npermissions = \"600\"\n\n[[rules]]\npath = \"file.txt\"\npermissions = \"600\"",
             )
             .unwrap();
         overlay_dir.child("file.txt").write_str("content").unwrap();

@@ -1,5 +1,11 @@
 # ADR-020: File permissions are hierarchical rules scoped to `PartialFile` entries
 
+> Amended by #190: scalar `permissions` replaces the permission baseline,
+> and shared `rules` carry optional `permissions` overrides in cascade order.
+> Permission enforcement remains scoped to partial content. The schema and
+> specificity rules below are historical; see the
+> [configuration reference](../configuration.md#file-permissions).
+
 **Status:** accepted
 
 ## Context

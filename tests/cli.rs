@@ -1973,7 +1973,9 @@ fn show_overlay_with_link_dirs() -> TestResult {
     fs::write(
         ov.join("over.toml"),
         br#"target = "~"
-link_dirs = [".config/nvim"]
+[[rules]]
+path = ".config/nvim"
+mode = "symlink-directory"
 "#,
     )?;
 
@@ -1984,7 +1986,7 @@ link_dirs = [".config/nvim"]
         .assert()
         .success()
         .stdout(contains("linkdir_overlay"))
-        .stdout(contains("link_dirs:"))
+        .stdout(contains("mode: symlink-directory"))
         .stdout(contains(".config/nvim"));
     Ok(())
 }
@@ -1998,12 +2000,11 @@ fn show_overlay_with_materialization_rules() -> TestResult {
     fs::write(
         ov.join("over.toml"),
         br#"target = "~"
-[defaults]
-materialization = "symlink-directory"
+mode = "symlink-directory"
 
 [[rules]]
 path = "special"
-materialization = "symlink"
+mode = "symlink"
 "#,
     )?;
 
@@ -2014,9 +2015,9 @@ materialization = "symlink"
         .assert()
         .success()
         .stdout(contains("rules_overlay"))
-        .stdout(contains("defaults: materialization = symlink-directory"))
+        .stdout(contains("mode: symlink-directory"))
         .stdout(contains("rules:"))
-        .stdout(contains("special: symlink"));
+        .stdout(contains("special: mode: symlink"));
     Ok(())
 }
 
@@ -2594,7 +2595,7 @@ fn setup_checkout_overlay(home: &Path, name: &str) -> PathBuf {
     fs::create_dir_all(&ov).unwrap();
     fs::write(
         ov.join("over.toml"),
-        "target = \"~\"\n[defaults]\nmaterialization = \"checkout\"\n",
+        "target = \"~\"\nmode = \"checkout\"\n",
     )
     .unwrap();
     fs::write(ov.join("file.txt"), "original\n").unwrap();
