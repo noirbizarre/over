@@ -219,7 +219,7 @@ over --help
 | `over doctor` | Check the environment and overlays for issues |
 | `over completion` | Generate shell completion scripts |
 | `over status` | Inspect resolved configuration and reconciliation health |
-| `over diff` | Show differences between desired and actual overlay state |
+| `over diff` | Show Git changes for managed overlay paths, with staged and difftool views |
 | `over sync` | Reconcile a checkout-materialized overlay with its git source |
 | `over unapply` | Remove a given overlay's own entries from the target |
 | `over commit` | Commit local changes in a checkout-materialized overlay back to its source repository |

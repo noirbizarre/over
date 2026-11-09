@@ -4,6 +4,11 @@
 > declaring descriptor's root, retaining their origins through inheritance.
 > Relative destinations no longer use the deployment target as their base.
 > Checkout ownership and staged-snapshot safeguards below remain in effect.
+>
+> Diff views are amended by
+> [ADR-026](026-git-aware-diff-delegates-presentation-to-git.md). The staged
+> virtual-checkout view compares recorded base to source index; unstaged
+> compares source index to target. Both preserve the ownership partitions here.
 
 ## Status
 

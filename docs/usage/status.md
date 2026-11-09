@@ -76,8 +76,8 @@ resolved configuration and whether it is healthy.
 
 ## Reconciliation states
 
-Each entry is classified into one of 8 statuses (referenced by `over diff`
-and `over unapply` too):
+Each entry is classified into one of 8 health statuses. `over diff` shares
+desired-state selection but presents Git changes independently of health:
 
 | Status | Meaning |
 |--------|---------|

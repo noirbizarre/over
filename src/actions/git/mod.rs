@@ -1,4 +1,5 @@
 pub mod config;
+pub(crate) mod diff;
 pub mod init;
 pub(crate) mod sync;
 

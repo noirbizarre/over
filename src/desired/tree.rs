@@ -21,6 +21,15 @@ use super::entry::{DesiredEntry, MaterializationIntent, Provenance};
 #[derive(Debug, Clone, Default)]
 pub struct DesiredTree {
     entries: Vec<DesiredEntry>,
+    pub(crate) sources: Vec<SourceSelection>,
+}
+
+/// Retain resolved policy even for paths deleted from today's filesystem.
+#[derive(Debug, Clone)]
+pub(crate) struct SourceSelection {
+    pub overlay: Overlay,
+    pub routing: ResolvedMappings,
+    pub policy: Arc<SourcePolicy>,
 }
 
 impl DesiredTree {
@@ -34,10 +43,18 @@ impl DesiredTree {
         let mut entries = Vec::new();
         let mut visited = HashSet::new();
         let mut stack = Vec::new();
-        build_inner(ctx, overlay, &mut visited, &mut stack, &mut entries)?;
+        let mut sources = Vec::new();
+        build_inner(
+            ctx,
+            overlay,
+            &mut visited,
+            &mut stack,
+            &mut entries,
+            &mut sources,
+        )?;
         // Canonical, deterministic ordering — useful for #109 diff and tests.
         entries.sort_by(|a, b| a.target.cmp(&b.target));
-        Ok(Self { entries })
+        Ok(Self { entries, sources })
     }
 
     /// This overlay's own entries only — no `uses` recursion.
@@ -51,10 +68,11 @@ impl DesiredTree {
     pub fn build_own(ctx: &exec::Context, overlay: &Overlay) -> Result<Self> {
         // Stage selections are absolute; relative roots must share their namespace.
         let target = mapping::absolute(&overlay.resolve_target(ctx)?)?;
-        let mut entries = collect_own_entries(ctx, overlay, &target)?;
+        let mut sources = Vec::new();
+        let mut entries = collect_own_entries(ctx, overlay, &target, &mut sources)?;
         // Same deterministic ordering as `build()`.
         entries.sort_by(|a, b| a.target.cmp(&b.target));
-        Ok(Self { entries })
+        Ok(Self { entries, sources })
     }
 
     pub fn entries(&self) -> &[DesiredEntry] {
@@ -67,7 +85,10 @@ impl DesiredTree {
     /// a full overlay/repository/target-resolution fixture.
     #[cfg(test)]
     pub(crate) fn from_entries(entries: Vec<DesiredEntry>) -> Self {
-        Self { entries }
+        Self {
+            entries,
+            sources: Vec::new(),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -85,6 +106,7 @@ fn build_inner(
     visited: &mut HashSet<String>,
     stack: &mut Vec<String>,
     entries: &mut Vec<DesiredEntry>,
+    sources: &mut Vec<SourceSelection>,
 ) -> Result<()> {
     // Already fully processed via another dependency path — skip silently.
     if visited.contains(&overlay.name) {
@@ -113,7 +135,7 @@ fn build_inner(
                     .get(name)
                     .with_context(|| format!("used overlay '{}' not found", name))?;
                 let sub_ctx = ctx.with_overlay(used.clone());
-                build_inner(&sub_ctx, &used, visited, stack, entries)?;
+                build_inner(&sub_ctx, &used, visited, stack, entries, sources)?;
             }
         }
     }
@@ -124,7 +146,7 @@ fn build_inner(
     // final sort by target is what actually gives us determinism, but
     // keeping this order matches the intent that a dependent's own files
     // are what's being layered on top of what it `uses`.
-    entries.extend(collect_own_entries(ctx, overlay, &target)?);
+    entries.extend(collect_own_entries(ctx, overlay, &target, sources)?);
 
     stack.pop();
     visited.insert(overlay.name.clone());
@@ -141,10 +163,16 @@ fn collect_own_entries(
     ctx: &exec::Context,
     overlay: &Overlay,
     target: &Path,
+    sources: &mut Vec<SourceSelection>,
 ) -> Result<Vec<DesiredEntry>> {
     let mut entries = Vec::new();
     let routing = overlay.resolve_mappings(ctx)?;
     let policy = Arc::new(SourcePolicy::new(&ctx.repository.root, overlay)?);
+    sources.push(SourceSelection {
+        overlay: overlay.clone(),
+        routing: routing.clone(),
+        policy: policy.clone(),
+    });
 
     // #141: the whole overlay resolves to a virtual checkout (via
     // `mode = "checkout"`, or an explicit `path = "."`

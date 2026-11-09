@@ -35,7 +35,7 @@ by editing the old one. The history is the value.
 | [010](010-templating-is-scoped-to-path-strings.md) | Templating is scoped to path-resolution strings, not file content |
 | [011](011-plan-then-execute-reconciliation.md) | Plan-then-execute reconciliation, amending ADR-005 and ADR-006 |
 | [012](012-materializer-backend-registry.md) | Materializer backend registry, amending ADR-011 |
-| [013](013-diff-has-its-own-taxonomy-and-uses-similar-for-content-diffs.md) | `diff` has its own taxonomy and uses `similar` for content diffs, amending ADR-011 |
+| [013](013-diff-has-its-own-taxonomy-and-uses-similar-for-content-diffs.md) | Legacy diff taxonomy and `similar` rendering; command presentation superseded by ADR-026 |
 | [014](014-bidirectional-checkout-synchronization.md) | Bidirectional checkout synchronization is `over sync`, scoped to an overlay's root git entry |
 | [015](015-unapply-reuses-plan-classification-and-only-removes-safely-reversible-state.md) | `unapply` reuses `Plan`'s classification and only ever removes safely reversible state |
 | [016](016-partial-file-managed-blocks.md) | Partial files are managed blocks injected via a sidecar, not a stem-plus-sidecar pair |
@@ -48,3 +48,4 @@ by editing the old one. The history is the value.
 | [023](023-merge-git-over-into-over.md) | Merge `git-over` into `over` as a nested `git` subcommand, superseding ADR-001 |
 | [024](024-doctor-aggregates-diagnostics-and-repairs-only-its-own-corruption.md) | `over doctor` aggregates existing diagnostics and repairs only its own corruption |
 | [025](025-directory-mappings-and-checkout-staging.md) | Directory mappings partition ownership; virtual-checkout adds stage snapshots |
+| [026](026-git-aware-diff-delegates-presentation-to-git.md) | Git-aware diff delegates presentation to Git |

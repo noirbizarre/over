@@ -54,6 +54,14 @@ impl Fixture {
     fn command(&self, command: &str) -> Command {
         let mut cmd = Command::cargo_bin("over").unwrap();
         cmd.env("XDG_STATE_HOME", self.temp.path().join("state"))
+            // Patch assertions must not invoke a contributor's configured tool.
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env(
+                "GIT_CONFIG_GLOBAL",
+                self.temp.path().join("isolated-gitconfig"),
+            )
+            .env_remove("GIT_EXTERNAL_DIFF")
+            .env_remove("GIT_DIFF_OPTS")
             .args(["--home"])
             .arg(&self.source)
             .arg(command);
@@ -308,6 +316,45 @@ fn mapped_checkout_add_stages_snapshots_and_commit_preserves_unstaged_edits() {
         fs::read_to_string(fixture.source.join("workspace/client/config/file")).unwrap(),
         "staged\n"
     );
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn mapped_diff_projects_each_target_back_to_its_owned_source_namespace(#[case] checkout: bool) {
+    let fixture = Fixture::new(checkout);
+    fixture.apply();
+    fs::write(fixture.base.join("main/file"), "main edit\n").unwrap();
+    fs::write(fixture.etc.join("file"), "etc edit\n").unwrap();
+    fs::write(fixture.config.join("file"), "config edit\n").unwrap();
+    fs::write(fixture.source.join("unrelated"), "unrelated staged\n").unwrap();
+    let repo = fixture.repo();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("unrelated")).unwrap();
+    index.write().unwrap();
+    let before = fs::read(fixture.source.join(".git/index")).unwrap();
+    let output = fixture
+        .command("diff")
+        .args(["workspace/client", "--all-changes", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    for directory in ["main", "etc", "config"] {
+        assert_eq!(
+            text.matches(&format!(
+                "diff --git a/workspace/client/{directory}/file b/workspace/client/{directory}/file"
+            ))
+            .count(),
+            1
+        );
+    }
+    assert!(!text.contains("unrelated"));
+    assert!(!text.contains(".config/client"));
+    assert_eq!(before, fs::read(fixture.source.join(".git/index")).unwrap());
 }
 
 #[test]

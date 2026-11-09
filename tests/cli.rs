@@ -764,12 +764,13 @@ fn diff_reports_missing_before_apply() -> TestResult {
         .arg(root.path())
         .assert()
         .success()
-        .stdout(contains("missing:"));
+        .stdout("")
+        .stderr(contains("missing symlink"));
     Ok(())
 }
 
 #[test]
-fn diff_reports_no_differences_after_apply() -> TestResult {
+fn diff_keeps_patch_output_empty_for_a_non_git_source_after_apply() -> TestResult {
     let repo = setup_overlay_repo();
     fs::write(repo.path().join("dev").join("file.txt"), b"content")?;
     let root = TempDir::new()?;
@@ -790,12 +791,14 @@ fn diff_reports_no_differences_after_apply() -> TestResult {
         .arg(root.path())
         .assert()
         .success()
-        .stdout(contains("no differences"));
+        .stdout("")
+        .stderr(contains("no Git repository"))
+        .stderr(contains("missing symlink").not());
     Ok(())
 }
 
 #[test]
-fn diff_shows_content_diff_for_existing_file() -> TestResult {
+fn diff_reports_an_existing_file_as_a_link_problem_without_a_content_patch() -> TestResult {
     let repo = setup_overlay_repo();
     fs::write(repo.path().join("dev").join("file.txt"), b"overlay content")?;
     let root = TempDir::new()?;
@@ -808,9 +811,8 @@ fn diff_shows_content_diff_for_existing_file() -> TestResult {
         .arg(root.path())
         .assert()
         .success()
-        .stdout(contains("modified"))
-        .stdout(contains("existing content"))
-        .stdout(contains("overlay content"));
+        .stdout("")
+        .stderr(contains("expected symlink, found a file"));
     Ok(())
 }
 
@@ -879,8 +881,8 @@ fn diff_without_name_narrows_to_configured_default_overlay() -> TestResult {
         .arg(root.path())
         .assert()
         .success()
-        .stdout(contains("dev"))
-        .stdout(contains("other").not());
+        .stderr(contains("dev"))
+        .stderr(contains("other").not());
     Ok(())
 }
 
@@ -902,8 +904,8 @@ fn diff_all_flag_overrides_configured_default_overlay() -> TestResult {
         .arg(root.path())
         .assert()
         .success()
-        .stdout(contains("dev"))
-        .stdout(contains("other"));
+        .stderr(contains("dev"))
+        .stderr(contains("other"));
     Ok(())
 }
 
