@@ -177,11 +177,21 @@ fn ancestor_hooks_are_not_inherited_and_root_overlay_hooks_are_not_duplicated() 
     assert_eq!(fixture.trace(), "root\nroot\n");
 }
 
-#[test]
-fn hook_context_has_absolute_paths_correct_cwd_and_inherited_environment() {
-    let fixture = Fixture::new();
-    let root_hook = r#"test "$PWD" = "$OVER_REPOSITORY_ROOT" && test "$OVER_HOOK_EVENT" = post-apply && test "$OVER_HOOK_ACTIVE" = 1 && test "$OVER_OVERLAY_NAME" = selected && test "$OVER_TARGET_ROOT" = "$TEST_TARGET" && echo root >> "$HOOK_TRACE""#;
-    let overlay_hook = r#"test "$PWD" = "$OVER_OVERLAY_ROOT" && test "$OVER_OVERLAY_ROOT" = "$OVER_REPOSITORY_ROOT/selected" && test "$OVER_OVERLAY_TARGET" = "$TEST_TARGET/config" && test "$INHERITED_VALUE" = available && echo overlay >> "$HOOK_TRACE""#;
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn hook_context_has_absolute_paths_correct_cwd_and_inherited_environment(#[case] aliased: bool) {
+    let mut fixture = Fixture::new();
+    if aliased {
+        // Reproduce macOS's /var -> /private/var alias without requiring a Mac.
+        let alias = fixture._temp.path().join("alias");
+        std::os::unix::fs::symlink(fixture._temp.path(), &alias).unwrap();
+        fixture.source = alias.join(fixture.source.file_name().unwrap());
+        fixture.target = alias.join(fixture.target.file_name().unwrap());
+    }
+    // A shell may canonicalize PWD even when Over receives a lexical absolute path.
+    let root_hook = r#"test "$PWD" -ef "$OVER_REPOSITORY_ROOT" && test "$OVER_HOOK_EVENT" = post-apply && test "$OVER_HOOK_ACTIVE" = 1 && test "$OVER_OVERLAY_NAME" = selected && test "$OVER_TARGET_ROOT" = "$TEST_TARGET" && echo root >> "$HOOK_TRACE""#;
+    let overlay_hook = r#"test "$PWD" -ef "$OVER_OVERLAY_ROOT" && test "$OVER_OVERLAY_ROOT" = "$OVER_REPOSITORY_ROOT/selected" && test "$OVER_OVERLAY_TARGET" = "$TEST_TARGET/config" && test "$INHERITED_VALUE" = available && echo overlay >> "$HOOK_TRACE""#;
     fixture.config("over.yaml", json!({"hooks": {"post-apply": [root_hook]}}));
     fixture.config(
         "selected/over.yaml",
@@ -343,7 +353,7 @@ fn clone_then_init_hooks_see_canonical_origin_without_reading_encrypted_child_de
     let fixture = Fixture::new();
     fixture.config("over.yaml", json!({"repository": "git@example.invalid:user/dotfiles.git", "hooks": {
         "post-clone": ["test \"$(git remote get-url origin)\" = git@example.invalid:user/dotfiles.git && git-crypt unlock && echo clone >> \"$HOOK_TRACE\""],
-        "post-init": ["test \"$PWD\" = \"$OVER_REPOSITORY_ROOT\" && test \"$OVER_HOOK_EVENT\" = post-init && test -z \"${OVER_OVERLAY_ROOT+x}\" && echo init >> \"$HOOK_TRACE\""]
+        "post-init": ["test \"$PWD\" -ef \"$OVER_REPOSITORY_ROOT\" && test \"$OVER_HOOK_EVENT\" = post-init && test -z \"${OVER_OVERLAY_ROOT+x}\" && echo init >> \"$HOOK_TRACE\""]
     }}));
     fixture.write(
         "selected/over.yaml",
