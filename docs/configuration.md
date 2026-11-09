@@ -99,6 +99,113 @@ with the Git-exclude section. `doctor`'s `NAME` argument only narrows which
 overlay's `.git/info/exclude` drift gets checked; there is no `--all` flag.
 Its destination rendering still uses the default data context.
 
+## Lifecycle Hooks
+
+Hooks execute repository-provided commands. **Only initialize or apply repositories
+you trust:** their hooks can execute arbitrary code with your user permissions.
+Hook-enabled operations require exactly one valid root `over.toml`, `over.yaml`,
+or `over.yml`. Keep this root descriptor plaintext when encrypting overlay content.
+
+Declare root hooks as ordered lists of shell-command strings:
+
+```yaml
+hooks:
+  post-clone:
+    - git-crypt unlock
+  post-init:
+    - ./scripts/ensure-local-setup
+  post-apply:
+    - ./scripts/render-secrets
+```
+
+The equivalent TOML is:
+
+```toml
+[hooks]
+post-clone = ["git-crypt unlock"]
+post-init = ["./scripts/ensure-local-setup"]
+post-apply = ["./scripts/render-secrets"]
+```
+
+Each overlay may declare its own `hooks.post-apply`, for example:
+
+```yaml
+hooks:
+  post-apply:
+    - 'op inject -i "$OVER_OVERLAY_ROOT/app.tpl" -o "$OVER_OVERLAY_TARGET/app.conf"'
+```
+
+Commands use `sh -c`, like install scripts, so a POSIX-compatible `sh` must be on
+`PATH`, including on Windows. Commands are not rendered as templates; pass paths
+through quoted environment variables. Each command runs in a separate shell.
+Unknown event names, non-list values, non-string commands, empty commands, and NUL
+bytes are errors. Missing hooks or empty command lists do nothing.
+
+### Events and Order
+
+1. **`post-clone`**: root hooks only, after a successful fresh clone, root
+   validation, and canonical-origin setup. Runs before child overlay discovery
+   or reading encrypted overlay descriptors. Clones declared in an overlay's
+   `git` section do not trigger this event.
+2. **`post-init`**: root hooks only, after initialization and any `post-clone`
+   hooks succeed. Runs on every successful `over init`, including reused
+   checkouts. Neither init event discovers or applies child overlays.
+3. **`post-apply`**: after the entire apply succeeds, including dependency
+   materialization and Git-exclude reconciliation. Root hooks run once first,
+   then participating overlay hooks run in depth-first, dependency-first `uses`
+   list order. Shared or repeated dependencies run once. Commands within each
+   event run in declaration order. A successful no-change apply still runs hooks.
+
+Hooks do not inherit through ancestor descriptors. Root hooks are separate from
+overlay hooks, even when the repository root is selected as the overlay.
+Intermediate ancestor hooks run only when that ancestor itself participates.
+Overlay-local `post-clone` and `post-init` declarations are accepted but ignored.
+`--no-uses` runs root hooks and the selected overlay's hooks only. Overlays included
+solely for metadata do not participate.
+
+Dry runs and read-only commands such as `status`, `diff`, and `lint` never execute
+hooks. Hook subprocesses receive an `OVER_HOOK_ACTIVE` marker; Over commands
+launched from them perform their operations without triggering further hooks.
+
+### Working Directory and Environment
+
+Root hooks run in the repository root. Overlay hooks run in their own source
+directory. Commands inherit the caller's environment and standard input/output.
+Over supplies these additional environment variables, with absolute paths:
+
+| Variable | Availability and meaning |
+| --- | --- |
+| `OVER_HOOK_EVENT` | All hooks: `post-clone`, `post-init`, or `post-apply` |
+| `OVER_REPOSITORY_ROOT` | All hooks: repository source root |
+| `OVER_HOOK_ACTIVE` | All hooks: `1`, suppressing nested lifecycle dispatch |
+| `OVER_TARGET_ROOT` | Post-apply: target home/root (`--root`) |
+| `OVER_OVERLAY_NAME` | Post-apply: relevant overlay's repository-relative name |
+| `OVER_OVERLAY_ROOT` | Post-apply: relevant overlay's source directory |
+| `OVER_OVERLAY_TARGET` | Post-apply: relevant overlay's resolved base target |
+
+For root post-apply hooks, the relevant overlay is the selected overlay; for
+overlay hooks, it is that hook's overlay. Post-clone and post-init remove the
+four apply-only variables from the child environment, even if inherited.
+
+### Failures and Retries
+
+The first failing hook stops later commands and hooks, and fails the operation.
+Diagnostics identify the event, scope, and one-based command index. Over preserves
+the hook's numeric exit code when representable as an 8-bit exit code; spawn errors,
+signal termination, and unrepresentable codes return `1`. Over does not log command
+text or environment values, including in debug/verbose mode, or copy command output
+into errors. Commands control their own output: do not print secrets or enable shell
+tracing for secret-bearing commands.
+
+No post-apply hooks run after failed or partially failed materialization. If a hook
+itself fails, already-applied files and completed hook side effects remain. Retrying
+apply reruns hooks from the beginning, so write retry-safe commands.
+
+Init preserves the checkout after failure. Retrying with that existing checkout
+runs **only post-init**, not post-clone. Recover a failed post-clone command manually
+in the preserved repository; use post-init for unlock/setup commands that should
+automatically retry on every init. Post-init failures can be retried with `over init`.
+
 ## Consumer Metadata (`data`)
 
 Descriptors may carry arbitrary consumer-owned metadata under `data`:

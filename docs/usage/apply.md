@@ -44,4 +44,19 @@ Options:
   scoped to the applied overlay, so its own `git status` stops listing them
   as untracked. Skipped on `--dry-run`; a path already tracked by that
   repository is never excluded. See [`over status`](status.md#gitinfoexclude-diagnostics)
-  for how to spot a missing, drifted, orphaned, or malformed block.
+   for how to spot a missing, drifted, orphaned, or malformed block.
+
+## Lifecycle hooks
+
+Apply can execute repository-provided commands: **only apply repositories you
+trust**. After all participating overlays materialize successfully, root
+`hooks.post-apply` runs once, followed by each overlay's own post-apply hooks in
+dependency-first order, without duplicates. These hooks also run on a successful
+no-change apply. `--no-uses` includes only root and selected-overlay hooks;
+`--dry-run` executes none.
+
+If materialization fails, no post-apply hooks run. A hook failure stops later
+hooks and fails the command, preserving completed filesystem changes. Retrying
+apply reruns hooks, so commands must tolerate repeated execution. See
+[Lifecycle Hooks](../configuration.md#lifecycle-hooks) for configuration, working
+directories, environment variables, and exit-status behavior.

@@ -63,8 +63,9 @@ moved: set `OVER_HOME=~/.over` or pass `--home ~/.over` to keep using one.
   bare repositories and nonempty unrelated directories are refused.
 - Existing valid Over checkouts are reused without fetching or resetting, even
   when a source is supplied. Output makes clear that the source was not cloned.
-- If origin already matches the canonical remote, rerunning is a no-op. If no
-  canonical remote is configured, existing remotes are preserved.
+- If origin already matches the canonical remote, rerunning preserves Git
+  configuration but still runs post-init hooks. If no canonical remote is
+  configured, existing remotes are preserved.
 - Changing or creating an existing checkout's origin requires confirmation.
   Declining preserves it and returns an incomplete-initialization error. Use
   `over init --set-origin` to approve without prompting; non-interactive runs
@@ -78,3 +79,25 @@ moved: set `OVER_HOME=~/.over` or pass `--home ~/.over` to keep using one.
 
 Initialization never applies overlays or runs their install commands. Finish
 with the normal `over apply [NAME]` workflow when ready.
+
+## Lifecycle hooks
+
+Init can execute repository-provided commands: **only initialize repositories you
+trust**. Root `hooks.post-clone` runs after a fresh clone is validated and its
+canonical origin configured; root `hooks.post-init` then runs on both fresh and
+existing checkouts. Both run before child overlay descriptors are needed. For
+example, keep the root descriptor plaintext and configure:
+
+```yaml
+hooks:
+  post-clone:
+    - git-crypt unlock
+  post-init:
+    - ./scripts/ensure-local-setup
+```
+
+A failed hook returns a nonzero status and stops initialization. The checkout
+remains intact. Retrying init on it runs post-init only, so recover failed
+post-clone commands manually or put repeatable unlock/setup commands in post-init.
+See [Lifecycle Hooks](../configuration.md#lifecycle-hooks) for ordering, environment,
+working directories, and failure semantics.
