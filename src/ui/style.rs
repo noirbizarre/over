@@ -35,6 +35,14 @@ pub fn cyan<D>(value: D) -> StyledObject<D> {
     style(value).cyan()
 }
 
+pub fn bold<D>(value: D) -> StyledObject<D> {
+    style(value).bold()
+}
+
+pub fn dim<D>(value: D) -> StyledObject<D> {
+    style(value).dim()
+}
+
 pub fn yellow<D>(value: D) -> StyledObject<D> {
     style(value).yellow()
 }

@@ -532,6 +532,7 @@ fn staging_refuses_to_overwrite_unstaged_source_edits() {
 fn log_infers_a_mapped_checkout_outside_the_base_target() {
     let fixture = Fixture::new(true);
     fixture.apply();
+    let base = fixture.repo().head().unwrap().target().unwrap();
     fs::write(
         fixture.source.join("workspace/client/etc/file"),
         "etc history",
@@ -563,6 +564,31 @@ fn log_infers_a_mapped_checkout_outside_the_base_target() {
         .success()
         .stdout(contains("etc history"))
         .stdout(contains("main history"));
+
+    let range = format!("{base}..HEAD");
+    fixture
+        .command("log")
+        .args([range.as_str(), "--root"])
+        .arg(&fixture.home)
+        .current_dir(&fixture.etc)
+        .assert()
+        .success()
+        .stdout(contains("etc history"))
+        .stdout(predicates::prelude::PredicateBooleanExt::not(contains(
+            "main history",
+        )));
+    let output = fixture
+        .command("log")
+        .args(["--overlay", "workspace/client", &range, "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).unwrap();
+    assert_eq!(output.matches("etc history").count(), 1);
+    assert_eq!(output.matches("main history").count(), 1);
 }
 
 #[test]

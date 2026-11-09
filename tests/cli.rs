@@ -2874,6 +2874,54 @@ fn virtual_checkout_log_lists_commits_scoped_to_the_overlay() -> TestResult {
 }
 
 #[test]
+fn log_resolves_revisions_in_the_overlay_repository_and_keeps_piped_output_plain() -> TestResult {
+    let tmp = TempDir::new()?;
+    let home = canonical_for_matching(tmp.path())?;
+    setup_checkout_overlay(&home, "dotfiles");
+    git(&home, &["init"]);
+    commit_all(&home, "home history");
+    git(&home, &["branch", "log-base"]);
+    let source = home.join("dotfiles");
+    git(&source, &["init"]);
+    commit_all(&source, "source base");
+    git(&source, &["branch", "log-base"]);
+    fs::write(source.join("file.txt"), "updated\n")?;
+    commit_all(&source, "source update");
+    let root = TempDir::new()?;
+    let state = TempDir::new()?;
+    for no_color in [false, true] {
+        let mut command = Command::cargo_bin("over")?;
+        command
+            .arg("--home")
+            .arg(&home)
+            .args(["log", "--overlay", "dotfiles", "log-base", "--root"])
+            .arg(root.path())
+            .env("XDG_STATE_HOME", state.path())
+            .env("CLICOLOR_FORCE", "1");
+        if no_color {
+            command.env("NO_COLOR", "1");
+        }
+        let output = command.assert().success().get_output().stdout.clone();
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("source update"));
+        assert!(!output.contains("source base"));
+        assert!(!output.contains("home history"));
+        assert!(!output.contains('\x1b'));
+    }
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&home)
+        .args(["log", "--overlay", "dotfiles", "missing", "--root"])
+        .arg(root.path())
+        .env("XDG_STATE_HOME", state.path())
+        .assert()
+        .failure()
+        .stdout(predicates::str::is_empty())
+        .stderr(contains("invalid or unsupported revision 'missing'"));
+    Ok(())
+}
+
+#[test]
 fn virtual_checkout_unapply_removes_only_when_clean() -> TestResult {
     let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
