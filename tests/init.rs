@@ -62,12 +62,15 @@ fn local_bootstrap_sets_an_unreachable_canonical_origin_and_can_be_repeated(
     let dest = tmp.path().join("nested/dotfiles");
     command(&dest).arg(&src).assert().success();
     assert_eq!(origin(&dest), CANONICAL);
+    // Git may convert LF to CRLF on checkout; retries must preserve those exact bytes.
+    let checked_out = fs::read_to_string(dest.join("dotfile")).unwrap();
+    assert_eq!(checked_out.lines().collect::<Vec<_>>(), ["original"]);
     command(&dest).arg(&src).assert().success();
     command(&dest).assert().success();
     assert_eq!(origin(&dest), CANONICAL);
     assert_eq!(
         fs::read_to_string(dest.join("dotfile")).unwrap(),
-        "original\n"
+        checked_out
     );
 }
 
