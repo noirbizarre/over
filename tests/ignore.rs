@@ -516,7 +516,11 @@ fn a_mapped_start_cannot_bypass_an_ignored_parent_directory(#[case] materializat
 #[test]
 fn descriptor_less_dependencies_inherit_root_rules_and_keep_their_own_negations() {
     let fixture = Fixture::new("uses = ['base']\n");
-    write(&fixture.source, "over.toml", "overlays = ['base', 'ov']\n");
+    write(
+        &fixture.source,
+        "over.toml",
+        "overlays = [{ path = 'base' }, { path = 'ov' }]\n",
+    );
     write(&fixture.source, ".overignore", "*.pem\n");
     write(&fixture.source, "base/base-kept", "selected dependency");
     write(&fixture.source, "base/keep.pem", "ignored dependency");
