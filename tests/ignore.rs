@@ -30,6 +30,8 @@ impl Fixture {
     fn command(&self, command: &str) -> Command {
         let mut cmd = Command::cargo_bin("over").unwrap();
         cmd.env("XDG_STATE_HOME", self.temp.path().join("state"))
+            // Windows resolves the home directory from USERPROFILE, not HOME.
+            .env("USERPROFILE", &self.home)
             .arg("--home")
             .arg(&self.source)
             .arg(command);
@@ -639,13 +641,10 @@ fn git_add_excludes_newly_staged_checkout_files_from_the_host_repository(
         .current_dir(&target)
         .assert()
         .success();
-    assert!(
-        source
-            .index()
-            .unwrap()
-            .get_path(Path::new("ov/new"), 0)
-            .is_some()
-    );
+    // The subprocess updated disk; libgit2 may retain this repository's old index.
+    let mut index = source.index().unwrap();
+    index.read(true).unwrap();
+    assert!(index.get_path(Path::new("ov/new"), 0).is_some());
     assert!(
         source
             .head()
