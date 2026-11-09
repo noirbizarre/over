@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -16,10 +18,16 @@ use crate::ui::{emojis, style};
 #[derive(Args, Debug)]
 pub struct Params {
     #[clap(
-        help = "Name of the overlay whose history to show (guessed from the current \
-                directory if omitted, falling back to the whole repository's history)"
+        value_name = "NAME_OR_REVISION",
+        help = "Select an overlay or Git revision/range (overlay names take precedence)"
     )]
     name: Option<String>,
+
+    #[clap(
+        long,
+        help = "Select an overlay explicitly, interpreting the positional argument as a revision"
+    )]
+    overlay: Option<String>,
 
     #[clap(short, long, help = "The target root directory (~)")]
     root: Option<PathBuf>,
@@ -46,21 +54,46 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .or_else(home_dir)
         .ok_or_else(|| anyhow!("could not determine home directory"))?;
 
-    let (git_repo, managed_path, label) = resolve_scope(&repo, &root, args.name.as_deref())?;
+    let (name, revision) = select_input(&repo, args)?;
+    let (git_repo, managed_path, label) = resolve_scope(&repo, &root, name)?;
+    let entries = log_scoped_entries(&git_repo, &managed_path, args.limit, revision)?;
+    let colors = log_colors_enabled();
 
     ui::info(format!(
         "{} {} {}",
         emojis::THREAD,
-        style::white_b("History for"),
-        style::cyan(&label),
-    ))
-    .ok();
+        style::bold("History for").force_styling(colors),
+        style::cyan(&label).force_styling(colors),
+    ))?;
 
-    for entry in log_scoped_entries(&git_repo, &managed_path, args.limit)? {
-        ui::info(format!("  {entry}")).ok();
+    for entry in entries {
+        ui::info(format!("  {}", entry.render(colors)))?;
     }
 
     Ok(())
+}
+
+fn select_input<'a>(
+    repo: &Repository,
+    args: &'a Params,
+) -> Result<(Option<&'a str>, Option<&'a str>)> {
+    if let Some(overlay) = args.overlay.as_deref() {
+        return Ok((Some(overlay), args.name.as_deref()));
+    }
+    if let Some(input) = args.name.as_deref() {
+        // Match Repository::get without hiding malformed overlays behind revision errors.
+        if repo.root.join(input).try_exists()? {
+            return Ok((Some(input), None));
+        }
+    }
+    Ok((None, args.name.as_deref()))
+}
+
+fn log_colors_enabled() -> bool {
+    // Forced color must not leak escape sequences into redirected history or override NO_COLOR.
+    std::io::stdout().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
+        && console::colors_enabled()
 }
 
 /// What `over log` scopes its history to: either a specific overlay's
@@ -216,18 +249,34 @@ struct LogEntry {
     summary: String,
     author: String,
     when: String,
+    decorations: Vec<Decoration>,
 }
 
-impl std::fmt::Display for LogEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} {} {} ({}, {})",
-            style::yellow(&self.short_oid),
-            self.summary,
-            style::white("—"),
-            self.author,
-            self.when,
+impl LogEntry {
+    fn render(&self, colors: bool) -> String {
+        let decorations = self
+            .decorations
+            .iter()
+            .map(|decoration| {
+                let styled = if decoration.tag {
+                    style::yellow(&decoration.label)
+                } else {
+                    style::cyan(&decoration.label)
+                };
+                styled.force_styling(colors).to_string()
+            })
+            .collect::<Vec<_>>();
+        let refs = if decorations.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", decorations.join(", "))
+        };
+        format!(
+            "{} {}{} {}",
+            style::yellow(&self.short_oid).force_styling(colors),
+            style::bold(&self.summary).force_styling(colors),
+            refs,
+            style::dim(format!("— ({}, {})", self.author, self.when)).force_styling(colors),
         )
     }
 }
@@ -253,6 +302,7 @@ impl LogEntry {
             summary,
             author,
             when,
+            decorations: Vec::new(),
         }
     }
 }
@@ -270,6 +320,7 @@ fn log_entries(repo: &GitRepository, managed_path: &Path, limit: usize) -> Resul
             scope: CheckoutScope::default(),
         }],
         limit,
+        None,
     )
 }
 
@@ -277,10 +328,20 @@ fn log_scoped_entries(
     repo: &GitRepository,
     scopes: &[HistoryScope],
     limit: usize,
+    revision: Option<&str>,
 ) -> Result<Vec<LogEntry>> {
     let mut revwalk = repo.revwalk()?;
-    revwalk.push_head()?;
+    configure_walk(repo, &mut revwalk, revision).with_context(|| {
+        format!(
+            "invalid or unsupported revision '{}'",
+            revision.unwrap_or("HEAD")
+        )
+    })?;
     revwalk.set_sorting(git2::Sort::TIME)?;
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut decorations = reference_decorations(repo)?;
 
     let mut entries = Vec::new();
     for oid in revwalk {
@@ -293,7 +354,9 @@ fn log_scoped_entries(
         if !touches {
             continue;
         }
-        entries.push(LogEntry::from_commit(&commit));
+        let mut entry = LogEntry::from_commit(&commit);
+        entry.decorations = decorations.remove(&oid).unwrap_or_default();
+        entries.push(entry);
         if entries.len() >= limit {
             break;
         }
@@ -301,9 +364,142 @@ fn log_scoped_entries(
     Ok(entries)
 }
 
+fn configure_walk(
+    repo: &GitRepository,
+    walk: &mut git2::Revwalk<'_>,
+    revision: Option<&str>,
+) -> Result<()> {
+    let Some(revision) = revision else {
+        walk.push_head()?;
+        return Ok(());
+    };
+    anyhow::ensure!(
+        !revision.contains("^@") && !revision.contains("^!") && !revision.contains("^-"),
+        "revision sets are unsupported; use a single commit-ish or two-/three-dot range"
+    );
+    let spec = repo.revparse(revision)?;
+    let from = spec
+        .from()
+        .context("revision has no starting object")?
+        .peel_to_commit()?;
+    if spec.mode().contains(git2::RevparseMode::RANGE) {
+        let to = spec
+            .to()
+            .context("range has no ending object")?
+            .peel_to_commit()?;
+        walk.push(to.id())?;
+        if spec.mode().contains(git2::RevparseMode::MERGE_BASE) {
+            walk.push(from.id())?;
+            match repo.merge_bases(from.id(), to.id()) {
+                Ok(bases) => {
+                    // Hiding only one base leaks shared history in criss-cross merges.
+                    for base in bases.iter() {
+                        walk.hide(*base)?;
+                    }
+                }
+                Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            walk.hide(from.id())?;
+        }
+    } else {
+        let (_, reference) = repo.revparse_ext(revision)?;
+        // Only literal branch refs are shorthand; ancestry/reflog expressions keep Git semantics.
+        let branch = if let Some(reference) = reference {
+            let name = reference.name()?;
+            revision != "HEAD"
+                && (reference.is_branch() || reference.is_remote())
+                && (name == revision
+                    || reference.shorthand()? == revision
+                    || name.strip_prefix("refs/") == Some(revision))
+        } else {
+            false
+        };
+        if branch {
+            walk.push_head()?;
+            walk.hide(from.id())?;
+        } else {
+            walk.push(from.id())?;
+        }
+    }
+    Ok(())
+}
+
+struct Decoration {
+    label: String,
+    tag: bool,
+}
+
+fn reference_decorations(repo: &GitRepository) -> Result<BTreeMap<git2::Oid, Vec<Decoration>>> {
+    let mut decorations: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    let head = match repo.head() {
+        Ok(head) => Some(head),
+        Err(error)
+            if matches!(
+                error.code(),
+                git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+            ) =>
+        {
+            None
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut refs = repo
+        .references()?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    refs.sort_by(|left, right| left.name_bytes().cmp(right.name_bytes()));
+    for reference in refs {
+        if !(reference.is_branch() || reference.is_remote() || reference.is_tag()) {
+            continue;
+        }
+        // Symbolic remote HEAD aliases duplicate the actual branch decoration.
+        if reference.symbolic_target()?.is_some() {
+            continue;
+        }
+        let object = reference.peel(git2::ObjectType::Any)?;
+        if object.kind() != Some(git2::ObjectType::Commit) {
+            continue;
+        }
+        let name = reference.shorthand().unwrap_or("<non-UTF-8 ref>");
+        let current = head
+            .as_ref()
+            .is_some_and(|head| head.is_branch() && head.name_bytes() == reference.name_bytes());
+        let label = if current {
+            format!("HEAD -> {name}")
+        } else if reference.is_tag() {
+            format!("tag: {name}")
+        } else {
+            name.to_string()
+        };
+        decorations
+            .entry(object.id())
+            .or_default()
+            .push(Decoration {
+                label,
+                tag: reference.is_tag(),
+            });
+    }
+    if repo.head_detached()?
+        && let Some(head) = head
+    {
+        decorations
+            .entry(head.peel_to_commit()?.id())
+            .or_default()
+            .insert(
+                0,
+                Decoration {
+                    label: "HEAD".into(),
+                    tag: false,
+                },
+            );
+    }
+    Ok(decorations)
+}
+
 /// Whether `commit` changed anything under `path`, compared against its
-/// first parent (or an empty tree for a root commit) — mirrors `git log --
-/// <path>`'s own notion of "touches".
+/// first parent (or an empty tree for a root commit), without Git's
+/// path-history simplification.
 fn commit_touches_scope(
     repo: &GitRepository,
     commit: &Commit,
@@ -334,8 +530,7 @@ fn commit_touches_scope(
 /// [`git2::Time`] — avoids pulling in a new date/time crate (AGENTS.md:
 /// "do not add new dependencies lightly") for what `over log` only ever
 /// needs as a display string. Uses the commit's own recorded UTC offset
-/// (not the local timezone), matching `git log`'s default author-relative
-/// display.
+/// (not the local timezone), preserving the recorded committer timestamp.
 fn format_git_time(time: &git2::Time) -> String {
     let total_seconds = time.seconds() + i64::from(time.offset_minutes()) * 60;
     let days = total_seconds.div_euclid(86400);
@@ -403,9 +598,29 @@ mod tests {
     fn params_with_limit(name: Option<&str>, root: PathBuf, limit: usize) -> Params {
         Params {
             name: name.map(String::from),
+            overlay: None,
             root: Some(root),
             limit,
         }
+    }
+
+    #[test]
+    fn explicit_overlay_and_revision_parse_with_a_limit() {
+        let cli = CLI::parse_from([
+            "over",
+            "log",
+            "--overlay",
+            "dotfiles",
+            "main..HEAD",
+            "-n",
+            "3",
+        ]);
+        let Some(crate::cli::Commands::Log(args)) = cli.cmd else {
+            panic!("expected log command");
+        };
+        assert_eq!(args.overlay.as_deref(), Some("dotfiles"));
+        assert_eq!(args.name.as_deref(), Some("main..HEAD"));
+        assert_eq!(args.limit, 3);
     }
 
     fn commit_all(repo: &GitRepository, message: &str) {
@@ -435,6 +650,188 @@ mod tests {
         cfg.set_str("user.email", "test@test.com").unwrap();
         drop(cfg);
         repo
+    }
+
+    fn graph_commit(repo: &GitRepository, message: &str, parents: &[git2::Oid]) -> git2::Oid {
+        let blob = repo.blob(message.as_bytes()).unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        builder.insert("file.txt", blob, 0o100644).unwrap();
+        let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+        let parents: Vec<_> = parents
+            .iter()
+            .map(|oid| repo.find_commit(*oid).unwrap())
+            .collect();
+        let parents: Vec<_> = parents.iter().collect();
+        let signature = Signature::now("Test", "test@test.com").unwrap();
+        repo.commit(None, &signature, &signature, message, &tree, &parents)
+            .unwrap()
+    }
+
+    fn selected_commits(repo: &GitRepository, revision: &str) -> Vec<git2::Oid> {
+        let mut walk = repo.revwalk().unwrap();
+        configure_walk(repo, &mut walk, Some(revision)).unwrap();
+        let mut commits = walk.collect::<std::result::Result<Vec<_>, _>>().unwrap();
+        commits.sort();
+        commits
+    }
+
+    #[test]
+    fn branches_are_shorthand_while_tags_and_expressions_keep_git_semantics() {
+        let tmp = TempDir::new().unwrap();
+        let repo = init_repo(tmp.path());
+        let base = graph_commit(&repo, "base", &[]);
+        let main = graph_commit(&repo, "main only", &[base]);
+        let feature = graph_commit(&repo, "feature only", &[base]);
+        repo.reference("refs/heads/main", main, false, "test")
+            .unwrap();
+        repo.reference("refs/heads/feature", feature, false, "test")
+            .unwrap();
+        repo.reference("refs/remotes/origin/main", main, false, "test")
+            .unwrap();
+        repo.set_head("refs/heads/feature").unwrap();
+        repo.tag_lightweight("light", &repo.find_object(base, None).unwrap(), false)
+            .unwrap();
+        repo.tag(
+            "annotated",
+            &repo.find_object(base, None).unwrap(),
+            &Signature::now("Test", "test@test.com").unwrap(),
+            "release",
+            false,
+        )
+        .unwrap();
+        for revision in [
+            "main",
+            "refs/heads/main",
+            "heads/main",
+            "origin/main",
+            "main..HEAD",
+            "light..HEAD",
+            "annotated..HEAD",
+            "HEAD~1..HEAD",
+            "main..",
+        ] {
+            assert_eq!(
+                selected_commits(&repo, revision),
+                vec![feature],
+                "{revision}"
+            );
+        }
+        for revision in ["light", "annotated", "HEAD~1", &base.to_string()] {
+            assert_eq!(selected_commits(&repo, revision), vec![base], "{revision}");
+        }
+        let mut symmetric = vec![main, feature];
+        symmetric.sort();
+        assert_eq!(selected_commits(&repo, "main...feature"), symmetric);
+        let mut reachable = vec![base, feature];
+        reachable.sort();
+        assert_eq!(selected_commits(&repo, "HEAD"), reachable);
+        assert_eq!(selected_commits(&repo, "@"), reachable);
+        let attached = reference_decorations(&repo).unwrap();
+        assert!(
+            attached[&feature]
+                .iter()
+                .any(|item| item.label == "HEAD -> feature")
+        );
+        // Git resolves a colliding tag before a branch; it must not become branch shorthand.
+        repo.tag_lightweight("main", &repo.find_object(base, None).unwrap(), false)
+            .unwrap();
+        assert_eq!(selected_commits(&repo, "main"), vec![base]);
+        repo.set_head_detached(feature).unwrap();
+        assert_eq!(selected_commits(&repo, "HEAD"), reachable);
+        let decorations = reference_decorations(&repo).unwrap();
+        assert!(
+            decorations[&base]
+                .iter()
+                .any(|item| item.label == "tag: annotated")
+        );
+        assert!(
+            decorations[&feature]
+                .iter()
+                .any(|item| item.label == "HEAD")
+        );
+    }
+
+    #[test]
+    fn symmetric_ranges_exclude_all_merge_bases_and_allow_unrelated_histories() {
+        let tmp = TempDir::new().unwrap();
+        let repo = init_repo(tmp.path());
+        let base = graph_commit(&repo, "base", &[]);
+        let a = graph_commit(&repo, "a", &[base]);
+        let b = graph_commit(&repo, "b", &[base]);
+        let left = graph_commit(&repo, "left", &[a, b]);
+        let right = graph_commit(&repo, "right", &[b, a]);
+        let unrelated = graph_commit(&repo, "unrelated", &[]);
+        for (from, to, mut expected) in [
+            (left, right, vec![left, right]),
+            (a, unrelated, vec![base, a, unrelated]),
+        ] {
+            expected.sort();
+            assert_eq!(selected_commits(&repo, &format!("{from}...{to}")), expected);
+        }
+    }
+
+    #[rstest]
+    #[case("missing")]
+    #[case("HEAD^!")]
+    #[case("HEAD^@")]
+    #[case("HEAD^-")]
+    #[case("HEAD^{tree}")]
+    fn invalid_or_non_commit_revisions_report_errors(#[case] revision: &str) {
+        let tmp = TempDir::new().unwrap();
+        let repo = init_repo(tmp.path());
+        let base = graph_commit(&repo, "base", &[]);
+        repo.set_head_detached(base).unwrap();
+        assert!(configure_walk(&repo, &mut repo.revwalk().unwrap(), Some(revision)).is_err());
+    }
+
+    #[test]
+    fn overlay_precedence_preserves_errors_and_explicit_selection_accepts_revisions() {
+        let tmp = TempDir::new().unwrap();
+        tmp.child("main").create_dir_all().unwrap();
+        let repository = Repository::new(tmp.path().to_path_buf());
+        let mut args = params(Some("main"), tmp.path().to_path_buf());
+        assert_eq!(
+            select_input(&repository, &args).unwrap(),
+            (Some("main"), None)
+        );
+        args.name = Some("missing".into());
+        assert_eq!(
+            select_input(&repository, &args).unwrap(),
+            (None, Some("missing"))
+        );
+        args.overlay = Some("main".into());
+        assert_eq!(
+            select_input(&repository, &args).unwrap(),
+            (Some("main"), Some("missing"))
+        );
+    }
+
+    #[test]
+    fn ranges_filter_paths_before_applying_the_limit() {
+        let tmp = TempDir::new().unwrap();
+        let (repo, overlay) = setup_nested_checkout_overlay(tmp.path());
+        let base = repo.head().unwrap().target().unwrap();
+        fs::write(overlay.join("a.txt"), "changed").unwrap();
+        commit_all(&repo, "scoped change");
+        fs::write(tmp.path().join("unrelated.txt"), "unrelated").unwrap();
+        commit_all(&repo, "unrelated change");
+        let scopes = [HistoryScope {
+            managed: "dotfiles".into(),
+            scope: CheckoutScope::default(),
+        }];
+        let range = format!("{base}..HEAD");
+        let entries = log_scoped_entries(&repo, &scopes, 1, Some(&range)).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].summary, "scoped change");
+        let plain = entries[0].render(false);
+        assert!(plain.contains("Test"));
+        assert!(!plain.contains('\x1b'));
+        assert!(entries[0].render(true).contains('\x1b'));
+        assert!(
+            log_scoped_entries(&repo, &scopes, 0, Some(&range))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[rstest]
