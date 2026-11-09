@@ -1144,6 +1144,7 @@ dependencies = [
  "pretty_assertions",
  "rstest",
  "serde",
+ "serde_json",
  "similar",
  "symlink",
  "tempfile",

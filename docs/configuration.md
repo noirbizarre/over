@@ -163,8 +163,9 @@ replaces `packages` with `[three]`, and keeps `optional` with a null value.
 Top-level `data: null` is invalid; null values inside the mapping are allowed.
 
 Without a configured default, explicit selection includes only the selected
-overlay and its dependencies. Without either, existing interactive/all-overlay
-selection behavior applies. Commands processing all overlays resolve a separate
+overlay and its dependencies. Without either, operational commands retain their
+existing interactive/all-overlay selection behavior; `over data` instead fails
+with a missing-selection error. Commands processing all overlays resolve a separate
 context per target; unrelated overlays' data is not pooled together.
 `--no-uses` skips dependency **operations**, but metadata always includes complete
 dependency closures. Invalid defaults, missing dependencies, and dependency cycles
@@ -186,6 +187,20 @@ are literal values rather than additional templates. File bodies and partial
 content remain literal. `default_overlay` is resolved using the bootstrap
 context (for example, `machine.hostname`) before metadata is composed; it cannot
 depend on the data it selects.
+
+External tools can consume the resolved mapping as compact JSON through
+[`over data`](usage/data.md), the supported CLI interface for custom data:
+
+```sh
+over data                  # Configured default overlay context
+over data base             # Default context composed with base
+over data | jq -r '.hostname'
+```
+
+The command uses the canonical resolver from
+[#179](https://github.com/noirbizarre/over/issues/179). It preserves JSON types and
+explicit nulls, writes diagnostics to stderr, and fails without prompting when
+neither an explicit name nor a default is available.
 
 External Rust consumers can use the same public resolver without parsing files
 or invoking CLI selection:

@@ -10,6 +10,7 @@ mod apply;
 mod commit;
 pub(crate) mod common;
 mod completion;
+mod data;
 mod diff;
 mod doctor;
 mod git;
@@ -73,6 +74,9 @@ pub enum Commands {
 
     #[clap(name = "show", about = "Display details about an overlay")]
     Show(show::Params),
+
+    #[clap(name = "data", about = "Export resolved overlay data as JSON")]
+    Data(data::Params),
 
     #[clap(name = "apply", about = "Apply a given overlay")]
     Apply(apply::Params),
@@ -170,6 +174,9 @@ pub async fn main() -> Result<()> {
         }
         Some(Commands::Show(ref opt)) => {
             show::execute(&args, opt).await?;
+        }
+        Some(Commands::Data(ref opt)) => {
+            data::execute(&args, opt).await?;
         }
         Some(Commands::Status(ref opt)) => {
             status::execute(&args, opt).await?;

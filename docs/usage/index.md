@@ -13,6 +13,7 @@ workflows.
 | [`over new`](new.md) | Create a new overlay |
 | [`over list`](list.md) (`ls`) | List known overlays |
 | [`over show`](show.md) | Display details about an overlay |
+| [`over data`](data.md) | Export resolved overlay data as JSON |
 | [`over apply`](apply.md) | Apply a given overlay |
 | [`over lint`](lint.md) | Check overlays for configuration issues |
 | [`over doctor`](doctor.md) | Check the environment and overlays for issues |

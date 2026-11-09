@@ -209,6 +209,7 @@ over --help
 | `over new` | Create a new overlay |
 | `over list` (`ls`) | List known overlays |
 | `over show` | Display details about an overlay |
+| `over data` | Export resolved overlay data as JSON |
 | `over apply` | Apply a given overlay |
 | `over lint` | Check overlays for configuration issues |
 | `over doctor` | Check the environment and overlays for issues |
