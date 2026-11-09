@@ -536,7 +536,7 @@ The overlay root stays a directory scaffold with `symlink` or
 `checkout` owns the whole overlay, apart from explicit mapped ownership units.
 Mode selection applies to directory units; files encountered during ordinary
 traversal are symlinked individually. Newly added source files are picked up
-automatically. See [virtual checkouts](usage/status.md#virtual-checkouts-mode-checkout).
+automatically. See [virtual checkouts](usage/status.md#virtual-checkouts-mode--checkout).
 
 Resolution is an ordered cascade:
 
