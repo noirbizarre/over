@@ -496,7 +496,7 @@ materialization = "symlink-directory"
   `symlink-directory` symlinks the directory as a single unit — its
   contents are not separately enumerated or tracked. `checkout` makes the
   subtree a **virtual checkout** — ordinary, directly editable files with
-  no `.git` at the target — see [Virtual checkouts](usage/status.md#virtual-checkouts-materialization-checkout)
+  no `.git` at the target — see [Virtual checkouts](usage/status.md#virtual-checkouts-materialization--checkout)
   and [ADR-022](adr/022-virtual-checkout-materialization.md).
 - `rules` is a list of path/subtree overrides. `path` is a glob pattern (or
   a literal path) relative to the overlay root. When more than one rule
