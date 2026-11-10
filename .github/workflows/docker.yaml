@@ -15,11 +15,11 @@ env:
 
 jobs:
   feature:
-    name: 📦 Release Over Feature
+    name: 📦 Release Dev Container feature
     needs: merge
     # Development/non-release tags must not publish immutable Feature versions.
     if: startsWith(github.ref, 'refs/tags/') && github.ref_name != 'development'
-    uses: ./.github/workflows/features.yml
+    uses: ./.github/workflows/devcontainer.yaml
     permissions:
       contents: read
       packages: write

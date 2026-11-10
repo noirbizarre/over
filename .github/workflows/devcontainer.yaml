@@ -1,4 +1,4 @@
-name: 📦 Over Dev Container Feature
+name: 📦 Dev Container
 
 on:
   push:
