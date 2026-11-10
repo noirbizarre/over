@@ -556,6 +556,60 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn full_staging_rejects_symlink_ancestors_without_recording_external_bytes(
+        #[case] dry_run: bool,
+    ) {
+        let mut fixture = Fixture::new();
+        let source = fixture.repo.workdir().unwrap().join("ov/nested");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("secret"), b"tracked content\n").unwrap();
+        let mut index = fixture.repo.index().unwrap();
+        index.add_path(Path::new("ov/nested/secret")).unwrap();
+        index.write().unwrap();
+        let tree = fixture.repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+        let head = fixture.repo.head().unwrap().peel_to_commit().unwrap();
+        let oid = fixture
+            .repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "nested file",
+                &tree,
+                &[&head],
+            )
+            .unwrap();
+        for record in fixture.records.values_mut() {
+            record.base_oid = oid.to_string();
+        }
+        let outside = fixture._directory.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let secret = b"external bytes must never enter the source object database\n";
+        fs::write(outside.join("secret"), secret).unwrap();
+        std::os::unix::fs::symlink(&outside, fixture.target.join("nested")).unwrap();
+        let original_index = fixture.index_bytes();
+        let secret_oid = git2::Oid::hash_object(git2::ObjectType::Blob, secret).unwrap();
+        assert!(!fixture.repo.odb().unwrap().exists(secret_oid));
+        let tree = DesiredTree::build_own(&fixture.ctx, &fixture.overlay).unwrap();
+        let result = super::super::stage_entries_with(
+            tree.entries(),
+            &[fixture.target.join("nested/secret")],
+            dry_run,
+            &fixture.overlay,
+            &|target| Ok(fixture.records.get(target).cloned()),
+            &git::source_entry,
+        );
+        assert!(result.unwrap_err().to_string().contains("symlink"));
+        assert_eq!(fixture.index_bytes(), original_index);
+        assert!(!fixture.repo.odb().unwrap().exists(secret_oid));
+        assert_eq!(fs::read(outside.join("secret")).unwrap(), secret);
+    }
+
     #[test]
     fn selected_hunks_preserve_previous_staging_and_leave_skipped_changes_unstaged() {
         let fixture = Fixture::new();

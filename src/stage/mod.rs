@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result, ensure};
 
 use crate::desired::{DesiredEntry, DesiredTree, Provenance};
 use crate::exec::Ctx;
-use crate::materialize::virtual_checkout::{git, state};
+use crate::materialize::virtual_checkout::{git, snapshot, state};
 use crate::overlays::Overlay;
 
 pub(crate) fn owns(entry: &DesiredEntry, path: &Path) -> bool {
@@ -213,14 +213,15 @@ fn stage_entries_with(
                 "source file '{}' has unstaged edits",
                 worktree.display()
             );
-            match target.symlink_metadata() {
-                Ok(metadata) => {
-                    ensure!(
-                        metadata.is_file(),
-                        "cannot stage non-regular checkout file '{}'",
-                        target.display()
-                    );
-                    let bytes = std::fs::read(&target)?;
+            ensure!(
+                !target.is_dir(),
+                "cannot stage non-regular checkout file '{}'",
+                target.display()
+            );
+            // Leaf metadata alone follows ancestor links and can import external
+            // secrets. Share patch staging's root-and-ancestor checked read.
+            match snapshot::target_content(&entry.target, &relative)? {
+                Some((bytes, mode)) => {
                     let index_entry = git2::IndexEntry {
                         ctime: git2::IndexTime::new(0, 0),
                         mtime: git2::IndexTime::new(0, 0),
@@ -228,7 +229,7 @@ fn stage_entries_with(
                         ino: 0,
                         uid: 0,
                         gid: 0,
-                        mode: i32::from(git::on_disk_filemode(&target)?) as u32,
+                        mode: mode as u32,
                         file_size: bytes.len().try_into().context("file too large to stage")?,
                         id: git2::Oid::ZERO_SHA1,
                         flags: 0,
@@ -243,12 +244,11 @@ fn stage_entries_with(
                         index.add_frombuffer(&index_entry, &bytes)?;
                     }
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                None => {
                     if indexed_entry.is_some() && !dry_run {
                         index.remove_path(&source_path)?;
                     }
                 }
-                Err(error) => return Err(error.into()),
             }
         }
     }
