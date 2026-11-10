@@ -114,6 +114,32 @@ fn overlap(a: &DesiredEntry, b: &DesiredEntry) -> anyhow::Result<Option<PathBuf>
     Ok(None)
 }
 
+/// Reject file ancestors even on platforms that report their children as absent.
+pub(crate) fn validate_directory_ancestors(path: &Path) -> anyhow::Result<()> {
+    for ancestor in path
+        .ancestors()
+        .skip(1)
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        match std::fs::metadata(ancestor) {
+            Ok(metadata) => {
+                anyhow::ensure!(
+                    metadata.is_dir(),
+                    "ancestor '{}' is not a directory",
+                    ancestor.display()
+                );
+                // The nearest existing directory proves its own parents are traversable.
+                return Ok(());
+            }
+            // Missing intermediate directories are valid prospective destinations;
+            // Windows also uses NotFound for children of files, so keep looking.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn check(tree: &DesiredTree) -> Vec<OwnershipIssue> {
     let mut diagnostics = Vec::new();
     // Resolve parent aliases once per entry, retaining managed symlink leaves as
@@ -127,9 +153,13 @@ pub(crate) fn check(tree: &DesiredTree) -> Vec<OwnershipIssue> {
                 // when resolving through the current directory link would succeed.
                 match tree.blocking_scaffold(&entry.target)? {
                     Some(parent) => {
+                        validate_directory_ancestors(&parent)?;
                         Ok(mapping::location(&parent)?.join(entry.target.strip_prefix(parent)?))
                     }
-                    None => mapping::location(&entry.target),
+                    None => {
+                        validate_directory_ancestors(&entry.target)?;
+                        mapping::location(&entry.target)
+                    }
                 }
             })() {
                 Ok(location) => Some(location),
@@ -739,14 +769,11 @@ mod tests {
         let error = DesiredTree::from_entries(vec![entry, other])
             .validate_ownership()
             .unwrap_err();
+        // Joining components separately avoids mixed separators in Windows display paths.
+        let witness = context.root.join("block.partial.yaml").join("selected");
         assert!(
-            error.to_string().contains(
-                &context
-                    .root
-                    .join("block.partial.yaml/selected")
-                    .display()
-                    .to_string()
-            )
+            error.to_string().contains(&witness.display().to_string()),
+            "{error:#}"
         );
         assert!(error.to_string().contains("conflicting target ownership"));
     }

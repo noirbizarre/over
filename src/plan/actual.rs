@@ -56,7 +56,12 @@ impl fmt::Display for ActualState {
 pub fn inspect(path: &Path) -> Result<ActualState> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(m) => m,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(ActualState::Missing),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            // Windows can report a child of a regular file as NotFound rather
+            // than NotADirectory; absence alone cannot authorize materialization.
+            crate::desired::ownership::validate_directory_ancestors(path)?;
+            return Ok(ActualState::Missing);
+        }
         Err(e) => return Err(e.into()),
     };
 
@@ -113,11 +118,33 @@ mod tests {
         assert_eq!(inspect(&path).unwrap(), ActualState::Missing);
     }
 
-    #[test]
-    fn a_child_of_a_regular_file_is_an_inspection_error_not_a_missing_path() {
+    #[rstest::rstest]
+    #[case("child")]
+    #[case("missing/child")]
+    fn a_child_of_a_regular_file_is_an_inspection_error_not_a_missing_path(#[case] suffix: &str) {
         let td = TempDir::new().unwrap();
         td.child("blocker").write_str("keep").unwrap();
-        assert!(inspect(&td.path().join("blocker/child")).is_err());
+        assert!(inspect(&td.path().join("blocker").join(suffix)).is_err());
+    }
+
+    #[test]
+    fn missing_ancestor_directories_still_report_a_missing_path() {
+        let td = TempDir::new().unwrap();
+        assert_eq!(
+            inspect(&td.path().join("missing/nested/child")).unwrap(),
+            ActualState::Missing
+        );
+    }
+
+    #[test]
+    fn a_missing_child_through_a_directory_alias_still_reports_missing() {
+        let td = TempDir::new().unwrap();
+        td.child("directory").create_dir_all().unwrap();
+        symlink::symlink_dir(td.path().join("directory"), td.path().join("alias")).unwrap();
+        assert_eq!(
+            inspect(&td.path().join("alias/missing/child")).unwrap(),
+            ActualState::Missing
+        );
     }
 
     #[test]

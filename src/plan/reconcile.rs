@@ -592,12 +592,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_unmanaged_non_directory_ancestor_remains_a_planning_error() {
+    #[rstest]
+    #[case("file")]
+    #[case("nested/file")]
+    fn an_unmanaged_non_directory_ancestor_remains_a_planning_error(#[case] suffix: &str) {
         let td = TempDir::new().unwrap();
         td.child("blocker").write_str("unmanaged").unwrap();
         let desired = DesiredTree::from_entries(vec![DesiredEntry {
-            target: td.path().join("blocker/nested/file"),
+            target: td.path().join("blocker").join(suffix),
             provenance: Provenance::Overlay {
                 overlay: "ov".into(),
                 source: td.path().join("source"),
