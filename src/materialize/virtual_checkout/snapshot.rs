@@ -138,11 +138,10 @@ pub(crate) fn target_content(root: &Path, relative: &Path) -> Result<Option<(Vec
     Ok(None)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn raw_canonical_blobs_skip_filters_but_still_ignore_executable_bits() {
         use std::os::unix::fs::PermissionsExt;
