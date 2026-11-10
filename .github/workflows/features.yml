@@ -3,12 +3,14 @@ name: 📦 Devcontainer Features
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    # gh-ship release tags are unprefixed, matching the Docker workflow.
+    tags: ["*"]
   pull_request:
 
 jobs:
   publish:
     name: 🚀 Publish Features
+    needs: test
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -30,15 +32,42 @@ jobs:
         uses: devcontainers/action@v1
         with:
           base-path-to-features: features
+          # Collection metadata uses <namespace>:latest; keep it away from the binary image.
+          features-namespace: ${{ github.repository }}/features
           publish-features: true
-          generate-docs: true
+          devcontainer-cli-version: "0.88.0"
+          # gh-ship owns repository tags; Feature tags would retrigger release workflows.
+          disable-repo-tagging: true
+          # Preserve the hand-maintained lifecycle and migration documentation.
+          generate-docs: false
 
   test:
-    name: 🧪 Test Features
-    runs-on: ubuntu-latest
+    name: 🧪 Test Features (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install Dev Container CLI
+        uses: jdx/mise-action@v5
+        with:
+          # prek is needed by the repository's mise postinstall hook.
+          install_args: devcontainer-cli prek
 
       - name: Validate feature metadata
         run: |
@@ -67,3 +96,6 @@ jobs:
 
             echo "  OK"
           done
+
+      - name: Exercise installation and lifecycle
+        run: python3 tests/features/run.py
