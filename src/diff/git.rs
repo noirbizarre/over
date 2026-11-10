@@ -230,13 +230,25 @@ impl Report {
             // Equal bytes alone cannot establish hard-link identity: a replaced
             // target must be reported even when its content has not changed.
             ActualState::File if matches!(link_type, LinkType::Hard) => {
-                if hard_link_matches(source, target)? {
-                    None
-                } else {
-                    Some(format!(
+                match hard_link_matches(source, target) {
+                    Ok(true) => None,
+                    Ok(false) => Some(format!(
                         "replaced hard link (expected {})",
                         source.display()
-                    ))
+                    )),
+                    // Removing either name leaves the other inode intact; report
+                    // drift without hiding diagnostics for the rest of the tree.
+                    Err(error)
+                        if error
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+                    {
+                        Some(format!(
+                            "missing source or target for hard link (expected {})",
+                            source.display()
+                        ))
+                    }
+                    Err(error) => return Err(error),
                 }
             }
             ActualState::Symlink { points_to } => {
@@ -474,6 +486,48 @@ mod tests {
     use super::*;
     use crate::actions::symlink::LinkType;
     use crate::plan::{Operation, PlanStep};
+
+    #[test]
+    fn a_missing_hard_link_source_does_not_hide_other_diagnostics() {
+        let td = tempfile::TempDir::new().unwrap();
+        let source = td.path().join("source");
+        let target = td.path().join("target");
+        let missing_target = td.path().join("missing-target");
+        std::fs::write(&source, "retained hard-link content").unwrap();
+        std::fs::hard_link(&source, &target).unwrap();
+        let entry = DesiredEntry {
+            target: target.clone(),
+            provenance: Provenance::Overlay {
+                overlay: "ov".into(),
+                source: source.clone(),
+            },
+            intent: MaterializationIntent::SymlinkFile {
+                source: source.clone(),
+                link_type: LinkType::Hard,
+            },
+            permissions: None,
+        };
+        let mut second = entry.clone();
+        second.target = missing_target.clone();
+        std::fs::remove_file(&source).unwrap();
+        let desired = DesiredTree::from_entries(vec![entry, second]);
+        let report = Report::build(&desired, &[]).unwrap();
+        assert_eq!(report.diagnostics.len(), 2);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.contains(&target.display().to_string())
+                && diagnostic.contains("missing source")
+        }));
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.contains(&missing_target.display().to_string()) })
+        );
+        assert_eq!(
+            std::fs::read_to_string(target).unwrap(),
+            "retained hard-link content"
+        );
+    }
 
     #[rstest::rstest]
     #[case(LinkType::Hard, false)]
