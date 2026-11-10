@@ -66,7 +66,8 @@ handoff or PR description.
 The toolchain, hooks, CI and release workflows come from
 [rust.tpl](https://github.com/noirbizarre/rust.tpl) and are updated with
 `git tpl update`. Files carrying template-owned content end with a
-`# --- project-specific ---` marker: add below it, never above.
+`# --- project-specific ---` marker: add below it. Global mise tools instead go
+between the begin/end project-specific tools markers inside `[tools]`.
 
 Changing template-owned content here fixes it in one repository. Changing it in
 the template fixes it in all of them — prefer that.

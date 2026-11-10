@@ -174,6 +174,7 @@ cargo-binstall available, mise downloads its release archive rather than
 compiling the libgit2 dependency from source.
 
 Files carrying template-owned content — `mise.toml`, `prek.toml`, `Cargo.toml` —
-end with a `# --- project-specific ---` marker. Add below it; Git's 3-way merge
+end with a `# --- project-specific ---` marker. Add below it, or put global mise
+tools between the begin/end project-specific tools markers. Git's 3-way merge
 then preserves your additions across updates. A fix that belongs to every
 project belongs in the template, not here.

@@ -60,6 +60,10 @@ uv = "latest"
 # cargo-insta is declared on the task that uses it instead of here — see the
 # note in the header.
 
+# --- begin project-specific tools ---
+# Add project-wide tools here; tools needed by only one task belong on that task.
+# --- end project-specific tools ---
+
 [hooks]
 # prek.toml declares both pre-commit and commit-msg as default hook types.
 postinstall = "prek install"
@@ -222,8 +226,8 @@ git tpl diff --exit-code --stat
 
 # --- project-specific tasks --------------------------------------------------
 #
-# Add your own tasks below this line. The template owns everything above it and
-# will keep updating it; everything here is yours, and Git's 3-way merge
+# Add your own tasks below this line and global tools between the tools markers.
+# Outside those regions the template keeps updating content; Git's 3-way merge
 # preserves it across `git tpl update`.
 #
 # Open any multi-line `run` block with `#!/usr/bin/env bash`. Without one mise
