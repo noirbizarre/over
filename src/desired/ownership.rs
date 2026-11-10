@@ -115,16 +115,16 @@ pub(crate) fn check(tree: &DesiredTree) -> Vec<OwnershipIssue> {
         .entries()
         .iter()
         .map(|entry| {
-            match mapping::location(&entry.target).or_else(|error| {
-                // Only an explicitly managed scaffold can authorize a future namespace;
-                // an unrelated ENOTDIR must remain an error rather than look absent.
+            match (|| -> anyhow::Result<PathBuf> {
+                // Replaced scaffold links no longer alias their old referents, even
+                // when resolving through the current directory link would succeed.
                 match tree.blocking_scaffold(&entry.target)? {
                     Some(parent) => {
                         Ok(mapping::location(&parent)?.join(entry.target.strip_prefix(parent)?))
                     }
-                    None => Err(error),
+                    None => mapping::location(&entry.target),
                 }
-            }) {
+            })() {
                 Ok(location) => Some(location),
                 Err(error) => {
                     diagnostics.push(OwnershipIssue {
@@ -395,6 +395,74 @@ mod tests {
 
     #[cfg(unix)]
     #[rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn replaced_scaffold_links_have_independent_prospective_ownership(
+        #[case] external_partial: bool,
+    ) {
+        let (temp, context) = fixture();
+        temp.child("foreign/settings")
+            .write_str("foreign content\n")
+            .unwrap();
+        temp.child("target").create_dir_all().unwrap();
+        std::os::unix::fs::symlink(temp.path().join("foreign"), context.root.join("first"))
+            .unwrap();
+        write(
+            &temp,
+            "selected/over.yaml",
+            "uses: [dependency]\ntarget: '~/first'",
+        );
+        write(&temp, "selected/settings", "first managed file");
+        if external_partial {
+            write(&temp, "dependency/over.yaml", "target: '~'");
+            write(
+                &temp,
+                "dependency/block.partial.yaml",
+                &format!(
+                    "target: '{}'\nmarker: external\ncontent: external managed block",
+                    temp.path().join("foreign/settings").display()
+                ),
+            );
+        } else {
+            std::os::unix::fs::symlink(temp.path().join("foreign"), context.root.join("second"))
+                .unwrap();
+            write(&temp, "dependency/over.yaml", "target: '~/second'");
+            write(&temp, "dependency/settings", "second managed file");
+        }
+        let context = Context::builder()
+            .repository(context.repository.clone())
+            .root(context.root.clone())
+            .force(true)
+            .no_prompt(true)
+            .build();
+        let overlay = context.repository.get("selected").unwrap();
+        let desired = crate::desired::DesiredTree::build(&context, &overlay).unwrap();
+        desired.validate_ownership().unwrap();
+        overlay.apply(&context).await.unwrap();
+        assert!(!context.root.join("first").is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(context.root.join("first/settings")).unwrap(),
+            "first managed file"
+        );
+        let foreign = std::fs::read_to_string(temp.path().join("foreign/settings")).unwrap();
+        if external_partial {
+            // Only the explicitly external partial may edit the old referent.
+            assert!(foreign.starts_with("foreign content\n"));
+            assert!(foreign.contains("external managed block"));
+            assert!(!foreign.contains("first managed file"));
+        } else {
+            assert_eq!(foreign, "foreign content\n");
+            assert!(!context.root.join("second").is_symlink());
+            assert_eq!(
+                std::fs::read_to_string(context.root.join("second/settings")).unwrap(),
+                "second managed file"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[rstest]
     #[case(false, false)]
     #[case(true, false)]
     #[case(false, true)]
@@ -404,28 +472,29 @@ mod tests {
         #[case] partial: bool,
     ) {
         let (temp, context) = fixture();
-        std::fs::create_dir_all(context.root.join("real")).unwrap();
+        // Keep the alias outside managed scaffolds so it survives reconciliation.
+        std::fs::create_dir_all(context.root.join("real/nested")).unwrap();
         std::os::unix::fs::symlink(context.root.join("real"), context.root.join("alias")).unwrap();
         write(
             &temp,
             "selected/over.yaml",
-            "uses: [dependency]\ntarget: '~/real'",
+            "uses: [dependency]\ntarget: '~/real/nested'",
         );
-        write(&temp, "dependency/over.yaml", "target: '~/alias'");
+        write(&temp, "dependency/over.yaml", "target: '~/alias/nested'");
         if partial {
             write(
                 &temp,
                 "selected/block.partial.yaml",
-                "target: '~/real/settings'\nmarker: shared\ncontent: selected",
+                "target: '~/real/nested/settings'\nmarker: shared\ncontent: selected",
             );
             write(
                 &temp,
                 "dependency/block.partial.yaml",
-                "target: '~/alias/settings'\nmarker: shared\ncontent: dependency",
+                "target: '~/alias/nested/settings'\nmarker: shared\ncontent: dependency",
             );
             if applied {
                 std::fs::write(
-                    context.root.join("real/settings"),
+                    context.root.join("real/nested/settings"),
                     "existing partial content",
                 )
                 .unwrap();
@@ -436,7 +505,7 @@ mod tests {
             if applied {
                 std::os::unix::fs::symlink(
                     context.repository.root.join("selected/settings"),
-                    context.root.join("real/settings"),
+                    context.root.join("real/nested/settings"),
                 )
                 .unwrap();
             }
