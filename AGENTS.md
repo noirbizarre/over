@@ -35,7 +35,10 @@ src/
 └── utils.rs      shared helpers
 ```
 
-Dependencies point inward. Nothing in the library knows a command exists.
+Core/domain and action modules keep dependencies inward: reusable behavior
+does not depend on CLI command types or dispatch. The library also exports
+`cli` for the thin binary entry point; that outer layer wires commands to the
+reusable modules.
 
 ## Build/Test
 
