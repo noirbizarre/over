@@ -89,6 +89,11 @@ impl SourcePolicy {
     }
 
     pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+        // Git administration is never overlay input, including apparent
+        // sidecars or nested ignore rules. Negations cannot reopen it.
+        if is_git_administration(path) {
+            return true;
+        }
         if let Ok(relative) = path.strip_prefix(&self.overlay.root)
             && self.overlay.is_excluded(relative)
         {
@@ -138,6 +143,9 @@ impl SourcePolicy {
 }
 
 pub fn is_control_file(path: &Path) -> bool {
+    if is_git_administration(path) {
+        return true;
+    }
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
@@ -147,6 +155,16 @@ pub fn is_control_file(path: &Path) -> bool {
                 || name.ends_with(&format!(".link.{extension}"))
                 || name.ends_with(&format!(".partial.{extension}"))
         })
+}
+
+fn is_git_administration(path: &Path) -> bool {
+    path.components().any(|component| {
+        let name = component.as_os_str();
+        name == ".git"
+            // Case-insensitive filesystems must not admit a spelling alias.
+            || (cfg!(any(windows, target_os = "macos"))
+                && name.to_str().is_some_and(|name| name.eq_ignore_ascii_case(".git")))
+    })
 }
 
 #[cfg(test)]
@@ -294,6 +312,9 @@ mod tests {
         let overlay = Repository::new(root.to_path_buf()).get("ov").unwrap();
         let policy = SourcePolicy::new(root, &overlay).unwrap();
         for path in [
+            ".git",
+            ".git/config",
+            "nested/.git/HEAD",
             "over.toml",
             ".overignore",
             "nested/.overignore",
