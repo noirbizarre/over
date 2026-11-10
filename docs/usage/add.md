@@ -16,6 +16,7 @@ Options:
   -n, --dry-run            Run without applying changes
   -v, --verbose            Toggle verbose output
   -f, --force              Overwrite without prompting
+  -p, --patch              Interactively stage virtual-checkout changes by hunk
   -h, --help               Print help
 ```
 
@@ -55,3 +56,39 @@ commits only staged changes. Status and diff distinguish staged and unstaged
 content. Unrelated index entries are preserved. Sync a checkout that is
 behind its source before staging, and resolve conflicting source edits
 first. `--dry-run` leaves both the index and target files unchanged.
+
+### Interactive partial staging
+
+Use `--patch` (`-p`) to stage selected changes instead of entire files:
+
+```sh
+over add -p --overlay workspace/client /etc/client/config.toml
+over add --patch --overlay workspace/client /etc/client/
+```
+
+Each text hunk includes surrounding context. Choose **Accept** to stage it
+or **Skip** to leave it unstaged. **Finish** applies the accepted choices and
+skips all remaining changes. **Cancel** (including Escape) discards every
+choice in the session. Finishing the last choice applies accepted changes.
+An interrupted or failed prompt does not stage any choices.
+
+Hunks show canonical Git content after clean filters. External diff drivers
+and text conversion tools are not used to generate applicable patches.
+
+Already-staged changes and unrelated index entries are preserved. All target
+and source working-tree files remain unchanged. If another process changes
+the index while you select hunks, the operation fails: rerun it against the
+new index. Index updates are atomic per repository; selections spanning
+multiple repositories are not a single transaction.
+
+Added and deleted text files, binary files, and empty-file changes are offered
+as whole-file choices. Executable-mode changes are separate whole-change
+choices. Manual hunk splitting/editing and file/directory replacements are
+not supported in patch mode.
+
+Patch mode only stages virtual-checkout paths owned by the selected overlay.
+Directory selections skip other materializations; explicitly selecting an
+unmanaged file fails. No files are moved or replaced with symlinks.
+`--force` does not accept choices automatically. Interactive selection needs
+a terminal; `--patch --dry-run` displays candidate changes without prompting
+or updating the index.
