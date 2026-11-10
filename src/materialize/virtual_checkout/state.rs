@@ -218,15 +218,21 @@ pub(crate) async fn persist_in(
         .await
 }
 
-pub(crate) async fn remove(target: &Path) -> Result<()> {
-    remove_in(&state_file()?, target).await
+/// Use the pre-removal key: a replacement symlink resolves to a different unit.
+pub(crate) async fn remove_key(key: String) -> Result<()> {
+    remove_key_in(&state_file()?, key).await
 }
 
+#[cfg(test)]
 pub(crate) async fn remove_in(
     state_file: &StateFile<VirtualCheckoutState>,
     target: &Path,
 ) -> Result<()> {
     let key = key_for(target);
+    remove_key_in(state_file, key).await
+}
+
+async fn remove_key_in(state_file: &StateFile<VirtualCheckoutState>, key: String) -> Result<()> {
     state_file
         .update(move |s| {
             s.checkouts.remove(&key);

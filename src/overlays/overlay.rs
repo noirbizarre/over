@@ -455,6 +455,28 @@ impl Overlay {
         Ok(())
     }
 
+    /// Validate before external installers can make irreversible changes.
+    pub fn validate_apply(&self, ctx: &Ctx) -> Result<()> {
+        let mut participants = Vec::new();
+        self.collect_participants(ctx, &mut HashSet::new(), &mut Vec::new(), &mut participants)?;
+        if !ctx.repository.hooks()?.is_empty()
+            || participants.iter().any(|overlay| !overlay.hooks.is_empty())
+        {
+            ctx.repository.validate_initialization()?;
+        }
+        for overlay in participants {
+            let overlay_ctx = ctx.with_overlay(overlay.clone());
+            let desired = DesiredTree::build_own(&overlay_ctx, &overlay)?;
+            let plan = Plan::build(&desired)?;
+            plan.validate_boundaries()?;
+            anyhow::ensure!(
+                !ctx.no_prompt || ctx.force || !plan.has_conflicts(),
+                "unresolved apply conflicts prevent installation under --no-prompt"
+            );
+        }
+        Ok(())
+    }
+
     fn collect_participants(
         &self,
         ctx: &Ctx,
@@ -510,26 +532,22 @@ impl Overlay {
         ))
         .ok();
 
-        // Git checkouts stay outside the plan (cloning is presence-only
-        // and runs before the Plan even though #110's
-        // CheckoutMaterializer classifies MaterializationIntent::Checkout
-        // like any other intent); everything else — the overlay's own
-        // directory, files, and `.link.*` sidecars — goes through a Plan
-        // built from this overlay's own DesiredTree (no `uses`
-        // recursion here: participants were resolved before materialization).
+        // Preflight before clone-time reconciliation, then rebuild after
+        // provisioning so no stale migration deletes a newly cloned repository.
         let ctx_with_target =
             ctx.with_resolved_overlay(self.name.clone(), target.to_string_lossy().to_string());
         let desired = DesiredTree::build_own(&ctx_with_target, self)?;
         let mut plan = Plan::build(&desired)?;
+        if ctx.verbose || ctx.dry_run {
+            ui::info(format!("{plan}")).ok();
+        }
+        plan.validate_boundaries()?;
         // Classify every ownership scope before cloning can mutate a destination.
         actions::git::clone_repositories(ctx.clone(), self, &target).await?;
         if self.git.is_some() {
             // Cloning may already perform a legacy-checkout migration;
             // never execute the stale pre-clone destructive operation.
             plan = Plan::build(&desired)?;
-        }
-        if ctx.verbose || ctx.dry_run {
-            ui::info(format!("{plan}")).ok();
         }
         plan.execute(ctx_with_target).await?;
 

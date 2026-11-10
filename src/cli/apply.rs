@@ -22,8 +22,18 @@ pub struct Params {
     #[clap(long, short = 'n', help = "Run without applying changes")]
     dry_run: bool,
 
-    #[clap(long, short, help = "Overwrite without prompting")]
+    #[clap(
+        long,
+        short,
+        help = "Overwrite ordinary filesystem conflicts without prompting"
+    )]
     force: bool,
+
+    #[clap(
+        long,
+        help = "Discard owned real checkouts, including local files and Git history"
+    )]
+    discard_checkout: bool,
 
     #[clap(long, help = "Fail on conflict instead of prompting")]
     no_prompt: bool,
@@ -57,6 +67,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .debug(cli.debug)
         .verbose(cli.verbose)
         .force(args.force)
+        .discard_checkout(args.discard_checkout)
         .no_prompt(args.no_prompt)
         .no_uses(args.no_uses)
         .root(root)
@@ -76,6 +87,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let ctx = ctx.with_overlay(overlay.clone()).resolve_data()?;
 
     if args.install {
+        overlay.validate_apply(&ctx)?;
         actions::install::install(&ctx, &overlay).await?;
     }
 

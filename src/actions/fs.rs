@@ -84,28 +84,311 @@ fn show_diff(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Absorb: copy the target file content into the overlay source, replacing it.
+/// Ordinary writes must not use rename to bypass read-only permissions.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PreparationPolicy {
+    ContentWrite,
+    #[cfg(unix)]
+    PermissionRepair,
+}
+
+/// Update one selected file without modifying other links to its old inode.
+///
+/// Single-link files retain their inode (and native ACLs/streams); those writes
+/// are not atomic. Linux prepares a replacement preserving owner/group/mode
+/// and all ACLs/xattrs visible and accessible to the process. Other platforms
+/// refuse shared inodes where native metadata cloning is unavailable.
+pub(crate) fn replace_file(
+    target: &Path,
+    data: impl AsRef<[u8]>,
+    permissions: impl FnOnce(fs::Permissions) -> fs::Permissions,
+) -> Result<()> {
+    replace_file_with_policy(target, data, permissions, PreparationPolicy::ContentWrite)
+}
+
+fn replace_file_with_policy(
+    target: &Path,
+    data: impl AsRef<[u8]>,
+    permissions: impl FnOnce(fs::Permissions) -> fs::Permissions,
+    policy: PreparationPolicy,
+) -> Result<()> {
+    let existing = match fs::symlink_metadata(target) {
+        Ok(metadata) => {
+            anyhow::ensure!(
+                metadata.is_file(),
+                "refusing to write through changed target '{}'",
+                target.display()
+            );
+            // Atomic rename must not silently bypass a user's read-only file.
+            anyhow::ensure!(
+                !matches!(policy, PreparationPolicy::ContentWrite)
+                    || !metadata.permissions().readonly(),
+                "file '{}' is read-only",
+                target.display()
+            );
+            Some(metadata)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(metadata) = &existing {
+        // Keeping the inode retains native ACLs, ownership, xattrs and Windows
+        // alternate streams without pretending Unix permissions describe them.
+        #[cfg(unix)]
+        let links = {
+            use std::os::unix::fs::MetadataExt;
+            metadata.nlink()
+        };
+        #[cfg(windows)]
+        let links = winapi_util::file::information(fs::File::open(target)?)?.number_of_links();
+        #[cfg(not(any(unix, windows)))]
+        let links = 2;
+        if links == 1 {
+            let desired = permissions(metadata.permissions());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                // Unix writes can strip privilege metadata even while keeping
+                // the inode. Refuse those files before chmod or content changes.
+                anyhow::ensure!(
+                    metadata.permissions().mode() & 0o6000 == 0,
+                    "cannot preserve set-id metadata while writing '{}'",
+                    target.display()
+                );
+            }
+            #[cfg(target_os = "linux")]
+            {
+                // These attributes can be stripped or invalidated by a write;
+                // inode retention alone is not sufficient to preserve them.
+                for name in ["security.capability", "security.ima", "security.evm"] {
+                    let value = match xattr::get(target, name) {
+                        Ok(value) => value,
+                        // Unsupported attributes cannot be stripped by writing;
+                        // do not reject ordinary files on filesystems without them.
+                        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => continue,
+                        Err(error) => return Err(error.into()),
+                    };
+                    anyhow::ensure!(
+                        value.is_none(),
+                        "cannot preserve {name} while writing '{}'",
+                        target.display()
+                    );
+                }
+            }
+            let mut output = fs::OpenOptions::new().write(true).open(target)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                // Fail permission changes before writing content. Avoid chmod
+                // when unnecessary because it can rewrite a native ACL mask.
+                if metadata.permissions().mode() & 0o7777 != desired.mode() & 0o7777 {
+                    output.set_permissions(desired.clone())?;
+                }
+            }
+            use std::io::Write as _;
+            // No truncation until preparation succeeds; subsequent I/O failure
+            // can leave partial content, as with an ordinary in-place editor.
+            output.write_all(data.as_ref())?;
+            output.set_len(data.as_ref().len() as u64)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if output.metadata()?.permissions().mode() & 0o7777 != desired.mode() & 0o7777 {
+                    output.set_permissions(desired)?;
+                }
+            }
+            #[cfg(not(unix))]
+            if output.metadata()?.permissions().readonly() != desired.readonly() {
+                output.set_permissions(desired)?;
+            }
+            return Ok(());
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            anyhow::bail!(
+                "cannot preserve native metadata while detaching hard-linked file '{}' on this platform",
+                target.display()
+            );
+        }
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("target has no parent"))?;
+    // Replacing a prepared inode avoids truncation on failure and writing
+    // through hard links to unrelated files. New files retain the process umask.
+    let scratch = tempfile::tempdir_in(parent)?;
+    let prepared = scratch.path().join("content");
+    fs::write(&prepared, data)?;
+    let current = existing.as_ref().map_or_else(
+        || fs::metadata(&prepared).map(|m| m.permissions()),
+        |m| Ok(m.permissions()),
+    )?;
+    let desired = permissions(current);
+    #[cfg(target_os = "linux")]
+    if let Some(metadata) = &existing {
+        use anyhow::Context as _;
+
+        clone_linux_metadata(target, &prepared, metadata, desired)
+            .with_context(|| format!("failed to preserve metadata for '{}'", target.display()))?;
+    } else {
+        fs::set_permissions(&prepared, desired)?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    fs::set_permissions(&prepared, desired)?;
+    fs::rename(&prepared, target)?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn clone_linux_metadata(
+    source: &Path,
+    prepared: &Path,
+    original: &fs::Metadata,
+    desired: fs::Permissions,
+) -> Result<()> {
+    use std::collections::BTreeMap;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, chown};
+
+    let attributes = |path: &Path| -> Result<BTreeMap<std::ffi::OsString, Vec<u8>>> {
+        let names = match xattr::list(path) {
+            Ok(names) => names,
+            // listxattr's ENOTSUP means this filesystem has no xattr support;
+            // errors reading an enumerated attribute still refuse the update.
+            Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+                return Ok(BTreeMap::new());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        names
+            .map(|name| {
+                let value = xattr::get(path, &name)?.ok_or_else(|| {
+                    anyhow::anyhow!("extended attribute changed during preparation: {name:?}")
+                })?;
+                Ok((name, value))
+            })
+            .collect()
+    };
+    let original_attributes = attributes(source)?;
+    let temporary = fs::metadata(prepared)?;
+    // Chown can clear set-id bits and capabilities, so do it before modes/xattrs.
+    if temporary.uid() != original.uid() || temporary.gid() != original.gid() {
+        chown(prepared, Some(original.uid()), Some(original.gid()))?;
+    }
+    fs::set_permissions(prepared, original.permissions())?;
+    // The scratch directory can inherit ACLs/security labels from its parent;
+    // replacing a file must not accidentally add those to its existing policy.
+    for name in attributes(prepared)?.keys() {
+        if !original_attributes.contains_key(name) {
+            xattr::remove(prepared, name)?;
+        }
+    }
+    for (name, value) in &original_attributes {
+        xattr::set(prepared, name, value)?;
+    }
+    let mode_changed = desired.mode() & 0o7777 != original.permissions().mode() & 0o7777;
+    if mode_changed {
+        // An explicitly requested mode may intentionally change the ACL mask.
+        fs::set_permissions(prepared, desired.clone())?;
+    }
+    let cloned = fs::metadata(prepared)?;
+    anyhow::ensure!(
+        cloned.uid() == original.uid()
+            && cloned.gid() == original.gid()
+            && cloned.permissions().mode() & 0o7777 == desired.mode() & 0o7777,
+        "cannot preserve ownership/mode for '{}'",
+        source.display()
+    );
+    let mut expected = original_attributes;
+    let actual = attributes(prepared)?;
+    if mode_changed
+        && let Some(acl) = expected.get_mut(std::ffi::OsStr::new("system.posix_acl_access"))
+    {
+        apply_linux_acl_mode(acl, desired.mode())?;
+    }
+    anyhow::ensure!(
+        actual == expected,
+        "cannot preserve extended attributes for '{}'",
+        source.display()
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn apply_linux_acl_mode(acl: &mut [u8], mode: u32) -> Result<()> {
+    // chmod changes only the POSIX ACL owner, mask (or group), and other
+    // entries. Verify those expected changes without exempting named entries.
+    anyhow::ensure!(
+        acl.starts_with(&2_u32.to_le_bytes()) && (acl.len() - 4).is_multiple_of(8),
+        "cannot verify unsupported Linux POSIX ACL encoding"
+    );
+    let has_mask = acl[4..]
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .any(|entry| u16::from_le_bytes([entry[0], entry[1]]) == 16);
+    for entry in acl[4..].as_chunks_mut::<8>().0 {
+        let access = match u16::from_le_bytes([entry[0], entry[1]]) {
+            1 => Some((mode >> 6) & 7),
+            4 if !has_mask => Some((mode >> 3) & 7),
+            16 => Some((mode >> 3) & 7),
+            32 => Some(mode & 7),
+            _ => None,
+        };
+        if let Some(access) = access {
+            entry[2..4].copy_from_slice(&(access as u16).to_le_bytes());
+        }
+    }
+    Ok(())
+}
+
+/// Prepare before replacing so a failed copy cannot truncate the source.
 fn absorb_file(source: &Path, target: &Path) -> Result<()> {
-    fs::copy(target, source).map_err(|e| {
-        anyhow::anyhow!(
-            "failed to absorb {} into {}: {}",
-            target.display(),
-            source.display(),
-            e
-        )
-    })?;
+    validate_absorb(source, target)?;
+    // Preparing beside the source avoids truncating it on copy failure.
+    let parent = source
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("source has no parent"))?;
+    let prepared = tempfile::NamedTempFile::new_in(parent)?;
+    fs::copy(target, prepared.path())?;
+    prepared.persist(source).map_err(|error| error.error)?;
     Ok(())
 }
 
 /// Absorb: recursively copy the target directory contents into the overlay source directory.
 fn absorb_dir(source: &Path, target: &Path) -> Result<()> {
-    // Remove existing overlay source directory and replace with target contents
-    if source.exists() {
-        fs::remove_dir_all(source).map_err(|e| {
-            anyhow::anyhow!("failed to remove overlay dir {}: {}", source.display(), e)
-        })?;
+    validate_absorb(source, target)?;
+    let parent = source
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("source has no parent"))?;
+    let scratch = tempfile::tempdir_in(parent)?;
+    let prepared = scratch.path().join("prepared");
+    copy_dir_recursive(target, &prepared)?;
+    let backup = scratch.path().join("original");
+    let had_source = source.exists();
+    if had_source {
+        fs::rename(source, &backup)?;
     }
-    copy_dir_recursive(target, source)
+    if let Err(error) = fs::rename(&prepared, source) {
+        if had_source && let Err(restore) = fs::rename(&backup, source) {
+            let retained = scratch.keep();
+            anyhow::bail!(
+                "absorb failed: {error}; restore failed: {restore}; original retained at {}",
+                retained.join("original").display()
+            );
+        }
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+fn validate_absorb(source: &Path, target: &Path) -> Result<()> {
+    let source = crate::overlays::mapping::physical(source)?;
+    let target = target.canonicalize()?;
+    anyhow::ensure!(
+        !source.starts_with(&target) && !target.starts_with(&source),
+        "cannot absorb overlapping source and target paths"
+    );
+    Ok(())
 }
 
 /// Recursively copy a directory tree from `source` to `target`.
@@ -115,7 +398,15 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> Result<()> {
         let entry = entry?;
         let source_path = entry.path();
         let target_path = target.join(entry.file_name());
-        if source_path.is_dir() {
+        if entry.file_type()?.is_symlink() {
+            // Copy the link itself: following it can escape the tree or cycle.
+            let destination = fs::read_link(&source_path)?;
+            if source_path.is_dir() {
+                symlink_dir(destination, &target_path)?;
+            } else {
+                symlink_file(destination, &target_path)?;
+            }
+        } else if entry.file_type()?.is_dir() {
             copy_dir_recursive(&source_path, &target_path)?;
         } else {
             fs::copy(&source_path, &target_path)?;
@@ -150,27 +441,54 @@ pub(crate) fn remove_target(target: &Path) -> Result<()> {
 ///
 /// Returns `Ok(true)` if the caller should proceed with creating the link,
 /// or `Ok(false)` if the file was skipped.
-fn resolve_file_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool> {
+pub(crate) fn resolve_file_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool> {
+    resolve_conflict_with(ctx, source, target, false, prompt_conflict)
+}
+
+fn resolve_conflict_with(
+    ctx: &Ctx,
+    source: &Path,
+    target: &Path,
+    is_dir: bool,
+    mut prompt: impl FnMut(&Path, &Path) -> Result<ConflictChoice>,
+) -> Result<bool> {
+    let source_location = crate::overlays::mapping::physical(source)?;
+    let target_location = crate::overlays::mapping::location(target)?;
+    // Removing the deployment must never remove its own source, even under
+    // force; resolving only the target's parents keeps unlinking safe links valid.
+    anyhow::ensure!(
+        !source_location.starts_with(&target_location)
+            && !target_location.starts_with(&source_location),
+        "refusing conflict replacement with overlapping source '{}' and target '{}'",
+        source.display(),
+        target.display()
+    );
+    ensure_unprotected_target(target)?;
     if ctx.force {
         remove_target(target)?;
         return Ok(true);
     }
     if ctx.no_prompt {
         anyhow::bail!(
-            "file conflict: '{}' already exists (use --force to overwrite or run interactively to choose)",
+            "{} conflict: '{}' already exists (use --force to overwrite or run interactively to choose)",
+            if is_dir { "directory" } else { "file" },
             target.display()
         );
     }
     // Interactive prompt loop
     loop {
-        match prompt_conflict(source, target)? {
+        match prompt(source, target)? {
             ConflictChoice::Skip => return Ok(false),
             ConflictChoice::Overwrite => {
                 remove_target(target)?;
                 return Ok(true);
             }
             ConflictChoice::Absorb => {
-                absorb_file(source, target)?;
+                if is_dir {
+                    absorb_dir(source, target)?;
+                } else {
+                    absorb_file(source, target)?;
+                }
                 remove_target(target)?;
                 return Ok(true);
             }
@@ -186,41 +504,34 @@ fn resolve_file_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool
 ///
 /// Returns `Ok(true)` if the caller should proceed with creating the link,
 /// or `Ok(false)` if the directory was skipped.
-fn resolve_dir_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool> {
-    if ctx.force {
-        remove_target(target)?;
-        return Ok(true);
-    }
-    if ctx.no_prompt {
-        anyhow::bail!(
-            "directory conflict: '{}' already exists (use --force to overwrite or run interactively to choose)",
-            target.display()
-        );
-    }
-    // Interactive prompt loop
-    loop {
-        match prompt_conflict(source, target)? {
-            ConflictChoice::Skip => return Ok(false),
-            ConflictChoice::Overwrite => {
-                remove_target(target)?;
-                return Ok(true);
-            }
-            ConflictChoice::Absorb => {
-                absorb_dir(source, target)?;
-                remove_target(target)?;
-                return Ok(true);
-            }
-            ConflictChoice::Diff => {
-                show_diff(source, target)?;
-                // Loop back to prompt
-            }
-        }
-    }
+pub(crate) fn resolve_dir_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool> {
+    resolve_conflict_with(ctx, source, target, true, prompt_conflict)
 }
 
 pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()> {
     let policy = crate::overlays::ignore::SourcePolicy::new(&ctx.repository.root, overlay)?;
     add_file_selected(ctx, overlay, file, &policy).await
+}
+
+/// Generic force/overwrite must not bypass checkout-specific disposal checks.
+pub(crate) fn ensure_unprotected_target(target: &Path) -> Result<()> {
+    if !target.is_symlink() && target.is_dir() {
+        anyhow::ensure!(
+            !target.join(".git").exists()
+                && crate::materialize::virtual_checkout::state::record_for_blocking(target)?
+                    .is_none(),
+            "protected checkout at '{}'; use its checkout migration/unapply workflow",
+            target.display()
+        );
+        // Recursive overwrite must also preserve checkout units nested beneath it.
+        for entry in fs::read_dir(target)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                ensure_unprotected_target(&entry.path())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn add_file_selected(
@@ -526,6 +837,30 @@ impl Action for EnsureDir {
         if !ctx.dry_run {
             let path = self.path.clone();
             spawn_blocking(move || -> Result<()> {
+                if path.is_symlink() || (path.exists() && !path.is_dir()) {
+                    // Stop on decline so children cannot follow this parent.
+                    ensure_unprotected_target(&path)?;
+                    if !ctx.force {
+                        anyhow::ensure!(
+                            !ctx.no_prompt,
+                            "directory conflict at '{}' (use --force to replace)",
+                            path.display()
+                        );
+                        let overwrite = dialoguer::Confirm::new()
+                            .with_prompt(format!(
+                                "Replace directory scaffold conflict at '{}' ?",
+                                path.display()
+                            ))
+                            .default(false)
+                            .interact()?;
+                        anyhow::ensure!(
+                            overwrite,
+                            "directory conflict declined at '{}'",
+                            path.display()
+                        );
+                    }
+                    remove_target(&path)?;
+                }
                 create_dir_all(path.as_path())?;
                 Ok(())
             })
@@ -575,7 +910,20 @@ impl Action for SetPermissions {
             let path = self.path.clone();
             let mode = self.mode.bits();
             spawn_blocking(move || -> Result<()> {
-                fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+                // A chmod of a shared inode would affect paths outside ownership.
+                let metadata = fs::symlink_metadata(&path)?;
+                anyhow::ensure!(metadata.is_file(), "permission target changed type");
+                use std::os::unix::fs::MetadataExt;
+                if metadata.nlink() > 1 {
+                    replace_file_with_policy(
+                        &path,
+                        fs::read(&path)?,
+                        |_| fs::Permissions::from_mode(mode),
+                        PreparationPolicy::PermissionRepair,
+                    )?;
+                } else {
+                    fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+                }
                 Ok(())
             })
             .await??;
@@ -748,6 +1096,317 @@ mod tests {
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use std::fs;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn replacing_a_file_preserves_content_behind_unowned_hard_links() {
+        let td = TempDir::new().unwrap();
+        let owned = td.path().join("owned");
+        let unowned = td.path().join("unowned");
+        fs::write(&unowned, "private").unwrap();
+        fs::hard_link(&unowned, &owned).unwrap();
+        replace_file(&owned, "updated", |permissions| permissions).unwrap();
+        assert_eq!(fs::read_to_string(owned).unwrap(), "updated");
+        assert_eq!(fs::read_to_string(unowned).unwrap(), "private");
+    }
+
+    #[rstest::rstest]
+    fn ordinary_content_writes_refuse_readonly_files_before_changing_any_link(
+        #[values(false, true)] hardlinked: bool,
+    ) {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("target");
+        let alias = td.path().join("alias");
+        fs::write(&target, "private").unwrap();
+        if hardlinked {
+            fs::hard_link(&target, &alias).unwrap();
+        }
+        let original = fs::metadata(&target).unwrap().permissions();
+        let mut readonly = original.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&target, readonly).unwrap();
+        assert!(replace_file(&target, "changed", |permissions| permissions).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"private");
+        assert!(fs::metadata(&target).unwrap().permissions().readonly());
+        if hardlinked {
+            assert_eq!(fs::read(&alias).unwrap(), b"private");
+            assert!(fs::metadata(&alias).unwrap().permissions().readonly());
+        }
+        // Windows cannot remove read-only test files during TempDir cleanup.
+        fs::set_permissions(&target, original).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn permission_repair_detaches_a_readonly_hardlink_without_changing_its_alias() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("target");
+        let alias = td.path().join("alias");
+        fs::write(&alias, "private").unwrap();
+        fs::set_permissions(&alias, fs::Permissions::from_mode(0o444)).unwrap();
+        fs::hard_link(&alias, &target).unwrap();
+        let original = fs::metadata(&alias).unwrap();
+        SetPermissions::new(target.clone(), FileMode::parse("644").unwrap())
+            .execute(Context::builder().build())
+            .await
+            .unwrap();
+        let repaired = fs::metadata(&target).unwrap();
+        let untouched = fs::metadata(&alias).unwrap();
+        assert_eq!(repaired.permissions().mode() & 0o7777, 0o644);
+        assert_eq!(untouched.permissions().mode() & 0o7777, 0o444);
+        assert_eq!(untouched.ino(), original.ino());
+        assert_ne!(repaired.ino(), untouched.ino());
+        assert_eq!(
+            (repaired.uid(), repaired.gid()),
+            (original.uid(), original.gid())
+        );
+        assert_eq!(fs::read(target).unwrap(), b"private");
+        assert_eq!(fs::read(alias).unwrap(), b"private");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[rstest::rstest]
+    fn replacement_preserves_acl_xattrs_and_ownership_on_every_surviving_link(
+        #[values(false, true)] hardlinked: bool,
+        #[values(false, true)] change_mode: bool,
+    ) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("target");
+        let alias = td.path().join("alias");
+        fs::write(&target, "private").unwrap();
+        xattr::set(&target, "user.over-regression", b"retain me").unwrap();
+        // Linux POSIX ACL version 2, including a named user: mode bits alone
+        // cannot reconstruct this policy. Avoid an external setfacl dependency.
+        let mut acl = 2_u32.to_le_bytes().to_vec();
+        for (tag, access, id) in [
+            (1_u16, 6_u16, u32::MAX),
+            (2, 4, 12345),
+            (4, 4, u32::MAX),
+            (16, 4, u32::MAX),
+            (32, 0, u32::MAX),
+        ] {
+            acl.extend(tag.to_le_bytes());
+            acl.extend(access.to_le_bytes());
+            acl.extend(id.to_le_bytes());
+        }
+        xattr::set(&target, "system.posix_acl_access", &acl).unwrap();
+        if hardlinked {
+            fs::hard_link(&target, &alias).unwrap();
+        }
+        let original = fs::metadata(&target).unwrap();
+        replace_file(&target, "updated", |permissions| {
+            if change_mode {
+                fs::Permissions::from_mode(0o700)
+            } else {
+                permissions
+            }
+        })
+        .unwrap();
+        for path in std::iter::once(&target).chain(hardlinked.then_some(&alias)) {
+            let current = fs::metadata(path).unwrap();
+            assert_eq!(
+                (current.uid(), current.gid()),
+                (original.uid(), original.gid())
+            );
+            let mut expected_acl = acl.clone();
+            let expected_mode = if change_mode && path == &target {
+                // The owner gains execute and the mask loses group access;
+                // named-user permissions and group-object entries must survive.
+                expected_acl[6..8].copy_from_slice(&7_u16.to_le_bytes());
+                expected_acl[30..32].copy_from_slice(&0_u16.to_le_bytes());
+                (original.mode() & !0o7777) | 0o700
+            } else {
+                original.mode()
+            };
+            assert_eq!(current.mode(), expected_mode);
+            assert_eq!(
+                xattr::get(path, "system.posix_acl_access").unwrap(),
+                Some(expected_acl)
+            );
+            assert_eq!(
+                xattr::get(path, "user.over-regression").unwrap(),
+                Some(b"retain me".to_vec())
+            );
+        }
+        if !hardlinked {
+            assert_eq!(fs::metadata(&target).unwrap().ino(), original.ino());
+        }
+        assert_eq!(fs::read(target).unwrap(), b"updated");
+        if hardlinked {
+            assert_eq!(fs::metadata(&alias).unwrap().ino(), original.ino());
+            assert_eq!(fs::read(alias).unwrap(), b"private");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[rstest::rstest]
+    fn writes_refuse_privilege_metadata_that_the_kernel_could_strip(
+        #[values(0o2640, 0o4640)] mode: u32,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("target");
+        fs::write(&target, "original").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(mode)).unwrap();
+        assert!(replace_file(&target, "changed", |p| p).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+            mode
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[rstest::rstest]
+    fn replacement_preserves_a_nondefault_group_when_chown_is_supported(
+        #[values(false, true)] hardlinked: bool,
+    ) {
+        use std::os::unix::fs::{MetadataExt, chown};
+
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("target");
+        fs::write(&target, "original").unwrap();
+        let default_group = fs::metadata(&target).unwrap().gid();
+        let other_group = if default_group == 1 { 0 } else { 1 };
+        if let Err(error) = chown(&target, None, Some(other_group)) {
+            // An unprivileged runner may not belong to another group; only
+            // that capability-dependent case is skipped, not preservation errors.
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            eprintln!("alternate-group fixture unavailable: {error}");
+            return;
+        }
+        let alias = td.path().join("alias");
+        if hardlinked {
+            fs::hard_link(&target, &alias).unwrap();
+        }
+        replace_file(&target, "updated", |permissions| permissions).unwrap();
+        assert_eq!(fs::metadata(&target).unwrap().gid(), other_group);
+        assert_eq!(fs::read(target).unwrap(), b"updated");
+        if hardlinked {
+            assert_eq!(fs::metadata(&alias).unwrap().gid(), other_group);
+            assert_eq!(fs::read(alias).unwrap(), b"original");
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn unsupported_native_metadata_cloning_refuses_to_detach_a_shared_inode() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("target");
+        let alias = td.path().join("alias");
+        fs::write(&target, "private").unwrap();
+        fs::hard_link(&target, &alias).unwrap();
+        assert!(replace_file(&target, "changed", |permissions| permissions).is_err());
+        assert_eq!(fs::read(target).unwrap(), b"private");
+        assert_eq!(fs::read(alias).unwrap(), b"private");
+    }
+
+    #[rstest::rstest]
+    fn interactive_conflict_choices_are_the_only_authority_for_loss(
+        #[values(false, true)] directory: bool,
+        #[values(
+            ConflictChoice::Skip,
+            ConflictChoice::Overwrite,
+            ConflictChoice::Absorb
+        )]
+        choice: ConflictChoice,
+    ) {
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("source");
+        let target = td.path().join("target");
+        let (source_content, target_content) = if directory {
+            fs::create_dir_all(&source).unwrap();
+            fs::create_dir_all(&target).unwrap();
+            (source.join("file"), target.join("file"))
+        } else {
+            (source.clone(), target.clone())
+        };
+        fs::write(&source_content, "overlay").unwrap();
+        fs::write(&target_content, "private").unwrap();
+        let ctx = Context::builder().build();
+        let proceed =
+            resolve_conflict_with(&ctx, &source, &target, directory, |_, _| Ok(choice)).unwrap();
+        assert_eq!(proceed, choice != ConflictChoice::Skip);
+        assert_eq!(
+            fs::read_to_string(&source_content).unwrap(),
+            if choice == ConflictChoice::Absorb {
+                "private"
+            } else {
+                "overlay"
+            }
+        );
+        if choice == ConflictChoice::Skip {
+            assert_eq!(fs::read_to_string(target_content).unwrap(), "private");
+        } else {
+            assert!(!target.exists());
+        }
+    }
+
+    #[test]
+    fn showing_a_diff_then_skipping_preserves_both_inputs() {
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("source");
+        let target = td.path().join("target");
+        fs::write(&source, "overlay").unwrap();
+        fs::write(&target, "private").unwrap();
+        let mut choices = [ConflictChoice::Diff, ConflictChoice::Skip].into_iter();
+        assert!(
+            !resolve_conflict_with(
+                &Context::builder().build(),
+                &source,
+                &target,
+                false,
+                |_, _| Ok(choices.next().unwrap())
+            )
+            .unwrap()
+        );
+        assert_eq!(fs::read_to_string(source).unwrap(), "overlay");
+        assert_eq!(fs::read_to_string(target).unwrap(), "private");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absorb_copies_directory_links_without_following_cycles() {
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("source");
+        let target = td.path().join("target");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        symlink_dir(&target, target.join("cycle")).unwrap();
+        absorb_dir(&source, &target).unwrap();
+        assert_eq!(fs::read_link(source.join("cycle")).unwrap(), target);
+    }
+
+    #[test]
+    fn absorb_rejects_overlapping_trees_before_modifying_the_source() {
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("source");
+        let target = source.join("child");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("keep"), "private").unwrap();
+        assert!(absorb_dir(&source, &target).is_err());
+        assert_eq!(fs::read_to_string(source.join("keep")).unwrap(), "private");
+    }
+
+    #[test]
+    fn force_cannot_delete_the_source_inside_a_conflicting_target() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("target");
+        let source = target.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("private"), "only copy").unwrap();
+        let ctx = Context::builder().force(true).build();
+        assert!(resolve_dir_conflict(&ctx, &source, &target).is_err());
+        assert_eq!(
+            fs::read_to_string(source.join("private")).unwrap(),
+            "only copy"
+        );
+    }
 
     /// Install a tracing subscriber so `tracing::warn!` etc. bodies are executed during tests.
     fn init_test_tracing() {

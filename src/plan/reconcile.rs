@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 use anyhow::{Context as _, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 
-use crate::desired::DesiredTree;
+use crate::desired::{DesiredTree, MaterializationIntent};
 use crate::exec::Ctx;
 use crate::materialize::MaterializerRegistry;
 use crate::ui::style;
@@ -39,6 +39,7 @@ static SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
 #[derive(Debug, Clone, Default)]
 pub struct Plan {
     steps: Vec<PlanStep>,
+    guards: Vec<crate::materialize::disposal::PathGuard>,
 }
 
 impl Plan {
@@ -51,16 +52,81 @@ impl Plan {
         let registry = MaterializerRegistry::default();
         let mut steps = Vec::with_capacity(desired.len());
         for entry in desired.entries() {
-            let operation = match registry.find(&entry.intent) {
+            let mut operation = match registry.find(&entry.intent) {
                 Some(materializer) => materializer.classify(entry)?,
                 None => Operation::Deferred,
             };
+            if let crate::desired::Provenance::Git {
+                overlay, repo_key, ..
+            } = &entry.provenance
+                && matches!(operation, Operation::Migrate { .. })
+            {
+                // Only the composed tree knows the declaring overlay source;
+                // arbitrary symlinks are not proof of a legacy installation.
+                let source = desired
+                    .sources
+                    .iter()
+                    .find(|selection| selection.overlay.name == *overlay)
+                    .map(|selection| (selection.overlay.root.join(repo_key), &selection.policy));
+                let owned = match source {
+                    Some((source, policy)) => {
+                        let matches = if entry.target.is_symlink() {
+                            std::fs::read_link(&entry.target)? == source
+                        } else {
+                            crate::materialize::symlink::directory_is_symlink_mirror(
+                                &entry.target,
+                                &source,
+                            )?
+                        };
+                        if matches {
+                            policy.validate_directory_link(&entry.target, &source)?;
+                        }
+                        matches
+                    }
+                    None => false,
+                };
+                if !owned {
+                    operation = Operation::Conflict {
+                        current: super::actual::inspect(&entry.target)?,
+                    };
+                }
+            }
+            if matches!(entry.intent, MaterializationIntent::Directory)
+                && !desired.entries().iter().any(|other| {
+                    other.target == entry.target
+                        && matches!(other.intent, MaterializationIntent::Checkout)
+                })
+                && !entry.target.is_symlink()
+                && ((entry.target.join(".git").exists() && git2::Repository::open(&entry.target).ok()
+                    .and_then(|repo| repo.config().ok())
+                    .and_then(|config| config.get_string("over.overlay").ok())
+                    .is_some_and(|name| matches!(&entry.provenance, crate::desired::Provenance::Overlay { overlay, .. } if *overlay == name)))
+                    || crate::materialize::virtual_checkout::state::record_for_blocking(
+                        &entry.target,
+                    )?
+                    .is_some())
+            {
+                // A parent checkout is indivisible: never force-overwrite its
+                // individual editable files after a recursive-rule change.
+                operation = Operation::Migrate {
+                    from: MaterializationIntent::VirtualCheckout,
+                    to: entry.intent.clone(),
+                    blocked: Some(
+                        "checkout to recursive links requires unapplying its old layout first"
+                            .into(),
+                    ),
+                };
+            }
             steps.push(PlanStep {
                 entry: entry.clone(),
                 operation,
             });
         }
-        Ok(Self { steps })
+        let guards = steps
+            .iter()
+            .map(|step| crate::materialize::disposal::PathGuard::capture(&step.entry.target))
+            .collect::<Result<_>>()?;
+        Ok(Self { steps, guards })
     }
 
     pub fn steps(&self) -> &[PlanStep] {
@@ -87,27 +153,40 @@ impl Plan {
     /// anything nested under it). `Noop`/`Deferred` steps are skipped — the
     /// former because there's nothing to do, the latter because it's
     /// unreachable in practice since #110 (kept as a defensive fallback). A
-    /// blocked `Migrate` (`blocked: Some(_)`) is skipped too — it's
-    /// understood, but not safe to perform yet (#129), and must never be
-    /// forced through.
+    /// blocked `Migrate` fails preflight: silently skipping it could let
+    /// descendants write through an unresolved parent and run success hooks.
     pub async fn execute(&self, ctx: Ctx) -> Result<()> {
+        self.validate_boundaries()?;
         let has_actionable = self.steps.iter().any(|s| is_actionable(&s.operation));
         if !has_actionable {
             return Ok(());
         }
 
         let registry = MaterializerRegistry::default();
+        let mut guards = self.guards.clone();
+        for guard in &guards {
+            guard.verify()?;
+        }
         let progress = ProgressBar::new_spinner()
             .with_style(SPINNER_STYLE.clone())
             .with_message("");
 
-        for step in &self.steps {
+        for (index, step) in self.steps.iter().enumerate() {
+            if let Some(guard) = guards.get(index) {
+                guard.verify()?;
+            }
             if !is_actionable(&step.operation) {
                 continue;
             }
 
             if ctx.verbose || ctx.dry_run {
                 progress.println(format!("{step}"));
+                if matches!(step.operation, Operation::Conflict { .. }) {
+                    progress.println(format!("  {} '{}': {}", if ctx.dry_run { "would reconcile" } else { "reconcile" }, step.entry.target.display(),
+                        if ctx.force { "overwrite authorized by --force; directories may be recursively removed" }
+                        else if ctx.no_prompt { "unresolved conflict will fail without changes" }
+                        else { "requires interactive skip/overwrite/absorb choice before destructive action" }));
+                }
             }
             progress.set_message(format!("{step}"));
 
@@ -123,9 +202,51 @@ impl Plan {
                 .with_context(|| {
                     format!("failed to reconcile '{}'", step.entry.target.display())
                 })?;
+            if !ctx.dry_run
+                && step.entry.target.is_dir()
+                && !step.entry.target.is_symlink()
+                && matches!(
+                    step.operation,
+                    Operation::Migrate { .. } | Operation::Conflict { .. }
+                )
+            {
+                // A completed parent-link migration intentionally changes the
+                // physical locations of its children. Refresh only that scope.
+                for (child, guard) in self.steps.iter().zip(&mut guards).skip(index + 1) {
+                    if child.entry.target.starts_with(&step.entry.target) {
+                        *guard =
+                            crate::materialize::disposal::PathGuard::capture(&child.entry.target)?;
+                    }
+                }
+            }
         }
 
         progress.finish_and_clear();
+        Ok(())
+    }
+
+    /// Refuse before any child can execute through an unresolved parent.
+    pub(crate) fn validate_boundaries(&self) -> Result<()> {
+        for step in &self.steps {
+            if matches!(step.entry.intent, MaterializationIntent::Checkout)
+                && matches!(step.operation, Operation::Conflict { .. })
+            {
+                anyhow::bail!(
+                    "refusing checkout replacement at '{}': legacy source ownership is not established; move it aside or unapply its old layout",
+                    step.entry.target.display()
+                );
+            }
+            if let Operation::Migrate {
+                blocked: Some(reason),
+                ..
+            } = &step.operation
+            {
+                anyhow::bail!(
+                    "migration blocked at '{}': {reason}",
+                    step.entry.target.display()
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -207,6 +328,42 @@ mod tests {
     use crate::desired::{DesiredEntry, MaterializationIntent, Provenance};
     use crate::exec::Context;
     use crate::overlays::{Overlay, Repository};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_ancestor_retargeted_after_planning_cannot_redirect_writes() {
+        let td = tempfile::tempdir().unwrap();
+        let first = td.path().join("first");
+        let second = td.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let alias = td.path().join("alias");
+        std::os::unix::fs::symlink(&first, &alias).unwrap();
+        let source = td.path().join("source");
+        std::fs::write(&source, "overlay").unwrap();
+        let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            target: alias.join("file"),
+            provenance: Provenance::Overlay {
+                overlay: "ov".into(),
+                source: source.clone(),
+            },
+            intent: MaterializationIntent::SymlinkFile {
+                source,
+                link_type: LinkType::Soft,
+            },
+            permissions: None,
+        }]);
+        let plan = Plan::build(&desired).unwrap();
+        std::fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&second, &alias).unwrap();
+        assert!(
+            plan.execute(Context::builder().force(true).build())
+                .await
+                .is_err()
+        );
+        assert!(!first.join("file").exists());
+        assert!(!second.join("file").exists());
+    }
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use rstest::rstest;
@@ -472,7 +629,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blocked_migrate_step_is_skipped_by_execute() {
+    async fn blocked_migration_reports_failure_without_executing() {
         let (td, repo) = repo_and_root();
         let c = ctx(td.path().to_path_buf(), repo, None);
         let target = td.path().join("some_target");
@@ -489,6 +646,7 @@ mod tests {
             permissions: None,
         };
         let plan = Plan {
+            guards: Vec::new(),
             steps: vec![PlanStep {
                 entry,
                 operation: Operation::Migrate {
@@ -504,7 +662,7 @@ mod tests {
         // No materializer would even be looked up for this step since it's
         // skipped — if it weren't, this would fail trying to remove/link a
         // nonexistent `/src`.
-        plan.execute(c).await.unwrap();
+        assert!(plan.execute(c).await.is_err());
         assert!(!target.exists());
     }
 
@@ -640,7 +798,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rule_change_from_symlink_to_checkout_migrates_and_clones() {
+    async fn rule_change_to_checkout_preserves_a_foreign_sidecar_link() {
         let (td, repo) = repo_and_root();
         let overlay_dir = td.child("ov");
         overlay_dir.create_dir_all().unwrap();
@@ -689,20 +847,14 @@ mod tests {
             .iter()
             .find(|s| s.entry.target == conf_target)
             .unwrap();
-        match &step.operation {
-            Operation::Migrate {
-                to, blocked: None, ..
-            } => assert!(matches!(to, MaterializationIntent::Checkout)),
-            other => panic!("expected a safe Migrate to Checkout, got {other:?}"),
-        }
+        assert!(matches!(step.operation, Operation::Conflict { .. }));
 
         let clone_ctx = c
             .clone()
             .with_multiprogress(indicatif::MultiProgress::new());
-        plan2.execute(clone_ctx).await.unwrap();
-        assert!(!conf_target.is_symlink(), "stale symlink should be gone");
-        assert!(conf_target.join(".git").exists(), "checkout now exists");
-        assert!(conf_target.join("README.md").exists());
+        assert!(plan2.execute(clone_ctx).await.is_err());
+        assert_eq!(fs::read_link(&conf_target).unwrap(), elsewhere.path());
+        assert!(!conf_target.join(".git").exists());
     }
 
     #[tokio::test]
@@ -766,7 +918,12 @@ mod tests {
             other => panic!("expected a safe Migrate from Checkout, got {other:?}"),
         }
 
-        plan2.execute(c.clone()).await.unwrap();
+        let discard = Context::builder()
+            .discard_checkout(true)
+            .root(td.path().to_path_buf())
+            .repository(repo.clone())
+            .build();
+        plan2.execute(discard).await.unwrap();
         assert!(
             !conf_target.join(".git").exists(),
             "checkout should be gone"
@@ -827,11 +984,8 @@ mod tests {
             .find(|s| s.entry.target == conf_target)
             .unwrap();
         match &step.operation {
-            Operation::Migrate {
-                blocked: Some(reason),
-                ..
-            } => assert!(reason.contains("uncommitted")),
-            other => panic!("expected a blocked Migrate, got {other:?}"),
+            Operation::Migrate { blocked: None, .. } => {}
+            other => panic!("expected consent-required checkout disposal, got {other:?}"),
         }
 
         // Even with `--force`, the dirty checkout must stay untouched.
@@ -841,7 +995,7 @@ mod tests {
             .repository(repo.clone())
             .overlay(overlay2.clone())
             .build();
-        plan2.execute(force_ctx).await.unwrap();
+        assert!(plan2.execute(force_ctx).await.is_err());
         assert!(conf_target.join(".git").exists(), "checkout must remain");
         assert_eq!(
             fs::read_to_string(conf_target.join("README.md")).unwrap(),

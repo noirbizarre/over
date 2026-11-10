@@ -30,6 +30,7 @@ nav = [
   ] },
   { "Commands" = [
     { "Overview" = "usage/index.md" },
+    { "Safety and recovery" = "usage/safety.md" },
     { "over init" = "usage/init.md" },
     { "over add" = "usage/add.md" },
     { "over new" = "usage/new.md" },

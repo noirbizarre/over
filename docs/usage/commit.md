@@ -69,9 +69,17 @@ staged files are preserved in the index and excluded from this commit.
 A checkout whose own source content has advanced must be synced first.
 Sync preserves independent staged and unstaged edits while reconciling
 non-conflicting source advancement. Source updates are prepared before HEAD
-advances and rolled back if applying them or creating the commit fails.
+advances; failures applying them or creating the commit attempt to restore
+source backups. Failed restoration retains backups and reports their paths.
 Existing source access permissions are retained; unstaged source content or
 executable-bit edits are rejected rather than overwritten.
+
+This is limited source-update recovery, not whole-command/crash rollback.
+Checkpoint persistence happens after the commit: it can fail after HEAD has
+advanced, and participating checkpoints may be only partly updated. That error
+identifies the successful commit; inspect HEAD and checkout status before
+retrying. Use `over diff NAME --staged` to inspect the selected changes;
+commit has no dry-run flag. See [Safety and recovery](safety.md).
 
 Unlike the earlier automatic-recording workflow, `over commit` does not
 include unstaged target changes. Use `over add` to select changes first.

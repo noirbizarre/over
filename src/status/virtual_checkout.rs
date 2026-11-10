@@ -56,6 +56,14 @@ pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
     let base_blobs = blob_ids(&base_entries);
 
     let local_changes = git::diff_scoped_target(&entry.target, &base_blobs, &scope)?;
+    // Hash equality alone would let unapply discard a chmod-only target edit.
+    let mut local_modes_match = true;
+    for (path, expected) in &base_entries {
+        if !git::entries_match(git::target_entry(&entry.target, path)?, Some(*expected)) {
+            local_modes_match = false;
+            break;
+        }
+    }
 
     let head_tree = git::base_tree(&repo, None)?;
     let head_entries = git::scoped_entries(&repo, &head_tree, &managed_path, &scope)?;
@@ -67,7 +75,7 @@ pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
     let staged = git::staged_changes(&repo, &managed_path, &scope)?;
     Ok(
         match (
-            local_changes.is_empty() && staged.is_empty(),
+            local_changes.is_empty() && staged.is_empty() && local_modes_match,
             source_drifted,
         ) {
             (true, false) => Status::Applied,

@@ -20,7 +20,7 @@ Options:
       --pull-only    Only pull upstream changes into the checkout
       --push-only    Only push local commits to the overlay source
       --continue     Re-attempt a sync after resolving conflicts manually
-      --abort        Abort an in-progress merge left by a conflicted sync
+      --abort        Abort an in-progress merge, discarding uncommitted tracked/index changes
   -n, --dry-run      Report what would happen without syncing
       --no-prompt    Never prompt to commit a virtual checkout's local changes; report them as blocked instead
   -h, --help         Print help
@@ -75,17 +75,28 @@ synced independently):
    algorithm. A conflicting merge leaves real conflict markers in the
    working tree and stops there (no push): resolve with ordinary `git add`
    / `git commit`, then re-run `over sync`, or run `over sync --abort` to
-   discard the in-progress merge (`git merge --abort` equivalent — your
-   own commits are never touched, only the failed merge attempt).
+   discard the in-progress merge. Abort hard-resets tracked working files and
+   the index to HEAD, including staged resolutions and edits made after the
+   conflict. It is not Git's more protective `merge --abort`. Other Git
+   operation states are refused; existing HEAD commits are not removed.
 3. Pushes the branch to `origin` if it ended up ahead.
 
 `--pull-only`/`--push-only` restrict this to one direction. `--dry-run`
 never performs any network I/O or mutation; it reports what's already
 known locally.
+Previews distinguish prospective merge/fast-forward and list candidate paths;
+a later fetch may reveal different upstream changes. For divergent branches,
+incoming candidates compare the merge base to cached upstream, preserving
+local-only additions in the preview; the eventual merge may still conflict.
+`--abort --dry-run` lists tracked/index changes that would be discarded and
+separately reports untracked/ignored obstructions that may be overwritten when
+restoring HEAD. Unrelated untracked files are not listed as discarded. The
+preview does not reset files or clear merge state.
 
 ### What declared Git sync never does
 
-- Touch a dirty working tree, even partially.
+- Pull into a dirty working tree or overwrite ignored/untracked obstructions.
+  Explicit `--abort` is the destructive exception for an in-progress merge.
 - Auto-resolve conflicts, rebase, or invent its own merge algorithm — git's
   own merge/rebase/conflict tooling is authoritative.
 - Synchronize nested (non-root) `git` entries (see above).
@@ -130,3 +141,7 @@ overlay from.
 
 `--dry-run` never prompts and never mutates anything for a virtual
 checkout either, matching its root-`Checkout` behavior above.
+Virtual refresh preserves existing access restrictions such as `0600`; Git's
+executable bit is applied without resetting private permissions to `0644`.
+See [Safety and recovery](safety.md) for the operation inventory and failure
+limitations.

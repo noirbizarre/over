@@ -135,7 +135,11 @@ Before changing mappings on an existing checkout, commit or resolve changes,
 unapply with the old configuration, change the mapping, and apply again.
 Ownership associations are not silently reused for different layouts. Review
 the plan with `over apply NAME --dry-run` when changing modes; `--force` does not
-bypass all ownership and data-preservation checks.
+bypass checkout disposal or ownership checks. Real checkout disposal requires
+confirmation or `--discard-checkout`, even when status is clean. Dirty virtual
+checkouts and independent mapped destinations remain protected under every flag.
+Checkout-to-recursive-link changes require unapplying the old layout first.
+See [Safety and recovery](../usage/safety.md) for the full contract.
 
 ## Migrating older descriptors
 

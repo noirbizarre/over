@@ -357,6 +357,7 @@ impl fmt::Display for StructuralChoice {
 }
 
 fn resolve_structural_conflict(ctx: &Ctx, target: &Path) -> Result<bool> {
+    super::fs::ensure_unprotected_target(target)?;
     if ctx.force {
         remove_target(target)?;
         return Ok(true);
@@ -511,18 +512,19 @@ fn write_target(
     data: impl AsRef<[u8]>,
     permissions: Option<FileMode>,
 ) -> Result<()> {
-    fs::write(target, data).with_context(|| format!("failed to write {}", target.display()))?;
-    #[cfg(unix)]
-    if let Some(mode) = permissions {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(target, fs::Permissions::from_mode(mode.bits()))
-            .with_context(|| format!("failed to set permissions on {}", target.display()))?;
-    }
-    // Permission bits aren't a meaningful concept to enforce here on
-    // non-unix platforms (see ADR-020) — `permissions` is simply unused.
-    #[cfg(not(unix))]
-    let _ = permissions;
-    Ok(())
+    super::fs::replace_file(target, data, |current| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.map_or(current, |mode| fs::Permissions::from_mode(mode.bits()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = permissions;
+            current
+        }
+    })
+    .with_context(|| format!("failed to write {}", target.display()))
 }
 
 #[async_trait]
@@ -914,6 +916,41 @@ mod tests {
             .no_prompt(no_prompt)
             .dry_run(dry_run)
             .build()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn partial_apply_and_block_removal_preserve_surviving_file_metadata() {
+        use std::os::unix::fs::MetadataExt;
+
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("shellrc");
+        let original = "export PRIVATE=keep\n";
+        fs::write(&target, original).unwrap();
+        xattr::set(&target, "user.over-regression", b"keep metadata").unwrap();
+        let before = fs::metadata(&target).unwrap();
+        EnsurePartialBlock::new(target.clone(), "m".to_string(), "alias x=y".to_string())
+            .execute(ctx_force(false, true, false))
+            .await
+            .unwrap();
+        assert_eq!(
+            xattr::get(&target, "user.over-regression").unwrap(),
+            Some(b"keep metadata".to_vec())
+        );
+        // Unapply uses this same writer; exercise the surviving-file removal
+        // path without changing the independently maintained unapply module.
+        let applied = fs::read_to_string(&target).unwrap();
+        super::super::fs::replace_file(&target, remove_block(&applied, "m"), |p| p).unwrap();
+        let after = fs::metadata(&target).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), original);
+        assert_eq!(
+            (after.uid(), after.gid(), after.mode()),
+            (before.uid(), before.gid(), before.mode())
+        );
+        assert_eq!(
+            xattr::get(&target, "user.over-regression").unwrap(),
+            Some(b"keep metadata".to_vec())
+        );
     }
 
     #[tokio::test]

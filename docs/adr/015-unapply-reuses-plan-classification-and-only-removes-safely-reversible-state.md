@@ -2,6 +2,18 @@
 
 **Status:** accepted
 
+## Safety amendment (#195)
+
+The historical clean-checkout/reversibility rationale below is superseded by
+the [current safety contract](../usage/safety.md). Clean Git status cannot prove
+recovery of ignored files, other refs, reflogs or local configuration. Real
+checkout disposal now uses a separate ownership assessment and requires explicit
+confirmation or `--discard-checkout`; `--no-prompt` alone preserves it. Ordinary
+force cannot authorize it, and no option overrides independent ownership or
+shared/external Git boundaries. Dirty virtual checkouts remain protected.
+Execution reports actual retained/removed outcomes. There is no general rollback
+or promise that reapply restores historical user data.
+
 ## Context
 
 Issue #64 asks for `over unapply`: a reverse reconciliation from an

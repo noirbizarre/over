@@ -167,6 +167,11 @@ Failed materialization runs no post-apply hooks. A hook failure leaves completed
 filesystem changes and hook effects in place. Apply retries run hooks from the
 beginning, so write retry-safe commands.
 
+Hook commands are outside Over's managed-filesystem recovery guarantees.
+Force/no-prompt flags do not suppress hooks or make child processes
+non-interactive. Install scripts and package managers have their own effects
+and prompt policies too; see [Safety and recovery](../usage/safety.md).
+
 Init preserves a checkout after failure. Retrying an existing checkout runs only
 post-init: recover a failed post-clone manually, or put repeatable setup in
 post-init so `over init` can retry it.

@@ -1238,7 +1238,7 @@ fn sync_dry_run_reports_without_mutating() -> TestResult {
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success()
-        .stdout(contains("up to date"));
+        .stdout(contains("would leave unchanged"));
     Ok(())
 }
 
@@ -1268,7 +1268,7 @@ fn legacy_symlink_only_installation_migrates_to_checkout_with_no_prior_xdg_state
     // Simulate what a pre-rules/pre-checkout `over` left behind at this
     // same target root: content recursed and symlinked file by file, with
     // no `.git` and no XDG state ever written for it.
-    let legacy_source = canonical_tmp.join("legacy_source");
+    let legacy_source = canonical_tmp.join("legacy");
     fs::create_dir_all(legacy_source.join("sub"))?;
     fs::write(legacy_source.join("a.txt"), "a")?;
     fs::write(legacy_source.join("sub/b.txt"), "b")?;
@@ -1294,13 +1294,19 @@ fn legacy_symlink_only_installation_migrates_to_checkout_with_no_prior_xdg_state
         target.join(".git").exists(),
         "legacy install should have been migrated to a checkout"
     );
-    assert!(
-        !target.join("a.txt").is_symlink(),
-        "legacy symlinks should be gone, replaced by the checkout"
+    // Source-owned overlay entries are reapplied after the clone; their
+    // locations survive as links while repository content is provisioned.
+    assert_eq!(
+        fs::read_link(target.join("a.txt"))?,
+        legacy_source.join("a.txt")
     );
-    assert!(
-        !target.join("sub/b.txt").is_symlink(),
-        "legacy symlinks should be gone, replaced by the checkout"
+    assert_eq!(
+        fs::read_link(target.join("sub/b.txt"))?,
+        legacy_source.join("sub/b.txt")
+    );
+    assert_eq!(
+        git2::Repository::open(&target)?.head()?.target(),
+        git2::Repository::open(&origin)?.head()?.target()
     );
     Ok(())
 }

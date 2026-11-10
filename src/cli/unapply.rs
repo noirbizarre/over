@@ -29,6 +29,15 @@ pub struct Params {
         help = "Report what would be removed without removing anything"
     )]
     dry_run: bool,
+
+    #[clap(
+        long,
+        help = "Discard owned real checkouts, including local files and Git history"
+    )]
+    discard_checkout: bool,
+
+    #[clap(long, help = "Leave risky checkouts untouched instead of prompting")]
+    no_prompt: bool,
 }
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
@@ -46,6 +55,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let ctx = Context::builder()
         .dry_run(args.dry_run)
+        .discard_checkout(args.discard_checkout)
+        .no_prompt(args.no_prompt)
         .debug(cli.debug)
         .verbose(cli.verbose)
         .root(root)
@@ -72,11 +83,20 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     // entries is left to explicitly unapplying it by name.
     let desired = DesiredTree::build_own(&ctx, &overlay)?;
     let report = Report::build(&desired)?;
+    let report = if ctx.dry_run {
+        report.execute(ctx.clone()).await?
+    } else {
+        report
+    };
 
     ui::info(format!(
         "{} {} {} {} {}",
         emojis::PACKAGE,
-        style::white_b("Overlay"),
+        style::white_b(if ctx.dry_run {
+            "Unapply preview for overlay"
+        } else {
+            "Overlay"
+        }),
         style::cyan(&overlay.name),
         style::white_b("->"),
         style::cyan(&short_path(&target.to_string_lossy())),
@@ -91,7 +111,13 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
     ui::info("").ok();
 
-    report.execute(ctx.clone()).await?;
+    let report = report.execute(ctx.clone()).await?;
+    if !ctx.dry_run {
+        ui::info("Unapply results:").ok();
+        for outcome in report.entries() {
+            ui::info(format!("  {outcome}")).ok();
+        }
+    }
 
     // #147: this overlay's own entries are unapplied — remove its exclude
     // block from every repo `desired` says it touched, reusing the same
@@ -133,6 +159,8 @@ mod tests {
             name: name.map(String::from),
             root: Some(root),
             dry_run,
+            discard_checkout: false,
+            no_prompt: true,
         }
     }
 

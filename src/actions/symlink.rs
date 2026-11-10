@@ -8,7 +8,7 @@ use async_trait::async_trait;
 
 use noyalib::compat::serde_yaml as serde_yml;
 use serde::{Deserialize, Serialize};
-use symlink::{remove_symlink_dir, remove_symlink_file, symlink_dir, symlink_file};
+use symlink::{symlink_dir, symlink_file};
 
 use crate::exec::{Action, Context, Ctx, MachineInfo};
 use crate::ui::{emojis, style};
@@ -65,22 +65,7 @@ impl fmt::Display for EnsureSymlink {
     }
 }
 
-fn remove_target(target: &Path) -> Result<()> {
-    if target.is_symlink() {
-        if target.is_dir() {
-            remove_symlink_dir(target)?;
-        } else {
-            remove_symlink_file(target)?;
-        }
-    } else if target.is_dir() {
-        fs::remove_dir_all(target)?;
-    } else {
-        fs::remove_file(target)?;
-    }
-    Ok(())
-}
-
-fn resolve_conflict(source: &Path, target: &Path) -> Result<bool> {
+fn resolve_conflict(ctx: &Ctx, source: &Path, target: &Path, is_dir: bool) -> Result<bool> {
     if target.is_symlink() {
         let existing = fs::read_link(target)?;
         if existing == source {
@@ -88,9 +73,19 @@ fn resolve_conflict(source: &Path, target: &Path) -> Result<bool> {
         }
     }
     if target.exists() || target.is_symlink() {
-        remove_target(target)?;
+        return if is_dir {
+            super::fs::resolve_dir_conflict(ctx, source, target)
+        } else {
+            super::fs::resolve_file_conflict(ctx, source, target)
+        };
     }
     Ok(true)
+}
+
+pub(crate) fn hard_link_matches(source: &Path, target: &Path) -> Result<bool> {
+    // Byte equality cannot establish ownership; never follow a target symlink
+    // while deciding whether an ordinary file is our existing hard link.
+    Ok(fs::symlink_metadata(target)?.is_file() && same_file::is_same_file(source, target)?)
 }
 
 #[async_trait]
@@ -106,7 +101,11 @@ impl Action for EnsureSymlink {
         let is_dir = self.is_dir;
 
         tokio::task::spawn_blocking(move || -> Result<()> {
-            let should_link = resolve_conflict(&source, &target)?;
+            if matches!(link_type, LinkType::Hard) && target.is_file()
+                && hard_link_matches(&source, &target)? {
+                return Ok(());
+            }
+            let should_link = resolve_conflict(&ctx, &source, &target, is_dir)?;
             if !should_link {
                 return Ok(());
             }
@@ -573,7 +572,7 @@ mod tests {
         fs::write(&wrong_source, "wrong").unwrap();
         symlink_file(&wrong_source, &target).unwrap();
 
-        let ctx = crate::exec::Context::builder().build();
+        let ctx = crate::exec::Context::builder().force(true).build();
         let action = EnsureSymlink::new(source.clone(), target.clone(), LinkType::Soft, false);
         action.execute(ctx).await.unwrap();
 
@@ -589,7 +588,7 @@ mod tests {
         fs::write(&source, "hello").unwrap();
         fs::write(&target, "existing").unwrap();
 
-        let ctx = crate::exec::Context::builder().build();
+        let ctx = crate::exec::Context::builder().force(true).build();
         let action = EnsureSymlink::new(source.clone(), target.clone(), LinkType::Soft, false);
         action.execute(ctx).await.unwrap();
 
@@ -606,7 +605,7 @@ mod tests {
         fs::write(source.join("file.txt"), "hello").unwrap();
         fs::create_dir_all(&target).unwrap();
 
-        let ctx = crate::exec::Context::builder().build();
+        let ctx = crate::exec::Context::builder().force(true).build();
         let action = EnsureSymlink::new(source.clone(), target.clone(), LinkType::Soft, true);
         action.execute(ctx).await.unwrap();
 
@@ -640,7 +639,7 @@ mod tests {
         fs::create_dir_all(&wrong_source).unwrap();
         symlink_dir(&wrong_source, &target).unwrap();
 
-        let ctx = crate::exec::Context::builder().build();
+        let ctx = crate::exec::Context::builder().force(true).build();
         let action = EnsureSymlink::new(source.clone(), target.clone(), LinkType::Soft, true);
         action.execute(ctx).await.unwrap();
 
