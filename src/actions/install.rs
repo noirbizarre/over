@@ -2246,7 +2246,8 @@ post = 'echo "after apt"'
                 "~" => root,
                 "~/crates/tool" => root.join("crates/tool"),
                 "absolute" => absolute.clone(),
-                _ => td.path().join(path),
+                // Descriptor loading rebuilds components with native separators on Windows.
+                _ => td.path().join(path).components().collect(),
             };
             COMMANDS.with_borrow_mut(|commands| *commands = Some(Vec::new()));
             let packages = get_cargo_packages(&ctx, &overlay, &mut HashSet::new())
