@@ -17,7 +17,7 @@ sources via `config::File::with_name(basename)` with no extension, and the
 `config` crate probes every registered extension (`over.toml`, `over.yaml`,
 `over.yml`) itself. `Format` (`src/overlays/mod.rs`) and `Repository::
 preferred_format()` only decide which extension `over new` **writes** — see
-[Configuration](../configuration.md#format-preference).
+[Format preference](../configuration/root.md#format-preference).
 
 ## Consequences
 

@@ -24,10 +24,10 @@ Options:
 ```
 
 When `NAME` is omitted, a configured `default_overlay` (see
-[Default Overlay Selection](../configuration.md#default-overlay-selection))
+[Default overlay selection](../configuration/root.md#default-overlay-selection))
 narrows the report to that overlay; pass `--all` to select every overlay.
 Explicit `NAME` and `--all` retain the configured default's
-[data context](../configuration.md#consumer-metadata-data). Each target resolves
+[data context](../configuration/overlay.md#consumer-metadata-data). Each target resolves
 its own metadata separately. `--no-uses` skips dependency entries, not their data.
 
 `--all` selects overlays; `--all-changes` selects both change views. The

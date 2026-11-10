@@ -1,10 +1,5 @@
 # `over log`
 
-An explicitly named overlay includes all its virtual checkout units,
-including mapped directories. Current-directory inference selects the actual
-owning unit, including destinations outside the base target. A residual
-checkout's history excludes its independently mapped source directories.
-
 Show the git history behind a
 [virtual checkout](../adr/022-virtual-checkout-materialization.md)-materialized
 overlay — including commits made via [`over commit`](commit.md) — without
@@ -28,6 +23,11 @@ Options:
 ```
 
 ## Scope
+
+An explicitly named overlay includes all its virtual checkout units,
+including mapped directories. Current-directory inference selects the actual
+owning unit, including destinations outside the base target. A residual
+checkout's history excludes its independently mapped source directories.
 
 - With an overlay name or `--overlay NAME`: shows commits touching that
   overlay's managed paths. Errors if the named overlay isn't

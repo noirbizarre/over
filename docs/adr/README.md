@@ -10,6 +10,10 @@ why. A record that only states the outcome saves nobody the argument.
 A decision is changed by writing a new ADR that supersedes the old one, never
 by editing the old one. The history is the value.
 
+These records include historical and superseded behavior. For current user-facing
+semantics, use the [configuration reference](../configuration.md) and
+[command reference](../usage/index.md).
+
 ## Format
 
 `NNN-kebab-case-title.md`, numbered in the order written, with the sections:
