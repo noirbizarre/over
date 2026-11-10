@@ -565,11 +565,11 @@ mod tests {
                 format!(
                     "{}|{}",
                     invocation.join("repository").display(),
-                    invocation.join("deployment/dest").display()
+                    invocation.join("deployment").join("dest").display()
                 )
             );
             let routing = overlay.resolve_mappings(&ctx).unwrap();
-            assert_eq!(routing.base, invocation.join("deployment/dest"));
+            assert_eq!(routing.base, invocation.join("deployment").join("dest"));
             return;
         }
         let td = assert_fs::TempDir::new().unwrap();

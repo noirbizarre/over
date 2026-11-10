@@ -747,17 +747,18 @@ fn every_hook_field_and_sidecar_uses_the_current_overlays_shared_paths() {
     let fixture = Fixture::new();
     let home = fixture._temp.path().join("actual home ü");
     fs::create_dir(&home).unwrap();
+    // Shell cwd may use /private/var on macOS while template paths retain /var.
     fixture.config("over.yaml", json!({
         "target": "~/{{ overlay.name }}",
         "hooks": {"post-apply": [{
-            "command": "test '{{ paths.target }}' = \"$OVER_OVERLAY_TARGET\" && test \"$PWD\" = \"$DEST\" && test \"$USER_HOME\" = \"$HOME\" && test '{{ paths.over }}' = \"$OVER_REPOSITORY_ROOT\" && echo root >> \"$HOOK_TRACE\"",
+            "command": "test '{{ paths.target }}' = \"$OVER_OVERLAY_TARGET\" && test \"$PWD\" -ef \"$DEST\" && test \"$USER_HOME\" = \"$HOME\" && test '{{ paths.over }}' = \"$OVER_REPOSITORY_ROOT\" && echo root >> \"$HOOK_TRACE\"",
             "when": "paths.target == env.TEST_TARGET + '/selected' and paths.home == env.HOME",
             "env": {"DEST": "{{ paths.target }}", "USER_HOME": "{{ paths.home }}"},
             "cwd": "{{ paths.target }}"
         }]}
     }));
     let hook = json!({
-        "command": "test '{{ paths.target }}' = \"$OVER_OVERLAY_TARGET\" && test \"$PWD\" = \"$DEST\" && test \"$USER_HOME\" = \"$HOME\" && test '{{ paths.over }}' = \"$OVER_REPOSITORY_ROOT\" && printf '%s\\n' '{{ overlay.name }}' >> \"$HOOK_TRACE\"",
+        "command": "test '{{ paths.target }}' = \"$OVER_OVERLAY_TARGET\" && test \"$PWD\" -ef \"$DEST\" && test \"$USER_HOME\" = \"$HOME\" && test '{{ paths.over }}' = \"$OVER_REPOSITORY_ROOT\" && printf '%s\\n' '{{ overlay.name }}' >> \"$HOOK_TRACE\"",
         "when": "paths.target == env.TEST_TARGET + '/' + overlay.name and paths.home == env.HOME",
         "env": {"DEST": "{{ paths.target }}", "USER_HOME": "{{ paths.home }}"},
         "cwd": "{{ paths.target }}"
