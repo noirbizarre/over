@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   build:
-    name: 🏗️ Build
+    name: 📝 Build documentation
     runs-on: ubuntu-latest
     # Redundant pushes to the same PR/branch should cancel their predecessor's
     # build — this is a fast check, not a deploy, so nothing needs the strict
@@ -48,7 +48,7 @@ jobs:
           path: site
 
   deploy:
-    name: 🚀 Deploy
+    name: 🌐 Publish documentation
     needs: build
     # Never deploy from a pull_request event — including from forks, which
     # get no `pages`/`id-token` write access from GitHub regardless of what's
