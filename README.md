@@ -38,6 +38,9 @@ checkouts, or managed blocks to fit your workflow.
 brew install noirbizarre/tap/over
 ```
 
+The formula provides macOS amd64/arm64 and Linux amd64 binaries. For Linux
+arm64, use the glibc release artifact listed below.
+
 ### Arch Linux (AUR)
 
 ```sh
@@ -61,8 +64,14 @@ cargo binstall over
 Download a binary for your platform from the
 [latest release](https://github.com/noirbizarre/over/releases/latest).
 
-**Supported platforms:** Linux (amd64/arm64, glibc or musl) and macOS
-(amd64/arm64 — Intel and Apple Silicon).
+**Release artifacts:**
+
+| Platform | Architectures | Runtime variant |
+| --- | --- | --- |
+| Linux | amd64 | glibc or musl |
+| Linux | arm64 | glibc |
+| macOS | amd64/arm64 (Intel and Apple Silicon) | native |
+| Windows | amd64 | MSVC |
 
 ## Quickstart
 
