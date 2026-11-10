@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "name": "Over Dotfiles",
     "description": "Apply dotfiles overlays using over, a git-based files overlay manager",
-    "documentationURL": "https://github.com/noirbizarre/over",
+    "documentationURL": "https://github.com/noirbizarre/over/tree/main/features/dotfiles",
     "licenseURL": "https://github.com/noirbizarre/over/blob/main/LICENSE",
     "keywords": [
         "dotfiles",
@@ -15,17 +15,17 @@
     "options": {
         "overlay": {
             "type": "string",
-            "description": "Name of the overlay to apply",
+            "description": "Overlay to apply without prompting or forcing conflicts (empty skips apply)",
             "default": ""
         },
         "repository": {
             "type": "string",
-            "description": "Git repository URL to clone as the dotfiles repository",
+            "description": "Git source to initialize; existing checkouts are reused without pulling (empty uses a mounted repository)",
             "default": ""
         },
         "overHome": {
             "type": "string",
-            "description": "Path for OVER_HOME in the container",
+            "description": "Source repository path; ~ resolves to the lifecycle user's home",
             "default": "~/.dotfiles"
         },
         "version": {
