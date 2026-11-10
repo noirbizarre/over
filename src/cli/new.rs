@@ -135,7 +135,11 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     // Absorb selected files/directories
     if !files_to_absorb.is_empty() {
-        let overlay = repo.get(&path)?;
+        let overlay = if args.dry_run {
+            prospective_overlay(&repo, &overlay_root, descriptor_target, &git_entries)?
+        } else {
+            repo.get(&path)?
+        };
         let ctx = Context::builder()
             .dry_run(args.dry_run)
             .debug(cli.debug)
@@ -173,6 +177,33 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     .ok();
 
     Ok(())
+}
+
+/// Retain inherited policy and origins without requiring the preview directory to exist.
+fn prospective_overlay(
+    repo: &Repository,
+    root: &Path,
+    target: Option<&str>,
+    git_entries: &HashMap<String, String>,
+) -> Result<crate::overlays::Overlay> {
+    let mut overlay = crate::overlays::Overlay::new(repo, root)?;
+    if let Some(target) = target {
+        overlay.target = target.to_owned();
+        overlay.target_origin = root.to_path_buf();
+    }
+    // Parse the same planned declarations so preview staging sees the new Git units too.
+    if !git_entries.is_empty() {
+        let planned = Config::builder()
+            .add_source(File::from_str(
+                &build_toml_descriptor(None, git_entries),
+                FileFormat::Toml,
+            ))
+            .build()?;
+        overlay.git.get_or_insert_default().extend(
+            planned.get::<HashMap<String, crate::actions::git::config::GitRepoConfig>>("git")?,
+        );
+    }
+    Ok(overlay)
 }
 
 /// Walk the target directory, categorise entries, and prompt the user to
@@ -341,6 +372,52 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[tokio::test]
+    async fn preview_absorbs_selected_files_with_inherited_mappings_without_writing() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("repo");
+        let target = temp.path().join("target");
+        let mapped = temp.path().join("mapped");
+        fs::create_dir(&home).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&mapped).unwrap();
+        fs::write(
+            home.join("over.toml"),
+            format!(
+                "target = '{}'\n[map.'ov/config']\ntarget = '{}'\n",
+                target.display(),
+                mapped.display()
+            ),
+        )
+        .unwrap();
+        let file = mapped.join("settings");
+        fs::write(&file, "original").unwrap();
+        let regular = target.join("plain");
+        fs::write(&regular, "regular").unwrap();
+        let repo = Repository::new(home.clone());
+        let overlay =
+            prospective_overlay(&repo, &home.join("ov"), Some("~/target"), &HashMap::new())
+                .unwrap();
+        assert_eq!(overlay.target, "~/target");
+        let ctx = Context::builder()
+            .repository(repo)
+            .root(temp.path().to_path_buf())
+            .overlay(overlay.clone())
+            .dry_run(true)
+            .build();
+        overlay
+            .add_files(
+                &ctx.resolve_data().unwrap(),
+                &[file.clone(), regular.clone()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(file).unwrap(), "original");
+        assert_eq!(fs::read_to_string(regular).unwrap(), "regular");
+        assert!(!home.join("ov").exists());
+        assert_eq!(fs::read_dir(&home).unwrap().count(), 1);
+    }
 
     // `~` expansion itself is exercised by `common::expand_tilde`'s own
     // tests (`cli/common.rs`) — this module no longer reimplements it, so
