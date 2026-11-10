@@ -88,6 +88,11 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     if args.install {
         overlay.validate_apply(&ctx)?;
+        crate::materialize::encrypted::prepare(
+            &crate::desired::DesiredTree::build(&ctx, &overlay)?,
+            &ctx,
+        )
+        .await?;
         actions::install::install(&ctx, &overlay).await?;
     }
 

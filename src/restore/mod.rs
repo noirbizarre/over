@@ -81,6 +81,10 @@ fn restore_blocking(
     let mut associations = Vec::new();
     for input in paths {
         let logical = routing.logical_path_for(input)?;
+        ensure!(
+            !crate::secrets::is_encrypted(&logical),
+            "encrypted checkout restore is unsupported"
+        );
         let target = routing.target_for(&logical);
         if !checked.insert(target.clone()) {
             continue;

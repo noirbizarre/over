@@ -89,6 +89,10 @@ pub(crate) fn honors_filemode(repo: &git2::Repository) -> Result<bool> {
 }
 
 pub(crate) fn target_content(root: &Path, relative: &Path) -> Result<Option<(Vec<u8>, i32)>> {
+    ensure!(
+        !crate::secrets::is_encrypted(relative),
+        "encrypted virtual-checkout paths are unsupported"
+    );
     let file = root.join(relative);
     let mut path = root.to_path_buf();
     // Inspect the root too: a replaced checkout root must not redirect reads.

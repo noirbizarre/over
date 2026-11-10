@@ -61,12 +61,9 @@ impl CheckoutScope {
 /// What kind of filesystem node a [`DesiredEntry`] should be, independent of
 /// *how* it gets there (see [`MaterializationIntent`]).
 ///
-/// `File` is produced by [`MaterializationIntent::PartialFile`] (#66):
-/// managed-block content written into an existing file. Rendered/templated
-/// whole-file content (#61) is a separate, still-unimplemented concern —
-/// symlink-first apply (ADR-006, ADR-010) otherwise never writes real file
-/// content, so today only `Directory`, `Symlink`, and the `PartialFile` case
-/// of `File` are reachable.
+/// `File` represents partial blocks and decrypted whole files. Content
+/// templating remains a separate concern (#61); encrypted entries carry
+/// recipes rather than plaintext so plans and diagnostics cannot disclose it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
     Directory,
@@ -83,6 +80,8 @@ pub enum EntryKind {
 /// rather than an implicit delete/recreate).
 #[derive(Debug, Clone)]
 pub enum MaterializationIntent {
+    /// A plaintext-free recipe; content is authenticated only when needed.
+    EncryptedFile(crate::secrets::EncryptedFile),
     /// Plain `mkdir` for a directory scaffold.
     Directory,
     /// Symlink a single file from `source` (file-level materialization).
@@ -150,7 +149,9 @@ impl MaterializationIntent {
             | MaterializationIntent::ScopedVirtualCheckout(_) => EntryKind::Directory,
             MaterializationIntent::SymlinkFile { .. }
             | MaterializationIntent::SymlinkDirectory { .. } => EntryKind::Symlink,
-            MaterializationIntent::PartialFile { .. } => EntryKind::File,
+            MaterializationIntent::PartialFile { .. } | MaterializationIntent::EncryptedFile(_) => {
+                EntryKind::File
+            }
         }
     }
 }
@@ -200,7 +201,7 @@ pub struct DesiredEntry {
     pub intent: MaterializationIntent,
     /// Desired permissions resolved from scalar baselines and shared rules —
     /// see [`crate::overlays::Overlay::permission_for`].
-    /// `None` for every intent except [`MaterializationIntent::PartialFile`]:
+    /// Used by partial files and encrypted whole files. Other intents leave it `None`:
     /// symlinked entries share their overlay source's inode (there is no
     /// independent target permission to set without mutating that source,
     /// out of scope for #65 — see ADR-020), and `Directory`/`Checkout`

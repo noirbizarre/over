@@ -35,6 +35,8 @@ use crate::utils::short_path;
 /// matching the minimum set called for by #12.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
+    /// Encrypted content has not been verified because the credential is unavailable.
+    Locked,
     /// Target matches desired intent — nothing to do. For a declared
     /// (non-root) `git` entry (#140, ADR-021), this means the repository
     /// is present and its declared configuration (url/tag/rev/remotes/git
@@ -84,6 +86,7 @@ impl fmt::Display for EntryStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let target = short_path(&self.entry.target.to_string_lossy());
         match &self.status {
+            Status::Locked => write!(f, "locked: {target} (set OVER_SECRET to verify)")?,
             Status::Applied => write!(
                 f,
                 "{} {} {}",
@@ -169,6 +172,7 @@ fn file_change_symbol(
 /// declared.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
+    pub locked: usize,
     pub applied: usize,
     pub missing: usize,
     pub modified: usize,
@@ -193,7 +197,11 @@ impl fmt::Display for Counts {
             self.ahead,
             self.behind,
             self.diverged,
-        )
+        )?;
+        if self.locked > 0 {
+            write!(f, ", {} locked", self.locked)?;
+        }
+        Ok(())
     }
 }
 
@@ -222,6 +230,7 @@ impl Report {
         let mut entries = Vec::with_capacity(plan.len());
         for step in plan.steps() {
             let status = match (&step.entry.intent, &step.operation) {
+                (_, Operation::NeedsUnlock) => Status::Locked,
                 (MaterializationIntent::Checkout, _) => git::inspect(&step.entry)?,
                 (
                     MaterializationIntent::VirtualCheckout
@@ -287,6 +296,7 @@ impl Report {
         let mut counts = Counts::default();
         for e in &self.entries {
             match e.status {
+                Status::Locked => counts.locked += 1,
                 Status::Applied => counts.applied += 1,
                 Status::Missing => counts.missing += 1,
                 Status::Modified => counts.modified += 1,
@@ -340,6 +350,7 @@ pub(crate) fn classify_noop(intent: &MaterializationIntent) -> Status {
 /// taxonomy, ADR-013); this is a full phrase, not a single word.
 pub(crate) fn describe(status: &Status) -> String {
     match status {
+        Status::Locked => "requires unlocking to verify encrypted content".to_string(),
         Status::Applied => "is applied".to_string(),
         Status::Missing => "is missing".to_string(),
         Status::Modified => "has uncommitted changes".to_string(),
@@ -609,6 +620,7 @@ mod tests {
         assert_eq!(
             counts,
             Counts {
+                locked: 0,
                 applied: 1,
                 missing: 1,
                 modified: 1,
@@ -778,6 +790,7 @@ mod tests {
     #[test]
     fn counts_display_lists_every_status() {
         let counts = Counts {
+            locked: 9,
             applied: 1,
             missing: 2,
             modified: 3,
@@ -796,6 +809,7 @@ mod tests {
         assert!(s.contains("6 ahead"));
         assert!(s.contains("7 behind"));
         assert!(s.contains("8 diverged"));
+        assert!(s.contains("9 locked"));
     }
 
     // ── exclude_problems: #148 ──────────────────────────────────────────

@@ -103,6 +103,8 @@ strip = true
 # favour of the project if `git tpl update` ever touches it.
 
 [dependencies]
+age = { version = "0.12", default-features = false, features = ["armor"] }
+zeroize = "1"
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }
 dirs = "7.0"
 etcetera = "0.11"

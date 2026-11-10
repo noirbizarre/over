@@ -121,12 +121,17 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     // #147: this overlay's own entries are unapplied — remove its exclude
     // block from every repo `desired` says it touched, reusing the same
-    // `desired` tree `Report::build` used above. Unconditional: even when
-    // some entries were left in place (`Outcome::NotOwned`/
-    // `CheckoutNotClean`, checked below), nothing in this overlay's block
-    // is "managed" by `over` any more once unapply has run over it. Skipped
-    // under `--dry-run` (nothing was actually removed to unexclude).
-    if !ctx.dry_run {
+    // `desired` tree `Report::build` used above. Retained plaintext is the
+    // exception: keep its exclusion rather than exposing it to accidental staging.
+    // Dry-run must not alter either block.
+    if !ctx.dry_run
+        && !report.entries().iter().any(|outcome| {
+            matches!(
+                outcome.entry.intent,
+                crate::desired::MaterializationIntent::EncryptedFile(_)
+            ) && !matches!(outcome.outcome, Outcome::Removed | Outcome::AlreadyAbsent)
+        })
+    {
         git_exclude::unreconcile_desired(&desired).with_context(|| {
             format!(
                 "failed to remove git excludes for overlay '{}'",

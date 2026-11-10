@@ -102,6 +102,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .await?;
     }
 
+    crate::secrets::validate_ingestion(&ctx, &overlay, &resolved)?;
     let (symlinks, regulars): (Vec<_>, Vec<_>) = resolved.iter().partition(|p| p.is_symlink());
 
     // Validate the entire selection before the first prompt can publish a declaration.

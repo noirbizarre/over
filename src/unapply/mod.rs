@@ -38,6 +38,8 @@ use crate::utils::short_path;
 /// `DesiredTree`/[`Plan`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
+    /// Ownership cannot be verified without the Age credential.
+    NeedsUnlock,
     /// Target still matches exactly what this overlay would materialize
     /// there — safe to remove (or already removed, under `--dry-run`).
     Removed,
@@ -68,7 +70,8 @@ impl Outcome {
     pub fn needs_attention(&self) -> bool {
         matches!(
             self,
-            Outcome::NotOwned { .. }
+            Outcome::NeedsUnlock
+                | Outcome::NotOwned { .. }
                 | Outcome::CheckoutNotClean { .. }
                 | Outcome::CheckoutDisposal { .. }
         )
@@ -81,6 +84,7 @@ impl Outcome {
 /// into that module's formatting.
 fn status_word(status: &Status) -> String {
     match status {
+        Status::Locked => "locked".to_string(),
         Status::Applied => "applied".to_string(),
         Status::Missing => "missing".to_string(),
         Status::Modified => "modified".to_string(),
@@ -103,6 +107,9 @@ impl fmt::Display for EntryOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let target = short_path(&self.entry.target.to_string_lossy());
         match &self.outcome {
+            Outcome::NeedsUnlock => {
+                write!(f, "locked: {target} (retained; unlock to verify ownership)")
+            }
             Outcome::Removed => write!(
                 f,
                 "{} {} {}{}",
@@ -152,6 +159,7 @@ impl fmt::Display for EntryOutcome {
 /// declared.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
+    pub locked: usize,
     /// Removed entries/projections, including those whose container remains.
     pub removed: usize,
     pub already_absent: usize,
@@ -165,7 +173,11 @@ impl fmt::Display for Counts {
             f,
             "{} to remove, {} already absent, {} not owned, {} checkout(s) need attention",
             self.removed, self.already_absent, self.not_owned, self.checkout_needs_attention,
-        )
+        )?;
+        if self.locked > 0 {
+            write!(f, ", {} locked", self.locked)?;
+        }
+        Ok(())
     }
 }
 
@@ -192,6 +204,7 @@ impl Report {
         let mut entries = Vec::with_capacity(plan.len());
         for step in plan.steps() {
             let outcome = match (&step.entry.intent, &step.operation) {
+                (_, Operation::NeedsUnlock) => Outcome::NeedsUnlock,
                 (MaterializationIntent::Checkout, _) => {
                     if !step.entry.target.exists() && !step.entry.target.is_symlink() {
                         Outcome::AlreadyAbsent
@@ -271,6 +284,7 @@ impl Report {
                     counts.removed += 1
                 }
                 Outcome::AlreadyAbsent => counts.already_absent += 1,
+                Outcome::NeedsUnlock => counts.locked += 1,
                 Outcome::NotOwned { .. } => counts.not_owned += 1,
                 Outcome::CheckoutNotClean { .. } => counts.checkout_needs_attention += 1,
                 Outcome::CheckoutDisposal { .. } => counts.checkout_needs_attention += 1,
@@ -321,8 +335,37 @@ impl Report {
             return Ok(preview);
         }
         let mut executed = self.clone();
+        // Unlock all selected existing files before any sibling removal can occur.
+        for entry in &executed.entries {
+            if let MaterializationIntent::EncryptedFile(recipe) = &entry.entry.intent
+                && !matches!(entry.outcome, Outcome::AlreadyAbsent)
+            {
+                let recipe = recipe.clone();
+                let prompt = !ctx.no_prompt;
+                spawn_blocking(move || recipe.read(prompt)).await??;
+            }
+        }
         for (entry_outcome, guard) in executed.entries.iter_mut().zip(&executed.guards).rev() {
             guard.verify()?;
+            if matches!(
+                entry_outcome.entry.intent,
+                MaterializationIntent::EncryptedFile(_)
+            ) {
+                use crate::materialize::Materializer;
+                let entry = entry_outcome.entry.clone();
+                let operation = spawn_blocking(move || {
+                    crate::materialize::encrypted::EncryptedFileMaterializer.classify(&entry)
+                })
+                .await??;
+                entry_outcome.outcome = match operation {
+                    Operation::Noop | Operation::Repair { .. } => Outcome::Removed,
+                    Operation::Create => Outcome::AlreadyAbsent,
+                    Operation::NeedsUnlock => Outcome::NeedsUnlock,
+                    _ => Outcome::NotOwned {
+                        current: actual::inspect(&entry_outcome.entry.target)?,
+                    },
+                };
+            }
             if matches!(entry_outcome.entry.intent, MaterializationIntent::Checkout)
                 && matches!(entry_outcome.outcome, Outcome::CheckoutDisposal { .. })
             {
@@ -348,7 +391,8 @@ impl Report {
                     entry_outcome.outcome = Outcome::RetainedDirectory;
                 } else if matches!(
                     entry_outcome.entry.intent,
-                    MaterializationIntent::SymlinkFile { .. }
+                    MaterializationIntent::EncryptedFile(_)
+                        | MaterializationIntent::SymlinkFile { .. }
                         | MaterializationIntent::SymlinkDirectory { .. }
                 ) && (target.exists() || target.is_symlink())
                 {
@@ -398,6 +442,20 @@ impl Report {
 /// call `status::git`/`actions::git` directly for what they need).
 async fn dematerialize(entry: &DesiredEntry) -> Result<()> {
     match &entry.intent {
+        MaterializationIntent::EncryptedFile(_) => {
+            let entry = entry.clone();
+            spawn_blocking(move || -> Result<()> {
+                use crate::materialize::Materializer;
+                if matches!(
+                    crate::materialize::encrypted::EncryptedFileMaterializer.classify(&entry)?,
+                    Operation::Noop | Operation::Repair { .. }
+                ) {
+                    fs::remove_file(&entry.target)?;
+                }
+                Ok(())
+            })
+            .await?
+        }
         MaterializationIntent::Directory => remove_dir_if_empty(entry.target.clone()).await,
         MaterializationIntent::SymlinkFile {
             source,
@@ -1573,6 +1631,7 @@ mod tests {
     #[rstest]
     fn counts_display_lists_every_outcome() {
         let counts = Counts {
+            locked: 5,
             removed: 1,
             already_absent: 2,
             not_owned: 3,
@@ -1583,6 +1642,7 @@ mod tests {
         assert!(s.contains("2 already absent"));
         assert!(s.contains("3 not owned"));
         assert!(s.contains("4 checkout(s) need attention"));
+        assert!(s.contains("5 locked"));
     }
 
     #[test]

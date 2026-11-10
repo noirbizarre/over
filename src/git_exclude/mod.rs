@@ -195,7 +195,7 @@ fn overlay_name(provenance: &Provenance) -> &str {
 /// Filter `desired`'s entries down to the ones this module is responsible
 /// for excluding — the "narrowest-path rule" from #146.
 ///
-/// Only `SymlinkFile`, `SymlinkDirectory`, `Checkout`, and
+/// `EncryptedFile`, `SymlinkFile`, `SymlinkDirectory`, `Checkout`, and
 /// `VirtualCheckout` qualify: each maps to exactly one artifact rooted at
 /// `entry.target` (a single symlink, or a whole checkout/subtree), so
 /// `entry.target` alone is the line to exclude — no filesystem walk
@@ -212,6 +212,7 @@ pub fn managed_targets(desired: &DesiredTree) -> Result<Vec<ManagedTarget>> {
             matches!(
                 entry.intent,
                 MaterializationIntent::SymlinkFile { .. }
+                    | MaterializationIntent::EncryptedFile(_)
                     | MaterializationIntent::SymlinkDirectory { .. }
                     | MaterializationIntent::Checkout
                     | MaterializationIntent::VirtualCheckout
@@ -285,6 +286,24 @@ fn discover_enclosing_repo(target: &Path) -> Result<Option<Repository>> {
     discover_repo_at(start)
 }
 
+/// Excludes cannot protect an already tracked plaintext destination.
+pub(crate) fn ensure_sensitive_target_untracked(target: &Path) -> Result<()> {
+    if let Some(repo) = discover_enclosing_repo(target)? {
+        let workdir = repo
+            .workdir()
+            .context("encrypted destination repository has no worktree")?;
+        let target = crate::overlays::mapping::location(target)?;
+        let workdir = workdir.canonicalize()?;
+        if let Ok(relative) = target.strip_prefix(workdir) {
+            anyhow::ensure!(
+                repo.index()?.get_path(relative, 0).is_none(),
+                "encrypted destination is already tracked by its host Git repository; untrack it before applying"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn discover_repo_at(start: &Path) -> Result<Option<Repository>> {
     let Some(ancestor) = nearest_existing_ancestor(start) else {
         return Ok(None);
@@ -337,13 +356,87 @@ fn canonical_parent_join(target: &Path) -> Result<PathBuf> {
 /// forward-slash-joined gitignore pattern — anchoring it to the repo root
 /// so it never accidentally matches a same-named path elsewhere in the
 /// tree.
-fn to_gitignore_pattern(relative: &Path) -> String {
+fn to_gitignore_pattern(relative: &Path) -> Result<String> {
     let joined = relative
         .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
+        .map(|component| {
+            let name = component
+                .as_os_str()
+                .to_str()
+                .context("Git exclusion path must be valid Unicode")?;
+            anyhow::ensure!(
+                !name.chars().any(char::is_control),
+                "Git exclusion paths cannot contain control characters"
+            );
+            let mut escaped = String::new();
+            for character in name.chars() {
+                // Gitignore is a pattern language: deployment names must remain literal.
+                if matches!(character, '\\' | '*' | '?' | '[' | ']' | ' ' | '#' | '!') {
+                    escaped.push('\\');
+                }
+                escaped.push(character);
+            }
+            Ok(escaped)
+        })
+        .collect::<Result<Vec<_>>>()?
         .join("/");
-    format!("/{joined}")
+    Ok(format!("/{joined}"))
+}
+
+/// Protect plaintext before publication, retaining prior exclusions if later work fails.
+pub(crate) fn protect_sensitive_target(entry: &crate::desired::DesiredEntry) -> Result<()> {
+    ensure_sensitive_target_untracked(&entry.target)?;
+    let Some(repo) = discover_enclosing_repo(&entry.target)? else {
+        return Ok(());
+    };
+    let workdir = repo
+        .workdir()
+        .context("encrypted destination repository has no worktree")?
+        .canonicalize()?;
+    let location = crate::overlays::mapping::location(&entry.target)?;
+    let relative = location
+        .strip_prefix(&workdir)
+        .context("encrypted destination is outside its host Git repository")?;
+    let pattern = to_gitignore_pattern(relative)?;
+    let marker = format!("exclude:{}", overlay_name(&entry.provenance));
+    let path = repo.commondir().join("info/exclude");
+    let current = match fs::read_to_string(&path) {
+        Ok(current) => current,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(error)
+                .context("could not read host Git exclusions before deploying plaintext");
+        }
+    };
+    let existing = match partial::find_block(&current, &marker) {
+        BlockState::Malformed => anyhow::bail!(
+            "malformed host Git exclusion block; repair it before deploying encrypted files"
+        ),
+        BlockState::Absent => "",
+        BlockState::Found(content) => content,
+    };
+    let mut patterns: BTreeSet<_> = existing.lines().map(str::to_owned).collect();
+    patterns.insert(pattern);
+    let content = patterns.into_iter().collect::<Vec<_>>().join("\n");
+    let updated = if matches!(partial::find_block(&current, &marker), BlockState::Absent) {
+        partial::append_block(&current, &marker, &content)
+    } else {
+        partial::replace_block(&current, &marker, &content)
+    };
+    if updated != current {
+        let parent = path
+            .parent()
+            .context("host Git exclusion file has no parent")?;
+        fs::create_dir_all(parent).context("could not prepare host Git exclusions")?;
+        fs::write(&path, updated)
+            .context("could not protect encrypted destination with host Git exclusions")?;
+    }
+    // A higher-priority ignore negation can defeat a syntactically valid exclude block.
+    anyhow::ensure!(
+        repo.is_path_ignored(relative)?,
+        "host Git does not ignore the encrypted destination; resolve conflicting ignore rules before applying"
+    );
+    Ok(())
 }
 
 /// Discovered repository handles, cached by `.git` dir identity, alongside
@@ -531,7 +624,7 @@ fn compute_expectation(
             continue;
         }
 
-        expected.insert(to_gitignore_pattern(relative));
+        expected.insert(to_gitignore_pattern(relative)?);
     }
 
     Ok(GroupExpectation {

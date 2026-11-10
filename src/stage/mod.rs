@@ -28,6 +28,7 @@ pub async fn add(ctx: &Ctx, overlay: &Overlay, selections: &[PathBuf]) -> Result
 }
 
 fn add_blocking(ctx: &Ctx, overlay: &Overlay, selections: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    crate::secrets::validate_ingestion(ctx, overlay, selections)?;
     let tree = DesiredTree::build_own(ctx, overlay)?;
     let entries: Vec<_> = tree
         .entries()

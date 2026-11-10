@@ -265,6 +265,7 @@ impl Report {
 /// [`Change`].
 fn classify_fs(entry: &DesiredEntry, operation: &Operation) -> Result<Change> {
     match operation {
+        Operation::NeedsUnlock => Ok(Change::Checkout(Status::Locked)),
         Operation::Create => Ok(Change::Missing),
         // Reuse `status`'s own dangling-soft-symlink check rather than
         // re-deriving it.

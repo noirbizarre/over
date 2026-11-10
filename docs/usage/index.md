@@ -13,6 +13,7 @@ workflows.
 | [`over new`](new.md) | Create a new overlay |
 | [`over list`](list.md) (`ls`) | List known overlays |
 | [`over data`](data.md) | Export resolved overlay data as JSON |
+| [`over secret`](secrets.md) | Manage repository-local Age-encrypted secrets |
 | [`over completion`](completion.md) | Generate shell completion scripts |
 
 ## Apply and inspect

@@ -66,6 +66,10 @@ impl Report {
                     continue;
                 };
                 let source = overlay.root.join(relative);
+                // Ciphertext is not a linked plaintext destination and must not reach external diff drivers.
+                if crate::secrets::is_encrypted(relative) {
+                    continue;
+                }
                 if !selection.policy.includes(&source, false) {
                     continue;
                 }
@@ -131,6 +135,16 @@ impl Report {
         };
         for entry in desired.entries() {
             match &entry.intent {
+                MaterializationIntent::EncryptedFile(_) => {
+                    report.entry_diagnostic(
+                        entry,
+                        super::classify_fs(
+                            entry,
+                            &crate::materialize::encrypted::EncryptedFileMaterializer
+                                .classify(entry)?,
+                        )?,
+                    );
+                }
                 MaterializationIntent::SymlinkFile { source, link_type }
                 | MaterializationIntent::SymlinkDirectory { source, link_type } => {
                     report.link_diagnostic(&entry.target, source, link_type)?;

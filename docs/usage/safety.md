@@ -20,6 +20,9 @@ objects, indexes, or refs. It is a snapshot, not a reservation of those paths.
   confirmation defaulting to No. `--discard-checkout` explicitly authorizes
   that loss without a prompt, including with `--no-prompt`. `--force` alone
   cannot authorize checkout disposal.
+- **Encrypted files** offer only skip or explicitly authorized overwrite, never
+  Absorb or plaintext diff. Authentication completes before target writes, and
+  unapply retains changed or unverifiable plaintext. See [Age encryption](secrets.md).
 - A clean Git working tree does **not** prove a repository is backed up.
   Ignored files, other branches, tags, stashes, reflogs, hooks and local
   configuration may be its only copy. Consequently, real checkout disposal
@@ -41,6 +44,7 @@ Blocked migrations fail apply and suppress post-apply hooks.
 | Operation | Affected data and authorization | Safeguards and preview |
 | --- | --- | --- |
 | Apply ordinary/sidecar links | Conflicting target file, link, or whole directory; interactive overwrite/absorb or `--force` | No-prompt refuses; checkout-specific checks precede generic recursive replacement; preview names target and replacement policy. |
+| Apply encrypted files | Final plaintext destination; explicit overwrite or `--force` for differing files | Authenticate in memory before writes; default Unix mode `0600`; no plaintext staging files. Existing destinations update in place. Hard links and directory obstructions refuse. |
 | Apply scaffold replacement | Conflicting node at a required directory; confirmation or `--force` | Unlinks a conflicting directory link rather than changing its referent; refusal stops descendants. |
 | Absorb | Copies target content over overlay/sidecar source, then replaces target with a link; explicit Absorb choice | Rejects overlapping trees, prepares copies before replacing the source, and copies links without traversing their referents. Diff/Skip do not modify either input. |
 | Managed partial files/permissions | Managed block or declared mode; applying the configured block/mode is opt-in; structural/block conflicts follow their conflict policy | Unapply removes only an unchanged block, preserving surrounding bytes; changed types are rejected. Preview names the physical file and marker or mode. |
@@ -55,7 +59,7 @@ Blocked migrations fail apply and suppress post-apply hooks.
 | Sync abort | Uncommitted tracked/index changes in an in-progress merge; explicit `--abort` | Rejects other Git operation states; dry-run lists prospective discarded paths and never resets. HEAD commits remain, but post-conflict edits may be lost. |
 | Virtual checkout commit | Selected source working-tree paths and HEAD; explicit commit, or confirmed sync commit | Preflight, prepared source updates and limited backup/restore; unrelated index entries and target edits survive. Inspect selection with `diff --staged`; commit has no dry-run flag. |
 | Reverse add/staging | Selected deployment/source paths or selected source-index entries; explicit `add`/`git add` | Source selection, checkout association and mapping checks apply. Virtual staging preserves source working files and unrelated staging. Ordinary reverse-add moves content into the source: inspect paths before running. |
-| Host Git excludes | Only the overlay's marker block in `.git/info/exclude` | Does not alter the host index or tracked files; malformed blocks remain intact. Unapply removes its own block even if some entries are retained. Dry-run leaves excludes untouched. |
+| Host Git excludes | Only the overlay's marker block in `.git/info/exclude` | Does not alter the host index or tracked files; malformed blocks remain intact. Unapply removes its own block unless encrypted destinations are retained. Dry-run leaves excludes untouched. |
 | Lifecycle hooks/external diff tools | Arbitrary effects of trusted repository commands | Lifecycle hooks run only at their documented events, stop on failure and are suppressed under dry-run; their effects are outside Over's filesystem ownership model. External inspection tools can have their own side effects. |
 | Install packages/scripts | Package-manager/system changes and arbitrary pre/post-install commands; explicit `apply --install` | Available configuration/ownership validation precedes installation. Installation precedes materialization; dry-run skips execution. Child commands have their own prompt/privilege policies. |
 

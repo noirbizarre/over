@@ -18,7 +18,8 @@
 //! Materializer::materialize   — concrete filesystem/Git changes
 //! ```
 //!
-//! [`MaterializerRegistry`] registers four backends: [`PartialFileMaterializer`]
+//! [`MaterializerRegistry`] also registers an encrypted whole-file backend (#62),
+//! whose intent holds only a ciphertext recipe. Other backends are [`PartialFileMaterializer`]
 //! (#66, [`MaterializationIntent::PartialFile`](crate::desired::MaterializationIntent::PartialFile)),
 //! [`SymlinkMaterializer`] (every remaining intent except `Checkout`/
 //! `VirtualCheckout`), [`CheckoutMaterializer`] (#110), which owns
@@ -39,6 +40,7 @@
 //! registry.
 
 mod checkout;
+pub(crate) mod encrypted;
 mod partial;
 pub(crate) mod symlink;
 pub mod virtual_checkout;
@@ -91,6 +93,7 @@ impl Default for MaterializerRegistry {
     fn default() -> Self {
         Self {
             backends: vec![
+                Box::new(encrypted::EncryptedFileMaterializer),
                 // Must come before `SymlinkMaterializer`: `PartialFile` is
                 // a distinct intent, but registration order matters for
                 // any future intent whose `handles()` might overlap.

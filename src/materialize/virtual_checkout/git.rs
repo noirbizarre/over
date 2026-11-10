@@ -85,6 +85,17 @@ pub(crate) fn scoped_entries(
     managed_path: &Path,
     scope: &CheckoutScope,
 ) -> Result<BTreeMap<PathBuf, (Oid, i32)>> {
+    for indexed in repo.index()?.iter() {
+        let path = Path::new(std::str::from_utf8(&indexed.path)?);
+        if let Ok(relative) = path.strip_prefix(managed_path)
+            && scope.owns_source(relative)
+        {
+            anyhow::ensure!(
+                !crate::secrets::is_encrypted(relative),
+                "Age-encrypted files require ordinary file-level materialization; virtual checkouts are unsupported"
+            );
+        }
+    }
     if !managed_path.as_os_str().is_empty() && tree.get_path(managed_path).is_err() {
         return Ok(BTreeMap::new());
     }
@@ -92,6 +103,10 @@ pub(crate) fn scoped_entries(
     let mut entries = tracked_entries(&subtree)?;
     entries.retain(|path, _| scope.owns_source(path));
     for path in entries.keys() {
+        anyhow::ensure!(
+            !crate::secrets::is_encrypted(path),
+            "Age-encrypted files require ordinary file-level materialization; virtual checkouts are unsupported"
+        );
         anyhow::ensure!(
             scope.owns_target(path),
             "source path '{}' collides with an independently mapped destination",
@@ -894,6 +909,10 @@ pub(crate) fn ensure_supported_staged(
 /// A regular target must not replace a source symlink/gitlink, including one
 /// above it: that would silently convert unsupported source content on add.
 pub(crate) fn ensure_supported_path(head: &Tree, index: &git2::Index, path: &Path) -> Result<()> {
+    anyhow::ensure!(
+        !crate::secrets::is_encrypted(path),
+        "encrypted checkout staging is unsupported"
+    );
     for ancestor in path.ancestors().filter(|path| !path.as_os_str().is_empty()) {
         let head_mode = head
             .get_path(ancestor)

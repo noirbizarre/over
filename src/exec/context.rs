@@ -55,6 +55,8 @@ fn detect_username() -> String {
 
 #[derive(Debug, Default, Serialize)]
 pub struct Context {
+    #[serde(skip)]
+    pub crypto: Arc<crate::secrets::CryptoService>,
     /// Lint must not mistake an unavailable destination variable for an empty path.
     #[serde(skip)]
     pub strict_paths: bool,
@@ -219,6 +221,7 @@ impl ContextBuilder {
 
     pub fn build(self) -> Arc<Context> {
         Arc::new(Context {
+            crypto: Arc::new(crate::secrets::CryptoService::default()),
             strict_paths: false,
             dry_run: self.dry_run,
             debug: self.debug,
@@ -262,6 +265,7 @@ impl Context {
 
     pub fn with_overlay(&self, overlay: Overlay) -> Arc<Self> {
         Arc::new(Self {
+            crypto: self.crypto.clone(),
             strict_paths: self.strict_paths,
             dry_run: self.dry_run,
             debug: self.debug,
@@ -282,6 +286,7 @@ impl Context {
 
     pub fn with_progress(&self, progress: ProgressBar) -> Arc<Self> {
         Arc::new(Self {
+            crypto: self.crypto.clone(),
             strict_paths: self.strict_paths,
             dry_run: self.dry_run,
             debug: self.debug,
@@ -302,6 +307,7 @@ impl Context {
 
     pub fn with_multiprogress(&self, progress: MultiProgress) -> Arc<Self> {
         Arc::new(Self {
+            crypto: self.crypto.clone(),
             strict_paths: self.strict_paths,
             dry_run: self.dry_run,
             debug: self.debug,
@@ -339,6 +345,7 @@ impl Context {
 
     fn clone_for_overlay_update(&self) -> Self {
         Self {
+            crypto: self.crypto.clone(),
             strict_paths: self.strict_paths,
             dry_run: self.dry_run,
             debug: self.debug,

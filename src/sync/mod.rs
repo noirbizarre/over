@@ -559,6 +559,7 @@ async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Resu
     let vc_status = status::virtual_checkout::inspect(entry)?;
 
     match vc_status {
+        Status::Locked => anyhow::bail!("encrypted virtual checkouts are unsupported"),
         Status::Applied => Ok(SyncOutcome::UpToDate { path }),
         Status::Behind(_) | Status::Diverged { .. } => {
             if !opts.pull {

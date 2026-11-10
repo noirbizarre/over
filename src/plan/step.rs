@@ -16,6 +16,8 @@ use super::actual::ActualState;
 /// didn't need to change for that.
 #[derive(Debug, Clone)]
 pub enum Operation {
+    /// Content cannot be verified without unlocking; previews never prompt.
+    NeedsUnlock,
     /// Target is missing; safe to materialize.
     Create,
     /// Target already matches the desired intent — nothing to do.
@@ -47,10 +49,8 @@ pub enum Operation {
     /// Target already matches desired content/kind, but its permission mode
     /// differs from what's declared (#65) — auto-fixable, unlike a real
     /// `Conflict`: nothing structural is wrong, only a `chmod` is needed.
-    /// Only ever produced for
-    /// [`MaterializationIntent::PartialFile`](crate::desired::MaterializationIntent::PartialFile)
-    /// entries with a declared `permissions` (ADR-020); every other intent's
-    /// permission is unmanaged and never classifies this way.
+    /// Produced for partial blocks with declared permissions (ADR-020) and
+    /// encrypted whole files, which default to private permissions (#62).
     Repair {
         current: FileMode,
         desired: FileMode,
@@ -63,6 +63,7 @@ pub enum Operation {
 /// that changed.
 fn intent_label(intent: &MaterializationIntent) -> &'static str {
     match intent {
+        MaterializationIntent::EncryptedFile(_) => "encrypted file",
         MaterializationIntent::Directory => "directory",
         MaterializationIntent::SymlinkFile { .. } => "symlink",
         MaterializationIntent::SymlinkDirectory { .. } => "directory symlink",
@@ -86,6 +87,13 @@ impl fmt::Display for PlanStep {
         let target = short_path(&self.entry.target.to_string_lossy());
 
         match (&self.entry.intent, &self.operation) {
+            (_, Operation::NeedsUnlock) => {
+                write!(f, "locked: {target} (set OVER_SECRET to verify)")
+            }
+            (MaterializationIntent::EncryptedFile(_), operation) => write!(
+                f,
+                "encrypted file: {target} ({operation:?}; content redacted)"
+            ),
             (MaterializationIntent::Directory, Operation::Create) => write!(
                 f,
                 "{} {} {}",

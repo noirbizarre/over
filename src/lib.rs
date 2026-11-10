@@ -17,6 +17,7 @@ pub mod materialize;
 pub mod overlays;
 pub mod plan;
 pub mod restore;
+pub mod secrets;
 pub mod stage;
 pub mod status;
 pub mod sync;

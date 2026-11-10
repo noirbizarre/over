@@ -16,7 +16,10 @@ use super::step::{Operation, PlanStep};
 /// does too (#129) — a blocked one doesn't, exactly like `Noop`/`Deferred`.
 fn is_actionable(operation: &Operation) -> bool {
     match operation {
-        Operation::Create | Operation::Conflict { .. } | Operation::Repair { .. } => true,
+        Operation::Create
+        | Operation::Conflict { .. }
+        | Operation::Repair { .. }
+        | Operation::NeedsUnlock => true,
         Operation::Migrate { blocked, .. } => blocked.is_none(),
         Operation::Noop | Operation::Deferred => false,
     }
@@ -208,6 +211,7 @@ impl Plan {
     /// descendants write through an unresolved parent and run success hooks.
     pub async fn execute(&self, ctx: Ctx) -> Result<()> {
         self.validate_boundaries()?;
+        crate::materialize::encrypted::prepare(&self.desired, &ctx).await?;
         let has_actionable = self.steps.iter().any(|s| is_actionable(&s.operation));
         if !has_actionable {
             return Ok(());
@@ -247,6 +251,12 @@ impl Plan {
                     operation: classify(&self.desired, &step.entry, &registry)?,
                 };
                 validate_boundary(&refreshed)?;
+                &refreshed
+            } else if matches!(step.operation, Operation::NeedsUnlock) && !ctx.dry_run {
+                refreshed = PlanStep {
+                    entry: step.entry.clone(),
+                    operation: classify(&self.desired, &step.entry, &registry)?,
+                };
                 &refreshed
             } else {
                 step
@@ -386,11 +396,16 @@ impl fmt::Display for Plan {
             .iter()
             .filter(|s| matches!(s.operation, Operation::Repair { .. }))
             .count();
+        let locked = self
+            .steps
+            .iter()
+            .filter(|step| matches!(step.operation, Operation::NeedsUnlock))
+            .count();
 
         writeln!(
             f,
             "{} {} to create, {} unchanged, {} conflict(s), {} to migrate, \
-             {} migration(s) blocked, {} to repair, {} deferred",
+             {} migration(s) blocked, {} to repair, {} deferred{}",
             style::white_b("Plan:"),
             create,
             noop,
@@ -399,6 +414,11 @@ impl fmt::Display for Plan {
             blocked,
             repair,
             deferred,
+            if locked > 0 {
+                format!(", {locked} locked")
+            } else {
+                String::new()
+            },
         )?;
         for (index, step) in self
             .steps

@@ -37,6 +37,7 @@ nav = [
     { "over list" = "usage/list.md" },
     { "over show (alias)" = "usage/show.md" },
     { "over data" = "usage/data.md" },
+    { "over secret / Age encryption" = "usage/secrets.md" },
     { "over apply" = "usage/apply.md" },
     { "over lint" = "usage/lint.md" },
     { "over doctor" = "usage/doctor.md" },
