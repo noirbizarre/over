@@ -118,7 +118,7 @@ pub(crate) fn physical_destination(target: &Path, source: &Path) -> Result<PathB
 }
 
 pub(crate) fn render_target(raw: &str, ctx: &exec::Context) -> Result<PathBuf> {
-    let rendered = exec::templates::render_path(raw, ctx, ctx.strict_paths)
+    let rendered = crate::actions::symlink::render_symlink_target(raw, ctx)
         .with_context(|| format!("failed to render target template '{raw}'"))?;
     Ok(if rendered == "~" {
         absolute(&ctx.root)?
@@ -294,6 +294,77 @@ mod tests {
     use crate::overlays::Repository;
     use assert_fs::prelude::*;
     use rstest::rstest;
+
+    #[rstest]
+    #[case("over.toml", "target = '{{ env.OVER_MISSING_PATH_VALUE }}'")]
+    #[case("over.toml", "[map.config]\ntarget = '{{ overlays.missing }}'")]
+    #[case("link.link.toml", "target = '{{ env.OVER_MISSING_PATH_VALUE }}'")]
+    #[case(
+        "block.partial.toml",
+        "target = '{{ overlays.missing }}'\ncontent = 'block'"
+    )]
+    fn strict_desired_path_resolution_reports_missing_namespace_values(
+        #[case] file: &str,
+        #[case] content: &str,
+    ) {
+        let temp = assert_fs::TempDir::new().unwrap();
+        temp.child(format!("ov/{file}")).write_str(content).unwrap();
+        let repo = Repository::new(temp.path().to_path_buf());
+        let overlay = repo.get("ov").unwrap();
+        let ctx = Context::builder()
+            .repository(repo)
+            .root(temp.path().join("home"))
+            .build();
+        let error =
+            crate::desired::DesiredTree::build_own(&ctx.with_strict_paths(), &overlay).unwrap_err();
+        assert!(format!("{error:#}").contains("undefined"));
+    }
+
+    #[test]
+    fn desired_paths_share_environment_overlay_and_execution_context_namespaces() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        // Use a built-in environment value without mutating process-global test state.
+        temp.child("repo/ov/over.toml").write_str(
+            "target = '{{ root }}/base'\n[map.config]\ntarget = '{{ overlays.shared }}/mapped'\n"
+        ).unwrap();
+        temp.child("repo/ov/config/file")
+            .write_str("content")
+            .unwrap();
+        temp.child("repo/ov/link.link.toml")
+            .write_str("target = '{{ root }}/referent'\n")
+            .unwrap();
+        temp.child("repo/ov/block.partial.toml")
+            .write_str(
+                "target = '{{ overlays.ov }}/{{ env.PATH | length }}/partial'\ncontent = 'block'\n",
+            )
+            .unwrap();
+        let repo = Repository::new(temp.path().join("repo"));
+        let overlay = repo.get("ov").unwrap();
+        let root = temp.path().join("home");
+        let shared = temp.path().join("shared");
+        let ctx = Context::builder()
+            .repository(repo)
+            .root(root.clone())
+            .resolved_overlays(std::sync::Arc::new(std::collections::HashMap::from([(
+                "shared".to_owned(),
+                shared.to_string_lossy().into_owned(),
+            )])))
+            .build();
+        let tree = crate::desired::DesiredTree::build_own(&ctx, &overlay).unwrap();
+        assert!(
+            tree.entries()
+                .iter()
+                .any(|entry| entry.target == shared.join("mapped/file"))
+        );
+        assert!(tree.entries().iter().any(|entry| matches!(&entry.intent,
+            crate::desired::MaterializationIntent::SymlinkFile { source, .. } if source == &root.join("referent"))));
+        let path_length = std::env::var("PATH").unwrap().chars().count();
+        assert!(
+            tree.entries()
+                .iter()
+                .any(|entry| entry.target == root.join(format!("base/{path_length}/partial")))
+        );
+    }
 
     #[test]
     fn reverse_alias_routing_preserves_a_symlink_leaf_identity() {
