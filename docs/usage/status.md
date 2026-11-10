@@ -120,8 +120,18 @@ reflects whether it's present and its declared configuration
 local commits, untracked files, or an in-progress merge inside it never
 make it `Modified`/`Ahead`/`Behind`/`Diverged`/`Conflict` — that content
 isn't something `over` manages. If its declared configuration itself
-changes (e.g. its `url`), it's reported `Conflict` until the next `over
-apply` reconciles it. See
+changes, it's reported `Conflict`. Re-running `over apply` reconciles managed
+settings such as declared remotes and Git configuration, but does not rewrite an
+existing checkout's `origin` URL to match `url`. For origin URL drift, inspect
+the checkout and its intended repository identity, then explicitly repair it:
+
+```sh
+git -C /path/to/checkout remote set-url origin https://example.com/intended-repo.git
+over status hosts/laptop
+```
+
+Replace the path and URL with the declared checkout and its intended `url`.
+This changes the remote configuration, not the checkout's files or history. See
 [ADR-021](../adr/021-declared-git-repositories-report-provisioning-not-content-status.md).
 
 ## Virtual checkouts (`mode = "checkout"`) {#virtual-checkouts-mode--checkout}
