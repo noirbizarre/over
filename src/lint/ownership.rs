@@ -288,8 +288,10 @@ mod tests {
         let diagnostics = conflicts(&result);
         assert_eq!(diagnostics.len(), 1, "{result:?}");
         let diagnostic = diagnostics[0];
+        // Diagnostics retain native paths; assertions must also work on Windows.
+        let message = diagnostic.message.replace('\\', "/");
         for expected in ["selected", "dependency", "config/editor", "target"] {
-            assert!(diagnostic.message.contains(expected), "{diagnostic:?}");
+            assert!(message.contains(expected), "{diagnostic:?}");
         }
         assert!(diagnostic.hint.as_ref().unwrap().contains("remap"));
         assert!(
@@ -530,7 +532,12 @@ mod tests {
         write(&temp, "dependency/mapped/editor", "dependency");
         let result = lint_overlay_with_context(&context, "selected", true).unwrap();
         assert_eq!(conflicts(&result).len(), 1, "{result:?}");
-        assert!(conflicts(&result)[0].message.contains("mapped/editor"));
+        assert!(
+            conflicts(&result)[0]
+                .message
+                .replace('\\', "/")
+                .contains("mapped/editor")
+        );
     }
 
     #[test]
@@ -620,15 +627,15 @@ mod tests {
         }
         let result = lint_repository_with_context(&context);
         assert_eq!(conflicts(&result).len(), 2, "{result:?}");
-        assert!(
-            conflicts(&result)
-                .iter()
-                .any(|diag| diag.message.contains("target/first/file"))
-        );
-        assert!(
-            conflicts(&result)
-                .iter()
-                .any(|diag| diag.message.contains("target/second/file"))
-        );
+        assert!(conflicts(&result).iter().any(|diag| {
+            diag.message
+                .replace('\\', "/")
+                .contains("target/first/file")
+        }));
+        assert!(conflicts(&result).iter().any(|diag| {
+            diag.message
+                .replace('\\', "/")
+                .contains("target/second/file")
+        }));
     }
 }
