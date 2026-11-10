@@ -1,4 +1,5 @@
 pub mod emojis;
+pub mod json;
 pub(crate) mod patch;
 pub mod style;
 
