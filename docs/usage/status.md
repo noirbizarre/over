@@ -21,14 +21,27 @@ Options:
 ```
 
 When `NAME` is omitted, a configured `default_overlay` (see
-[Default Overlay Selection](../configuration.md#default-overlay-selection))
+[Default overlay selection](../configuration/root.md#default-overlay-selection))
 narrows the report to just that overlay; pass `--all` to report on every
 overlay regardless.
 Without a configured default, omitting `NAME` selects every overlay.
 
 Explicit `NAME` and `--all` retain the configured default's
-[data context](../configuration.md#consumer-metadata-data). Each target resolves
+[data context](../configuration/overlay.md#consumer-metadata-data). Each target resolves
 its own metadata separately. `--no-uses` skips dependency entries, not their data.
+
+## Example
+
+```sh
+over status hosts/laptop
+over status hosts/laptop --verbose
+over status --all
+```
+
+Use verbose output to trace inherited values and individual entries. For actual
+content changes, use [`over diff`](diff.md); to create missing entries, preview
+[`over apply`](apply.md). See [Examples](../examples.md#compose-a-host) for the
+host layout used here.
 
 ## Resolved configuration
 

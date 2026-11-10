@@ -1,8 +1,8 @@
 # `over sync`
 
-Reconcile a checkout-materialized overlay with its git source: pull
-upstream changes into the checkout, and push local commits made directly in
-the checkout back upstream.
+Reconcile editable checkouts with their source. Root declared Git repositories
+can fetch, merge, and push upstream; virtual checkouts reconcile with the overlay
+source repository locally, without network I/O.
 
 ```text
 Usage: over sync [OPTIONS] [NAME]
@@ -27,29 +27,42 @@ Options:
 ```
 
 When `NAME` is omitted, a configured `default_overlay` (see
-[Default Overlay Selection](../configuration.md#default-overlay-selection))
+[Default overlay selection](../configuration/root.md#default-overlay-selection))
 narrows the sync to just that overlay; pass `--all` to sync every overlay
 regardless.
 
 Explicit `NAME` and `--all` retain the configured default's
-[data context](../configuration.md#consumer-metadata-data). Each target resolves
+[data context](../configuration/overlay.md#consumer-metadata-data). Each target resolves
 its own metadata separately. `--no-uses` skips dependency operations, not their data.
 
-## Scope: the overlay's root git entry only
+## Example
+
+```sh
+over sync workspace/client --dry-run
+over sync workspace/client --pull-only
+```
+
+Use a preview to inspect reconciliation first. For a virtual checkout, stage and
+commit target edits with [`over add`](add.md) and [`over commit`](commit.md)
+before syncing when they block source updates. See
+[Materialization](../configuration/materialization.md#editing-and-lifecycle)
+for the complete local editing workflow.
+
+## Declared Git scope: root entries only
 
 An overlay's `git` map can declare two conceptually different things:
 
 - the overlay's **own** content, cloned to its target root (the `"."`
   entry, or the shorthand single-URL/single-object form) — this is "the
-  overlay itself materialized as a checkout", and the only thing `over
-  sync` ever touches.
+  overlay itself materialized as a checkout", and the declared-Git entry that
+  `over sync` handles. Virtual checkouts are handled separately below.
 - **nested repositories declared inside the overlay** (any other path key,
   e.g. a plugin-manager checkout at `.config/nvim/pack/plugins/foo`) — a
   separate concern. `over apply` ensures these exist and are configured as
   declared, but their content/history is never synchronized by `over
   sync`. Manage them with plain git yourself.
 
-## What it does
+### What declared Git sync does
 
 For each overlay's root checkout (and, for a `worktree`/`worktrees`
 bare-repo config, for every worktree directory that exists on disk —
@@ -70,7 +83,7 @@ synced independently):
 never performs any network I/O or mutation; it reports what's already
 known locally.
 
-## What it never does
+### What declared Git sync never does
 
 - Touch a dirty working tree, even partially.
 - Auto-resolve conflicts, rebase, or invent its own merge algorithm — git's
@@ -89,7 +102,7 @@ See [ADR-014](../adr/014-bidirectional-checkout-synchronization.md) and
 [the roadmap](https://github.com/noirbizarre/over/issues/112) for the full
 design rationale.
 
-## Virtual checkouts (`mode = "checkout"`)
+## Virtual checkouts (`mode = "checkout"`) {#virtual-checkouts-mode-checkout}
 
 A [virtual checkout](../adr/022-virtual-checkout-materialization.md) — no
 `.git` at the target, backed by the overlay's own source repository — is

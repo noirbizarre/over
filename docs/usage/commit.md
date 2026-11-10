@@ -22,11 +22,24 @@ Options:
 
 When `NAME` is omitted, the repository's configured `default_overlay` (if
 any) is used instead of prompting interactively — see
-[Default Overlay Selection](../configuration.md#default-overlay-selection).
+[Default overlay selection](../configuration/root.md#default-overlay-selection).
 
 An explicit `NAME` retains the configured default's
-[data context](../configuration.md#consumer-metadata-data) for path rendering.
+[data context](../configuration/overlay.md#consumer-metadata-data) for path rendering.
 Only the selected overlay's own checkout entries are committed.
+
+## Example
+
+After editing a file in an applied [virtual checkout](../configuration/materialization.md):
+
+```sh
+over add --overlay workspace/client ~/.config/client/settings.json
+over diff workspace/client --staged
+over commit workspace/client --message "Update client settings"
+```
+
+See the [complete checkout example](../examples.md#edit-ordinary-files-with-checkout)
+for source initialization and the mapped layout. Commit does not push a remote.
 
 ## What it does
 

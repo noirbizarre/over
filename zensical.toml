@@ -21,8 +21,14 @@ Copyright &copy; 2026 Axel H. — MIT licensed
 # meaningfully conflict with additions here.
 nav = [
   { "Home" = "index.md" },
-  { "Examples" = "examples.md" },
-  { "Usage" = [
+  { "Configuration" = [
+    { "Overview" = "configuration.md" },
+    { "Root configuration" = "configuration/root.md" },
+    { "Overlay configuration" = "configuration/overlay.md" },
+    { "Materialization" = "configuration/materialization.md" },
+    { "Install configuration" = "install-config.md" },
+  ] },
+  { "Commands" = [
     { "Overview" = "usage/index.md" },
     { "over init" = "usage/init.md" },
     { "over add" = "usage/add.md" },
@@ -40,14 +46,42 @@ nav = [
     { "over unapply" = "usage/unapply.md" },
     { "over commit" = "usage/commit.md" },
     { "over log" = "usage/log.md" },
-    { "over git mount" = "usage/over-git-mount.md" },
-    { "over git add" = "usage/over-git-add.md" },
-    { "over git status" = "usage/over-git-status.md" },
+    { "Git" = [
+      { "Overview" = "usage/git.md" },
+      { "over git mount" = "usage/over-git-mount.md" },
+      { "over git add" = "usage/over-git-add.md" },
+      { "over git status" = "usage/over-git-status.md" },
+    ] },
   ] },
-  { "Configuration" = "configuration.md" },
-  { "Install Configuration" = "install-config.md" },
-  { "About" = [
-    { "Architecture Decisions" = "adr/README.md" },
+  { "Examples" = "examples.md" },
+  { "Architecture decisions" = [
+    { "Overview" = "adr/README.md" },
+    { "001: Original binary layout" = "adr/001-two-binaries-one-crate.md" },
+    { "002: Overlay model" = "adr/002-overlay-is-a-directory-not-a-repository.md" },
+    { "003: Descriptor formats" = "adr/003-overlay-descriptors-tolerate-any-format-on-read.md" },
+    { "004: Install configuration" = "adr/004-install-config-is-declarative-with-a-shell-escape-hatch.md" },
+    { "005: Async scope" = "adr/005-async-is-scoped-to-io-concurrency.md" },
+    { "006: Symlink-first apply" = "adr/006-symlink-first-apply-with-escape-hatches.md" },
+    { "007: Git library access" = "adr/007-git2-is-not-confined-to-actions-git.md" },
+    { "008: Composition" = "adr/008-uses-composition-is-a-flat-union.md" },
+    { "009: Lint architecture" = "adr/009-lint-is-a-separate-tolerant-pass.md" },
+    { "010: Path templating" = "adr/010-templating-is-scoped-to-path-strings.md" },
+    { "011: Reconciliation plans" = "adr/011-plan-then-execute-reconciliation.md" },
+    { "012: Materializer registry" = "adr/012-materializer-backend-registry.md" },
+    { "013: Original diff taxonomy" = "adr/013-diff-has-its-own-taxonomy-and-uses-similar-for-content-diffs.md" },
+    { "014: Checkout synchronization" = "adr/014-bidirectional-checkout-synchronization.md" },
+    { "015: Safe unapply" = "adr/015-unapply-reuses-plan-classification-and-only-removes-safely-reversible-state.md" },
+    { "016: Partial files" = "adr/016-partial-file-managed-blocks.md" },
+    { "017: Materialization rules" = "adr/017-materialization-rules-generalize-link-dirs.md" },
+    { "018: Overlay discovery" = "adr/018-root-declared-overlays-extend-descriptor-discovery.md" },
+    { "019: Default overlay" = "adr/019-default-overlay-selection-extends-templating-to-overlay-choice.md" },
+    { "020: Permissions" = "adr/020-file-permissions-are-hierarchical-rules-scoped-to-partial-files.md" },
+    { "021: Git provisioning status" = "adr/021-declared-git-repositories-report-provisioning-not-content-status.md" },
+    { "022: Virtual checkouts" = "adr/022-virtual-checkout-materialization.md" },
+    { "023: Unified CLI" = "adr/023-merge-git-over-into-over.md" },
+    { "024: Doctor" = "adr/024-doctor-aggregates-diagnostics-and-repairs-only-its-own-corruption.md" },
+    { "025: Mappings and staging" = "adr/025-directory-mappings-and-checkout-staging.md" },
+    { "026: Git-aware diff" = "adr/026-git-aware-diff-delegates-presentation-to-git.md" },
   ] },
 ]
 
@@ -57,8 +91,8 @@ language = "en"
 
 # The header slot is one line tall and already sits next to the site name, so
 # it gets the mark alone — a wordmark would render as an illegible sliver and
-# repeat the name. `logo.svg` is the project's existing icon mark (also used
-# standalone in the README); `logo-text.svg` is the wordmark variant.
+# repeat the name. `logo.svg` is the icon mark; `over-text.svg` is the wordmark
+# used on the documentation landing page and in the README.
 logo = "images/logo.svg"
 favicon = "images/logo.svg"
 
@@ -68,6 +102,7 @@ features = [
   "content.code.copy",
   "navigation.instant",
   "navigation.sections",
+  "navigation.tabs",
   "navigation.top",
   "navigation.tracking",
   "search.highlight",

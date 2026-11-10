@@ -14,3 +14,14 @@ Options:
   -v, --verbose      Toggle verbose output
   -h, --help         Print help
 ```
+
+## Example
+
+```sh
+over git status
+```
+
+Run inside a repository previously associated with an overlay through
+[`over git mount`](over-git-mount.md). This command requires the `over.overlay`
+Git setting; it does not prompt for a missing association. For full overlay
+configuration and reconciliation health, use [`over status NAME`](status.md).

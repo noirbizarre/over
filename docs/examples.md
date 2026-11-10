@@ -1,145 +1,254 @@
 # Examples
 
-## One workspace, several destinations
+These layouts progress from one overlay to composition and editable checkouts.
+Each example identifies its root and overlay descriptors. Paths below assume
+the source repository is `~/.dotfiles`, initialized with Git. Create the shown
+content files as well as descriptors before running commands. If you are new to
+Over, [Getting started](index.md#getting-started) first provides an isolated,
+copyable walkthrough.
 
-An overlay `workspace/client` can keep application files and machine
-configuration together:
+## One flat overlay
 
-```text
-workspace/client/
-├── over.yaml
-├── main/
-├── etc/
-└── config/
-```
-
-```yaml
-target: ~/Workspace/Client
-map:
-  etc:
-    target: /etc/client
-  config:
-    target: ~/.config/client
-```
-
-`over apply workspace/client` puts `main/` below the workspace target,
-`etc/` contents directly in `/etc/client`, and `config/` contents directly
-in `~/.config/client`. `over add --overlay workspace/client
-/etc/client/other.yaml` reverse-maps to `etc/other.yaml` in the overlay.
-
-Add `mode: checkout` to use ordinary editable files
-at all three destinations. In that mode, use `over add` to stage selected
-changes, then `over commit workspace/client` to record the staged snapshots.
-See [Directory Target Mappings](configuration.md#directory-target-mappings)
-for validation, inheritance, and materialization boundaries.
-
-Two complete overlay-repository layouts, from the simplest thing that works
-to a composed, multi-host setup. Both use generic names — no real hostnames,
-usernames, organizations, or secrets.
-
-See [Configuration](configuration.md) for `default_overlay`/templating
-details, and [`over apply`](usage/apply.md) for how composition (`uses:`) is
-reconciled.
-
-## Example 1 — Flat, single overlay
-
-The minimum viable setup: `OVER_HOME` itself *is* one overlay, no
-subdirectories, no `uses:`. The README's Quickstart and demo start one
-step past this, with a small `apps/`-per-tool layout that also shows
-composition (`uses:`) and templating — see Example 2 below for that
-pattern at scale.
+Use the repository root itself as an overlay when all files share one target:
 
 ```text
-~/dotfiles/
-├── over.toml          # target = "~"
+~/.dotfiles/
+├── over.toml
 ├── .gitconfig
-├── .bashrc
 └── .config/
     └── starship.toml
 ```
 
+Root descriptor, `~/.dotfiles/over.toml`:
+
 ```toml
-# ~/dotfiles/over.toml
 target = "~"
 ```
 
-With only one overlay and no `default_overlay` configured
-(see [Configuration](configuration.md)), a bare `over apply` still prompts
-interactively to confirm it — having a single candidate doesn't skip the
-prompt on its own, only an explicit `NAME` or a configured
-`default_overlay` does. Pass `.` (the overlay's path, here the repository
-root itself) to skip the prompt in scripts: `over apply .` symlinks every
-entry straight into `$HOME`. Growing beyond one tool means splitting this
-into subdirectories, each with its own descriptor — see example 2.
+Content, `~/.dotfiles/.gitconfig`:
 
-## Example 2 — Composed, multi-host layout
+```gitconfig
+[init]
+    defaultBranch = main
+```
 
-One overlay per app, bundled into stacks and per-OS overlays, pulled
-together by per-host root overlays, plus a `workspaces/` family that uses
-`git:` to clone related repositories and a `target:` template. This shows
-diamond `uses:` composition, per-OS `install:` blocks, templating, and
-`default_overlay` resolving per machine.
+Content, `~/.dotfiles/.config/starship.toml`:
+
+```toml
+add_newline = false
+```
+
+```sh
+over apply . --dry-run
+over apply .
+over status .
+```
+
+`.` explicitly selects the repository-root overlay. A bare `over apply` prompts
+unless a default is configured, even when only one candidate exists. Existing
+target files may conflict; inspect the preview before choosing how to handle
+them. Editing an applied symlink edits its source in `~/.dotfiles`.
+
+## Compose a host
+
+Use one overlay per app and a host overlay to select them. This is an alternative
+to the flat layout above; move content into the app directories when adopting it.
 
 ```text
-~/dotfiles/
-├── over.toml                # default_overlay = "hosts/{{ machine.hostname }}"
+~/.dotfiles/
+├── over.toml
 ├── apps/
-│   ├── git/                 # over.yaml: .gitconfig + install: per-OS packages
-│   ├── tmux/
-│   └── starship/            # over.yaml: links: templated by a theme variable
-├── stacks/
-│   ├── dev/                 # over.yaml: uses: [apps/git, apps/tmux, ...]
-│   └── python/
-├── os/
-│   ├── linux/                # uses: [stacks/dev]
-│   ├── archlinux/            # uses: [os/linux]  install.archlinux: [...]
-│   └── macos/                # uses: [stacks/dev]  install.brew: [...]
-├── desktop/
-│   └── hyprland/             # uses: [apps/*]  install.archlinux: [...]
-├── workspaces/
-│   └── myproject/            # target: ~/Workspaces/myproject
-│                              # git: { common/lib: git@github.com:me/lib.git }
+│   ├── git/
+│   │   ├── over.toml
+│   │   └── .gitconfig
+│   └── starship/
+│       ├── over.toml
+│       └── .config/
+│           └── starship.toml
 └── hosts/
-    ├── laptop/                # uses: [os/macos, workspaces/myproject]
-    └── workstation/           # uses: [os/archlinux, desktop/hyprland]
+    └── laptop/
+        └── over.toml
 ```
+
+Root descriptor, `~/.dotfiles/over.toml`:
+
+```toml
+target = "~"
+default_overlay = "hosts/laptop"
+```
+
+App descriptors, both `apps/git/over.toml` and `apps/starship/over.toml`:
+
+```toml
+# Inherit target from the repository root; no local fields needed.
+```
+
+Use the `.gitconfig` and `starship.toml` content from the flat example, now in
+their app directories. Host descriptor, `hosts/laptop/over.toml`:
+
+```toml
+description = "Laptop dotfiles"
+uses = ["apps/git", "apps/starship"]
+
+[data]
+theme = "dark"
+```
+
+```sh
+over apply hosts/laptop --dry-run
+over apply hosts/laptop
+over status
+over status --all
+```
+
+The host includes each app dependency once. Each app retains its own target;
+`uses` is a union of independent trees, not a file override stack. Shared
+dependencies in larger compositions are not repeated. Names in `uses` are
+explicit identifiers, not globs.
+
+The fixed default makes `over apply` select this host and `over status` report
+its composition. For multiple hosts, add a descriptor for each, then use
+`default_overlay = "hosts/{{ machine.hostname }}"` only after creating a matching
+overlay for every machine that will use the repository. A missing default is an
+error, including when selecting another overlay explicitly.
+
+## Inherit shared policy
+
+Use an intermediate descriptor to set policy for a family of overlays. Add this
+family to the composed repository:
+
+```text
+~/.dotfiles/workspaces/
+├── over.toml
+└── demo/
+    ├── over.toml
+    └── notes.txt
+```
+
+Intermediate descriptor, `workspaces/over.toml`:
+
+```toml
+target = "~/Workspaces/{{ overlay.name | split('/') | last }}"
+mode = "symlink"
+```
+
+Overlay descriptor, `workspaces/demo/over.toml`:
+
+```toml
+description = "Demo workspace"
+```
+
+Content, `workspaces/demo/notes.txt`:
+
+```text
+Notes for the demo workspace.
+```
+
+```sh
+over apply workspaces/demo --dry-run
+over apply workspaces/demo
+```
+
+The resolved destination is `~/Workspaces/demo/notes.txt`. A nearer explicit
+target would replace the inherited template. Intermediate descriptors supply
+configuration; discovery lists the more-specific overlay rather than listing
+both parent and child. Ancestor settings follow field-specific
+[inheritance rules](configuration/overlay.md#fields-and-inheritance).
+
+## One workspace, several destinations
+
+Use directory mappings to keep related files together while deploying them to
+several writable locations. This example can coexist with the preceding ones.
+
+```text
+~/.dotfiles/workspace/client/
+├── over.yaml
+├── main/
+│   └── notes.txt
+└── config/
+    └── settings.json
+```
+
+Overlay descriptor, `workspace/client/over.yaml`:
 
 ```yaml
-# ~/dotfiles/hosts/laptop/over.yaml
-uses:
-  - os/macos
-  - workspaces/myproject
+target: ~/Workspace/Client
+map:
+  config:
+    target: ~/.config/client
 ```
 
-```toml
-# ~/dotfiles/workspaces/myproject/over.toml
-target = "~/Workspaces/myproject"
+Content, `workspace/client/main/notes.txt`:
 
-[git]
-"common/lib" = "git@github.com:me/lib.git"
+```text
+Client workspace notes.
 ```
 
-```toml
-# ~/dotfiles/over.toml
-default_overlay = "hosts/{{ machine.hostname }}"
+Content, `workspace/client/config/settings.json`:
+
+```json
+{"theme": "dark"}
 ```
 
-With that root config, a bare `over apply` on any machine resolves to the
-right host overlay automatically, which then pulls in its OS, desktop, and
-workspace overlays transitively — `over status`/`over diff` narrow to that
-same default once it's configured (pass `-a`/`--all` to see every overlay
-regardless).
-
-A `target:` doesn't have to be a fixed path either — it can be rendered from
-the overlay's own name, letting one descriptor apply to every overlay
-beneath it without repeating the field. A directory with its own
-`over.toml` is only listed as its own overlay when none of its
-subdirectories have one too — the more specific overlay always wins — so
-`workspaces/over.toml` below never becomes an overlay in its own right, only
-an ancestor contributing `target` to whichever `workspaces/*` overlay
-doesn't set its own:
-
-```toml
-# ~/dotfiles/workspaces/over.toml
-target = "~/Workspaces/{{ overlay.name | split('/') | last }}"
+```sh
+over apply workspace/client --dry-run
+over apply workspace/client
 ```
+
+`main/notes.txt` lands at `~/Workspace/Client/main/notes.txt`, while
+`config/settings.json` lands directly at `~/.config/client/settings.json`.
+There is no `~/Workspace/Client/config` directory. If you later create
+`~/.config/client/other.json`, `over add --overlay workspace/client
+~/.config/client/other.json` reverse-routes it to `config/other.json`.
+
+See [Directory mappings](configuration/overlay.md#directory-target-mappings) for
+overlap restrictions and ownership boundaries.
+
+## Edit ordinary files with checkout
+
+Choose checkout when applications should edit ordinary target files rather than
+the linked source. Starting from the workspace mapping example, add this field
+to its overlay descriptor **before the first apply**:
+
+```yaml
+# workspace/client/over.yaml (complete descriptor)
+target: ~/Workspace/Client
+mode: checkout
+map:
+  config:
+    target: ~/.config/client
+```
+
+Commit the descriptor and both content files in the source repository first;
+initial checkout materialization reads committed `HEAD`. With Git author identity
+configured, run:
+
+```sh
+git -C ~/.dotfiles add workspace/client
+git -C ~/.dotfiles commit -m "Add client workspace"
+over apply workspace/client --dry-run
+over apply workspace/client
+```
+
+If you already applied the symlink example, unapply it using the old descriptor
+before switching this example to checkout. Each mapped destination is a separate
+checkout unit, with no target `.git` directory.
+
+After editing `~/.config/client/settings.json`:
+
+```sh
+over diff workspace/client
+over add --overlay workspace/client ~/.config/client/settings.json
+over diff workspace/client --staged
+over commit workspace/client -m "Update client settings"
+over sync workspace/client --dry-run
+```
+
+Add stages a target snapshot; commit records **only staged changes** in the source
+repository. Further unstaged target edits stay outside that commit. Sync reconciles
+source and target locally, without fetching or pushing a remote.
+
+For whole-directory links instead, use `mode: symlink-directory` on directories
+that contain no control metadata or ignored content. See
+[Materialization](configuration/materialization.md) for all mechanisms, ordered
+rules, and safe migration of existing ownership boundaries.

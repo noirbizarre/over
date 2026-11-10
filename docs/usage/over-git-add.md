@@ -1,10 +1,5 @@
 # `over git add`
 
-Directory mappings are reversed just as for [`over add`](add.md), including
-repositories outside the overlay's base target. Virtual-checkout inputs
-stage selected snapshots in the overlay source index; symlink-materialized
-inputs retain move-and-link ingestion.
-
 Add files from the current git repository to an overlay — the `over git`
 equivalent of [`over add`](add.md), resolved from inside the repository
 mounted with [`over git mount`](over-git-mount.md).
@@ -27,3 +22,18 @@ Options:
 
 Added files are also excluded from this repository's `git status` via the
 same per-overlay `.git/info/exclude` block that `over apply` maintains.
+
+## Example
+
+From a mounted repository with an existing `.editorconfig`:
+
+```sh
+over git add .editorconfig --dry-run
+over git add .editorconfig
+```
+
+Directory mappings are reversed just as for [`over add`](add.md), including
+repositories outside the overlay's base target. Virtual-checkout inputs stage
+selected snapshots in the overlay source index; symlink inputs retain
+move-and-link ingestion. Use [`over git status`](over-git-status.md) to inspect
+the host association and [`over diff`](diff.md) for staged checkout changes.

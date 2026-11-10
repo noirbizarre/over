@@ -76,7 +76,7 @@ the default closure. Mappings merge recursively, while other values (including
 lists and null) replace lower-priority values. This metadata composition does not
 change ADR-008's filesystem flat union. `--no-uses` only skips dependency operations;
 metadata closure resolution remains complete. See
-[Consumer Metadata](../configuration.md#consumer-metadata-data) for the full contract
+[Consumer metadata](../configuration/overlay.md#consumer-metadata-data) for the full contract
 and public API.
 
 ## Consequences

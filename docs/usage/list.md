@@ -23,3 +23,13 @@ Options:
 │   └── zsh
 └── vim
 ```
+
+```sh
+over list --tree
+```
+
+Discovery combines descriptors and root-declared directories, preferring
+more-specific overlays to ancestors. See
+[Overlay discovery](../configuration/root.md#overlay-discovery) to include
+directories without local descriptors, and [`over status`](status.md) to inspect
+whether discovered overlays are applied.

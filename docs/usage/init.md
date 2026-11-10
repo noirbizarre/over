@@ -99,5 +99,5 @@ hooks:
 A failed hook returns a nonzero status and stops initialization. The checkout
 remains intact. Retrying init on it runs post-init only, so recover failed
 post-clone commands manually or put repeatable unlock/setup commands in post-init.
-See [Lifecycle Hooks](../configuration.md#lifecycle-hooks) for ordering, environment,
+See [Lifecycle hooks](../configuration/root.md#lifecycle-hooks) for ordering, environment,
 working directories, and failure semantics.

@@ -43,9 +43,20 @@ always cover every overlay in the repository. A configured
 `default_overlay` does not select doctor's targets, and there is no `--all`
 flag: since only one of four sections could ever be narrowed, doctor always
 reports on everything unless you name a specific overlay. Destination rendering
-still resolves the configured default's [data context](../configuration.md#consumer-metadata-data);
+still resolves the configured default's [data context](../configuration/overlay.md#consumer-metadata-data);
 an invalid default fails data resolution. `--no-uses` skips dependency entries,
 but retains their metadata.
+
+## Example
+
+```sh
+over doctor
+over doctor --fix
+```
+
+Start with the read-only report; use `--fix` for the limited repairs described
+below. For descriptor-specific static checks, use [`over lint`](lint.md); for
+the selected overlay's application state, use [`over status`](status.md).
 
 ## `--fix`
 

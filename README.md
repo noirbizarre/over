@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/logo-text.svg" alt="over" width="640">
+  <img src="docs/images/over-text.svg" alt="over">
 </p>
 
 <p align="center"><strong>A git-based file overlay manager (dotfiles as overlays)</strong></p>
@@ -20,11 +20,11 @@
 
 ---
 
-Over is a git-based file overlay manager that lets you define file overlays in
-Git repositories, with support for nested references and installation
-requirements. It is particularly well-suited for managing dotfiles.
-It is inspired by tools like GNU Stow and Chezmoi but focuses on a Git-centric
-workflow with flexible configuration and installation capabilities.
+Over manages files as overlays: directories in a Git-backed source repository
+whose contents are applied to target directories. It is particularly well-suited
+for dotfiles. Compose reusable app overlays into host setups, inherit policy
+through descriptors, and choose file symlinks, directory symlinks, editable
+checkouts, or managed blocks to fit your workflow.
 
 <p align="center">
   <img src="docs/images/demo.gif" alt="over creating, composing (uses:), and applying overlays" width="800">
@@ -66,180 +66,94 @@ Download a binary for your platform from the
 
 ## Quickstart
 
-Bootstrap an existing Over repository into `~/.dotfiles`, then explicitly apply
-an overlay:
+Follow [Getting started](https://noirbizarre.github.io/over/#getting-started)
+to create and apply a complete first overlay in an isolated directory.
+
+Already have an Over repository? Clone it, then apply an overlay it defines
+(replace the URL and name with your own):
 
 ```sh
 over init https://github.com/user/dotfiles.git
+over apply hosts/my-machine --dry-run
 over apply hosts/my-machine
 ```
 
-A root `repository: git@github.com:user/dotfiles.git` setting (or its TOML
-equivalent) switches the clone's origin to SSH without requiring SSH during
-bootstrap. A local source such as `/media/usb/dotfiles.git` works too.
-See [`over init`](docs/usage/init.md) for confirmation and retry behavior.
-Use `--home` or `OVER_HOME` to select another location; existing `~/.over`
-repositories remain usable through these overrides.
+`--home` or `OVER_HOME` selects the source repository (default `~/.dotfiles`).
+`--root` selects the destination meaning of `~` for commands supporting it
+(default your home directory). Existing `~/.over` repositories remain usable
+through source overrides; they are not moved automatically.
 
-Point `over` at an overlay repository — a plain directory, versioned with
-git — via `--home`/`OVER_HOME`, then create an overlay and add a file to it:
-
-```console
-$ over new apps/git ~ --force
-Created overlay directory apps/git (toml)
-Overlay apps/git created targeting /home/you
-
-$ over add ~/.gitconfig --overlay apps/git --force
-
-$ over list --tree
-dotfiles
-└── apps
-    └── git
-```
-
-`over add` moves `~/.gitconfig` into `apps/git/` and replaces it with a
-symlink back to that overlay. `over apply apps/git` re-applies it (or
-reconciles it after editing the overlay's copy).
-
-Overlays can also compose each other via `uses:`, and any field can be a
-template rendered against the current overlay/machine:
-
-```console
-$ over status hosts/demo
-Overlay hosts/demo
-Configuration:
-  source: /home/you/dotfiles/hosts/demo
-  target: /home/you
-  ...
-  composition: apps/git -> hosts/demo
-Reconciliation:
-  Fully applied — 2 applied, 0 missing, 0 modified, 0 broken, 0 conflict(s), 0 ahead, 0 behind, 0 diverged
-
-$ over apply hosts/demo --dry-run
-📦 Applying overlay hosts/demo to /home/you
-📦 Applying overlay apps/git to /home/you
-Plan: 0 to create, 2 unchanged, 0 conflict(s), 0 to migrate, 0 migration(s) blocked, 0 to repair, 0 deferred
-
-$ over apply workspaces/demo --dry-run
-📦 Applying overlay workspaces/demo to /home/you/Workspaces/demo
-Plan: 1 to create, 0 unchanged, 0 conflict(s), 0 to migrate, 0 migration(s) blocked, 0 to repair, 0 deferred
-  📁 create directory: ~/Workspaces/demo
-```
-
-`workspaces/demo`'s `target` is
-`~/Workspaces/{{ overlay.name | split('/') | last }}` — resolved from the
-overlay's own name, one descriptor covering every overlay under
-`workspaces/`. See the demo above for the full sequence in motion.
+A root `repository` setting can switch a clone's origin to a canonical remote
+without requiring that remote for bootstrap. See [`over init`](docs/usage/init.md)
+for local-source, confirmation, and retry behavior. Init does not apply files.
 
 ## Layout examples
 
-**Flat, single overlay** — the simplest possible setup: no subdirectories
-at all, `OVER_HOME` itself is the one overlay, with a single `target`.
+Start flat or split reusable app overlays from host composition:
 
 ```text
-~/dotfiles/
-├── over.toml       # target = "~"
-├── .gitconfig
-├── .bashrc
-└── .config/
-    └── starship.toml
-```
-
-With only one overlay and no `default_overlay` configured, a bare
-`over apply` still prompts interactively to confirm it — pass `.` (the
-overlay's path, here the repository root itself) to skip the prompt, e.g.
-`over apply .`, which symlinks every entry straight into `$HOME`. The
-Quickstart above starts one step past this, with a small `apps/`-per-tool
-layout that also shows composition (`uses:`) and templating in the same
-breath.
-
-**Composed, multi-host layout** — one overlay per app, bundled into
-per-stack/per-OS/per-desktop overlays, pulled together by per-host root
-overlays, plus a `default_overlay` that resolves to the right host
-automatically:
-
-```text
-~/dotfiles/
-├── over.toml                 # default_overlay = "hosts/{{ machine.hostname }}"
+~/.dotfiles/
+├── over.toml
 ├── apps/
 │   ├── git/
-│   ├── tmux/
-│   └── starship/
-├── stacks/
-│   └── dev/                  # uses: [apps/git, apps/tmux, ...]
-├── os/
-│   ├── linux/
-│   ├── archlinux/            # uses: [os/linux]       install.archlinux: [...]
-│   └── macos/                # uses: [stacks/dev]     install.brew: [...]
-├── desktop/
-│   └── hyprland/             # uses: [apps/*]          install.archlinux: [...]
-├── workspaces/
-│   └── myproject/            # target: ~/Workspaces/myproject
-│                              # git: { common/lib: git@github.com:me/lib.git }
+│   │   ├── over.toml
+│   │   └── .gitconfig
+│   └── editor/
+│       ├── over.toml
+│       └── .config/editor/settings.json
 └── hosts/
-    ├── laptop/                # uses: [os/macos, workspaces/myproject]
-    └── workstation/           # uses: [os/archlinux, desktop/hyprland]
+    └── laptop/
+        └── over.toml
 ```
 
-See [`docs/examples.md`](docs/examples.md) for the full walkthrough of both
-layouts, descriptor contents included.
+The root descriptor can set `target = "~"` and
+`default_overlay = "hosts/laptop"`; the host descriptor selects
+`uses = ["apps/git", "apps/editor"]`. Each app inherits configuration from its
+own ancestors. Composition includes independent trees, not a file override stack.
 
-## Why over?
+See [Examples](docs/examples.md) for complete descriptors, content, commands,
+multi-destination mappings, and checkout staging. Supported destination fields
+can use templates such as `{{ machine.hostname }}` and `{{ data.theme }}`;
+file content and arbitrary configuration strings are not automatically templated.
 
-| | over | GNU Stow | chezmoi | yadm |
-|---|---|---|---|---|
-| Unit of management | git repository (overlay) | plain directory ("package") | single git repo | single git repo (bare) |
-| Composing multiple sources | `uses:` (overlay graph) | — | `.chezmoiexternal` (flat includes) | — |
-| Templating | MiniJinja | — | Go `text/template` | Go `text/template` (via alt files) |
-| Package-manager integration | `install:` per overlay, per OS | — | run scripts (`run_once_*`) | — |
-| Materialization | symlink, partial file, or git checkout | symlink only | render + copy, or symlink | symlink |
+## Why Over?
 
-over leans into a git-centric workflow where each overlay is its own
-concern — independently versionable, composable into others, and able to
-declare the packages it needs — rather than one monolithic dotfiles
-repository.
+| | Over | GNU Stow | chezmoi | yadm |
+| --- | --- | --- | --- | --- |
+| Unit of management | directory with cascading configuration (overlay) | plain directory ("package") | single Git repo | single Git repo (bare) |
+| Composition | `uses` (overlay graph) | — | `.chezmoiexternal` (flat includes) | — |
+| Path templating | MiniJinja | — | Go `text/template` | Go `text/template` (via alt files) |
+| Package-manager integration | `install` per overlay, per OS | — | run scripts (`run_once_*`) | — |
+| Materialization | file/directory links, virtual checkout, managed blocks, declared Git repos | symlink only | render + copy, or symlink | symlink |
+
+Each overlay is an independently configured concern that can be composed into
+others and declare the packages it needs. Git versions the source repository;
+an overlay does not need its own repository.
 
 ## Usage
 
-```bash
+```sh
 over --help
 ```
 
-### Commands
+The [command reference](docs/usage/index.md) groups setup (`init`, `new`, `add`,
+`list`), inspection (`status`, `diff`, `data`, `lint`, `doctor`), application
+(`apply`, `unapply`), checkout recording/reconciliation (`commit`, `sync`, `log`),
+and shell `completion`. `ls` aliases `list`; `show` aliases `status`.
 
-| Command | Description |
-|---------|-------------|
-| `over add` | Add files or directories to an overlay |
-| `over new` | Create a new overlay |
-| `over list` (`ls`) | List known overlays |
-| `over show` | Compatibility alias for `over status` |
-| `over data` | Export resolved overlay data as JSON |
-| `over apply` | Apply a given overlay |
-| `over lint` | Check overlays for configuration issues |
-| `over doctor` | Check the environment and overlays for issues |
-| `over completion` | Generate shell completion scripts |
-| `over status` | Inspect resolved configuration and reconciliation health |
-| `over diff` | Show Git changes for managed overlay paths, with staged and difftool views |
-| `over sync` | Reconcile a checkout-materialized overlay with its git source |
-| `over unapply` | Remove a given overlay's own entries from the target |
-| `over commit` | Commit local changes in a checkout-materialized overlay back to its source repository |
-| `over log` | Show the git history behind a checkout-materialized overlay |
-
-`over`'s `git` subcommand group integrates with git workflows:
-
-| Command | Description |
-|---------|-------------|
-| `over git mount` | Mount the current git repository to an overlay |
-| `over git add` | Add files from the current git repository to an overlay |
-| `over git status` | Show overlay status for the current git repository |
-
-See the [documentation](https://noirbizarre.github.io/over/) for the full
-command reference, configuration format, and install-manager reference
-(package managers, precedence rules, platform sections).
+For editable checkouts, `over add` stages selected target snapshots and
+`over commit` records staged changes in the source repository. `over git mount`,
+`over git add`, and `over git status` integrate overlays with a host Git repository;
+see the [Git command group](docs/usage/git.md).
 
 ## Documentation
 
-<https://noirbizarre.github.io/over/>
+- [Getting started](https://noirbizarre.github.io/over/#getting-started)
+- [Examples](docs/examples.md)
+- [Configuration](docs/configuration.md): separate root, overlay, materialization,
+  and install references
+- [Commands](docs/usage/index.md)
+- [Architecture decisions](docs/adr/README.md)
 
 ## Contributing
 

@@ -22,11 +22,23 @@ Options:
 
 When `NAME` is omitted, the repository's configured `default_overlay` (if
 any) is used instead of prompting interactively — see
-[Default Overlay Selection](../configuration.md#default-overlay-selection).
+[Default overlay selection](../configuration/root.md#default-overlay-selection).
 
 An explicit `NAME` retains the configured default's
-[data context](../configuration.md#consumer-metadata-data) for path rendering.
+[data context](../configuration/overlay.md#consumer-metadata-data) for path rendering.
 Only the selected overlay's own entries are removed.
+
+## Example
+
+```sh
+over unapply apps/git --dry-run
+over unapply apps/git
+```
+
+Select the app itself to remove its files. Unapplying a host composition does
+not recursively remove its shared app dependencies. See
+[composition](../configuration/overlay.md#composition) and
+[`over status`](status.md) before removing checkout entries with local changes.
 
 ## What it does
 

@@ -3,7 +3,7 @@
 > Amended by #190: current descriptors use scalar `mode`/`permissions` and
 > shared ordered rules with declaration-relative paths. `link_dirs` is removed;
 > directory-link rules alone may use globs. The historical design below is
-> superseded by the [configuration reference](../configuration.md#materialization-rules).
+> superseded by the [configuration reference](../configuration/materialization.md).
 
 **Status:** accepted
 

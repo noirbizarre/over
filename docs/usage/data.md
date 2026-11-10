@@ -29,7 +29,7 @@ named overlay and both transitive dependency closures. Without a default, only
 the named overlay and its dependencies contribute. An invalid configured default
 is an error even when an explicit name is supplied.
 
-The command uses the same [data resolution rules](../configuration.md#resolution-and-precedence)
+The command uses the same [data resolution rules](../configuration/overlay.md#resolution-and-precedence)
 as templates and the public Rust API: dependencies precede their parents,
 shared dependencies contribute once, and the selected overlay's effective
 inherited mapping merges last. Mappings merge recursively; lists and other

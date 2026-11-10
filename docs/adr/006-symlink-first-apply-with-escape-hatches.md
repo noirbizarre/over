@@ -2,7 +2,7 @@
 
 > Configuration amended by #190: `symlink-directory` rules replace the
 > historical directory-link list. See the
-> [current mode configuration](../configuration.md#materialization-rules).
+> [current mode configuration](../configuration/materialization.md).
 
 **Status:** accepted
 

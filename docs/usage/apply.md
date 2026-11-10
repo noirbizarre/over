@@ -1,8 +1,9 @@
 # `over apply`
 
-Apply a given overlay: optionally install packages first (`--install`), then
-clone any declared git repositories and symlink its files into the target
-root.
+Apply an overlay and its dependencies to their configured targets. Optionally
+install packages (`--install`), provision declared Git repositories, and
+materialize files as links, editable checkouts, or managed blocks according to
+the [configuration](../configuration/materialization.md).
 
 ```text
 Usage: over apply [OPTIONS] [NAME]
@@ -25,14 +26,14 @@ Options:
 
 - When `NAME` is omitted, the repository's configured `default_overlay` (if
   any) is used instead of prompting interactively — see
-  [Default Overlay Selection](../configuration.md#default-overlay-selection).
+  [Default overlay selection](../configuration/root.md#default-overlay-selection).
 - `--no-uses` applies only the named overlay, skipping every overlay it
   `uses` operationally. Metadata still includes all transitive dependencies.
-- The configured default's [data context](../configuration.md#consumer-metadata-data)
+- The configured default's [data context](../configuration/overlay.md#consumer-metadata-data)
   remains available with an explicit `NAME`; this does not apply the default's files.
 - `--install` additionally runs the `install` section (see
-  [Install Configuration](../install-config.md)); without it, `apply` only
-  links files.
+  [Install configuration](../install-config.md)). File materialization, declared
+  Git provisioning, and post-apply hooks do not require `--install`.
 - A file that already exists at the target triggers an interactive prompt
   (skip, overwrite, absorb, diff) unless `--force` or `--no-prompt` is given.
 - `--dry-run`/`--verbose` print the structured reconciliation plan (one line
@@ -46,6 +47,18 @@ Options:
   repository is never excluded. See [`over status`](status.md#gitinfoexclude-diagnostics)
   for how to spot a missing, drifted, orphaned, or malformed block.
 
+## Example
+
+```sh
+over apply hosts/laptop --dry-run
+over apply hosts/laptop
+over status hosts/laptop
+```
+
+Use the preview to inspect conflicts and planned changes before applying.
+See [Examples](../examples.md#compose-a-host) for the corresponding composition
+and [`over unapply`](unapply.md) for reversing a selected overlay's own entries.
+
 ## Lifecycle hooks
 
 Apply can execute repository-provided commands: **only apply repositories you
@@ -58,5 +71,5 @@ no-change apply. `--no-uses` includes only root and selected-overlay hooks;
 If materialization fails, no post-apply hooks run. A hook failure stops later
 hooks and fails the command, preserving completed filesystem changes. Retrying
 apply reruns hooks, so commands must tolerate repeated execution. See
-[Lifecycle Hooks](../configuration.md#lifecycle-hooks) for configuration, working
+[Lifecycle hooks](../configuration/root.md#lifecycle-hooks) for configuration, working
 directories, environment variables, and exit-status behavior.
