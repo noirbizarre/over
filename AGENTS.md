@@ -15,7 +15,7 @@ and focused.
 src/
 ├── lib.rs        the library surface
 ├── main.rs       the `over` binary
-├── actions/      filesystem, symlink, install and git side effects
+├── actions/      filesystem, symlink and git side effects
 ├── cli/          argument types for the CLI (cli/git/ is the `over git` group)
 ├── commit/       `over commit` recording virtual-checkout changes back to the source repository
 ├── desired/      the DesiredTree/DesiredEntry desired-state model

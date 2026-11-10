@@ -68,7 +68,7 @@ facts, before metadata composition; it cannot depend on the `data` it selects.
 
 The default also contributes the host [data context](overlay.md#consumer-metadata-data).
 An explicit name or `--all` changes command selection, but retains that context.
-The default's files and packages are not processed just because its metadata is
+The default's files and hooks are not processed just because its metadata is
 included. An invalid or missing default is an error, including with an explicit
 name or `--all`; Over never silently selects something else.
 
@@ -105,6 +105,9 @@ hooks:
     - git-crypt unlock
   post-init:
     - ./scripts/ensure-local-setup
+  install:
+    - command: ./scripts/install-tools
+      when: machine.os == "linux"
   post-apply:
     - ./scripts/render-secrets
 ```
@@ -136,10 +139,10 @@ MiniJinja environment immediately before execution. They expose machine facts,
 the inherited process `env`, resolved `overlays`, and the shared `paths` object
 (`home`, `over`, and `target`), alongside the execution context. The paths mean
 the actual user's home, the source repository root, and the current overlay's
-effective base destination, respectively. Post-apply hooks can
+effective base destination, respectively. Install and post-apply hooks can
 read the selected overlay's resolved `data`, including inherited and host data.
 Each participant sees its own `overlay`, retaining the selected data snapshot;
-root post-apply hooks see the selected overlay.
+root install and post-apply hooks see the selected overlay.
 
 Init hooks have machine/environment/repository context but no selected overlay
 or composed data: bootstrap never discovers children before unlock hooks run.
@@ -189,10 +192,18 @@ or cwd, resolve execution-only secrets, or spawn a process.
    trigger it.
 2. **`post-init`**: root only, on every successful init, including existing
    checkouts, after any post-clone hooks. Neither init event applies overlays.
-3. **`post-apply`**: after all materialization and Git-exclude reconciliation
-   succeed. Root hooks run once, then participating overlays' own hooks run
-   dependency-first in depth-first `uses` list order. Repeated dependencies run
-   once. A successful no-change apply still executes hooks.
+3. **`install`**: only with `over apply --install` (or `-i`), after all
+   materialization, Git provisioning, and Git-exclude reconciliation succeed.
+   Root hooks run once, then participating overlays' own hooks run dependency-first
+   in depth-first `uses` list order. Repeated dependencies run once.
+4. **`post-apply`**: after reconciliation and any opted-in install hooks complete,
+   with the same root-first, dependency-first ordering. Ordinary apply skips
+   install hooks entirely. A successful no-change apply still executes applicable
+   hooks; repeated install runs have no package deduplication or persistent state.
+
+Install hooks are arbitrary executable commands: applying an untrusted repository
+with `--install` executes repository-provided code. Commands must provide their
+own idempotency. See [Install hooks](../install-config.md) for examples and migration.
 
 Commands within an event run in declaration order, each in a separate `sh -c`
 shell. A POSIX-compatible `sh` must be on `PATH`, including on Windows. Commands
@@ -227,12 +238,12 @@ reserved: attempting to override one is a configuration error.
 | `OVER_HOOK_EVENT` | All hooks: event name |
 | `OVER_REPOSITORY_ROOT` | All hooks: absolute repository source root |
 | `OVER_HOOK_ACTIVE` | All hooks: `1`, suppressing nested dispatch |
-| `OVER_TARGET_ROOT` | Post-apply: absolute execution target root (`--root`) |
-| `OVER_OVERLAY_NAME` | Post-apply: repository-relative overlay name |
-| `OVER_OVERLAY_ROOT` | Post-apply: absolute overlay source directory |
-| `OVER_OVERLAY_TARGET` | Post-apply: absolute resolved base target |
+| `OVER_TARGET_ROOT` | Install and post-apply: absolute execution target root (`--root`) |
+| `OVER_OVERLAY_NAME` | Install and post-apply: repository-relative overlay name |
+| `OVER_OVERLAY_ROOT` | Install and post-apply: absolute overlay source directory |
+| `OVER_OVERLAY_TARGET` | Install and post-apply: absolute resolved base target |
 
-For root post-apply hooks, overlay variables identify the selected overlay; for
+For root install and post-apply hooks, overlay variables identify the selected overlay; for
 overlay hooks, they identify that hook's overlay. Init events remove the four
 apply-only variables even if inherited from the caller.
 
@@ -246,7 +257,8 @@ provider error details. Commands control their own output, which Over does not
 redact. Numeric exit codes are preserved when representable as an 8-bit code;
 spawn errors, signal termination, and unrepresentable codes return `1`.
 
-Failed materialization runs no post-apply hooks. A hook failure leaves completed
+Failed reconciliation runs no install or post-apply hooks. A failed install hook
+also suppresses post-apply. A hook failure leaves completed
 filesystem changes and hook effects in place. Apply retries run hooks from the
 beginning, so write retry-safe commands.
 

@@ -35,8 +35,7 @@ other's files; overlapping ownership is a conflict.
 | `rules` | Ordered path-specific mode/permission assignments | All scopes contribute; `[]` does not clear ancestor rules |
 | `data` | Consumer-owned metadata mapping | Recursive mapping merge; other values replace |
 | `git` | Repositories/worktrees to provision | Tables merge by key; nearer conflicting values replace |
-| `install` | Packages and installation commands | Tables merge by key; nearer lists replace rather than append |
-| `hooks` | Overlay-local post-apply commands | Never inherited |
+| `hooks` | Overlay-local install and post-apply commands | Never inherited |
 
 Root-only preferences are documented in [Root configuration](root.md). Runtime
 fields such as the overlay's name and source root are not descriptor settings.
@@ -69,7 +68,7 @@ The same context is available to path templates and every lifecycle hook field
 These values are filesystem paths serialized as absolute native path strings.
 They retain symlink spelling and do not require the destination to exist. Paths
 that cannot be represented as UTF-8 produce an error rather than a lossy string.
-Each dependency and its hooks see its own target; repository post-apply hooks
+Each dependency and its hooks see its own target; repository install/post-apply hooks
 see the selected overlay's target.
 
 Unavailable fields are undefined, not null. `paths.target` is unavailable during
@@ -340,17 +339,21 @@ ordinary Git. See [`over sync`](../usage/sync.md).
 
 ## Install configuration
 
-`install` declares packages and shell installation commands. It runs only with
-`over apply --install`; see [Install configuration](../install-config.md) for
-platform sections, package-manager fields, and precedence.
+Declare installation commands under `hooks.install`, executed only with
+`over apply --install`, after reconciliation and before post-apply hooks.
+The former top-level `install` field is rejected; see
+[Install hooks](../install-config.md) for examples and migration guidance.
 
 ## Overlay hooks
 
-Declare local commands under `hooks.post-apply`:
+Declare local commands under `hooks.install` and `hooks.post-apply`:
 
 ```yaml
 # ~/.dotfiles/apps/editor/over.yaml
 hooks:
+  install:
+    - command: brew install neovim
+      when: machine.os == "macos"
   post-apply:
     - './scripts/refresh-cache "$OVER_OVERLAY_TARGET"'
     - command: ./scripts/report

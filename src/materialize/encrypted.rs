@@ -168,7 +168,7 @@ impl Materializer for EncryptedFileMaterializer {
     }
 }
 
-/// Validate every selected ciphertext before installers or earlier entries mutate.
+/// Validate every selected ciphertext before earlier entries mutate the target.
 pub(crate) async fn prepare(desired: &crate::desired::DesiredTree, ctx: &Ctx) -> Result<()> {
     if ctx.dry_run {
         return Ok(());

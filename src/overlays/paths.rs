@@ -37,36 +37,6 @@ pub(super) fn logical_path(raw: &str, origin: &Path, overlay: &Path) -> Result<O
     }))
 }
 
-/// Only typed install paths are rewritten; package options and scripts remain opaque.
-pub(super) fn resolve_install_paths(value: &mut Value, origin: &Path) {
-    match &mut value.kind {
-        ValueKind::Table(table) => {
-            for (key, value) in table {
-                if key == "path" {
-                    if let ValueKind::String(path) = &mut value.kind {
-                        // Tilde is execution-root-relative; resolving it here loses that distinction
-                        // before the caller supplies a custom root.
-                        if path == "~" || path.starts_with("~/") {
-                            continue;
-                        }
-                        *path = super::mapping::lexical(&origin.join(&*path))
-                            .to_string_lossy()
-                            .into_owned();
-                    }
-                } else {
-                    resolve_install_paths(value, origin);
-                }
-            }
-        }
-        ValueKind::Array(values) => {
-            for value in values {
-                resolve_install_paths(value, origin);
-            }
-        }
-        _ => {}
-    }
-}
-
 pub(super) fn resolve_remote(raw: &mut String, origin: &Path) {
     // Git's transport URLs and scp-style addresses are identifiers, not local paths.
     if !raw.is_empty()

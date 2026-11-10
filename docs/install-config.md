@@ -1,218 +1,95 @@
-# Install Configuration
+# Install hooks
 
-Define installation requirements per overlay under an `install` key in the
-overlay config (TOML/YAML). Supports system package managers and
-language-specific installers with optional pre/post script hooks. See
-[ADR-004](adr/004-install-config-is-declarative-with-a-shell-escape-hatch.md)
-for the design behind this.
-
-Supported managers:
-
-- System: `archlinux`, `apt`, `brew`, `winget`
-- Language: `cargo`, `python` (uv, pipx, pip), `node` (npm)
-
-## Forms
-
-Each manager accepts either a flat list (shorthand) or a full object with
-`packages`, `pre`, `post` (and manager-specific fields):
-
-Flat (YAML):
+Describe installation steps as ordinary lifecycle hooks, in the repository-root
+descriptor or an overlay's own descriptor:
 
 ```yaml
-install:
-  archlinux:
-    - pkg1
-    - pkg2
-  apt:
-    - curl
-  brew:
-    - jq
-  cargo:
-    - ripgrep
-  python:
-    - requests
-  node:
-    - typescript
-  winget:
-    - Git.Git
+hooks:
+  install:
+    - command: paru -S --needed neovim
+      when: machine.os == "linux" and machine.distro_id == "arch"
+    - command: brew install neovim
+      when: machine.os == "macos"
+    - command: mise install
+      cwd: "{{ paths.home }}"
+      env:
+        EDITOR_HOST: "{{ machine.hostname }}"
 ```
 
-Flat (TOML):
+Run them explicitly:
 
-```toml
-[install]
-archlinux = ["pkg1", "pkg2"]
-apt = ["curl"]
-brew = ["jq"]
-cargo = ["ripgrep"]
-python = ["requests"]
-node = ["typescript"]
-winget = ["Git.Git"]
+```sh
+over apply hosts/laptop --install
 ```
 
-Full (YAML):
+Ordinary `over apply` never runs or prepares install commands. `-i` is an alias
+for `--install`; dry runs execute no hooks, even with the flag.
+
+## Lifecycle and context
+
+All participating overlays must finish reconciliation, including Git provisioning
+and Git-exclude updates, before any install hook runs. With `--install`, root
+install hooks run first, then participating overlays' own install hooks in
+dependency-first `uses` order. All install hooks finish before post-apply hooks
+start. Commands can therefore use configuration deployed by the same invocation,
+and post-apply hooks can use installed applications.
+
+Install hooks use the same [structured-hook features](configuration/root.md#lifecycle-hooks)
+as other events: shorthand or templated `command`, `when`, `cwd`, and `env`.
+Conditions run before execution fields render; a skipped hook neither resolves
+execution-only secrets nor spawns a process. `machine.os` is `linux`, `macos`,
+or `windows`; select Linux distributions with `machine.distro_id`.
+
+`paths.home` is the actual user's home, `paths.over` the source repository root,
+and `paths.target` the current overlay's effective destination. Use
+`cwd: "{{ paths.target }}"` for work in deployed configuration. Root hooks see
+the selected overlay; each overlay hook sees its own target and the selected
+consumer's resolved data. Default cwd is the declaring overlay's source directory,
+or the repository root for root hooks. Explicit relative cwd is repository-root-relative.
+
+Hooks do not inherit through ancestor descriptors. Put shared steps in root
+`hooks.install`, or compose an overlay that owns them through `uses`.
+`--no-uses` includes only root and selected-overlay hooks. A diamond dependency
+participates once; identical commands in different overlays still both run.
+Initialization and read-only commands never run install hooks.
+
+## Failures, retries, and trust
+
+The first failing hook stops later hooks, including post-apply, and fails apply.
+Diagnostics identify the event, scope, and command index without printing command
+or rendered values. Completed file changes and command effects remain. Numeric
+child exit status is preserved where representable; other failures return `1`.
+Nested Over commands suppress further lifecycle dispatch.
+
+Repeated `over apply --install`, including no-change applies and retries, may
+execute every install command again. Over maintains no package identities,
+package deduplication, or persistent installation state. Commands and scripts are
+responsible for their own idempotency and prompt policies. Over's force/no-prompt
+flags do not control child prompts, and child output is not redacted.
+
+**Install hooks are arbitrary executable commands. Applying an untrusted
+repository with `--install` executes repository-provided code.** Review commands
+and scripts before running them. See [Safety and recovery](usage/safety.md).
+
+## Migrate legacy installation configuration
+
+The top-level `install` key and its package-manager/platform tables are removed.
+Descriptors using them fail with migration guidance, including inherited ancestor
+descriptors. Replace them with explicit `hooks.install` commands or scripts:
 
 ```yaml
-install:
-  pre:
-    - echo "setup"
-  archlinux:
-    packages: [pkg1, pkg2]
-  apt:
-    packages: [curl]
-  brew:
-    taps: [my/tap]
-    packages:
-      - name: jq
-      - name: firefox
-        cask: true
-  cargo:
-    packages:
-      - name: ripgrep
-        locked: true
-      - git: https://github.com/sharkdp/fd
-        tag: v9.0.0
-  python:
-    packages:
-      - name: requests
-        tool: uv
-        extras: [security]
-      - name: black
-        tool: pipx
-  node:
-    packages:
-      - name: typescript
-        options: "--force"
-  winget:
-    packages:
-      - name: Git.Git
-      - id: Microsoft.VisualStudioCode
-  post:
-    - echo "done"
+# Replace an old install.apt package list with an explicit command.
+hooks:
+  install:
+    - command: sudo apt-get install -y neovim
+      when: machine.os == "linux" and machine.distro_id == "ubuntu"
 ```
 
-Full (TOML):
+Move pre/post-install steps into the same ordered command list. Choose manager
+flags, platform conditions, and cwd explicitly; Over no longer chooses a package
+manager or merges package lists. Move formerly inherited steps to root hooks or
+an explicitly composed overlay, since hook lists do not inherit.
 
-```toml
-[install]
-pre = ['echo "setup"']
-archlinux.packages = ["pkg1", "pkg2"]
-apt.packages = ["curl"]
-brew.taps = ["my/tap"]
-brew.packages = [
-  { name = "jq" },
-  { name = "firefox", cask = true }
-]
-cargo.packages = [
-  { name = "ripgrep", locked = true },
-  { git = "https://github.com/sharkdp/fd", tag = "v9.0.0" }
-]
-python.packages = [
-  { name = "requests", tool = "uv", extras = ["security"] },
-  { name = "black", tool = "pipx" }
-]
-node.packages = [
-  { name = "typescript", options = "--force" }
-]
-winget.packages = [
-  { name = "Git.Git" },
-  { id = "Microsoft.VisualStudioCode" }
-]
-post = ['echo "done"']
-```
-
-## Brew Package Options
-
-Brew packages can specify `options` (string split by whitespace) and
-`cask: true` to install via the cask tap. The `--cask` flag is automatically
-added when `cask: true` and de-duplicated if already present in `options`.
-
-## Cargo Packages
-
-Fields: `name`, `version`, `git`, `tag`, `branch`, `rev`, `path`, `features`
-(array), `locked` (bool), `options` (extra flags). Provide one of: name
-only, git + optional tag/branch/rev + optional name, or path.
-
-Relative `path` values use the declaring descriptor's root, including in
-platform-specific sections. Inherited paths retain their original base and
-do not depend on the process working directory. Absolute paths remain
-absolute. `~` and `~/...` resolve against the execution root (including a
-custom `--root`) when the installer runs; see
-[Path Resolution](configuration.md#path-resolution).
-
-## Python Packages
-
-Fields: `name`, `tool` (one of `uv`, `pipx`, `pip` or omit for auto),
-`extras` (array), `options` (additional flags). Auto selection prefers `uv`,
-then `pipx`, then `pip` based on availability.
-
-## Node Packages
-
-Installed globally via `npm install -g`. Field: `name`, optional `options`
-appended to the command before the package name.
-
-## Winget Packages
-
-Fields: `name` (display name), `id` (winget package identifier), optional
-`options` (extra flags). Provide either `name` or `id` to identify the
-package.
-
-## Precedence & Execution Order
-
-Order:
-
-1. Global `pre` scripts
-2. Platform `pre` scripts
-3. System managers (Linux precedence determined by distro; macOS: brew;
-   Windows: winget)
-4. Language managers (`cargo`, `python`, `node`)
-5. Platform `post` scripts
-6. Global `post` scripts
-
-Linux system manager precedence:
-
-- Arch: archlinux, brew
-- Debian/Ubuntu: apt, brew
-- Other: archlinux, apt, brew (attempt those present)
-
-If a platform section matching the distro exists, all listed managers in
-precedence order run; otherwise the first available top-level manager only.
-
-## Platform Sections
-
-Add distro/OS-specific overrides using keys inside `install` matching the
-`/etc/os-release` `ID` (e.g. `ubuntu`, `debian`, `arch`) or `macos`/
-`windows`. These mirror top-level structure but apply only on that
-platform.
-
-Note: `archlinux` is **not** a valid platform-section key — it's already
-the top-level Arch package manager field shown above, so
-`[install.archlinux]` sets that manager's config, not a platform override
-(the actual Arch platform key is `arch`, matching the real
-`/etc/os-release` `ID`). Use `arch` for Arch platform overrides.
-
-## Scripts
-
-Each manager can define its own `pre` / `post` arrays executed immediately
-before/after that manager's install step.
-
-## Windows
-
-Windows is supported via `winget` as the system package manager. Language
-managers (`cargo`, `python`, `node`) work the same as on other platforms.
-Platform-specific overrides use the `windows` key inside `install`.
-
-## Composition via Uses
-
-Packages from overlays referenced in `uses` are merged (set union) to avoid
-duplicates across overlays. Managers are discovered across that dependency
-closure, so a composition-only overlay does not need its own `install`
-section. Linux manager precedence is evaluated for each participating
-descriptor; shared managers run once. Each descriptor contributes packages
-and taps only for its selected managers. For example, a Brew-only dependency
-does not enable a host's top-level Brew alternative when the host selects
-Apt. `--no-uses` installs only the selected overlay's packages.
-
-Only the selected overlay's scripts run, in the order above; dependency
-scripts are not inherited through `uses`. See
-[ADR-008](adr/008-uses-composition-is-a-flat-union.md).
+Installation now follows deployment rather than preceding it. Review scripts
+that relied on the old order. See [ADR-027](adr/027-installation-is-an-opt-in-hook-event.md)
+for the architecture decision replacing the dedicated engine.

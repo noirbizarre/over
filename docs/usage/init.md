@@ -77,7 +77,7 @@ moved: set `OVER_HOME=~/.over` or pass `--home ~/.over` to keep using one.
   Git configuration and retry; for an incomplete clone, choose another
   destination or explicitly remove the failed checkout after inspecting it.
 
-Initialization never applies overlays or runs their install commands. Finish
+Initialization never applies overlays or runs install hooks. Finish
 with the normal `over apply [NAME]` workflow when ready.
 
 ## Lifecycle hooks

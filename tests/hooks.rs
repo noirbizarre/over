@@ -103,6 +103,84 @@ impl Fixture {
 }
 
 #[test]
+fn install_hooks_run_only_on_request_after_all_files_and_before_post_apply() {
+    let fixture = Fixture::new();
+    fixture.config("over.yaml", json!({"target": "~", "hooks": {
+        "install": ["test -f \"$TEST_TARGET/deployed/file\" && echo install-root >> \"$HOOK_TRACE\""],
+        "post-apply": ["echo post-root >> \"$HOOK_TRACE\""]
+    }}));
+    for (name, uses) in [("dependency", vec![]), ("selected", vec!["dependency"])] {
+        fixture.config(&format!("{name}/over.yaml"), json!({"uses": uses, "hooks": {
+            "install": [{"command": "test -f file && test \"$HOME_VALUE\" = '{{ paths.home }}' && echo install >> \"$HOOK_TRACE\"",
+                "cwd": "{{ paths.target }}/deployed", "env": {"HOME_VALUE": "{{ paths.home }}"},
+                "when": "machine.os != 'windows' and paths.over is defined"}],
+            "post-apply": [format!("echo post-{name} >> \"$HOOK_TRACE\"")]
+        }}));
+    }
+    fixture.write("selected/deployed/file", "deployed");
+    fixture.apply("selected").assert().success();
+    let post = "post-root\npost-dependency\npost-selected\n";
+    assert_eq!(fixture.trace(), post);
+    for flag in ["--install", "-i"] {
+        fixture.apply("selected").arg(flag).assert().success();
+    }
+    // Identical commands in different overlays must both run on every invocation.
+    assert_eq!(
+        fixture.trace(),
+        format!(
+            "{post}{}",
+            format!("install-root\ninstall\ninstall\n{post}").repeat(2)
+        )
+    );
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn inactive_install_hooks_never_prepare_execution_fields(#[case] dry_run: bool) {
+    let fixture = Fixture::new();
+    fixture.config("over.yaml", json!({"hooks": {"install": [{
+        "command": "{{ secret('unavailable') }}", "cwd": "{{ broken", "env": {"TOKEN": "{{ missing }}"}
+    }]}}));
+    fixture.config("selected/over.yaml", json!({}));
+    let mut command = fixture.apply("selected");
+    if dry_run {
+        command.args(["--install", "--dry-run"]);
+    }
+    command.assert().success();
+    assert_eq!(fixture.trace(), "");
+}
+
+#[test]
+fn failed_install_stops_post_apply_and_retry_reruns_install_after_files_are_applied() {
+    let fixture = Fixture::new();
+    fixture.config("over.yaml", json!({"hooks": {
+        "install": ["echo attempt >> \"$HOOK_TRACE\"; test -f \"$TEST_TARGET/file\" || exit 24; test -f \"$TEST_TARGET/ready\" || exit 23", "echo installed >> \"$HOOK_TRACE\""],
+        "post-apply": ["echo post >> \"$HOOK_TRACE\""]
+    }}));
+    fixture.config("selected/over.yaml", json!({"target": "~"}));
+    fixture.write("selected/file", "applied");
+    fixture
+        .apply("selected")
+        .arg("--install")
+        .assert()
+        .code(23)
+        .stderr(contains("install hook #1"));
+    assert_eq!(fixture.trace(), "attempt\n");
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("file")).unwrap(),
+        "applied"
+    );
+    fs::write(fixture.target.join("ready"), "ready").unwrap();
+    fixture
+        .apply("selected")
+        .arg("--install")
+        .assert()
+        .success();
+    assert_eq!(fixture.trace(), "attempt\nattempt\ninstalled\npost\n");
+}
+
+#[test]
 fn hooks_resolve_native_secrets_in_every_field_from_the_source_repository() {
     let fixture = Fixture::new();
     fixture.add_secret("token", b"secret-directory");
@@ -265,10 +343,12 @@ fn bootstrap_hooks_resolve_secrets_without_discovering_children() {
     assert_eq!(fixture.trace(), "bootstrap\n");
 }
 
-#[test]
-fn hooks_run_root_first_then_once_per_overlay_in_dependency_order_after_all_files_exist() {
+#[rstest]
+fn hooks_run_root_first_then_once_per_overlay_in_dependency_order_after_all_files_exist(
+    #[values("post-apply", "install")] event: &str,
+) {
     let fixture = Fixture::new();
-    fixture.config("over.yaml", json!({"target": "~", "hooks": {"post-apply": [
+    fixture.config("over.yaml", json!({"target": "~", "hooks": {(event): [
         "test -f \"$TEST_TARGET/selected\" && test -f \"$TEST_TARGET/shared\" && echo root >> \"$HOOK_TRACE\"",
         "echo root-second >> \"$HOOK_TRACE\""
     ]}}));
@@ -280,26 +360,36 @@ fn hooks_run_root_first_then_once_per_overlay_in_dependency_order_after_all_file
     ] {
         fixture.config(
             &format!("{name}/over.yaml"),
-            json!({"uses": uses, "hooks": {"post-apply": [
+            json!({"uses": uses, "hooks": {(event): [
                 format!("echo {name} >> \"$HOOK_TRACE\"")
             ]}}),
         );
         fixture.write(&format!("{name}/{name}"), name);
     }
-    fixture.apply("selected").assert().success();
+    fixture
+        .apply("selected")
+        .arg("--install")
+        .assert()
+        .success();
     let expected = "root\nroot-second\nshared\nleft\nright\nselected\n";
     assert_eq!(fixture.trace(), expected);
     // Lifecycle events still run when reconciliation has no changes to make.
-    fixture.apply("selected").assert().success();
+    fixture
+        .apply("selected")
+        .arg("--install")
+        .assert()
+        .success();
     assert_eq!(fixture.trace(), expected.repeat(2));
 }
 
-#[test]
-fn no_uses_and_metadata_only_dependencies_do_not_participate_in_hooks() {
+#[rstest]
+fn no_uses_and_metadata_only_dependencies_do_not_participate_in_hooks(
+    #[values("post-apply", "install")] event: &str,
+) {
     let fixture = Fixture::new();
     fixture.config(
         "over.yaml",
-        json!({"target": "~", "default_overlay": "host", "hooks": {"post-apply": [
+        json!({"target": "~", "default_overlay": "host", "hooks": {(event): [
             "echo root >> \"$HOOK_TRACE\""
         ]}}),
     );
@@ -311,7 +401,7 @@ fn no_uses_and_metadata_only_dependencies_do_not_participate_in_hooks() {
     ] {
         fixture.config(
             &format!("{name}/over.yaml"),
-            json!({"uses": uses, "hooks": {"post-apply": [
+            json!({"uses": uses, "hooks": {(event): [
                 format!("echo {name} >> \"$HOOK_TRACE\"")
             ]}}),
         );
@@ -319,33 +409,44 @@ fn no_uses_and_metadata_only_dependencies_do_not_participate_in_hooks() {
     fixture
         .apply("selected")
         .arg("--no-uses")
+        .arg("--install")
         .assert()
         .success();
     assert_eq!(fixture.trace(), "root\nselected\n");
-    fixture.apply("selected").assert().success();
+    fixture
+        .apply("selected")
+        .arg("--install")
+        .assert()
+        .success();
     assert_eq!(
         fixture.trace(),
         "root\nselected\nroot\ndependency\nselected\n"
     );
 }
 
-#[test]
-fn ancestor_hooks_are_not_inherited_and_root_overlay_hooks_are_not_duplicated() {
+#[rstest]
+fn ancestor_hooks_are_not_inherited_and_root_overlay_hooks_are_not_duplicated(
+    #[values("post-apply", "install")] event: &str,
+) {
     let fixture = Fixture::new();
     fixture.config(
         "over.yaml",
-        json!({"target": "~", "hooks": {"post-apply": ["echo root >> \"$HOOK_TRACE\""]}}),
+        json!({"target": "~", "hooks": {(event): ["echo root >> \"$HOOK_TRACE\""]}}),
     );
     fixture.config(
         "parent/over.yaml",
-        json!({"hooks": {"post-apply": ["echo parent >> \"$HOOK_TRACE\""]}}),
+        json!({"hooks": {(event): ["echo parent >> \"$HOOK_TRACE\""]}}),
     );
     fixture.config("parent/child/over.yaml", json!({}));
-    fixture.apply("parent/child").assert().success();
+    fixture
+        .apply("parent/child")
+        .arg("--install")
+        .assert()
+        .success();
     assert_eq!(fixture.trace(), "root\n");
     // Isolate the root-as-overlay case from child descriptors and content.
     fs::remove_dir_all(fixture.source.join("parent")).unwrap();
-    fixture.apply("").assert().success();
+    fixture.apply("").arg("--install").assert().success();
     assert_eq!(fixture.trace(), "root\nroot\n");
 }
 
@@ -382,7 +483,7 @@ fn a_later_materialization_failure_suppresses_all_hooks() {
     let fixture = Fixture::new();
     fixture.config(
         "over.yaml",
-        json!({"target": "~", "hooks": {"post-apply": ["echo root >> \"$HOOK_TRACE\""]}}),
+        json!({"target": "~", "hooks": {"install": ["echo install >> \"$HOOK_TRACE\""], "post-apply": ["echo root >> \"$HOOK_TRACE\""]}}),
     );
     fixture.config(
         "dependency/over.yaml",
@@ -392,7 +493,11 @@ fn a_later_materialization_failure_suppresses_all_hooks() {
     fixture.config("selected/over.yaml", json!({"uses": ["dependency"]}));
     fixture.write("selected/conflict", "desired");
     fs::write(fixture.target.join("conflict"), "existing").unwrap();
-    fixture.apply("selected").assert().failure();
+    fixture
+        .apply("selected")
+        .arg("--install")
+        .assert()
+        .failure();
     assert_eq!(
         fs::read_to_string(fixture.target.join("first")).unwrap(),
         "applied"
@@ -471,8 +576,7 @@ fn status_and_show_report_sections_without_exposing_or_executing_secret_values()
     );
     fixture.config("selected/over.yaml", json!({
         "data": {"token": "DATA_SECRET"},
-        "hooks": {"post-apply": ["echo HOOK_SECRET >> \"$HOOK_TRACE\""]},
-        "install": {"pre": ["echo INSTALL_SECRET >> \"$HOOK_TRACE\""], "apt": ["PACKAGE_SECRET"]},
+        "hooks": {"post-apply": ["echo HOOK_SECRET >> \"$HOOK_TRACE\""], "install": ["echo INSTALL_SECRET >> \"$HOOK_TRACE\""]},
         "git": {"plugin": {"url": "https://user:REMOTE_SECRET@example.invalid/plugin.git", "config": {"custom.token": "CONFIG_SECRET"}}}
     }));
     for verb in ["status", "show"] {
@@ -482,7 +586,7 @@ fn status_and_show_report_sections_without_exposing_or_executing_secret_values()
             .arg(&fixture.target)
             .assert()
             .code(1)
-            .stdout(contains("install: configured"))
+            .stdout(contains("install: 1"))
             .stdout(contains("post-apply: 1"))
             .stdout(contains("git: plugin"))
             .get_output()
@@ -505,7 +609,7 @@ fn status_and_show_report_sections_without_exposing_or_executing_secret_values()
     assert_eq!(fixture.trace(), "");
     fixture.config(
         "selected/over.yaml",
-        json!({"install": {"apt": {"packages": 42, "pre": ["INVALID_SECRET"]}}}),
+        json!({"hooks": {"install": [{"command": ["INVALID_SECRET"]}]}}),
     );
     let output = fixture
         .command()
@@ -522,8 +626,8 @@ fn status_and_show_report_sections_without_exposing_or_executing_secret_values()
 #[test]
 fn nested_over_operations_do_not_recursively_trigger_hooks() {
     let fixture = Fixture::new();
-    fixture.config("over.yaml", json!({"target": "~", "hooks": {"post-apply": [
-        "echo root >> \"$HOOK_TRACE\"; \"$OVER_TEST_BINARY\" --home \"$OVER_REPOSITORY_ROOT\" apply selected --root \"$OVER_TARGET_ROOT\" --no-prompt"
+    fixture.config("over.yaml", json!({"target": "~", "hooks": {"install": ["echo install >> \"$HOOK_TRACE\""], "post-apply": [
+        "echo root >> \"$HOOK_TRACE\"; \"$OVER_TEST_BINARY\" --home \"$OVER_REPOSITORY_ROOT\" apply selected --install --root \"$OVER_TARGET_ROOT\" --no-prompt"
     ]}}));
     fixture.config(
         "selected/over.yaml",
@@ -567,11 +671,17 @@ fn hook_enabled_apply_requires_a_valid_root_before_materialization() {
 fn root_and_overlay_hooks_work_in_every_descriptor_format(
     #[case] descriptor: &str,
     #[case] config: &str,
+    #[values("post-apply", "install")] event: &str,
 ) {
     let fixture = Fixture::new();
-    fixture.write(descriptor, config);
-    fixture.write(&format!("selected/{descriptor}"), config);
-    fixture.apply("selected").assert().success();
+    let config = config.replace("post-apply", event);
+    fixture.write(descriptor, &config);
+    fixture.write(&format!("selected/{descriptor}"), &config);
+    fixture
+        .apply("selected")
+        .arg("--install")
+        .assert()
+        .success();
     assert_eq!(fixture.trace().lines().count(), 2);
 }
 
@@ -767,13 +877,15 @@ fn signal_termination_of_a_hook_returns_a_nonzero_fallback() {
         .stderr(contains("post-apply hook #1"));
 }
 
-#[test]
-fn structured_hooks_share_data_and_machine_context_and_isolate_environment_overrides() {
+#[rstest]
+fn structured_hooks_share_data_and_machine_context_and_isolate_environment_overrides(
+    #[values("post-apply", "install")] event: &str,
+) {
     let fixture = Fixture::new();
     fixture.config("over.yaml", json!({"data": {"inherited": "parent"}}));
     fixture.config("selected/over.yaml", json!({
         "data": {"value": "consumer"},
-        "hooks": {"post-apply": [
+        "hooks": {(event): [
             {"command": "printf '%s\\n' '{{ data.inherited }}' '{{ machine.os }}' \"$VALUE\" \"$EMPTY\" >> \"$HOOK_TRACE\"; test \"$PWD\" -ef \"$OVER_REPOSITORY_ROOT\"",
              "env": {"VALUE": "{{ data.value }}", "EMPTY": ""}, "cwd": ".", "when": "machine.os != 'windows'"},
             "printf '%s\\n' \"$VALUE\" '{{ overlay.name }}' >> \"$HOOK_TRACE\"",
@@ -783,6 +895,7 @@ fn structured_hooks_share_data_and_machine_context_and_isolate_environment_overr
     fixture
         .apply("selected")
         .env("VALUE", "inherited")
+        .arg("--install")
         .assert()
         .success();
     assert_eq!(
@@ -817,16 +930,22 @@ fn hook_conditions_accept_only_the_documented_boolean_none_and_string_semantics(
     assert_eq!(fixture.trace(), if runs { "ran\n" } else { "" });
 }
 
-#[test]
-fn skipped_hooks_never_render_execution_fields_or_spawn_commands() {
+#[rstest]
+fn skipped_hooks_never_render_execution_fields_or_spawn_commands(
+    #[values("post-apply", "install")] event: &str,
+) {
     let fixture = Fixture::new();
-    fixture.config("over.yaml", json!({"hooks": {"post-apply": [
+    fixture.config("over.yaml", json!({"hooks": {(event): [
         {"command": "{{ secret('unavailable') }}", "env": {"TOKEN": "{{ broken"}, "cwd": "missing", "when": "false"},
         {"command": "echo never >> \"$HOOK_TRACE\"", "cwd": "{{ secret('unavailable') }}", "when": "none"},
         {"command": "echo never >> \"$HOOK_TRACE\"", "env": {"TOKEN": "{{ secret('unavailable') }}"}, "when": "''"}
     ]}}));
     fixture.config("selected/over.yaml", json!({}));
-    fixture.apply("selected").assert().success();
+    fixture
+        .apply("selected")
+        .arg("--install")
+        .assert()
+        .success();
     assert!(!fixture.trace.exists());
 }
 

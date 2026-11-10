@@ -132,11 +132,11 @@ file content and arbitrary configuration strings are not automatically templated
 | Unit of management | directory with cascading configuration (overlay) | plain directory ("package") | single Git repo | single Git repo (bare) |
 | Composition | `uses` (overlay graph) | — | `.chezmoiexternal` (flat includes) | — |
 | Path templating | MiniJinja | — | Go `text/template` | Go `text/template` (via alt files) |
-| Package-manager integration | `install` per overlay, per OS | — | run scripts (`run_once_*`) | — |
+| Installation commands | opted-in `hooks.install`, with platform conditions | — | run scripts (`run_once_*`) | — |
 | Materialization | file/directory links, virtual checkout, managed blocks, declared Git repos | symlink only | render + copy, or symlink | symlink |
 
 Each overlay is an independently configured concern that can be composed into
-others and declare the packages it needs. Git versions the source repository;
+others and declare installation hooks for the tools it needs. Git versions the source repository;
 an overlay does not need its own repository.
 
 ## Usage
@@ -160,7 +160,7 @@ see the [Git command group](docs/usage/git.md).
 - [Getting started](https://noirbizarre.github.io/over/#getting-started)
 - [Examples](docs/examples.md)
 - [Configuration](docs/configuration.md): separate root, overlay, materialization,
-  and install references
+  and install-hook references
 - [Commands](docs/usage/index.md)
 - [Architecture decisions](docs/adr/README.md)
 

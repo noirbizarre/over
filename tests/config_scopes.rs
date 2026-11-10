@@ -80,30 +80,15 @@ fn inherited_destinations_and_mapping_entries_keep_independent_origins() {
 }
 
 #[test]
-fn inherited_cargo_paths_and_local_git_sources_keep_the_declaring_root() {
+fn inherited_local_git_sources_keep_the_declaring_root() {
     let temp = TempDir::new().unwrap();
     write(
         temp.path(),
         "over.yaml",
-        "install:\n  cargo:\n    packages:\n      - path: crates/root\n  linux:\n    cargo:\n      packages:\n        - path: crates/linux\ngit:\n  ov/vendor:\n    url: local/repository\n    remotes:\n      mirror:\n        url: ../mirror\n",
+        "git:\n  ov/vendor:\n    url: local/repository\n    remotes:\n      mirror:\n        url: ../mirror\n",
     );
     write(temp.path(), "ov/over.yaml", "description: child\n");
     let overlay = Repository::new(temp.path().into()).get("ov").unwrap();
-    let install = overlay.install.unwrap();
-    assert_eq!(
-        install.cargo.unwrap().packages[0]
-            .path
-            .as_deref()
-            .map(Path::new),
-        Some(temp.path().join("crates/root").as_path())
-    );
-    assert_eq!(
-        install.platforms["linux"].cargo.as_ref().unwrap().packages[0]
-            .path
-            .as_deref()
-            .map(Path::new),
-        Some(temp.path().join("crates/linux").as_path())
-    );
     let git = overlay.git.unwrap();
     assert_eq!(
         Path::new(&git["vendor"].url),
@@ -112,6 +97,7 @@ fn inherited_cargo_paths_and_local_git_sources_keep_the_declaring_root() {
 }
 
 #[rstest]
+#[case("install: {apt: [curl]}\n", "migrate to `hooks.install`")]
 #[case("defaults: {materialization: checkout}\n", "no longer supported")]
 #[case("link_dirs: [config/*]\n", "no longer supported")]
 #[case("permissions: [{path: secret, mode: '600'}]\n", "octal string")]

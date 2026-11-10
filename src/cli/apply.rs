@@ -4,7 +4,6 @@ use anyhow::{Result, anyhow};
 use clap::Args;
 use dirs::home_dir;
 
-use crate::actions;
 use crate::cli::CLI;
 use crate::cli::common::select_overlay;
 use crate::exec::Context;
@@ -41,7 +40,7 @@ pub struct Params {
     #[clap(long, help = "Skip dependency operations, retaining dependency data")]
     no_uses: bool,
 
-    #[clap(long, short, help = "Install associated applications")]
+    #[clap(long, short, help = "Run install hooks after applying files")]
     install: bool,
 }
 
@@ -70,6 +69,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .discard_checkout(args.discard_checkout)
         .no_prompt(args.no_prompt)
         .no_uses(args.no_uses)
+        .install(args.install)
         .root(root)
         .repository(repo)
         .build();
@@ -85,16 +85,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
 
     let ctx = ctx.with_overlay(overlay.clone()).resolve_data()?;
-
-    if args.install {
-        overlay.validate_apply(&ctx)?;
-        crate::materialize::encrypted::prepare(
-            &crate::desired::DesiredTree::build(&ctx, &overlay)?,
-            &ctx,
-        )
-        .await?;
-        actions::install::install(&ctx, &overlay).await?;
-    }
 
     overlay.apply(&ctx).await.inspect_err(|e| {
         ui::warn(format!(

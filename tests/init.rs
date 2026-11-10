@@ -382,7 +382,7 @@ fn initialization_neither_renders_templates_nor_applies_or_installs() {
     let sentinel = tmp.path().join("installed");
     let src = tmp.path().join("source");
     let config = format!(
-        "target: '{}'\ndefault_overlay: '{{{{ missing.variable }}}}'\ninstall:\n  pre: 'touch \"{}\"'\n",
+        "target: '{}'\ndefault_overlay: '{{{{ missing.variable }}}}'\nhooks:\n  install: ['touch \"{}\"']\n",
         target.display(),
         sentinel.display()
     );

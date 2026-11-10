@@ -1,6 +1,5 @@
 pub mod fs;
 pub mod git;
-pub mod install;
 pub mod partial;
 pub mod symlink;
 

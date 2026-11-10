@@ -2065,15 +2065,16 @@ mode = "symlink"
 }
 
 #[test]
-fn show_overlay_with_install_config() -> TestResult {
+fn show_reports_install_hook_counts() -> TestResult {
     let tmp = TempDir::new()?;
+    fs::write(tmp.path().join("over.toml"), "target = '~'\n")?;
     let ov = tmp.path().join("install_overlay");
     fs::create_dir_all(&ov)?;
     fs::write(
         ov.join("over.toml"),
         br#"target = "~"
-[install]
-apt = ["curl"]
+[hooks]
+install = ["echo install"]
 "#,
     )?;
 
@@ -2084,7 +2085,7 @@ apt = ["curl"]
         .assert()
         .success()
         .stdout(contains("install_overlay"))
-        .stdout(contains("install:"));
+        .stdout(contains("install: 1"));
     Ok(())
 }
 

@@ -48,12 +48,12 @@ host layout used here.
 Each overlay has separate **Configuration** and **Reconciliation** sections.
 Configuration includes the source root, resolved target and its origin,
 dependencies in composition order, directory mappings with resolved destinations,
-materialization baseline and rule count, declared Git destinations, and install
-and lifecycle-hook summaries. These describe intent even when targets are missing.
+materialization baseline and rule count, declared Git destinations, and
+lifecycle-hook counts including install. These describe intent even when targets are missing.
 
 Use `--verbose` to expand dependency configuration, policy scopes, selectors,
 permissions and excludes in cascade order. Scopes name their declaring descriptor;
-mapping origins name their declaration directory. Install and Git summaries name
+mapping origins name their declaration directory. Git summaries name
 the latest contributing descriptor; individual merged settings can also inherit
 from earlier scopes. Hooks are local to their overlay or repository, not inherited.
 
@@ -61,8 +61,8 @@ Unhealthy paths show their source or sidecar/declaration, owning overlay,
 materialization intent, and responsible rule/scope where available. Healthy paths
 are summarized by default and expanded with `--verbose`.
 
-Scripts, consumer data values, package options, remote URLs and arbitrary Git
-configuration values are omitted. Install sections and hooks are described by
+Scripts, consumer data values, remote URLs and arbitrary Git
+configuration values are omitted. Hooks, including install, are described by
 presence/counts without executing commands or consulting external providers.
 
 ## Exit status and read-only behavior

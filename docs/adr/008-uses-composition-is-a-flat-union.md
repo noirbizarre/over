@@ -2,6 +2,11 @@
 
 **Status:** accepted
 
+The historical package-union behavior below was replaced by install hooks in
+[ADR-027](027-installation-is-an-opt-in-hook-event.md). Hook participation follows
+the same dependency graph, but commands and packages are not deduplicated across
+different overlays.
+
 ## Context
 
 An overlay can `uses` other overlays, pulling in their files and packages.

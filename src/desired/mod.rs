@@ -49,8 +49,8 @@
 //!   that's [`crate::plan`] (#13) and [`crate::materialize`] (#108).
 //!   `DesiredTree` is consumed by those, not a replacement for
 //!   `Overlay::apply` itself.
-//! - `install` config (package managers): not filesystem materialization, so
-//!   it has no representation in `DesiredTree`.
+//! - Lifecycle hooks: executable side effects have no representation in
+//!   `DesiredTree`, including opted-in install hooks.
 
 mod entry;
 pub(crate) mod ownership;
