@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::actions;
 use crate::actions::git::config::{GitRepoConfig, deserialize_git_field};
-use crate::actions::install::InstallConfig;
 use crate::desired::DesiredTree;
 use crate::exec::{self, Ctx};
 use crate::git_exclude;
@@ -95,8 +94,6 @@ pub struct Overlay {
 
     #[serde(default, deserialize_with = "deserialize_git_field")]
     pub git: Option<HashMap<String, GitRepoConfig>>,
-
-    pub install: Option<InstallConfig>,
 
     pub mode: Option<MaterializationKind>,
     pub permissions: Option<FileMode>,
@@ -185,6 +182,11 @@ impl Overlay {
                 .map(|extension| directory.join(format!("over.{extension}")))
                 .find(|path| path.is_file())
                 .unwrap_or_else(|| directory.join("over"));
+            anyhow::ensure!(
+                !values.contains_key("install"),
+                "{}: top-level `install` is no longer supported; migrate to `hooks.install` and run `over apply --install`",
+                descriptor.display()
+            );
             for key in ["default", "defaults", "materialization", "link_dirs"] {
                 anyhow::ensure!(
                     !values.contains_key(key),
@@ -255,7 +257,7 @@ impl Overlay {
                 })
                 .transpose()?;
             let origin = super::paths::absolute_origin(directory)?;
-            for key in ["target", "uses", "install", "git"] {
+            for key in ["target", "uses", "git"] {
                 if values.contains_key(key) {
                     field_origins.insert(key.to_owned(), descriptor.clone());
                 }
@@ -283,9 +285,6 @@ impl Overlay {
                     }
                 }
                 value.kind = config::ValueKind::Table(normalized);
-            }
-            if let Some(value) = values.get_mut("install") {
-                super::paths::resolve_install_paths(value, &origin);
             }
             if let Some(value) = values.get_mut("git") {
                 super::paths::resolve_git_paths(value, &origin, root)?;
@@ -435,60 +434,43 @@ impl Overlay {
         let selected_ctx = ctx
             .with_overlay(self.clone())
             .with_target(selected_target.clone());
-        crate::hooks::run(
-            &root_hooks,
-            crate::hooks::Event::PostApply,
-            crate::hooks::HookContext {
-                templates: selected_ctx,
-                repository: &ctx.repository.root,
-                cwd: &ctx.repository.root,
-                scope: "repository root",
-                overlay: Some((&self.name, &self.root, &selected_target)),
-                target_root: Some(&ctx.root),
-            },
-        )
-        .await?;
-        for (overlay, target) in applied {
-            let overlay_ctx = ctx
-                .with_overlay(overlay.clone())
-                .with_target(target.clone());
+        // Installation consumes deployed files; post-apply can then use installed tools.
+        let events = [
+            ctx.install.then_some(crate::hooks::Event::Install),
+            Some(crate::hooks::Event::PostApply),
+        ];
+        for event in events.into_iter().flatten() {
             crate::hooks::run(
-                &overlay.hooks,
-                crate::hooks::Event::PostApply,
+                &root_hooks,
+                event,
                 crate::hooks::HookContext {
-                    templates: overlay_ctx,
+                    templates: selected_ctx.clone(),
                     repository: &ctx.repository.root,
-                    cwd: &overlay.root,
-                    scope: &format!("overlay '{}'", overlay.name),
-                    overlay: Some((&overlay.name, &overlay.root, &target)),
+                    cwd: &ctx.repository.root,
+                    scope: "repository root",
+                    overlay: Some((&self.name, &self.root, &selected_target)),
                     target_root: Some(&ctx.root),
                 },
             )
             .await?;
-        }
-        Ok(())
-    }
-
-    /// Validate before external installers can make irreversible changes.
-    pub fn validate_apply(&self, ctx: &Ctx) -> Result<()> {
-        // Installers run before apply, so they need the same composed preflight.
-        DesiredTree::build(ctx, self)?.validate_ownership()?;
-        let mut participants = Vec::new();
-        self.collect_participants(ctx, &mut HashSet::new(), &mut Vec::new(), &mut participants)?;
-        if !ctx.repository.hooks()?.is_empty()
-            || participants.iter().any(|overlay| !overlay.hooks.is_empty())
-        {
-            ctx.repository.validate_initialization()?;
-        }
-        for overlay in participants {
-            let overlay_ctx = ctx.with_overlay(overlay.clone());
-            let desired = DesiredTree::build_own(&overlay_ctx, &overlay)?;
-            let plan = Plan::build(&desired)?;
-            plan.validate_boundaries()?;
-            anyhow::ensure!(
-                !ctx.no_prompt || ctx.force || !plan.has_conflicts(),
-                "unresolved apply conflicts prevent installation under --no-prompt"
-            );
+            for (overlay, target) in &applied {
+                let overlay_ctx = ctx
+                    .with_overlay((*overlay).clone())
+                    .with_target(target.clone());
+                crate::hooks::run(
+                    &overlay.hooks,
+                    event,
+                    crate::hooks::HookContext {
+                        templates: overlay_ctx,
+                        repository: &ctx.repository.root,
+                        cwd: &overlay.root,
+                        scope: &format!("overlay '{}'", overlay.name),
+                        overlay: Some((&overlay.name, &overlay.root, target)),
+                        target_root: Some(&ctx.root),
+                    },
+                )
+                .await?;
+            }
         }
         Ok(())
     }
@@ -677,12 +659,6 @@ mod tests {
             .no_prompt(true)
             .force(force)
             .build();
-        let before_install = overlay.validate_apply(&context).unwrap_err();
-        assert!(
-            before_install
-                .to_string()
-                .contains("conflicting target ownership")
-        );
         let error = overlay.apply(&context).await.unwrap_err();
         assert!(error.to_string().contains("conflicting target ownership"));
         assert!(

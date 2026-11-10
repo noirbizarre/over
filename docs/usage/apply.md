@@ -1,7 +1,7 @@
 # `over apply`
 
 Apply an overlay and its dependencies to their configured targets. Optionally
-install packages (`--install`), provision declared Git repositories, and
+run install hooks (`--install`), provision declared Git repositories, and
 materialize files as links, editable checkouts, or managed blocks according to
 the [configuration](../configuration/materialization.md).
 
@@ -21,7 +21,7 @@ Options:
       --no-prompt    Fail on conflict instead of prompting
       --discard-checkout  Discard owned real checkouts, including local files and Git history
       --no-uses      Skip dependency operations, retaining dependency data
-  -i, --install      Install associated applications
+  -i, --install      Run install hooks after applying files
   -h, --help         Print help
 ```
 
@@ -32,8 +32,8 @@ Options:
   `uses` operationally. Metadata still includes all transitive dependencies.
 - The configured default's [data context](../configuration/overlay.md#consumer-metadata-data)
   remains available with an explicit `NAME`; this does not apply the default's files.
-- `--install` additionally runs the `install` section (see
-  [Install configuration](../install-config.md)). File materialization, declared
+- `--install` additionally runs `hooks.install` (see
+  [Install hooks](../install-config.md)). File materialization, declared
   Git provisioning, and post-apply hooks do not require `--install`.
 - A file that already exists at the target triggers an interactive prompt
   (skip, overwrite, absorb, diff) unless `--force` or `--no-prompt` is given.
@@ -69,21 +69,24 @@ Apply has no whole-command rollback or permanent overwrite/absorb backup.
 Absorb changes source content as well as the target. Reapply/unapply cannot
 recover previously overwritten user data.
 
-With `--install`, available configuration and ownership validation runs first,
-then packages/install scripts run before file materialization. Later failure
-does not undo package or script changes. External commands retain their own
+With `--install`, install hooks run after all overlays reconcile and before
+post-apply hooks. Later failure does not undo file or command changes.
+External commands retain their own
 prompt policies; Over's force/no-prompt flags do not control child prompts.
 
 ## Lifecycle hooks
 
 Apply can execute repository-provided commands: **only apply repositories you
-trust**. After all participating overlays materialize successfully, root
-`hooks.post-apply` runs once, followed by each overlay's own post-apply hooks in
-dependency-first order, without duplicates. These hooks also run on a successful
+trust**. With `--install`, applying an untrusted repository executes its arbitrary
+installation commands. After all participating overlays reconcile successfully,
+opted-in `hooks.install` runs first, then `hooks.post-apply`. Each event runs root
+hooks once, followed by each overlay's own hooks in dependency-first order,
+without duplicate participants. These hooks also run on a successful
 no-change apply. `--no-uses` includes only root and selected-overlay hooks;
 `--dry-run` executes none.
 
-If materialization fails, no post-apply hooks run. A hook failure stops later
+Ordinary apply does not prepare or execute install hooks. If materialization
+fails, neither install nor post-apply hooks run. A hook failure stops later
 hooks and fails the command, preserving completed filesystem changes. Retrying
 apply reruns hooks, so commands must tolerate repeated execution. See
 [Lifecycle hooks](../configuration/root.md#lifecycle-hooks) for configuration, working

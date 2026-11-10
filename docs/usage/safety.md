@@ -2,7 +2,7 @@
 
 Over checks ownership before changing deployed content. Use `apply --dry-run`,
 `unapply --dry-run`, and `sync --dry-run` to inspect affected paths. A preview
-never prompts, executes hooks/installers, updates checkpoints, or writes Git
+never prompts, executes hooks, updates checkpoints, or writes Git
 objects, indexes, or refs. It is a snapshot, not a reservation of those paths.
 
 ## Authorization contract
@@ -37,7 +37,7 @@ Changing a mode authorizes automatic replacement only for reconstructible owned
 state: matching source links, exact source-link mirrors, or clean virtual
 checkouts without independent destinations. Foreign legacy links are preserved.
 To change a checkout to recursive per-file links, unapply its old layout first.
-Blocked migrations fail apply and suppress post-apply hooks.
+Blocked migrations fail apply and suppress install and post-apply hooks.
 
 ## Operation inventory
 
@@ -61,7 +61,7 @@ Blocked migrations fail apply and suppress post-apply hooks.
 | Reverse add/staging | Selected deployment/source paths or selected source-index entries; explicit `add`/`git add` | Source selection, checkout association and mapping checks apply. Virtual staging preserves source working files and unrelated staging. Ordinary reverse-add moves content into the source: inspect paths before running. |
 | Host Git excludes | Only the overlay's marker block in `.git/info/exclude` | Does not alter the host index or tracked files; malformed blocks remain intact. Unapply removes its own block unless encrypted destinations are retained. Dry-run leaves excludes untouched. |
 | Lifecycle hooks/external diff tools | Arbitrary effects of trusted repository commands | Lifecycle hooks run only at their documented events, stop on failure and are suppressed under dry-run; their effects are outside Over's filesystem ownership model. External inspection tools can have their own side effects. |
-| Install packages/scripts | Package-manager/system changes and arbitrary pre/post-install commands; explicit `apply --install` | Available configuration/ownership validation precedes installation. Installation precedes materialization; dry-run skips execution. Child commands have their own prompt/privilege policies. |
+| Install hooks | Arbitrary repository-provided commands, including package-manager/system changes; explicit `apply --install` | Run only after all reconciliation succeeds, before post-apply. Dry-run skips execution. Child commands have their own prompt/privilege policies and must be safe to repeat. |
 
 ## Recovery limitations
 

@@ -48,9 +48,8 @@ fn parse_os_release_field(content: &str, key: &str) -> Option<String> {
         .map(|value| value.trim_matches('"').to_string())
 }
 
-/// Distro ID (e.g. `"ubuntu"`, `"arch"`) from `/etc/os-release`. Used both for
-/// package-manager resolution (`actions::install`) and the `machine.distro_id`
-/// template variable. Memoized: the file never changes mid-process.
+/// Distro ID (e.g. `"ubuntu"`, `"arch"`) for `machine.distro_id` templates.
+/// Memoized because machine facts must remain consistent within an invocation.
 pub fn detect_linux_distro_id() -> Option<String> {
     static DISTRO_ID: OnceLock<Option<String>> = OnceLock::new();
     DISTRO_ID

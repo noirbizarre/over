@@ -100,6 +100,9 @@ pub struct Context {
     /// Skip operational overlay composition, retaining dependency metadata.
     pub no_uses: bool,
 
+    /// Run install hooks after reconciliation, before post-apply hooks.
+    pub install: bool,
+
     /// Target root (~)
     pub root: PathBuf,
 
@@ -158,6 +161,7 @@ pub struct ContextBuilder {
     discard_checkout: bool,
     no_prompt: bool,
     no_uses: bool,
+    install: bool,
     root: PathBuf,
     repository: Repository,
     overlay: Option<Overlay>,
@@ -168,6 +172,11 @@ pub struct ContextBuilder {
 }
 
 impl ContextBuilder {
+    pub fn install(mut self, install: bool) -> Self {
+        self.install = install;
+        self
+    }
+
     pub fn data(mut self, data: DataMap) -> Self {
         self.data = data;
         self
@@ -250,6 +259,7 @@ impl ContextBuilder {
             discard_checkout: self.discard_checkout,
             no_prompt: self.no_prompt,
             no_uses: self.no_uses,
+            install: self.install,
             root: self.root,
             repository: self.repository,
             overlay: self.overlay,

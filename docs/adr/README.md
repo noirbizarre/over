@@ -30,7 +30,7 @@ semantics, use the [configuration reference](../configuration.md) and
 | [001](001-two-binaries-one-crate.md) | Two binaries, one crate |
 | [002](002-overlay-is-a-directory-not-a-repository.md) | An overlay is a directory and a cascading descriptor chain, not a git repository |
 | [003](003-overlay-descriptors-tolerate-any-format-on-read.md) | Overlay descriptors tolerate any format on read; `format` only governs what `over new` writes |
-| [004](004-install-config-is-declarative-with-a-shell-escape-hatch.md) | Install configuration is declarative package sets with an explicit shell escape hatch |
+| [004](004-install-config-is-declarative-with-a-shell-escape-hatch.md) | Declarative install configuration; superseded by ADR-027 |
 | [005](005-async-is-scoped-to-io-concurrency.md) | Async is scoped to I/O concurrency, not a scheduled execution plan |
 | [006](006-symlink-first-apply-with-escape-hatches.md) | Symlink-first apply, with two explicit widening escape hatches |
 | [007](007-git2-is-not-confined-to-actions-git.md) | `git2` is a direct dependency of the CLI layer, not confined to `actions::git` |
@@ -53,3 +53,4 @@ semantics, use the [configuration reference](../configuration.md) and
 | [024](024-doctor-aggregates-diagnostics-and-repairs-only-its-own-corruption.md) | `over doctor` aggregates existing diagnostics and repairs only its own corruption |
 | [025](025-directory-mappings-and-checkout-staging.md) | Directory mappings partition ownership; virtual-checkout adds stage snapshots |
 | [026](026-git-aware-diff-delegates-presentation-to-git.md) | Git-aware diff delegates presentation to Git |
+| [027](027-installation-is-an-opt-in-hook-event.md) | Installation is an opt-in lifecycle hook event, superseding ADR-004 |

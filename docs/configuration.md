@@ -11,7 +11,7 @@ that inheritance chain.
 | [Root configuration](configuration/root.md) | Repository preferences, overlay discovery, default selection, and lifecycle hooks |
 | [Overlay configuration](configuration/overlay.md) | Targets, composition, inheritance, mappings, metadata, and sidecars |
 | [Materialization](configuration/materialization.md) | File/directory symlinks, editable checkouts, precedence, and lifecycle |
-| [Install configuration](install-config.md) | Packages, platform sections, and installation commands |
+| [Install hooks](install-config.md) | Opted-in installation commands and migration guidance |
 
 For complete layouts, start with [Examples](examples.md). For your first applied
 overlay, follow [Getting started](index.md#getting-started).
@@ -26,7 +26,7 @@ Configured filesystem paths retain the root of their **declaring** descriptor:
 - Inherited values keep their original base when other fields are overridden.
 
 This applies to sources, destinations, rule paths, excludes, declared Git
-placement/local remotes, and Cargo package `path` values. Nested `.link.*`
+placement/local remotes. Nested `.link.*`
 referents and `.partial.*` destinations use their owning overlay root, not the
 sidecar's containing directory. Absolute paths remain absolute. Destination
 templates render before relative-path resolution. `~` means the execution root
@@ -69,7 +69,7 @@ See [Default overlay selection](configuration/root.md#default-overlay-selection)
 ## Lifecycle hooks
 
 See [Lifecycle hooks](configuration/root.md#lifecycle-hooks), including root events
-and overlay-local post-apply hooks.
+and overlay-local install/post-apply hooks.
 
 ### Events and order
 

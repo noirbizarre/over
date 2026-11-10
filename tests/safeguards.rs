@@ -338,13 +338,14 @@ fn apply_requires_checkout_discard_separately_from_force_during_migration() {
 
 #[cfg(unix)]
 #[test]
-fn known_noninteractive_conflicts_prevent_installer_side_effects() {
+fn known_noninteractive_conflicts_prevent_install_hook_side_effects() {
     let fixture = Fixture::new("");
+    fs::write(fixture.source.join("over.toml"), "").unwrap();
     let marker = fixture.temp.path().join("installer-ran");
     fs::write(
         fixture.source.join("ov/over.toml"),
         format!(
-            "target='~/target'\n[install]\npre=[\"touch '{}'\"]\n",
+            "target='~/target'\n[hooks]\ninstall=[\"touch '{}'\"]\n",
             marker.display()
         ),
     )
@@ -357,7 +358,7 @@ fn known_noninteractive_conflicts_prevent_installer_side_effects() {
         .args(["--install", "--no-prompt"])
         .assert()
         .failure()
-        .stderr(contains("prevent installation"));
+        .stderr(contains("conflict"));
     assert!(!marker.exists());
     assert_eq!(fs::read(fixture.target().join("file")).unwrap(), b"private");
 }

@@ -291,7 +291,6 @@ const VALID_OVERLAY_KEYS: &[&str] = &[
     "format",
     "git",
     "hooks",
-    "install",
     "map",
     "mode",
     "overlays",

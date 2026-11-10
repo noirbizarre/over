@@ -111,6 +111,7 @@ impl Hook {
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Hooks {
+    pub install: Vec<Hook>,
     pub post_clone: Vec<Hook>,
     pub post_init: Vec<Hook>,
     pub post_apply: Vec<Hook>,
@@ -119,6 +120,7 @@ pub struct Hooks {
 impl fmt::Debug for Hooks {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Hooks")
+            .field("install", &self.install.len())
             .field("post_clone", &self.post_clone.len())
             .field("post_init", &self.post_init.len())
             .field("post_apply", &self.post_apply.len())
@@ -142,11 +144,14 @@ impl Hooks {
         let mut hooks = Self::default();
         for (event, commands) in events {
             let destination = match event.as_str() {
+                "install" => &mut hooks.install,
                 "post-clone" => &mut hooks.post_clone,
                 "post-init" => &mut hooks.post_init,
                 "post-apply" => &mut hooks.post_apply,
                 // Even an unknown key may contain a secret, so do not quote it.
-                _ => bail!("unknown hook event; expected post-clone, post-init or post-apply"),
+                _ => bail!(
+                    "unknown hook event; expected install, post-clone, post-init or post-apply"
+                ),
             };
             let serde_json::Value::Array(commands) = commands else {
                 bail!("hook commands must be a list of strings or objects");
@@ -162,11 +167,15 @@ impl Hooks {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.post_clone.is_empty() && self.post_init.is_empty() && self.post_apply.is_empty()
+        self.install.is_empty()
+            && self.post_clone.is_empty()
+            && self.post_init.is_empty()
+            && self.post_apply.is_empty()
     }
 
     fn commands(&self, event: Event) -> &[Hook] {
         match event {
+            Event::Install => &self.install,
             Event::PostClone => &self.post_clone,
             Event::PostInit => &self.post_init,
             Event::PostApply => &self.post_apply,
@@ -176,6 +185,7 @@ impl Hooks {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Event {
+    Install,
     PostClone,
     PostInit,
     PostApply,
@@ -184,6 +194,7 @@ pub enum Event {
 impl fmt::Display for Event {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::Install => "install",
             Self::PostClone => "post-clone",
             Self::PostInit => "post-init",
             Self::PostApply => "post-apply",
@@ -539,6 +550,18 @@ mod tests {
     fn invalid_hooks_fail_without_disclosing_values(#[case] value: serde_json::Value) {
         let error = serde_json::from_value::<Hooks>(value).unwrap_err();
         assert!(!error.to_string().contains("secret-sentinel"));
+    }
+
+    #[test]
+    fn install_only_hooks_are_nonempty_and_hide_commands_in_debug_output() {
+        let hooks: Hooks = serde_json::from_value(json!({"install": ["install-secret"]})).unwrap();
+        assert!(!hooks.is_empty());
+        assert_eq!(
+            serde_json::to_value(hooks.commands(Event::Install)).unwrap(),
+            json!(["install-secret"])
+        );
+        assert_eq!(Event::Install.to_string(), "install");
+        assert!(!format!("{hooks:?}").contains("install-secret"));
     }
 
     #[test]

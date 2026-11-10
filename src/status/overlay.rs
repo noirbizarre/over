@@ -129,10 +129,11 @@ fn origin(overlay: &Overlay, key: &str) -> String {
 
 fn hook_summary(hooks: &Hooks) -> String {
     format!(
-        "post-clone: {}, post-init: {}, post-apply: {}",
+        "post-clone: {}, post-init: {}, post-apply: {}, install: {}",
         hooks.post_clone.len(),
         hooks.post_init.len(),
-        hooks.post_apply.len()
+        hooks.post_apply.len(),
+        hooks.install.len()
     )
 }
 
@@ -262,45 +263,6 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
                 ));
             }
         }
-    }
-    if let Some(install) = &overlay.install {
-        let managers = [
-            ("apt", install.apt.is_some()),
-            ("archlinux", install.archlinux.is_some()),
-            ("brew", install.brew.is_some()),
-            ("cargo", install.cargo.is_some()),
-            ("python", install.python.is_some()),
-            ("node", install.node.is_some()),
-            ("winget", install.winget.is_some()),
-        ]
-        .into_iter()
-        .filter_map(|(name, present)| present.then_some(name))
-        .collect::<Vec<_>>();
-        summary.push(format!("install: configured (managers: {}; pre: {}, post: {}, platform sections: {}; latest contributing scope: {})", managers.join(", "), install.pre.as_ref().map_or(0, Vec::len), install.post.as_ref().map_or(0, Vec::len), install.platforms.len(), origin(overlay, "install")));
-        let mut platforms = install.platforms.iter().collect::<Vec<_>>();
-        platforms.sort_by_key(|(name, _)| *name);
-        for (name, platform) in platforms {
-            let managers = [
-                ("apt", platform.apt.is_some()),
-                ("archlinux", platform.archlinux.is_some()),
-                ("brew", platform.brew.is_some()),
-                ("cargo", platform.cargo.is_some()),
-                ("python", platform.python.is_some()),
-                ("node", platform.node.is_some()),
-                ("winget", platform.winget.is_some()),
-            ]
-            .into_iter()
-            .filter_map(|(name, present)| present.then_some(name))
-            .collect::<Vec<_>>();
-            details.push(format!(
-                "install platform {name}: managers: {}; pre: {}, post: {}",
-                managers.join(", "),
-                platform.pre.as_ref().map_or(0, Vec::len),
-                platform.post.as_ref().map_or(0, Vec::len)
-            ));
-        }
-    } else {
-        summary.push("install: none".into());
     }
     summary.push(format!(
         "hooks (overlay local: {}): {}",

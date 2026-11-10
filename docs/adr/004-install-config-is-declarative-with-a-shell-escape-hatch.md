@@ -1,6 +1,6 @@
 # ADR-004: Install configuration is declarative package sets with an explicit shell escape hatch
 
-**Status:** accepted
+**Status:** superseded by [ADR-027](027-installation-is-an-opt-in-hook-event.md)
 
 ## Context
 
