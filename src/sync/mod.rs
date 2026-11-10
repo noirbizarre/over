@@ -783,10 +783,16 @@ async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Resu
                 }
             }
         }
+        let changes = vc_git::preflight_tree_changes(
+            &repo,
+            &target,
+            &managed_path,
+            &base_entries,
+            &updates_from,
+            &updates_to,
+        )?;
         if !dry_run {
-            let from = vc_git::build_content_tree(&repo, &updates_from)?;
-            let to = vc_git::build_content_tree(&repo, &updates_to)?;
-            vc_git::apply_tree_diff(&repo, &target, &from, &to)?;
+            changes.apply(&target)?;
         }
         anyhow::Ok(repo.head()?.peel_to_commit()?.id().to_string())
     })
@@ -1392,6 +1398,138 @@ mod tests {
                 RepositoryState::Clean
             }
         );
+    }
+
+    #[tokio::test]
+    #[rstest::rstest]
+    async fn virtual_sync_preflights_shape_transitions_before_any_target_mutation(
+        #[values(false, true)] directory_to_file: bool,
+        #[values(
+            "clean",
+            "edited",
+            "untracked",
+            "empty-untracked",
+            "readonly",
+            "hole",
+            "missing-old"
+        )]
+        obstruction: &str,
+        #[values(false, true)] dry_run: bool,
+    ) {
+        let xdg = isolate_xdg_state();
+        let source = TempDir::new().unwrap();
+        let repo = init_committed_repo_ret(source.path());
+        let old = if directory_to_file {
+            "shape/nested/leaf"
+        } else {
+            "shape"
+        };
+        let new = if directory_to_file {
+            "shape"
+        } else {
+            "shape/nested/leaf"
+        };
+        fs::create_dir_all(source.path().join(old).parent().unwrap()).unwrap();
+        fs::write(source.path().join(old), "old").unwrap();
+        fs::write(source.path().join("aaa"), "old unrelated").unwrap();
+        if directory_to_file && obstruction == "hole" {
+            fs::write(source.path().join("shape/foreign"), "independently owned").unwrap();
+        }
+        commit_all(&repo, "base shape");
+        let target = TempDir::new().unwrap();
+        materialize_virtual_checkout(source.path(), target.path()).await;
+        if directory_to_file {
+            fs::remove_dir_all(source.path().join("shape")).unwrap();
+        } else {
+            fs::remove_file(source.path().join(old)).unwrap();
+            fs::create_dir_all(source.path().join(new).parent().unwrap()).unwrap();
+        }
+        fs::write(source.path().join(new), "new").unwrap();
+        fs::write(source.path().join("aaa"), "new unrelated").unwrap();
+        commit_all(&repo, "new shape");
+        match obstruction {
+            "missing-old" => fs::remove_file(target.path().join(old)).unwrap(),
+            "edited" => fs::write(target.path().join(old), "local edit").unwrap(),
+            "untracked" if directory_to_file => {
+                fs::write(target.path().join("shape/foreign"), "private").unwrap()
+            }
+            "empty-untracked" if directory_to_file => {
+                fs::create_dir(target.path().join("shape/foreign")).unwrap()
+            }
+            "readonly" => {
+                let file = target.path().join(old);
+                let mut permissions = fs::metadata(&file).unwrap().permissions();
+                permissions.set_readonly(true);
+                fs::set_permissions(file, permissions).unwrap();
+            }
+            _ => {}
+        }
+        let mut entry = virtual_checkout_entry(target.path().into(), source.path().into());
+        if directory_to_file && obstruction == "hole" {
+            let scope = crate::desired::CheckoutScope {
+                source_excludes: vec![PathBuf::from("shape/foreign")],
+                target_excludes: vec![PathBuf::from("shape/foreign")],
+                ..Default::default()
+            };
+            entry.intent = MaterializationIntent::ScopedVirtualCheckout(scope.clone());
+            let mut record = vc_state::record_for(target.path()).await.unwrap().unwrap();
+            record.scope = scope;
+            vc_state::persist(target.path(), record).await.unwrap();
+        }
+        let before = checkout_snapshot(target.path());
+        let state_before = fs::read(xdg.path().join("over/virtual_checkout.toml")).unwrap();
+        let result = if obstruction == "clean" {
+            // Exercise public dispatch too: shape-only upstream changes must be
+            // classified as pullable rather than reaching a commit prompt.
+            sync(
+                &DesiredTree::from_entries(vec![entry.clone()]),
+                &SyncOptions {
+                    dry_run,
+                    no_prompt: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(|outcomes| {
+                assert!(matches!(
+                    outcomes[0],
+                    SyncOutcome::FastForwarded { .. } | SyncOutcome::Preview { .. }
+                ));
+            })
+        } else {
+            reconcile_virtual_checkout(&entry, dry_run).await
+        };
+        let blocked = obstruction == "edited"
+            || obstruction == "readonly"
+            || (directory_to_file
+                && matches!(obstruction, "untracked" | "empty-untracked" | "hole"));
+        assert_eq!(result.is_err(), blocked, "{result:?}");
+        if blocked || dry_run {
+            assert_eq!(checkout_snapshot(target.path()), before);
+            assert_eq!(
+                fs::read(xdg.path().join("over/virtual_checkout.toml")).unwrap(),
+                state_before
+            );
+        } else {
+            assert_eq!(fs::read(target.path().join(new)).unwrap(), b"new");
+            assert_eq!(
+                fs::read(target.path().join("aaa")).unwrap(),
+                b"new unrelated"
+            );
+            assert_eq!(
+                status::virtual_checkout::inspect(&entry).unwrap(),
+                Status::Applied
+            );
+        }
+        // Windows cannot clean up read-only fixture files.
+        if obstruction == "readonly" {
+            let file = target.path().join(old);
+            fs::set_permissions(
+                &file,
+                fs::metadata(source.path().join(new)).unwrap().permissions(),
+            )
+            .unwrap();
+        }
     }
 
     #[tokio::test]

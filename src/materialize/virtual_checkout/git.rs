@@ -200,9 +200,182 @@ pub(crate) fn apply_tree_diff(
 ) -> Result<()> {
     let from_entries = tracked_entries(from_tree)?;
     let to_entries = tracked_entries(to_tree)?;
+    preflight_tree_changes(
+        repo,
+        target,
+        Path::new(""),
+        &from_entries,
+        &from_entries,
+        &to_entries,
+    )?
+    .apply(target)
+}
 
-    for (path, (oid, mode)) in &to_entries {
-        if from_entries.get(path) != Some(&(*oid, *mode)) {
+/// The complete removal/write order is computed before any mutation. In
+/// particular, a late directory obstruction cannot follow an earlier file write.
+pub(crate) struct TreeChanges {
+    removed: Vec<PathBuf>,
+    directories: Vec<PathBuf>,
+    writes: Vec<(PathBuf, Vec<u8>, i32)>,
+}
+
+pub(crate) fn preflight_tree_changes(
+    repo: &Repository,
+    target: &Path,
+    managed: &Path,
+    owned: &BTreeMap<PathBuf, (Oid, i32)>,
+    from: &BTreeMap<PathBuf, (Oid, i32)>,
+    to: &BTreeMap<PathBuf, (Oid, i32)>,
+) -> Result<TreeChanges> {
+    let removed: Vec<_> = from
+        .keys()
+        .filter(|path| !to.contains_key(*path))
+        .cloned()
+        .collect();
+    let mut directories = std::collections::BTreeSet::new();
+    let mut writes = Vec::new();
+    for path in from.keys().chain(to.keys()) {
+        if from.get(path) == to.get(path) {
+            continue;
+        }
+        let mut current = target.to_path_buf();
+        for component in std::iter::once(None).chain(path.components().map(Some)) {
+            if let Some(component) = component {
+                current.push(component);
+            }
+            let metadata = match current.symlink_metadata() {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to inspect '{}'", current.display()));
+                }
+            };
+            anyhow::ensure!(
+                !metadata.is_symlink(),
+                "refusing changed symlink '{}'",
+                current.display()
+            );
+            if metadata.is_file() {
+                anyhow::ensure!(
+                    !metadata.permissions().readonly(),
+                    "file '{}' is read-only",
+                    current.display()
+                );
+                if current != target.join(path) {
+                    let ancestor = current.strip_prefix(target)?;
+                    // ENOTDIR is acceptable only for an old leaf this plan owns
+                    // and removes; unrelated files remain hard obstructions.
+                    anyhow::ensure!(
+                        removed.iter().any(|path| path == ancestor),
+                        "unowned file obstruction '{}'",
+                        current.display()
+                    );
+                    let expected = from.get(ancestor).copied();
+                    let local = super::snapshot::canonical_target_entry(
+                        repo,
+                        target,
+                        ancestor,
+                        &managed.join(ancestor),
+                        &[expected],
+                    )?;
+                    anyhow::ensure!(
+                        entries_match(local, expected),
+                        "modified file obstruction '{}'",
+                        current.display()
+                    );
+                }
+                break;
+            }
+            anyhow::ensure!(
+                metadata.is_dir(),
+                "unsupported obstruction '{}'",
+                current.display()
+            );
+            if current == target.join(path) {
+                anyhow::ensure!(
+                    !removed.contains(path),
+                    "directory replaced old leaf '{}'",
+                    current.display()
+                );
+            }
+            if current == target.join(path) && to.contains_key(path) {
+                // Raw inventory deliberately includes ignored files, empty
+                // foreign directories, symlinks, and independently owned holes.
+                for entry in walkdir::WalkDir::new(&current) {
+                    let entry = entry?;
+                    let relative = entry.path().strip_prefix(target)?;
+                    if entry.file_type().is_dir() {
+                        anyhow::ensure!(
+                            owned.keys().any(|path| path.starts_with(relative)),
+                            "unowned directory obstruction '{}'",
+                            entry.path().display()
+                        );
+                        directories.insert(relative.to_path_buf());
+                    } else {
+                        anyhow::ensure!(
+                            entry.file_type().is_file()
+                                && removed.iter().any(|path| path == relative),
+                            "unowned obstruction '{}'",
+                            entry.path().display()
+                        );
+                    }
+                }
+            }
+        }
+    }
+    for path in &removed {
+        let expected = from.get(path).copied();
+        let local = super::snapshot::canonical_target_entry(
+            repo,
+            target,
+            path,
+            &managed.join(path),
+            &[expected],
+        )?;
+        anyhow::ensure!(
+            local.is_none() || entries_match(local, expected),
+            "modified removal '{}'",
+            target.join(path).display()
+        );
+    }
+    for (path, (oid, mode)) in to {
+        if from.get(path) != Some(&(*oid, *mode)) {
+            // Resolve every blob before removing old leaves; corrupt/missing Git
+            // objects must never leave a half-applied shape transition.
+            writes.push((path.clone(), read_blob(repo, *oid)?, *mode));
+        }
+    }
+    let mut directories: Vec<_> = directories.into_iter().collect();
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    Ok(TreeChanges {
+        removed,
+        directories,
+        writes,
+    })
+}
+
+impl TreeChanges {
+    pub(crate) fn apply(self, target: &Path) -> Result<()> {
+        for path in self.removed {
+            let on_disk = target.join(path);
+            crate::materialize::disposal::validate_relative_ancestors(target, &on_disk)?;
+            match fs::remove_file(&on_disk) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to remove '{}'", on_disk.display()));
+                }
+            }
+        }
+        for path in self.directories {
+            // Never recursively delete: a raced-in foreign entry must stop us.
+            let directory = target.join(path);
+            crate::materialize::disposal::validate_relative_ancestors(target, &directory)?;
+            fs::remove_dir(directory)?;
+        }
+        for (path, content, mode) in self.writes {
             let on_disk = target.join(path);
             crate::materialize::disposal::validate_relative_ancestors(target, &on_disk)?;
             anyhow::ensure!(
@@ -214,14 +387,13 @@ pub(crate) fn apply_tree_diff(
                 fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create '{}'", parent.display()))?;
             }
-            let content = read_blob(repo, *oid)?;
             crate::actions::fs::replace_file(&on_disk, content, |permissions| {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
                     // Git records executability, not private access bits such as 0600.
                     let existing = permissions.mode();
-                    let bits = if *mode & 0o111 != 0 {
+                    let bits = if mode & 0o111 != 0 {
                         existing | ((existing & 0o444) >> 2)
                     } else {
                         existing & !0o111
@@ -236,29 +408,8 @@ pub(crate) fn apply_tree_diff(
             })
             .with_context(|| format!("failed to write '{}'", on_disk.display()))?;
         }
+        Ok(())
     }
-
-    for path in from_entries.keys() {
-        if !to_entries.contains_key(path) {
-            let on_disk = target.join(path);
-            crate::materialize::disposal::validate_relative_ancestors(target, &on_disk)?;
-            anyhow::ensure!(
-                !on_disk.is_symlink(),
-                "refusing to remove changed symlink '{}'",
-                on_disk.display()
-            );
-            match fs::remove_file(&on_disk) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    return Err(e)
-                        .with_context(|| format!("failed to remove '{}'", on_disk.display()));
-                }
-            }
-        }
-    }
-
-    Ok(())
 }
 
 /// Git-blob hash of the file currently on disk at `path` — the same `Oid`
