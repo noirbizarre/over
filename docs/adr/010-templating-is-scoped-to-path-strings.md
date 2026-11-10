@@ -33,12 +33,13 @@ configured lifecycle point. This extends execution configuration, not file
 content rendering. See [Lifecycle hooks](../configuration/root.md#lifecycle-hooks)
 for context availability and failure semantics.
 
-`exec::templates::create_env()` documents itself as "the single extension
-point for custom template capabilities such as encryption and secret
-manager integration" and deliberately registers nothing beyond a bare
-`Environment` — no custom filters, no loaders, no includes. `src::actions::
-templates` remains an empty stub rather than a half-built content-templating
-path.
+**Secret resolution extension (#63):** hook environments explicitly register
+`secret()` using the shared context's source repository and credential service.
+Conditions and executable fields use the same capability, with execution-only
+lookups deferred until the condition succeeds. Destination/default-selection
+environments remain secret-free. `exec::templates::create_env()` supplies strict
+undefined handling; hook-only capability registration does not enable file
+content rendering. `src::actions::templates` remains an empty stub.
 
 ## Consequences
 

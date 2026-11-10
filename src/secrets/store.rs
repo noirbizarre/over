@@ -147,6 +147,26 @@ impl SecretStore {
         )
     }
 
+    pub(crate) fn read_for_resolution(
+        &self,
+        name: &SecretName,
+        prompt: bool,
+    ) -> Result<SecretBytes, super::ProviderError> {
+        use super::ProviderError;
+        let path = self.path(name).map_err(|_| ProviderError::StoreFailure)?;
+        // Only absence at this read is recoverable; invalid layout must stop fallback.
+        let ciphertext = fs::read(path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                ProviderError::Missing
+            } else {
+                ProviderError::StoreFailure
+            }
+        })?;
+        self.crypto
+            .decrypt(&ciphertext, prompt)
+            .map_err(|_| ProviderError::DecryptionFailed)
+    }
+
     pub fn list(&self) -> Result<Vec<String>> {
         self.validate()?;
         let entries = match fs::read_dir(&self.root) {

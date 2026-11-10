@@ -54,6 +54,13 @@ impl Default for CryptoService {
 }
 
 impl CryptoService {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        source: impl Fn(bool) -> Result<Option<SecretString>> + Send + Sync + 'static,
+    ) -> Self {
+        Self::with_source(source)
+    }
+
     fn from_sources(
         environment: impl Fn() -> Result<Option<String>> + Send + Sync + 'static,
         prompt: impl Fn() -> Result<SecretString> + Send + Sync + 'static,

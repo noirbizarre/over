@@ -105,7 +105,20 @@ over apply selected
 
 The encrypted source remains unchanged. Decryption is a desired-state content
 transformation, producing a real file rather than a source symlink. Content
-templating and secret interpolation into templates/hooks are not implemented.
+templating is not implemented. Lifecycle hooks support native secret interpolation
+through `secret("name")` in commands, environment values, working directories
+and conditions. See [hook templates](../configuration/root.md#templates-and-conditions).
+
+Fallback chains use a pipe inside the argument, for example
+`secret("op://dev/github/token | github-token")`. Bare names address the active
+repository's native store; provider-qualified references use `scheme://payload`.
+External providers are not implemented yet and count as unavailable. Missing
+secrets and unavailable providers allow fallback. Malformed expressions, locked
+native credentials, wrong passphrases, corrupt ciphertext and store failures stop
+resolution. Hook interpolation requires valid UTF-8, preserves whitespace, and
+shares the invocation's cached Age credential without caching plaintext values.
+Path templates cannot access secrets. Prefer passing values through hook `env`
+rather than embedding them in shell command text.
 
 On Unix, decrypted files default to `0600`; explicit scalar/rule permissions
 can override this, matched against the logical output filename. Plaintext is

@@ -439,7 +439,7 @@ impl Overlay {
             &root_hooks,
             crate::hooks::Event::PostApply,
             crate::hooks::HookContext {
-                templates: &selected_ctx,
+                templates: selected_ctx,
                 repository: &ctx.repository.root,
                 cwd: &ctx.repository.root,
                 scope: "repository root",
@@ -456,7 +456,7 @@ impl Overlay {
                 &overlay.hooks,
                 crate::hooks::Event::PostApply,
                 crate::hooks::HookContext {
-                    templates: &overlay_ctx,
+                    templates: overlay_ctx,
                     repository: &ctx.repository.root,
                     cwd: &overlay.root,
                     scope: &format!("overlay '{}'", overlay.name),
