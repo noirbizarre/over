@@ -73,6 +73,20 @@ where
     T: Clone + Ord,
     F: Fn(&InstallConfig, Option<&PlatformInstallConfig>) -> BTreeSet<T> + Copy,
 {
+    collect_packages_for_manager(ctx, overlay, visited, None, extract).await
+}
+
+async fn collect_packages_for_manager<T, F>(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    visited: &mut HashSet<String>,
+    linux_manager: Option<(&str, SystemManager)>,
+    extract: F,
+) -> Result<BTreeSet<T>>
+where
+    T: Clone + Ord,
+    F: Fn(&InstallConfig, Option<&PlatformInstallConfig>) -> BTreeSet<T> + Copy,
+{
     if !visited.insert(overlay.name.clone()) {
         return Ok(BTreeSet::new());
     }
@@ -80,7 +94,16 @@ where
         .install
         .as_ref()
         .map(|install| {
-            let platform = resolve_platform_override(install);
+            // A dependency enabling a manager must not enable another descriptor's alternative.
+            if let Some((distro, manager)) = linux_manager
+                && !decide_linux_managers(distro, install).contains(&manager)
+            {
+                return BTreeSet::new();
+            }
+            let platform = match linux_manager {
+                Some((distro, _)) => install.platforms.get(distro),
+                None => resolve_platform_override(install),
+            };
             extract(install, platform)
         })
         .unwrap_or_default();
@@ -92,7 +115,14 @@ where
                 .repository
                 .get(name)
                 .with_context(|| format!("used overlay '{name}' not found"))?;
-            let used_pkgs = Box::pin(collect_packages(ctx, &used, visited, extract)).await?;
+            let used_pkgs = Box::pin(collect_packages_for_manager(
+                ctx,
+                &used,
+                visited,
+                linux_manager,
+                extract,
+            ))
+            .await?;
             packages = packages.union(&used_pkgs).cloned().collect();
         }
     }
@@ -566,7 +596,8 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
                 {
                     run_scripts(ctx, pre).await?;
                 }
-                let pkgs = get_archlinux_packages(ctx, overlay, &mut HashSet::new()).await?;
+                let pkgs = get_archlinux_packages(ctx, overlay, &mut HashSet::new(), Some(&distro))
+                    .await?;
                 if !pkgs.is_empty() {
                     install_arch_pkgs(ctx, pkgs).await?;
                 }
@@ -586,7 +617,8 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
                 {
                     run_scripts(ctx, pre).await?;
                 }
-                let pkgs = get_apt_packages(ctx, overlay, &mut HashSet::new()).await?;
+                let pkgs =
+                    get_apt_packages(ctx, overlay, &mut HashSet::new(), Some(&distro)).await?;
                 if !pkgs.is_empty() {
                     install_apt_pkgs(ctx, pkgs).await?;
                 }
@@ -606,7 +638,9 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
                 {
                     run_scripts(ctx, pre).await?;
                 }
-                let (taps, pkgs) = get_brew_packages(ctx, overlay, &mut HashSet::new()).await?;
+                let (taps, pkgs) =
+                    get_brew_packages_for_linux(ctx, overlay, &mut HashSet::new(), Some(&distro))
+                        .await?;
                 if !taps.is_empty() || !pkgs.is_empty() {
                     install_brew_pkgs(ctx, taps, pkgs).await?;
                 }
@@ -717,32 +751,41 @@ async fn get_archlinux_packages(
     ctx: &Ctx,
     overlay: &Overlay,
     visited: &mut HashSet<String>,
+    distro: Option<&str>,
 ) -> Result<BTreeSet<String>> {
-    collect_packages(ctx, overlay, visited, |install, _platform| {
-        // Archlinux has special platform resolution: "arch" / "archlinux" aliases
-        let platform_override = if OS == "linux" {
-            detect_linux_distro_id().and_then(|distro| {
-                let key = if install.platforms.contains_key("arch") {
-                    Some("arch")
-                } else if install.platforms.contains_key("archlinux") {
-                    Some("archlinux")
-                } else if install.platforms.contains_key(&distro) {
-                    Some(distro.as_str())
-                } else {
-                    None
-                };
-                key.and_then(|k| install.platforms.get(k))
-            })
-        } else {
-            None
-        };
-        let source = platform_override
-            .and_then(|p| p.archlinux.as_ref())
-            .or(install.archlinux.as_ref());
-        source
-            .map(|cfg| cfg.packages.iter().cloned().collect())
-            .unwrap_or_default()
-    })
+    collect_packages_for_manager(
+        ctx,
+        overlay,
+        visited,
+        distro.map(|distro| (distro, SystemManager::Archlinux)),
+        |install, platform| {
+            // Archlinux has special platform resolution: "arch" / "archlinux" aliases
+            let platform_override = if distro.is_some() {
+                platform
+            } else if OS == "linux" {
+                detect_linux_distro_id().and_then(|distro| {
+                    let key = if install.platforms.contains_key("arch") {
+                        Some("arch")
+                    } else if install.platforms.contains_key("archlinux") {
+                        Some("archlinux")
+                    } else if install.platforms.contains_key(&distro) {
+                        Some(distro.as_str())
+                    } else {
+                        None
+                    };
+                    key.and_then(|k| install.platforms.get(k))
+                })
+            } else {
+                None
+            };
+            let source = platform_override
+                .and_then(|p| p.archlinux.as_ref())
+                .or(install.archlinux.as_ref());
+            source
+                .map(|cfg| cfg.packages.iter().cloned().collect())
+                .unwrap_or_default()
+        },
+    )
     .await
 }
 
@@ -750,15 +793,22 @@ async fn get_apt_packages(
     ctx: &Ctx,
     overlay: &Overlay,
     visited: &mut HashSet<String>,
+    distro: Option<&str>,
 ) -> Result<BTreeSet<String>> {
-    collect_packages(ctx, overlay, visited, |install, platform| {
-        let source = platform
-            .and_then(|p| p.apt.as_ref())
-            .or(install.apt.as_ref());
-        source
-            .map(|cfg| cfg.packages.iter().cloned().collect())
-            .unwrap_or_default()
-    })
+    collect_packages_for_manager(
+        ctx,
+        overlay,
+        visited,
+        distro.map(|distro| (distro, SystemManager::Apt)),
+        |install, platform| {
+            let source = platform
+                .and_then(|p| p.apt.as_ref())
+                .or(install.apt.as_ref());
+            source
+                .map(|cfg| cfg.packages.iter().cloned().collect())
+                .unwrap_or_default()
+        },
+    )
     .await
 }
 
@@ -851,17 +901,33 @@ async fn get_brew_packages(
     overlay: &Overlay,
     visited: &mut HashSet<String>,
 ) -> Result<(BTreeSet<String>, BTreeSet<BrewPackage>)> {
+    get_brew_packages_for_linux(ctx, overlay, visited, None).await
+}
+
+async fn get_brew_packages_for_linux(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    visited: &mut HashSet<String>,
+    distro: Option<&str>,
+) -> Result<(BTreeSet<String>, BTreeSet<BrewPackage>)> {
     if !visited.insert(overlay.name.clone()) {
         return Ok((BTreeSet::new(), BTreeSet::new()));
     }
     let mut taps: BTreeSet<String> = BTreeSet::new();
     let mut packages: BTreeSet<BrewPackage> = BTreeSet::new();
     if let Some(install) = &overlay.install {
-        let platform = resolve_platform_override(install);
+        let platform = match distro {
+            Some(distro) => install.platforms.get(distro),
+            None => resolve_platform_override(install),
+        };
         let source = platform
             .and_then(|p| p.brew.as_ref())
             .or(install.brew.as_ref());
-        if let Some(brew) = source {
+        // Filter this descriptor only; eligible packages may still exist in its dependencies.
+        let eligible = distro.is_none_or(|distro| {
+            decide_linux_managers(distro, install).contains(&SystemManager::Brew)
+        });
+        if let Some(brew) = source.filter(|_| eligible) {
             if let Some(brew_taps) = &brew.taps {
                 taps.extend(brew_taps.iter().cloned());
             }
@@ -878,7 +944,8 @@ async fn get_brew_packages(
                 .repository
                 .get(name)
                 .with_context(|| format!("used overlay '{name}' not found"))?;
-            let (used_taps, used_pkgs) = Box::pin(get_brew_packages(ctx, &used, visited)).await?;
+            let (used_taps, used_pkgs) =
+                Box::pin(get_brew_packages_for_linux(ctx, &used, visited, distro)).await?;
             taps = taps.union(&used_taps).cloned().collect();
             packages = packages.union(&used_pkgs).cloned().collect();
         }
@@ -1910,6 +1977,154 @@ post = 'echo "after apt"'
     }
 
     #[rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn a_dependency_manager_does_not_enable_a_hosts_unselected_alternative(
+        #[case] no_uses: bool,
+    ) {
+        let (td, repo) = repo_and_root();
+        for (name, descriptor) in [
+            (
+                "host",
+                "uses = ['dependency']\n[install]\napt = ['curl']\n[install.brew]\ntaps = ['macos/tap']\npackages = [{name = 'macos-app', cask = true}]",
+            ),
+            (
+                "dependency",
+                "[install.brew]\ntaps = ['dependency/tap']\npackages = ['dependency-tool']",
+            ),
+        ] {
+            td.child(name).create_dir_all().unwrap();
+            td.child(name)
+                .child("over.toml")
+                .write_str(descriptor)
+                .unwrap();
+        }
+        let overlay = repo.get("host").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .no_uses(no_uses)
+            .build();
+        assert_eq!(
+            collect_linux_managers(&ctx, &overlay, "ubuntu", &mut HashSet::new()).unwrap(),
+            if no_uses {
+                vec![SystemManager::Apt]
+            } else {
+                vec![SystemManager::Apt, SystemManager::Brew]
+            }
+        );
+        let (taps, packages) =
+            get_brew_packages_for_linux(&ctx, &overlay, &mut HashSet::new(), Some("ubuntu"))
+                .await
+                .unwrap();
+        assert_eq!(
+            taps,
+            if no_uses {
+                BTreeSet::new()
+            } else {
+                BTreeSet::from(["dependency/tap".to_string()])
+            }
+        );
+        assert_eq!(
+            packages
+                .into_iter()
+                .map(|package| package.name)
+                .collect::<Vec<_>>(),
+            if no_uses {
+                vec![]
+            } else {
+                vec!["dependency-tool".to_string()]
+            }
+        );
+    }
+
+    #[rstest]
+    #[case("ubuntu", "apt", false)]
+    #[case("ubuntu", "apt", true)]
+    #[case("arch", "archlinux", false)]
+    #[case("arch", "archlinux", true)]
+    #[case("unknown", "archlinux", false)]
+    #[case("unknown", "archlinux", true)]
+    #[tokio::test]
+    async fn mixed_managers_preserve_each_descriptors_platform_selection(
+        #[case] distro: &str,
+        #[case] native: &str,
+        #[case] explicit_brew: bool,
+    ) {
+        let (td, repo) = repo_and_root();
+        let host_brew = if explicit_brew {
+            format!("\n[install.{distro}.brew]\ntaps = ['host/tap']\npackages = ['host-tool']")
+        } else {
+            String::new()
+        };
+        for (name, descriptor) in [
+            (
+                "host",
+                format!(
+                    "uses = ['dependency']\n[install.brew]\ntaps = ['unselected/tap']\npackages = ['unselected-app']\n[install.{distro}]\n{native} = ['host-native']{host_brew}"
+                ),
+            ),
+            // The override selects Brew despite a higher-precedence top-level native manager.
+            (
+                "dependency",
+                format!(
+                    "uses = ['leaf']\n[install]\n{native} = ['unselected-native']\nbrew = ['unselected-brew']\n[install.{distro}.brew]\ntaps = ['dependency/tap']\npackages = ['dependency-tool']"
+                ),
+            ),
+            // A dependency's precedence decision must also survive the union of manager names.
+            (
+                "leaf",
+                format!("[install]\n{native} = ['leaf-native']\nbrew = ['unselected-leaf-brew']"),
+            ),
+        ] {
+            td.child(name).create_dir_all().unwrap();
+            td.child(name)
+                .child("over.toml")
+                .write_str(&descriptor)
+                .unwrap();
+        }
+        let overlay = repo.get("host").unwrap();
+        let ctx = test_ctx(td.path().to_path_buf(), repo, None);
+        let native_packages = if native == "apt" {
+            get_apt_packages(&ctx, &overlay, &mut HashSet::new(), Some(distro))
+                .await
+                .unwrap()
+        } else {
+            get_archlinux_packages(&ctx, &overlay, &mut HashSet::new(), Some(distro))
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            native_packages,
+            BTreeSet::from(["host-native".to_string(), "leaf-native".to_string()])
+        );
+        let (taps, packages) =
+            get_brew_packages_for_linux(&ctx, &overlay, &mut HashSet::new(), Some(distro))
+                .await
+                .unwrap();
+        assert_eq!(
+            taps,
+            if explicit_brew {
+                BTreeSet::from(["dependency/tap".to_string(), "host/tap".to_string()])
+            } else {
+                BTreeSet::from(["dependency/tap".to_string()])
+            }
+        );
+        assert_eq!(
+            packages
+                .into_iter()
+                .map(|package| package.name)
+                .collect::<Vec<_>>(),
+            if explicit_brew {
+                vec!["dependency-tool", "host-tool"]
+            } else {
+                vec!["dependency-tool"]
+            }
+        );
+    }
+
+    #[rstest]
     #[case(false, false)]
     #[case(true, false)]
     #[case(false, true)]
@@ -2080,7 +2295,7 @@ post = 'echo "after apt"'
             BTreeSet::from(["host".to_string(), "dependency".to_string()])
         };
         assert_eq!(
-            get_apt_packages(&ctx, &overlay, &mut HashSet::new())
+            get_apt_packages(&ctx, &overlay, &mut HashSet::new(), None)
                 .await
                 .unwrap(),
             expected
@@ -2206,7 +2421,7 @@ post = 'echo "after apt"'
         let overlay = repo.get("a").unwrap();
         let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
         let mut visited = HashSet::new();
-        let pkgs = get_apt_packages(&ctx, &overlay, &mut visited)
+        let pkgs = get_apt_packages(&ctx, &overlay, &mut visited, None)
             .await
             .unwrap();
 
@@ -2248,7 +2463,7 @@ post = 'echo "after apt"'
             Some(overlay_a.clone()),
         );
         let mut visited = HashSet::new();
-        let pkgs = get_apt_packages(&ctx, &overlay_a, &mut visited)
+        let pkgs = get_apt_packages(&ctx, &overlay_a, &mut visited, None)
             .await
             .unwrap();
 
@@ -2650,7 +2865,7 @@ post = 'echo "after apt"'
         let overlay = repo.get("a").unwrap();
         let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
         let mut visited = HashSet::new();
-        let pkgs = get_archlinux_packages(&ctx, &overlay, &mut visited)
+        let pkgs = get_archlinux_packages(&ctx, &overlay, &mut visited, None)
             .await
             .unwrap();
 
@@ -2692,7 +2907,7 @@ post = 'echo "after apt"'
             Some(overlay_a.clone()),
         );
         let mut visited = HashSet::new();
-        let pkgs = get_archlinux_packages(&ctx, &overlay_a, &mut visited)
+        let pkgs = get_archlinux_packages(&ctx, &overlay_a, &mut visited, None)
             .await
             .unwrap();
 
@@ -3170,7 +3385,7 @@ packages = [
         let ctx = test_ctx(td.path().to_path_buf(), repo.clone(), Some(overlay.clone()));
 
         let mut visited = HashSet::new();
-        let apt = get_apt_packages(&ctx, &overlay, &mut visited)
+        let apt = get_apt_packages(&ctx, &overlay, &mut visited, None)
             .await
             .unwrap();
         assert!(apt.is_empty());
@@ -3201,7 +3416,7 @@ packages = [
         assert!(winget.is_empty());
 
         let mut visited = HashSet::new();
-        let arch = get_archlinux_packages(&ctx, &overlay, &mut visited)
+        let arch = get_archlinux_packages(&ctx, &overlay, &mut visited, None)
             .await
             .unwrap();
         assert!(arch.is_empty());

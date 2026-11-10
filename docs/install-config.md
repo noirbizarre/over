@@ -189,10 +189,7 @@ Note: `archlinux` is **not** a valid platform-section key — it's already
 the top-level Arch package manager field shown above, so
 `[install.archlinux]` sets that manager's config, not a platform override
 (the actual Arch platform key is `arch`, matching the real
-`/etc/os-release` `ID`). Package extraction across `uses` dependencies
-does accept `archlinux` as an alias for `arch` when looking up platform
-sections, but the other manager/`pre`/`post` resolution paths do not —
-use `arch` to be safe.
+`/etc/os-release` `ID`). Use `arch` for Arch platform overrides.
 
 ## Scripts
 
@@ -211,8 +208,10 @@ Packages from overlays referenced in `uses` are merged (set union) to avoid
 duplicates across overlays. Managers are discovered across that dependency
 closure, so a composition-only overlay does not need its own `install`
 section. Linux manager precedence is evaluated for each participating
-descriptor; shared managers run once. `--no-uses` installs only the selected
-overlay's packages.
+descriptor; shared managers run once. Each descriptor contributes packages
+and taps only for its selected managers. For example, a Brew-only dependency
+does not enable a host's top-level Brew alternative when the host selects
+Apt. `--no-uses` installs only the selected overlay's packages.
 
 Only the selected overlay's scripts run, in the order above; dependency
 scripts are not inherited through `uses`. See
