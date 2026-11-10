@@ -7,6 +7,7 @@ use anyhow::{Context as _, Result, ensure};
 use git2::{IndexEntryExtendedFlag, Oid, Repository};
 
 use crate::actions::git::diff::{Comparison, Scratch, View};
+use crate::actions::symlink::{LinkType, hard_link_matches};
 use crate::desired::{CheckoutScope, DesiredEntry, DesiredTree, MaterializationIntent, Provenance};
 use crate::materialize::virtual_checkout::snapshot::{honors_filemode, target_content};
 use crate::materialize::virtual_checkout::{git as vc, state};
@@ -109,6 +110,7 @@ impl Report {
                     report.link_diagnostic(
                         &selection.routing.target_for(logical),
                         &overlay.root.join(logical),
+                        &LinkType::Soft,
                     )?;
                 }
                 linked
@@ -129,9 +131,9 @@ impl Report {
         };
         for entry in desired.entries() {
             match &entry.intent {
-                MaterializationIntent::SymlinkFile { source, .. }
-                | MaterializationIntent::SymlinkDirectory { source, .. } => {
-                    report.link_diagnostic(&entry.target, source)?;
+                MaterializationIntent::SymlinkFile { source, link_type }
+                | MaterializationIntent::SymlinkDirectory { source, link_type } => {
+                    report.link_diagnostic(&entry.target, source, link_type)?;
                     // Sidecars can refer to another repository, outside the overlay tree.
                     if matches!(entry.provenance, Provenance::SymlinkSidecar { .. }) {
                         match vc::discover_source(source) {
@@ -218,8 +220,25 @@ impl Report {
         }
     }
 
-    fn link_diagnostic(&mut self, target: &Path, source: &Path) -> Result<()> {
+    fn link_diagnostic(
+        &mut self,
+        target: &Path,
+        source: &Path,
+        link_type: &LinkType,
+    ) -> Result<()> {
         let problem = match actual::inspect(target)? {
+            // Equal bytes alone cannot establish hard-link identity: a replaced
+            // target must be reported even when its content has not changed.
+            ActualState::File if matches!(link_type, LinkType::Hard) => {
+                if hard_link_matches(source, target)? {
+                    None
+                } else {
+                    Some(format!(
+                        "replaced hard link (expected {})",
+                        source.display()
+                    ))
+                }
+            }
             ActualState::Symlink { points_to } => {
                 let resolved = if points_to.is_absolute() {
                     points_to
@@ -450,4 +469,74 @@ fn target_files(root: &Path, scope: &CheckoutScope) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::symlink::LinkType;
+    use crate::plan::{Operation, PlanStep};
+
+    #[rstest::rstest]
+    #[case(LinkType::Hard, false)]
+    #[case(LinkType::Hard, true)]
+    #[case(LinkType::Soft, false)]
+    #[tokio::test]
+    async fn applied_links_agree_across_status_and_git_diff(
+        #[case] link_type: LinkType,
+        #[case] soft_fallback: bool,
+    ) {
+        let td = tempfile::TempDir::new().unwrap();
+        Repository::init(td.path()).unwrap();
+        let source = td.path().join("source");
+        let target = td.path().join("target");
+        std::fs::write(&source, "same content").unwrap();
+        let entry = DesiredEntry {
+            target: target.clone(),
+            provenance: Provenance::SymlinkSidecar {
+                overlay: "ov".into(),
+                config: td.path().join("link.link.toml"),
+                template: source.display().to_string(),
+                resolved: source.clone(),
+            },
+            intent: MaterializationIntent::SymlinkFile {
+                source: source.clone(),
+                link_type,
+            },
+            permissions: None,
+        };
+        let ctx = crate::exec::Context::builder().no_prompt(true).build();
+        let mut applied = entry.clone();
+        if soft_fallback {
+            // A supported hard-link fallback must remain healthy for hard intent.
+            applied.intent = MaterializationIntent::SymlinkFile {
+                source: source.clone(),
+                link_type: LinkType::Soft,
+            };
+        }
+        SymlinkMaterializer
+            .materialize(
+                ctx,
+                &PlanStep {
+                    entry: applied,
+                    operation: Operation::Create,
+                },
+            )
+            .await
+            .unwrap();
+        let desired = DesiredTree::from_entries(vec![entry]);
+        assert_eq!(
+            crate::status::Report::build(&desired).unwrap().entries()[0].status,
+            crate::status::Status::Applied
+        );
+        assert!(Report::build(&desired, &[]).unwrap().diagnostics.is_empty());
+        std::fs::remove_file(&target).unwrap();
+        std::fs::write(&target, "same content").unwrap();
+        assert!(
+            crate::status::Report::build(&desired).unwrap().entries()[0]
+                .status
+                .needs_attention()
+        );
+        assert_eq!(Report::build(&desired, &[]).unwrap().diagnostics.len(), 1);
+    }
 }
