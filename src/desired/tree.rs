@@ -79,6 +79,21 @@ impl DesiredTree {
         &self.entries
     }
 
+    /// Reject incompatible claims independently of deployment authorization.
+    pub fn validate_ownership(&self) -> Result<()> {
+        let issues = super::ownership::check(self);
+        anyhow::ensure!(
+            issues.is_empty(),
+            "{}",
+            issues
+                .into_iter()
+                .map(|issue| issue.message)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        Ok(())
+    }
+
     /// Test-only: build a tree directly from a list of entries, bypassing
     /// `Overlay`/config resolution. Used by other modules' tests
     /// (`crate::sync`) that exercise entry-level behavior without needing
