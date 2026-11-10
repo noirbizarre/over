@@ -6,6 +6,10 @@ Over manages files as **overlays**: directories in a Git-backed source repositor
 whose contents are applied to a **target** directory. Descriptors configure where
 files go and how they appear there. By default, Over links individual files.
 
+<p align="center">
+  <img src="images/demo.gif" alt="over creating, composing (uses:), and applying overlays" width="800">
+</p>
+
 ## Getting started
 
 ### Install Over
@@ -14,8 +18,8 @@ Choose one installation channel:
 
 ```sh
 brew install noirbizarre/tap/over   # Homebrew (macOS/Linux)
-yay -S over-bin                    # Arch Linux AUR (prebuilt)
-cargo binstall over                # Prebuilt binaries, not cargo install
+paru -S over-bin                    # Arch Linux AUR (prebuilt)
+cargo binstall over                 # Prebuilt binaries, not cargo install
 ```
 
 Or download a binary from the
@@ -30,11 +34,12 @@ existing dotfiles. This creates a source repository and an empty target:
 
 ```sh
 demo="$(mktemp -d)"
+export OVER_HOME="$demo/source"
 mkdir -p "$demo/source/apps/hello" "$demo/target"
 git init "$demo/source"
-printf 'format = "toml"\n' > "$demo/source/over.toml"
-printf 'target = "~"\n' > "$demo/source/apps/hello/over.toml"
-printf 'Hello from Over!\n' > "$demo/source/apps/hello/greeting.txt"
+echo 'format = "toml"' > "$demo/source/over.toml"
+echo 'target = "~"' > "$demo/source/apps/hello/over.toml"
+echo 'Hello from Over!' > "$demo/source/apps/hello/greeting.txt"
 ```
 
 The **root descriptor**, `source/over.toml`, configures the repository. The
@@ -44,9 +49,9 @@ The **root descriptor**, `source/over.toml`, configures the repository. The
 ### Preview, apply, inspect
 
 ```sh
-over --home "$demo/source" apply apps/hello --root "$demo/target" --dry-run
-over --home "$demo/source" apply apps/hello --root "$demo/target"
-over --home "$demo/source" status apps/hello --root "$demo/target"
+over apply apps/hello --root "$demo/target" --dry-run
+over apply apps/hello --root "$demo/target"
+over status apps/hello --root "$demo/target"
 cat "$demo/target/greeting.txt"
 ```
 
@@ -54,14 +59,16 @@ The preview reports a link to create. Apply creates
 `target/greeting.txt` pointing to `source/apps/hello/greeting.txt`. Status should
 report it as applied, and reading the target prints `Hello from Over!`.
 
-`--home` selects the **source** repository; `--root` changes what `~` means in
-destinations. In daily use, they default to `~/.dotfiles` and your home directory.
+`OVER_HOME` selects the **source** repository, just like `--home`; `--root` changes
+what `~` means in destinations. Without these overrides, the defaults are
+`~/.dotfiles` and your home directory.
 Explicit `apps/hello` selection avoids an interactive overlay prompt.
 
 To reverse this example, run:
 
 ```sh
-over --home "$demo/source" unapply apps/hello --root "$demo/target"
+over unapply apps/hello --root "$demo/target"
+unset OVER_HOME
 ```
 
 When you already have an Over repository, [`over init`](usage/init.md) clones or
