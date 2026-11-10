@@ -818,10 +818,53 @@ struct PreparedSourceUpdate {
     has_new: bool,
     backed_up: bool,
     installed: bool,
+    #[cfg(not(target_os = "linux"))]
+    in_place: bool,
 }
 
 impl SourceTransaction {
     pub(crate) fn prepare(&mut self, file: PathBuf, update: Option<(Vec<u8>, u32)>) -> Result<()> {
+        let existing = match file.symlink_metadata() {
+            Ok(metadata) => {
+                anyhow::ensure!(
+                    metadata.is_file(),
+                    "source '{}' is not a regular file",
+                    file.display()
+                );
+                anyhow::ensure!(
+                    !metadata.permissions().readonly(),
+                    "source '{}' is read-only",
+                    file.display()
+                );
+                Some(metadata)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        #[cfg(not(target_os = "linux"))]
+        if update.is_some()
+            && let Some(metadata) = &existing
+        {
+            // Without a native clone, keep the original inode and its ACLs/streams.
+            // Shared inodes cannot be updated without changing somebody else's file.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                anyhow::ensure!(
+                    metadata.nlink() == 1 && metadata.mode() & 0o6000 == 0,
+                    "cannot preserve native metadata for '{}'",
+                    file.display()
+                );
+            }
+            #[cfg(windows)]
+            anyhow::ensure!(
+                winapi_util::file::information(fs::File::open(&file)?)?.number_of_links() == 1,
+                "cannot preserve hard-linked source '{}'",
+                file.display()
+            );
+            #[cfg(not(any(unix, windows)))]
+            anyhow::bail!("cannot preserve native metadata for '{}'", file.display());
+        }
         let parent = file.parent().context("source file has no parent")?;
         let mut missing = Vec::new();
         let mut ancestor = parent;
@@ -854,6 +897,8 @@ impl SourceTransaction {
             has_new: update.is_some(),
             backed_up: false,
             installed: false,
+            #[cfg(not(target_os = "linux"))]
+            in_place: existing.is_some() && update.is_some(),
         });
         if let Some((content, mode)) = update {
             let prepared = directory.join("new");
@@ -884,17 +929,43 @@ impl SourceTransaction {
                         access |= (access & 0o444) >> 2;
                     }
                 }
-                output.set_permissions(fs::Permissions::from_mode(access & 0o7777))?;
+                let desired = fs::Permissions::from_mode(access & 0o7777);
+                #[cfg(target_os = "linux")]
+                if let Some(metadata) = &existing {
+                    crate::actions::fs::clone_linux_metadata(&file, &prepared, metadata, desired)?;
+                } else {
+                    output.set_permissions(desired)?;
+                }
+                #[cfg(not(target_os = "linux"))]
+                output.set_permissions(desired)?;
             }
             #[cfg(not(unix))]
             let _ = mode;
             output.sync_all()?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        if self.updates.last().is_some_and(|update| update.in_place) {
+            // Read every backup before applying any write, so unreadable sources
+            // cannot fail halfway through an otherwise valid commit.
+            fs::copy(&file, directory.join("old"))?;
         }
         Ok(())
     }
 
     pub(crate) fn apply(&mut self) -> Result<()> {
         for update in &mut self.updates {
+            #[cfg(not(target_os = "linux"))]
+            if update.in_place {
+                update.backed_up = true;
+                // Mark before the write: an I/O error can leave partial bytes.
+                update.installed = true;
+                let prepared = update.directory.join("new");
+                let permissions = fs::metadata(&prepared)?.permissions();
+                crate::actions::fs::replace_file(&update.file, fs::read(&prepared)?, |_| {
+                    permissions
+                })?;
+                continue;
+            }
             match fs::rename(&update.file, update.directory.join("old")) {
                 Ok(()) => update.backed_up = true,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -916,6 +987,17 @@ impl SourceTransaction {
         let mut errors = Vec::new();
         for update in self.updates.iter_mut().rev() {
             let result = (|| -> Result<()> {
+                #[cfg(not(target_os = "linux"))]
+                if update.in_place && update.installed {
+                    let backup = update.directory.join("old");
+                    let permissions = fs::metadata(&backup)?.permissions();
+                    crate::actions::fs::replace_file(&update.file, fs::read(&backup)?, |_| {
+                        permissions
+                    })?;
+                    update.installed = false;
+                    update.backed_up = false;
+                    return Ok(());
+                }
                 if update.installed {
                     fs::remove_file(&update.file)?;
                     update.installed = false;
@@ -1187,6 +1269,88 @@ mod tests {
                 & 0o777,
             0o700
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_preparation_rejects_readonly_updates_and_deletions_before_mutation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = TempDir::new().unwrap();
+        source.child("file").write_str("original").unwrap();
+        let file = source.path().join("file");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap();
+        for update in [None, Some((b"new".to_vec(), 0o100644))] {
+            let mut transaction = SourceTransaction::default();
+            assert!(transaction.prepare(file.clone(), update).is_err());
+            transaction.rollback().unwrap();
+            assert_eq!(fs::read(&file).unwrap(), b"original");
+            assert_eq!(fs::read_dir(source.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[rstest::rstest]
+    fn source_transactions_preserve_native_metadata_and_isolate_hardlinks(
+        #[values(false, true)] rollback: bool,
+    ) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let source = TempDir::new().unwrap();
+        let file = source.path().join("file");
+        let alias = source.path().join("alias");
+        fs::write(&file, b"original").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+        xattr::set(&file, "user.over-regression", b"retain me").unwrap();
+        let mut acl = 2_u32.to_le_bytes().to_vec();
+        for (tag, access, id) in [
+            (1_u16, 6_u16, u32::MAX),
+            (2, 4, 12345),
+            (4, 4, u32::MAX),
+            (16, 4, u32::MAX),
+            (32, 0, u32::MAX),
+        ] {
+            acl.extend(tag.to_le_bytes());
+            acl.extend(access.to_le_bytes());
+            acl.extend(id.to_le_bytes());
+        }
+        xattr::set(&file, "system.posix_acl_access", &acl).unwrap();
+        fs::hard_link(&file, &alias).unwrap();
+        let original = fs::metadata(&file).unwrap();
+        let mut transaction = SourceTransaction::default();
+        transaction
+            .prepare(file.clone(), Some((b"new".to_vec(), 0o100644)))
+            .unwrap();
+        transaction.apply().unwrap();
+        if rollback {
+            transaction.rollback().unwrap();
+        } else {
+            transaction.cleanup().unwrap();
+        }
+        let current = fs::metadata(&file).unwrap();
+        assert_eq!(
+            (current.uid(), current.gid(), current.mode()),
+            (original.uid(), original.gid(), original.mode())
+        );
+        assert_eq!(
+            xattr::get(&file, "system.posix_acl_access").unwrap(),
+            Some(acl)
+        );
+        assert_eq!(
+            xattr::get(&file, "user.over-regression").unwrap(),
+            Some(b"retain me".to_vec())
+        );
+        assert_eq!(
+            fs::read(&file).unwrap(),
+            if rollback {
+                b"original".as_slice()
+            } else {
+                b"new".as_slice()
+            }
+        );
+        assert_eq!(fs::read(&alias).unwrap(), b"original");
+        assert_eq!(fs::metadata(&alias).unwrap().ino(), original.ino());
+        assert_eq!(current.ino() == original.ino(), rollback);
     }
 
     #[cfg(unix)]

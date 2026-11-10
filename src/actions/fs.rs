@@ -240,7 +240,7 @@ fn replace_file_with_policy(
 }
 
 #[cfg(target_os = "linux")]
-fn clone_linux_metadata(
+pub(crate) fn clone_linux_metadata(
     source: &Path,
     prepared: &Path,
     original: &fs::Metadata,
