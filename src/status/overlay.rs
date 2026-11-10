@@ -344,6 +344,7 @@ fn explain(entry: &DesiredEntry, overlays: &[Overlay]) -> String {
         } => (overlay, repo_key.clone(), Some("Git declaration".into())),
     };
     let intent = match entry.intent {
+        MaterializationIntent::EncryptedFile(_) => "encrypted file",
         MaterializationIntent::Directory => "directory scaffold",
         MaterializationIntent::SymlinkFile { .. } => "symlink",
         MaterializationIntent::SymlinkDirectory { .. } => "symlink-directory",

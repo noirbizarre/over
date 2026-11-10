@@ -18,6 +18,17 @@ pub struct SourcePolicy {
 impl SourcePolicy {
     pub fn new(root: &Path, overlay: &Overlay) -> Result<Self> {
         ensure!(
+            !overlay.root.starts_with(root.join(".over")),
+            ".over is reserved repository administration"
+        );
+        if root.join(".over").exists() {
+            ensure!(
+                !super::mapping::physical(&overlay.root)?
+                    .starts_with(super::mapping::physical(&root.join(".over"))?),
+                ".over is reserved repository administration"
+            );
+        }
+        ensure!(
             overlay.root.starts_with(root),
             "overlay is outside the Over repository"
         );
@@ -91,7 +102,7 @@ impl SourcePolicy {
     pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
         // Git administration is never overlay input, including apparent
         // sidecars or nested ignore rules. Negations cannot reopen it.
-        if is_git_administration(path) {
+        if is_git_administration(path) || path.starts_with(self.root.join(".over")) {
             return true;
         }
         if let Ok(relative) = path.strip_prefix(&self.overlay.root)
@@ -128,6 +139,7 @@ impl SourcePolicy {
     }
 
     pub fn validate_directory_link(&self, directory: &Path, source: &Path) -> Result<()> {
+        crate::secrets::reject_encrypted_directory(directory)?;
         for entry in WalkDir::new(directory).min_depth(1) {
             let entry = entry?;
             let projected = source.join(entry.path().strip_prefix(directory)?);

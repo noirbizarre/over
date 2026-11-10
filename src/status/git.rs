@@ -339,6 +339,7 @@ fn merge(a: Status, b: Status) -> Status {
 /// Higher means more urgent to surface when aggregating statuses.
 fn severity(status: &Status) -> u8 {
     match status {
+        Status::Locked => 7,
         Status::Applied => 0,
         Status::Ahead(_) => 1,
         Status::Behind(_) => 2,

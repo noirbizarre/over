@@ -511,6 +511,7 @@ pub(crate) fn resolve_dir_conflict(ctx: &Ctx, source: &Path, target: &Path) -> R
 }
 
 pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()> {
+    crate::secrets::validate_ingestion(&ctx, overlay, std::slice::from_ref(file))?;
     let policy = crate::overlays::ignore::SourcePolicy::new(&ctx.repository.root, overlay)?;
     add_file_selected(ctx, overlay, file, &policy).await
 }
@@ -608,6 +609,7 @@ async fn add_file_selected(
 /// `Overlay::is_link_dir`, #113/#126) or by recursing into it and adding
 /// each file individually.
 pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
+    crate::secrets::validate_ingestion(&ctx, overlay, &[dir.to_path_buf()])?;
     let src = if dir.is_relative() {
         current_dir()?.join(dir)
     } else {

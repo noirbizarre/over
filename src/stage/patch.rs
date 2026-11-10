@@ -46,6 +46,7 @@ pub(crate) fn run(
     selections: &[PathBuf],
     select: impl FnMut(&Unit, bool) -> Result<Decision>,
 ) -> Result<()> {
+    crate::secrets::validate_ingestion(ctx, overlay, selections)?;
     run_with(
         ctx,
         overlay,

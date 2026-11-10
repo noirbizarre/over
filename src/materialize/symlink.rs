@@ -35,6 +35,7 @@ impl Materializer for SymlinkMaterializer {
         !matches!(
             intent,
             MaterializationIntent::Checkout
+                | MaterializationIntent::EncryptedFile(_)
                 | MaterializationIntent::VirtualCheckout
                 | MaterializationIntent::ScopedVirtualCheckout(_)
                 | MaterializationIntent::PartialFile { .. }
@@ -142,6 +143,7 @@ impl Materializer for SymlinkMaterializer {
                 }
             }
             MaterializationIntent::Checkout
+            | MaterializationIntent::EncryptedFile(_)
             | MaterializationIntent::VirtualCheckout
             | MaterializationIntent::ScopedVirtualCheckout(_)
             | MaterializationIntent::PartialFile { .. } => {
@@ -419,6 +421,7 @@ fn build_action(ctx: Ctx, entry: &DesiredEntry) -> Box<dyn Action> {
             }
         }
         MaterializationIntent::Checkout
+        | MaterializationIntent::EncryptedFile(_)
         | MaterializationIntent::VirtualCheckout
         | MaterializationIntent::ScopedVirtualCheckout(_)
         | MaterializationIntent::PartialFile { .. } => {

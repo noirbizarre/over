@@ -42,7 +42,11 @@ pub(super) fn resolve_declared_dirs(
         };
         // Only directories are overlays; a glob like `hosts/*` may also
         // match plain files sitting alongside overlay directories.
-        dirs.extend(paths.filter_map(Result::ok).filter(|p| p.is_dir()));
+        dirs.extend(
+            paths
+                .filter_map(Result::ok)
+                .filter(|p| p.is_dir() && !p.starts_with(repo_root.join(".over"))),
+        );
     }
     dirs
 }

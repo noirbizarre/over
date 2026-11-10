@@ -404,7 +404,9 @@ impl Overlay {
 
     pub async fn apply(&self, ctx: &Ctx) -> Result<()> {
         // A flat union has no winner: reject every claim before any participant writes.
-        DesiredTree::build(ctx, self)?.validate_ownership()?;
+        let desired = DesiredTree::build(ctx, self)?;
+        desired.validate_ownership()?;
+        crate::materialize::encrypted::prepare(&desired, ctx).await?;
         let mut visited = HashSet::new();
         let mut stack = Vec::new();
         let mut participants = Vec::new();

@@ -112,6 +112,7 @@ impl Repository {
             self.declared_overlay_dirs()
         });
         dirs.sort();
+        dirs.retain(|path| !path.starts_with(self.root.join(".over")));
         dirs.dedup();
 
         let mut overlays = Vec::new();
@@ -137,6 +138,10 @@ impl Repository {
     /// Get an overlay by its name/relative path
     pub fn get(&self, name: &str) -> Result<Overlay> {
         let root = self.root.join(name);
+        anyhow::ensure!(
+            !root.starts_with(self.root.join(".over")),
+            ".over is reserved repository administration"
+        );
         if !root.exists() {
             anyhow::bail!(
                 "overlay '{}' not found (no such directory: {})",

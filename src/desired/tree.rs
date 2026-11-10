@@ -222,7 +222,7 @@ fn collect_own_entries(
             permissions: None,
         });
         for source in routing.directories.keys() {
-            walk_overlay_tree(overlay, &routing, &policy, source, &mut entries)?;
+            walk_overlay_tree(ctx, overlay, &routing, &policy, source, &mut entries)?;
         }
         build_git_entries(overlay, &routing, &mut entries);
         let ctx_with_target =
@@ -249,9 +249,9 @@ fn collect_own_entries(
 
     build_git_entries(overlay, &routing, &mut entries);
 
-    walk_overlay_tree(overlay, &routing, &policy, Path::new(""), &mut entries)?;
+    walk_overlay_tree(ctx, overlay, &routing, &policy, Path::new(""), &mut entries)?;
     for source in routing.directories.keys() {
-        walk_overlay_tree(overlay, &routing, &policy, source, &mut entries)?;
+        walk_overlay_tree(ctx, overlay, &routing, &policy, source, &mut entries)?;
     }
 
     // Mirrors the same resolved-overlay bookkeeping `Overlay::apply` uses so
@@ -284,6 +284,31 @@ fn finalize_entries(
     routing: &ResolvedMappings,
     entries: &mut [DesiredEntry],
 ) -> Result<()> {
+    for entry in entries.iter() {
+        if entry.intent.is_virtual_checkout()
+            && let Provenance::Overlay { source, .. } = &entry.provenance
+        {
+            // Mapped checkouts may deliberately have no source directory until reverse add.
+            if source
+                .symlink_metadata()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            {
+                continue;
+            }
+            let scope = entry.intent.checkout_scope();
+            for item in WalkDir::new(source).min_depth(1) {
+                let item = item?;
+                if !item.file_type().is_dir()
+                    && scope.owns_source(item.path().strip_prefix(source)?)
+                {
+                    anyhow::ensure!(
+                        !crate::secrets::is_encrypted(item.path()),
+                        "Age-encrypted files require ordinary file-level materialization; virtual checkouts are unsupported"
+                    );
+                }
+            }
+        }
+    }
     if overlay.map.is_empty() {
         return Ok(());
     }
@@ -389,6 +414,7 @@ fn build_git_entries(
 /// skipped, mirroring what `Overlay::apply` used to filter for inline
 /// before #13 moved materialization behind a `Plan`.
 fn walk_overlay_tree(
+    ctx: &exec::Context,
     overlay: &Overlay,
     routing: &ResolvedMappings,
     policy: &SourcePolicy,
@@ -442,9 +468,31 @@ fn walk_overlay_tree(
             continue;
         }
 
-        let entry_target = routing.target_for(rel_path);
+        let encrypted = !entry.file_type().is_dir() && crate::secrets::is_encrypted(path);
+        let logical = if encrypted {
+            anyhow::ensure!(
+                entry.file_type().is_file(),
+                "encrypted source must be a regular file"
+            );
+            let stem = rel_path
+                .file_stem()
+                .filter(|stem| !stem.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("encrypted filename must have a nonempty basename")
+                })?;
+            let logical = rel_path.with_file_name(stem);
+            anyhow::ensure!(
+                logical.file_name().is_some_and(|name| name != ".age")
+                    && !crate::overlays::ignore::is_control_file(&logical),
+                "encrypted control files are unsupported"
+            );
+            logical
+        } else {
+            rel_path.to_path_buf()
+        };
+        let entry_target = routing.target_for(&logical);
         anyhow::ensure!(
-            routing.logical_path_for(&entry_target)? == rel_path,
+            routing.logical_path_for(&entry_target)? == logical,
             "residual path '{}' collides with a mapped destination",
             rel_path.display()
         );
@@ -515,11 +563,22 @@ fn walk_overlay_tree(
                     overlay: overlay.name.clone(),
                     source: path.to_path_buf(),
                 },
-                intent: MaterializationIntent::SymlinkFile {
-                    source: path.to_path_buf(),
-                    link_type: symlink::LinkType::Soft,
+                intent: if encrypted {
+                    MaterializationIntent::EncryptedFile(crate::secrets::EncryptedFile {
+                        source: path.to_path_buf(),
+                        crypto: ctx.crypto.clone(),
+                    })
+                } else {
+                    MaterializationIntent::SymlinkFile {
+                        source: path.to_path_buf(),
+                        link_type: symlink::LinkType::Soft,
+                    }
                 },
-                permissions: None,
+                permissions: if encrypted {
+                    overlay.permission_for(&logical)
+                } else {
+                    None
+                },
             });
         }
     }
@@ -554,6 +613,7 @@ fn build_symlink_sidecars(
             resolved: resolved.clone(),
         };
         let intent = if is_dir {
+            crate::secrets::reject_encrypted_directory(&resolved)?;
             if resolved.starts_with(&overlay.root) {
                 policy.validate_directory_link(&resolved, &resolved)?;
             }

@@ -20,6 +20,7 @@ mod list;
 mod log;
 mod new;
 mod restore;
+mod secret;
 mod status;
 mod sync;
 mod unapply;
@@ -57,6 +58,8 @@ pub struct CLI {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    #[clap(subcommand, about = "Manage repository-local encrypted secrets")]
+    Secret(secret::Commands),
     #[clap(
         name = "init",
         about = "Initialize an Over repository from a Git source"
@@ -147,6 +150,7 @@ pub async fn main() -> Result<()> {
     crate::ui::init_tracing(args.verbose, args.debug);
 
     match args.cmd {
+        Some(Commands::Secret(ref command)) => secret::execute(&args, command).await?,
         Some(Commands::Init(ref opt)) => {
             init::execute(&args, opt).await?;
         }
