@@ -126,6 +126,35 @@ pub fn resolve_overlay(
     git_repo: &git2::Repository,
     overlay_name: Option<&str>,
 ) -> Result<Overlay> {
+    let overlay = select_overlay(over_repo, git_repo, overlay_name)?;
+    if overlay_name.is_none() && get_overlay_config(git_repo)?.is_none() {
+        set_overlay_config(git_repo, &overlay.name)?;
+    }
+    Ok(overlay)
+}
+
+/// Select without publishing an association so previews and failed validation stay read-only.
+pub fn select_overlay(
+    over_repo: &Repository,
+    git_repo: &git2::Repository,
+    overlay_name: Option<&str>,
+) -> Result<Overlay> {
+    select_overlay_with(over_repo, git_repo, overlay_name, |overlays| {
+        dialoguer::FuzzySelect::with_theme(&DialogTheme::default())
+            .with_prompt("Choose the target overlay")
+            .default(0)
+            .items(overlays)
+            .interact()
+            .map_err(|e| anyhow!("overlay selection cancelled: {}", e))
+    })
+}
+
+fn select_overlay_with(
+    over_repo: &Repository,
+    git_repo: &git2::Repository,
+    overlay_name: Option<&str>,
+    select: impl FnOnce(&[Overlay]) -> Result<usize>,
+) -> Result<Overlay> {
     if let Some(name) = overlay_name {
         return over_repo.get(name);
     }
@@ -141,19 +170,7 @@ pub fn resolve_overlay(
         bail!("no overlays found in repository");
     }
 
-    let selection = dialoguer::FuzzySelect::with_theme(&DialogTheme::default())
-        .with_prompt("Choose the target overlay")
-        .default(0)
-        .items(&overlays[..])
-        .interact()
-        .map_err(|e| anyhow!("overlay selection cancelled: {}", e))?;
-
-    let overlay = overlays[selection].clone();
-
-    // Persist selection to git config
-    set_overlay_config(git_repo, &overlay.name)?;
-
-    Ok(overlay)
+    Ok(overlays[select(&overlays)?].clone())
 }
 
 #[cfg(test)]
@@ -162,6 +179,19 @@ mod tests {
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use std::fs;
+
+    #[test]
+    fn selecting_an_unassociated_overlay_does_not_publish_configuration() {
+        let td = TempDir::new().unwrap();
+        td.child("ov/over.toml").write_str("target = '~'").unwrap();
+        let over_repo = Repository::new(td.path().to_path_buf());
+        let (_gtd, git_repo) = temp_git_repo();
+        let before = fs::read(git_repo.path().join("config")).unwrap();
+        let overlay = select_overlay_with(&over_repo, &git_repo, None, |_| Ok(0)).unwrap();
+        assert_eq!(overlay.name, "ov");
+        assert_eq!(fs::read(git_repo.path().join("config")).unwrap(), before);
+        assert_eq!(get_overlay_config(&git_repo).unwrap(), None);
+    }
 
     /// Helper: create a temp dir and init a bare-style git repo (non-bare, with workdir).
     fn temp_git_repo() -> (TempDir, git2::Repository) {
