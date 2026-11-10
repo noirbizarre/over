@@ -104,6 +104,10 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let (symlinks, regulars): (Vec<_>, Vec<_>) = resolved.iter().partition(|p| p.is_symlink());
 
+    // Validate the entire selection before the first prompt can publish a declaration.
+    for symlink_path in &symlinks {
+        validate_symlink_ingestion(&overlay, symlink_path, &ctx)?;
+    }
     for symlink_path in &symlinks {
         add_symlink(&overlay, &home, symlink_path, &ctx)?;
     }
@@ -128,15 +132,34 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     Ok(())
 }
 
+fn validate_symlink_ingestion(
+    overlay: &crate::overlays::Overlay,
+    symlink_path: &Path,
+    ctx: &Context,
+) -> Result<PathBuf> {
+    let rel_path = overlay
+        .resolve_mappings(ctx)?
+        .logical_path_for(symlink_path)?;
+    let source = overlay.root.join(&rel_path);
+    let policy = crate::overlays::ignore::SourcePolicy::new(&ctx.repository.root, overlay)?;
+    anyhow::ensure!(
+        policy.includes(&source, symlink_path.is_dir()),
+        "cannot ingest ignored content or control metadata '{}'",
+        rel_path.display()
+    );
+    if symlink_path.is_dir() {
+        policy.validate_directory_link(symlink_path, &source)?;
+    }
+    Ok(rel_path)
+}
+
 fn add_symlink(
     overlay: &crate::overlays::Overlay,
     home: &Path,
     symlink_path: &Path,
     ctx: &crate::exec::Context,
 ) -> Result<()> {
-    let rel_path = overlay
-        .resolve_mappings(ctx)?
-        .logical_path_for(symlink_path)?;
+    let rel_path = validate_symlink_ingestion(overlay, symlink_path, ctx)?;
     let desired = crate::desired::DesiredTree::build_own(ctx, overlay)?;
     anyhow::ensure!(
         !desired
@@ -204,6 +227,44 @@ fn compute_default_target(link_target: &Path, overlay_root: &Path, home: &Path) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[rstest::rstest]
+    #[case("secret", false)]
+    #[case("over.toml", false)]
+    #[case("directory", true)]
+    fn refused_symlink_ingestion_leaves_sources_and_declarations_untouched(
+        #[case] name: &str,
+        #[case] directory: bool,
+    ) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo_root = temp.path().join("repo");
+        let root = temp.path().join("target");
+        std::fs::create_dir_all(repo_root.join("ov")).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(repo_root.join("ov/.overignore"), "secret\n*.pem\n").unwrap();
+        let referent = temp.path().join("referent");
+        if directory {
+            std::fs::create_dir(&referent).unwrap();
+            std::fs::write(referent.join("private.pem"), "private").unwrap();
+        } else {
+            std::fs::write(&referent, "private").unwrap();
+        }
+        let link = root.join(name);
+        std::os::unix::fs::symlink(&referent, &link).unwrap();
+        let repo = Repository::new(repo_root.clone());
+        let overlay = repo.get("ov").unwrap();
+        let ctx = Context::builder()
+            .repository(repo)
+            .root(root)
+            .dry_run(true)
+            .build();
+        let result = add_symlink(&overlay, &repo_root, &link, &ctx);
+        assert!(result.is_err(), "ingestion must reject {name}");
+        assert_eq!(std::fs::read_link(&link).unwrap(), referent);
+        assert!(!overlay.root.join(format!("{name}.link.toml")).exists());
+        assert_eq!(std::fs::read_dir(&overlay.root).unwrap().count(), 1);
+    }
 
     #[test]
     fn compute_default_target_inside_overlay() {
