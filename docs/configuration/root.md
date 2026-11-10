@@ -242,7 +242,7 @@ reserved: attempting to override one is a configuration error.
 | `OVER_HOOK_EVENT` | All hooks: event name |
 | `OVER_REPOSITORY_ROOT` | All hooks: absolute repository source root |
 | `OVER_HOOK_ACTIVE` | All hooks: `1`, suppressing nested dispatch |
-| `OVER_TARGET_ROOT` | Install and post-apply: absolute execution target root (`--root`) |
+| `OVER_TARGET_ROOT` | Install and post-apply: resolved absolute execution target root (`--target` or `OVER_TARGET`, otherwise the home directory) |
 | `OVER_OVERLAY_NAME` | Install and post-apply: repository-relative overlay name |
 | `OVER_OVERLAY_ROOT` | Install and post-apply: absolute overlay source directory |
 | `OVER_OVERLAY_TARGET` | Install and post-apply: absolute resolved base target |

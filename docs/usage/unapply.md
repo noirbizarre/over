@@ -12,14 +12,14 @@ Arguments:
   [NAME]  Name of the overlay to unapply (uses default_overlay if configured)
 
 Options:
-  -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
-  -r, --root <ROOT>  The target root directory (~)
-  -d, --debug        Toggle debug traces
-  -n, --dry-run      Report what would be removed without removing anything
-      --no-prompt    Leave risky checkouts untouched instead of prompting
+  -H, --home <HOME>       Configuration and overlays root [env: OVER_HOME=]
+  -r, --target <TARGET>   Set the target directory (defaults to ~) [env: OVER_TARGET=]
+  -d, --debug             Toggle debug traces
+  -n, --dry-run           Report what would be removed without removing anything
       --discard-checkout  Discard owned real checkouts, including local files and Git history
-  -v, --verbose      Toggle verbose output
-  -h, --help         Print help
+  -v, --verbose           Toggle verbose output
+      --no-prompt         Leave risky checkouts untouched instead of prompting
+  -h, --help              Print help
 ```
 
 When `NAME` is omitted, the repository's configured `default_overlay` (if

@@ -32,7 +32,7 @@ over secret remove NAME
 
 The store belongs to the repository selected by `--home` / `OVER_HOME`, with
 `~/.dotfiles` as the default. It does not depend on the selected overlay, the
-current Git repository, or the target `--root`. The repository directory must
+current Git repository, or the target `--target`. The repository directory must
 already exist.
 
 Each secret is a versionable ciphertext file:

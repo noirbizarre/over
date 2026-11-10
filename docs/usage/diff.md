@@ -14,16 +14,16 @@ Arguments:
   [NAME]  Name of the overlay to check (default_overlay if configured, all overlays otherwise)
 
 Options:
-  -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
-  -r, --root <ROOT>  The target root directory (~)
-  -d, --debug        Toggle debug traces
-      --no-uses      Skip dependency operations, retaining dependency data
-  -a, --all          Diff every overlay, retaining configured default_overlay data
-      --staged       Show staged changes instead of unstaged changes (alias: --cached)
-      --all-changes  Show both staged and unstaged changes
-      --difftool     Use Git's configured difftool
-  -v, --verbose      Toggle verbose output
-  -h, --help         Print help
+  -H, --home <HOME>      Configuration and overlays root [env: OVER_HOME=]
+  -r, --target <TARGET>  Set the target directory (defaults to ~) [env: OVER_TARGET=]
+  -d, --debug            Toggle debug traces
+      --no-uses          Skip dependency operations, retaining dependency data
+  -a, --all              Diff every overlay, retaining configured default_overlay data
+  -v, --verbose          Toggle verbose output
+      --staged           Show staged changes instead of unstaged changes
+      --all-changes      Show both staged and unstaged changes
+      --difftool         Use Git's configured difftool
+  -h, --help             Print help
 ```
 
 When `NAME` is omitted, a configured `default_overlay` (see

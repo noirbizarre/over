@@ -88,7 +88,7 @@ impl Fixture {
             .arg("--home")
             .arg(&self.source)
             .arg(name)
-            .arg("--root")
+            .arg("--target")
             .arg(&self.target);
         command
     }
@@ -642,7 +642,7 @@ fn independent_materializations_and_other_overlays_cannot_be_restored() {
             .command("restore")
             .args(["--overlay", "other"])
             .arg(fixture.target.join("file"))
-            .arg("--root")
+            .arg("--target")
             .arg(other_target)
             .output()
             .unwrap()

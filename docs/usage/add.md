@@ -9,10 +9,10 @@ Arguments:
   <FILES>...  Files, directories, or glob patterns to add
 
 Options:
-  -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME]
+  -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME=]
   -o, --overlay <OVERLAY>  Name of the target overlay
   -d, --debug              Toggle debug traces
-  -r, --root <ROOT>        The target root directory (~)
+  -r, --target <TARGET>    Set the target directory (defaults to ~) [env: OVER_TARGET=]
   -n, --dry-run            Run without applying changes
   -v, --verbose            Toggle verbose output
   -f, --force              Overwrite without prompting

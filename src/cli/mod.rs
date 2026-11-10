@@ -215,7 +215,85 @@ pub async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
+    use rstest::rstest;
     use std::path::PathBuf;
+
+    #[rstest]
+    #[case("add")]
+    #[case("apply")]
+    #[case("commit")]
+    #[case("diff")]
+    #[case("doctor")]
+    #[case("lint")]
+    #[case("log")]
+    #[case("restore")]
+    #[case("status")]
+    #[case("show")]
+    #[case("sync")]
+    #[case("unapply")]
+    fn every_destination_option_respects_flag_environment_and_default_precedence(
+        #[case] command: &str,
+        #[values("environment", "flag", "short_flag", "default")] selection: &str,
+    ) {
+        // Clap reads the process environment: isolate each parse so parallel tests
+        // never race over environment mutations (which are unsafe in edition 2024).
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "cli::tests::destination_selection_is_checked_in_an_isolated_process",
+                "--nocapture",
+            ])
+            .env("OVER_TEST_COMMAND", command)
+            .env("OVER_TEST_SELECTION", selection)
+            .env_remove("OVER_TARGET");
+        if selection != "default" {
+            child.env(
+                "OVER_TARGET",
+                std::env::temp_dir().join("environment-target"),
+            );
+        }
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn destination_selection_is_checked_in_an_isolated_process() {
+        let Ok(command) = std::env::var("OVER_TEST_COMMAND") else {
+            return;
+        };
+        let selection = std::env::var("OVER_TEST_SELECTION").unwrap();
+        let environment_target = std::env::temp_dir().join("environment-target");
+        let flag_target = std::env::temp_dir().join("flag-target");
+        let mut args = vec![std::ffi::OsString::from("over"), command.into()];
+        args.push("file".into());
+        let expected = match selection.as_str() {
+            "flag" | "short_flag" => {
+                args.push(
+                    if selection == "flag" {
+                        "--target"
+                    } else {
+                        "-r"
+                    }
+                    .into(),
+                );
+                args.push(flag_target.clone().into());
+                Some(flag_target)
+            }
+            "environment" => Some(environment_target),
+            "default" => None,
+            _ => panic!("unknown target selection"),
+        };
+        let matches = CLI::command().try_get_matches_from(args).unwrap();
+        let (_, matches) = matches.subcommand().unwrap();
+        assert_eq!(matches.get_one::<PathBuf>("root"), expected.as_ref());
+    }
 
     #[test]
     fn resolve_home_with_flag() {

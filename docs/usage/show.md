@@ -11,6 +11,6 @@ over show --all
 over show desktop --verbose
 ```
 
-Selection, `--root`, `--no-uses`, `--all`, verbosity, read-only behavior, and exit
+Selection, `--target`, `OVER_TARGET`, `--no-uses`, `--all`, verbosity, read-only behavior, and exit
 statuses are identical. In particular, `show` now returns `1` for missing,
 unhealthy, or uncheckable overlays; it is no longer a configuration-only command.

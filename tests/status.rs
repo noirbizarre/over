@@ -13,7 +13,7 @@ fn command(source: &Path, root: &Path, verb: &str) -> Command {
         .arg("--home")
         .arg(source)
         .arg(verb)
-        .arg("--root")
+        .arg("--target")
         .arg(root);
     command
 }
@@ -126,7 +126,9 @@ fn generated_completions_include_canonical_status_and_its_compatibility_alias(#[
         .success()
         .stdout(contains("status"))
         .stdout(contains("show"))
-        .stdout(contains("no-uses"));
+        .stdout(contains("no-uses"))
+        .stdout(contains("target"))
+        .stdout(contains("--root").not());
 }
 
 #[rstest::rstest]
@@ -141,5 +143,5 @@ fn both_command_names_explain_the_same_inspection_options(#[case] verb: &str) {
         .stdout(contains("resolved overlay configuration"))
         .stdout(contains("--all"))
         .stdout(contains("--no-uses"))
-        .stdout(contains("--root"));
+        .stdout(contains("--target"));
 }

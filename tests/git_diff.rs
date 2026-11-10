@@ -81,7 +81,7 @@ impl Fixture {
             .arg(&self.source)
             .arg(subcommand)
             .arg("ov")
-            .arg("--root")
+            .arg("--target")
             .arg(&self.target)
             .args(args);
         command
@@ -101,7 +101,7 @@ impl Fixture {
                 .arg("add")
                 .arg("--overlay")
                 .arg("ov")
-                .arg("--root")
+                .arg("--target")
                 .arg(&self.target)
                 .arg(self.target.join(name))
                 .output()
@@ -488,7 +488,7 @@ fn pager_diff_overrides_core_pager_in_an_interactive_terminal() {
     fixture.git(&["config", "pager.diff", "printf 'DIFF-PAGER\\n'; cat"]);
     let quote = |path: &Path| format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"));
     let shell = format!(
-        "{} --home {} diff ov --root {}",
+        "{} --home {} diff ov --target {}",
         quote(Path::new(assert_cmd::cargo::cargo_bin!("over"))),
         quote(&fixture.source),
         quote(&fixture.target)
@@ -679,7 +679,7 @@ fn selecting_all_overlays_diffs_shared_symlink_dependencies_once() {
     let output = checked(
         all.arg("--home")
             .arg(&fixture.source)
-            .args(["diff", "--all", "--root"])
+            .args(["diff", "--all", "--target"])
             .arg(&fixture.target)
             .output()
             .unwrap(),

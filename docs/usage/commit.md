@@ -11,11 +11,11 @@ Arguments:
   [NAME]  Name of the overlay to commit (uses default_overlay if configured)
 
 Options:
-  -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME]
-  -r, --root <ROOT>        The target root directory (~)
+  -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME=]
+  -r, --target <TARGET>    Set the target directory (defaults to ~) [env: OVER_TARGET=]
+  -d, --debug              Toggle debug traces
   -m, --message <MESSAGE>  Commit message
       --no-prompt          Never prompt; use --message or an auto-generated message
-  -d, --debug              Toggle debug traces
   -v, --verbose            Toggle verbose output
   -h, --help               Print help
 ```

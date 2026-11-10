@@ -12,17 +12,17 @@ Arguments:
   [NAME]  Name of the overlay to apply (uses default_overlay if configured)
 
 Options:
-  -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
-  -r, --root <ROOT>  The target root directory (~)
-  -d, --debug        Toggle debug traces
-  -n, --dry-run      Run without applying changes
-  -f, --force        Overwrite ordinary filesystem conflicts without prompting
-  -v, --verbose      Toggle verbose output
-      --no-prompt    Fail on conflict instead of prompting
+  -H, --home <HOME>       Configuration and overlays root [env: OVER_HOME=]
+  -r, --target <TARGET>   Set the target directory (defaults to ~) [env: OVER_TARGET=]
+  -d, --debug             Toggle debug traces
+  -n, --dry-run           Run without applying changes
+  -f, --force             Overwrite ordinary filesystem conflicts without prompting
+  -v, --verbose           Toggle verbose output
       --discard-checkout  Discard owned real checkouts, including local files and Git history
-      --no-uses      Skip dependency operations, retaining dependency data
-  -i, --install      Run install hooks after applying files
-  -h, --help         Print help
+      --no-prompt         Fail on conflict instead of prompting
+      --no-uses           Skip dependency operations, retaining dependency data
+  -i, --install           Run install hooks after applying files
+  -h, --help              Print help
 ```
 
 - When `NAME` is omitted, the repository's configured `default_overlay` (if

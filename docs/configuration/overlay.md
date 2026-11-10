@@ -52,8 +52,9 @@ consumer keys inside `data` and supported Git configuration namespaces are allow
 
 `target` is the base destination for ordinary entries. An overlay with
 `target: "~"` and `.config/editor/config.toml` manages
-`~/.config/editor/config.toml`. `~` means `--root` when supplied, otherwise the
-user's home directory; `--home` selects the source repository instead.
+`~/.config/editor/config.toml`. `~` means `--target` when supplied, then
+`OVER_TARGET` when set, otherwise the user's home directory; `--home` selects the
+source repository instead.
 
 Destination templates can use `machine` facts (`os`, `arch`, `hostname`,
 `username`, `distro`, `distro_id`), shared `paths`, the current `overlay`, and
@@ -69,7 +70,7 @@ The same context is available to path templates and every lifecycle hook field
 
 | Field | Meaning |
 | --- | --- |
-| `paths.home` | The current user's detected home directory, independent of `--root` and `--home` |
+| `paths.home` | The current user's detected home directory, independent of `--target`, `OVER_TARGET`, and `--home` |
 | `paths.over` | The active Over source repository root |
 | `paths.target` | The current overlay's resolved base destination, independent of directory mappings |
 

@@ -44,7 +44,7 @@ After tolerant static checks, lint resolves each selected composition through th
 shared desired-state builder. It reads relevant destination metadata to preserve
 runtime path-routing and materialization semantics, but never applies, repairs,
 executes hooks, writes Git objects, or persists state. The current machine and home
-directory provide the default context; `--root` selects another target root.
+directory provide the default context; `--target` or `OVER_TARGET` selects another target root.
 Resolution failures become diagnostics and do not stop unrelated compositions.
 Ownership errors follow ADR-008's flat union rather than traversal-order precedence.
 

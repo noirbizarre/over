@@ -149,7 +149,7 @@ pub(crate) fn state_file() -> Result<StateFile<VirtualCheckoutState>> {
 /// `over` invocations naming the *same* directory via different relative
 /// paths (or a different current directory) always map to the same
 /// record. Without this, e.g. two different overlays both applied with a
-/// relative `--root .` from different working directories would collide
+/// relative `--target .` from different working directories would collide
 /// on the literal string `"."`, silently reading/overwriting each
 /// other's association — observed directly, not just theoretical.
 ///
@@ -332,7 +332,7 @@ mod tests {
         // Two different real directories that happen to share the exact
         // same relative path string ("target") must never collide —
         // this is the scenario `over` hit directly: the same relative
-        // `--root` value used from two different working directories.
+        // `--target` value used from two different working directories.
         let tmp_a = tempfile::tempdir().unwrap();
         let tmp_b = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp_a.path().join("target")).unwrap();

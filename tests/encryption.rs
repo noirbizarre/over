@@ -14,7 +14,7 @@ fn command(home: &Path, root: &Path, verb: &str) -> Command {
         .arg("--home")
         .arg(home)
         .arg(verb)
-        .arg("--root")
+        .arg("--target")
         .arg(root)
         .env("OVER_SECRET", PASSPHRASE)
         .env("NO_COLOR", "1");

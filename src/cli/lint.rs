@@ -15,8 +15,13 @@ use crate::ui::style;
 
 #[derive(Args, Debug)]
 pub struct Params {
-    /// Set the target root directory (~)
-    #[arg(short, long)]
+    /// Set the target directory (defaults to ~)
+    #[arg(
+        short = 'r',
+        long = "target",
+        value_name = "TARGET",
+        env = "OVER_TARGET"
+    )]
     pub root: Option<PathBuf>,
 
     /// Check only this overlay and its uses dependencies

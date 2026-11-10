@@ -9,6 +9,121 @@ use tempfile::TempDir;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[rstest]
+#[case("add")]
+#[case("apply")]
+#[case("commit")]
+#[case("diff")]
+#[case("doctor")]
+#[case("lint")]
+#[case("log")]
+#[case("restore")]
+#[case("status")]
+#[case("show")]
+#[case("sync")]
+#[case("unapply")]
+fn destination_options_advertise_target_and_reject_the_removed_root_flag(
+    #[case] command: &str,
+) -> TestResult {
+    Command::cargo_bin("over")?
+        .args([command, "--help"])
+        .env_remove("OVER_TARGET")
+        .assert()
+        .success()
+        .stdout(contains("--target <TARGET>"))
+        .stdout(contains("OVER_TARGET"))
+        .stdout(contains("--root").not());
+    Command::cargo_bin("over")?
+        .args([command, "file", "--root", "destination"])
+        .env_remove("OVER_TARGET")
+        .assert()
+        .code(2)
+        .stderr(contains("unexpected argument '--root'"));
+    Ok(())
+}
+
+#[rstest]
+#[case::environment(false)]
+#[case::explicit_flag(true)]
+fn the_getting_started_walkthrough_uses_the_selected_target(
+    #[case] explicit_target: bool,
+) -> TestResult {
+    let temp = TempDir::new()?;
+    let source = temp.path().join("source");
+    let environment_target = temp.path().join("environment-target");
+    let flag_target = temp.path().join("flag-target");
+    let target = if explicit_target {
+        &flag_target
+    } else {
+        &environment_target
+    };
+    fs::create_dir_all(source.join("apps/hello"))?;
+    fs::create_dir_all(&environment_target)?;
+    fs::create_dir_all(&flag_target)?;
+    git2::Repository::init(&source)?;
+    fs::write(source.join("over.toml"), "format = 'toml'\n")?;
+    fs::write(source.join("apps/hello/over.toml"), "target = '~'\n")?;
+    let greeting = source.join("apps/hello/greeting.txt");
+    fs::write(&greeting, "Hello from Over!\n")?;
+    let command = |verb: &str| -> Result<Command, Box<dyn Error>> {
+        let mut command = Command::cargo_bin("over")?;
+        command
+            .env("OVER_HOME", &source)
+            .env("OVER_TARGET", &environment_target)
+            .env("XDG_STATE_HOME", temp.path().join("state"))
+            .env("XDG_CACHE_HOME", temp.path().join("cache"))
+            .args([verb, "apps/hello"]);
+        if explicit_target {
+            command.arg("--target").arg(&flag_target);
+        }
+        Ok(command)
+    };
+    command("apply")?.arg("--dry-run").assert().success();
+    assert!(!target.join("greeting.txt").exists());
+    command("apply")?.assert().success();
+    assert!(target.join("greeting.txt").is_symlink());
+    assert_eq!(
+        fs::read_to_string(target.join("greeting.txt"))?,
+        "Hello from Over!\n"
+    );
+    command("status")?
+        .assert()
+        .success()
+        .stdout(contains("applied"));
+    command("unapply")?.assert().success();
+    assert!(fs::symlink_metadata(target.join("greeting.txt")).is_err());
+    assert!(greeting.is_file());
+    if explicit_target {
+        assert!(!environment_target.join("greeting.txt").exists());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn omitting_target_overrides_still_deploys_to_the_detected_home() -> TestResult {
+    let source = setup_overlay_repo();
+    let home = TempDir::new()?;
+    fs::write(source.path().join("dev/over.toml"), "target = '~'\n")?;
+    fs::write(source.path().join("dev/file.txt"), "home default")?;
+    // A child HOME makes a regression safe even if deployment unexpectedly occurs.
+    Command::cargo_bin("over")?
+        .env("HOME", home.path())
+        .env_remove("OVER_TARGET")
+        .env("XDG_STATE_HOME", home.path().join("state"))
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .arg("--home")
+        .arg(source.path())
+        .args(["apply", "dev"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(home.path().join("file.txt"))?,
+        "home default"
+    );
+    Ok(())
+}
+
 /// Canonicalize a path for comparison against paths reported by libgit2
 /// (e.g. via `git2::Repository::workdir()`), stripping Windows' `\\?\`
 /// verbatim-path prefix that `Path::canonicalize()` adds but that libgit2
@@ -53,7 +168,7 @@ fn doctor_ownership_diagnostics_use_the_requested_target_root() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&source)
-        .args(["doctor", "--root"])
+        .args(["doctor", "--target"])
         .arg(&target)
         .env("XDG_STATE_HOME", temp.path().join("state"))
         .assert()
@@ -152,7 +267,7 @@ fn unknown_keys_warn_once_and_allow_application_and_lint(#[case] extension: &str
     let output = Command::cargo_bin("over")?
         .arg("--home")
         .arg(&source)
-        .args(["apply", "selected", "--root"])
+        .args(["apply", "selected", "--target"])
         .arg(&target)
         .arg("--no-prompt")
         .env("XDG_STATE_HOME", temp.path().join("state"))
@@ -175,7 +290,7 @@ fn unknown_keys_warn_once_and_allow_application_and_lint(#[case] extension: &str
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&source)
-        .args(["lint", "selected", "--root"])
+        .args(["lint", "selected", "--target"])
         .arg(&target)
         .assert()
         .success()
@@ -290,7 +405,7 @@ fn add_file_to_overlay_dry_run() -> TestResult {
         target_file.to_str().unwrap(),
         "-o",
         "dev",
-        "--root",
+        "--target",
         repo.path().to_str().unwrap(),
         "--dry-run",
     ]);
@@ -312,7 +427,7 @@ fn add_file_debug_output() -> TestResult {
             target_file.to_str().unwrap(),
             "-o",
             "dev",
-            "--root",
+            "--target",
             repo.path().to_str().unwrap(),
             "--dry-run",
         ])
@@ -339,7 +454,7 @@ fn add_multiple_files_dry_run() -> TestResult {
         file_b.to_str().unwrap(),
         "-o",
         "dev",
-        "--root",
+        "--target",
         repo.path().to_str().unwrap(),
         "--dry-run",
     ]);
@@ -360,7 +475,7 @@ fn add_directory_dry_run() -> TestResult {
         dir.to_str().unwrap(),
         "-o",
         "dev",
-        "--root",
+        "--target",
         repo.path().to_str().unwrap(),
         "--dry-run",
     ]);
@@ -378,7 +493,7 @@ fn add_nonexistent_file_fails() -> TestResult {
         "nonexistent_file_xyz.txt",
         "-o",
         "dev",
-        "--root",
+        "--target",
         repo.path().to_str().unwrap(),
     ]);
     cmd.assert().failure();
@@ -633,7 +748,7 @@ fn doctor_clean_repository_reports_no_issues() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(tmp.path())
-        .args(["doctor", "--root"])
+        .args(["doctor", "--target"])
         .arg(&root)
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -655,7 +770,7 @@ fn doctor_reports_lint_errors_and_exits_nonzero() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(tmp.path())
-        .args(["doctor", "--root"])
+        .args(["doctor", "--target"])
         .arg(&root)
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -685,7 +800,7 @@ fn doctor_reports_malformed_exclude_block_and_exits_nonzero() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["doctor", "--root"])
+        .args(["doctor", "--target"])
         .arg(&target)
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -722,7 +837,7 @@ fn doctor_fix_repairs_malformed_exclude_block_and_exits_zero() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["doctor", "--root"])
+        .args(["doctor", "--target"])
         .arg(&target)
         .arg("--fix")
         .env("XDG_STATE_HOME", xdg_state_home.path())
@@ -761,7 +876,7 @@ fn doctor_fix_never_touches_a_merely_modified_block() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["doctor", "--root"])
+        .args(["doctor", "--target"])
         .arg(&target)
         .arg("--fix")
         .env("XDG_STATE_HOME", xdg_state_home.path())
@@ -815,7 +930,7 @@ fn doctor_reports_a_stale_xdg_sync_record() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(tmp.path())
-        .args(["doctor", "--root"])
+        .args(["doctor", "--target"])
         .arg(&root)
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -834,7 +949,7 @@ fn status_reports_missing_before_apply() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["status", "dev", "--root"])
+        .args(["status", "dev", "--target"])
         .arg(root.path())
         .assert()
         .code(1)
@@ -853,7 +968,7 @@ fn status_reports_applied_after_apply() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["apply", "dev", "--root"])
+        .args(["apply", "dev", "--target"])
         .arg(root.path())
         .arg("--force")
         .assert()
@@ -862,7 +977,7 @@ fn status_reports_applied_after_apply() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["status", "dev", "--root"])
+        .args(["status", "dev", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -880,7 +995,7 @@ fn status_reports_conflict_for_existing_file() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["status", "dev", "--root"])
+        .args(["status", "dev", "--target"])
         .arg(root.path())
         .assert()
         .code(1)
@@ -927,7 +1042,7 @@ fn status_without_name_narrows_to_configured_default_overlay() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["status", "--root"])
+        .args(["status", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -950,7 +1065,7 @@ fn status_all_flag_overrides_configured_default_overlay() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["status", "--all", "--root"])
+        .args(["status", "--all", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -972,7 +1087,7 @@ fn diff_reports_missing_before_apply() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["diff", "dev", "--root"])
+        .args(["diff", "dev", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -990,7 +1105,7 @@ fn diff_keeps_patch_output_empty_for_a_non_git_source_after_apply() -> TestResul
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["apply", "dev", "--root"])
+        .args(["apply", "dev", "--target"])
         .arg(root.path())
         .arg("--force")
         .assert()
@@ -999,7 +1114,7 @@ fn diff_keeps_patch_output_empty_for_a_non_git_source_after_apply() -> TestResul
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["diff", "dev", "--root"])
+        .args(["diff", "dev", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -1019,7 +1134,7 @@ fn diff_reports_an_existing_file_as_a_link_problem_without_a_content_patch() -> 
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["diff", "dev", "--root"])
+        .args(["diff", "dev", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -1042,7 +1157,7 @@ fn overlay_root_subcommand_debug_output_logs_cli_args(#[case] subcommand: &str) 
         .arg("--home")
         .arg(repo.path())
         .arg("--debug")
-        .args([subcommand, "dev", "--root"])
+        .args([subcommand, "dev", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -1089,7 +1204,7 @@ fn diff_without_name_narrows_to_configured_default_overlay() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["diff", "--root"])
+        .args(["diff", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -1112,7 +1227,7 @@ fn diff_all_flag_overrides_configured_default_overlay() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["diff", "--all", "--root"])
+        .args(["diff", "--all", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -1217,7 +1332,7 @@ fn sync_without_name_narrows_to_configured_default_overlay() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["sync", "--verbose", "--root"])
+        .args(["sync", "--verbose", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -1242,7 +1357,7 @@ fn sync_all_flag_overrides_configured_default_overlay() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["sync", "--all", "--verbose", "--root"])
+        .args(["sync", "--all", "--verbose", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -1260,7 +1375,7 @@ fn sync_overlay_without_git_entry_succeeds_quietly() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["sync", "dev", "--root"])
+        .args(["sync", "dev", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -1281,7 +1396,7 @@ fn sync_reports_up_to_date_right_after_apply() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["apply", "gitsync", "--root"])
+        .args(["apply", "gitsync", "--target"])
         .arg(root.path())
         .arg("--force")
         .env("XDG_STATE_HOME", xdg_state_home.path())
@@ -1291,7 +1406,7 @@ fn sync_reports_up_to_date_right_after_apply() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["sync", "gitsync", "--root"])
+        .args(["sync", "gitsync", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -1313,7 +1428,7 @@ fn sync_pulls_and_fast_forwards_after_upstream_advances() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["apply", "gitsync2", "--root"])
+        .args(["apply", "gitsync2", "--target"])
         .arg(root.path())
         .arg("--force")
         .env("XDG_STATE_HOME", xdg_state_home.path())
@@ -1342,7 +1457,7 @@ fn sync_pulls_and_fast_forwards_after_upstream_advances() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["sync", "gitsync2", "--root"])
+        .args(["sync", "gitsync2", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -1366,7 +1481,7 @@ fn sync_blocks_on_dirty_checkout_without_touching_it() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["apply", "gitsync3", "--root"])
+        .args(["apply", "gitsync3", "--target"])
         .arg(root.path())
         .arg("--force")
         .env("XDG_STATE_HOME", xdg_state_home.path())
@@ -1378,7 +1493,7 @@ fn sync_blocks_on_dirty_checkout_without_touching_it() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["sync", "gitsync3", "--root"])
+        .args(["sync", "gitsync3", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -1403,7 +1518,7 @@ fn sync_dry_run_reports_without_mutating() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["apply", "gitsync4", "--root"])
+        .args(["apply", "gitsync4", "--target"])
         .arg(root.path())
         .arg("--force")
         .env("XDG_STATE_HOME", xdg_state_home.path())
@@ -1413,7 +1528,7 @@ fn sync_dry_run_reports_without_mutating() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["sync", "gitsync4", "--root"])
+        .args(["sync", "gitsync4", "--target"])
         .arg(root.path())
         .arg("--dry-run")
         .env("XDG_STATE_HOME", xdg_state_home.path())
@@ -1465,7 +1580,7 @@ fn legacy_symlink_only_installation_migrates_to_checkout_with_no_prior_xdg_state
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["apply", "legacy", "--root"])
+        .args(["apply", "legacy", "--target"])
         .arg(&target)
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -1518,7 +1633,7 @@ fn legacy_symlink_installation_with_drift_is_reported_as_conflict_not_replaced()
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["apply", "legacy2", "--root"])
+        .args(["apply", "legacy2", "--target"])
         .arg(&target)
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -1567,7 +1682,7 @@ fn unapply_without_name_uses_configured_default_overlay() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["unapply", "--root"])
+        .args(["unapply", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -1582,7 +1697,7 @@ fn unapply_before_apply_reports_already_absent() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["unapply", "dev", "--root"])
+        .args(["unapply", "dev", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -1599,7 +1714,7 @@ fn unapply_removes_applied_symlink_and_apply_restores_it() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["apply", "dev", "--root"])
+        .args(["apply", "dev", "--target"])
         .arg(root.path())
         .arg("--force")
         .assert()
@@ -1609,7 +1724,7 @@ fn unapply_removes_applied_symlink_and_apply_restores_it() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["unapply", "dev", "--root"])
+        .args(["unapply", "dev", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -1622,7 +1737,7 @@ fn unapply_removes_applied_symlink_and_apply_restores_it() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["apply", "dev", "--root"])
+        .args(["apply", "dev", "--target"])
         .arg(root.path())
         .arg("--force")
         .assert()
@@ -1641,7 +1756,7 @@ fn unapply_leaves_foreign_file_untouched_and_fails() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["unapply", "dev", "--root"])
+        .args(["unapply", "dev", "--target"])
         .arg(root.path())
         .assert()
         .failure()
@@ -1660,7 +1775,7 @@ fn unapply_dry_run_reports_without_mutating() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["apply", "dev", "--root"])
+        .args(["apply", "dev", "--target"])
         .arg(root.path())
         .arg("--force")
         .assert()
@@ -1669,7 +1784,7 @@ fn unapply_dry_run_reports_without_mutating() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["unapply", "dev", "--root"])
+        .args(["unapply", "dev", "--target"])
         .arg(root.path())
         .arg("--dry-run")
         .assert()
@@ -2001,7 +2116,7 @@ fn add_symlink_to_overlay_dry_run() -> TestResult {
         link_path.to_str().unwrap(),
         "-o",
         "dev",
-        "--root",
+        "--target",
         repo.path().to_str().unwrap(),
         "--dry-run",
     ]);
@@ -2116,7 +2231,7 @@ fn apply_overlay_with_root_dry_run() -> TestResult {
         "apply",
         "dev",
         "--dry-run",
-        "--root",
+        "--target",
         target_root.to_str().unwrap(),
     ]);
     cmd.assert().success();
@@ -2715,7 +2830,7 @@ fn apply_conflict_no_prompt_fails() -> TestResult {
         .args([
             "apply",
             "dev",
-            "--root",
+            "--target",
             target_root.to_str().unwrap(),
             "--no-prompt",
         ])
@@ -2730,13 +2845,13 @@ fn add_file_outside_root_fails() -> TestResult {
     let repo = setup_overlay_repo();
     let canonical = repo.path().canonicalize()?;
 
-    // Create a file outside the --root directory
+    // Create a file outside the --target directory
     let outside = TempDir::new()?;
     let outside_canonical = outside.path().canonicalize()?;
     let outside_file = outside_canonical.join("outside.txt");
     fs::write(&outside_file, "I am outside")?;
 
-    // The --root is set to a subdirectory so the file is not under it
+    // The --target is set to a subdirectory so the file is not under it
     let narrow_root = canonical.join("narrow");
     fs::create_dir_all(&narrow_root)?;
 
@@ -2748,7 +2863,7 @@ fn add_file_outside_root_fails() -> TestResult {
             outside_file.to_str().unwrap(),
             "-o",
             "dev",
-            "--root",
+            "--target",
             narrow_root.to_str().unwrap(),
         ])
         .assert()
@@ -2859,7 +2974,7 @@ fn virtual_checkout_apply_materializes_files_with_no_git_directory() -> TestResu
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["apply", "dotfiles", "--root"])
+        .args(["apply", "dotfiles", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -2888,7 +3003,7 @@ fn virtual_checkout_status_and_diff_report_local_modification() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["apply", "dotfiles", "--root"])
+        .args(["apply", "dotfiles", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -2899,7 +3014,7 @@ fn virtual_checkout_status_and_diff_report_local_modification() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["status", "dotfiles", "--verbose", "--root"])
+        .args(["status", "dotfiles", "--verbose", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -2910,7 +3025,7 @@ fn virtual_checkout_status_and_diff_report_local_modification() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["diff", "dotfiles", "--root"])
+        .args(["diff", "dotfiles", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -2933,7 +3048,7 @@ fn virtual_checkout_commit_records_a_commit_in_the_source_repository() -> TestRe
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["apply", "dotfiles", "--root"])
+        .args(["apply", "dotfiles", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -2944,7 +3059,7 @@ fn virtual_checkout_commit_records_a_commit_in_the_source_repository() -> TestRe
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["add", "--overlay", "dotfiles", "--root"])
+        .args(["add", "--overlay", "dotfiles", "--target"])
         .arg(root.path())
         .arg(root.path().join("file.txt"))
         .env("XDG_STATE_HOME", xdg_state_home.path())
@@ -2960,7 +3075,7 @@ fn virtual_checkout_commit_records_a_commit_in_the_source_repository() -> TestRe
             "--no-prompt",
             "--message",
             "edit file.txt",
-            "--root",
+            "--target",
         ])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
@@ -2979,7 +3094,7 @@ fn virtual_checkout_commit_records_a_commit_in_the_source_repository() -> TestRe
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["status", "dotfiles", "--root"])
+        .args(["status", "dotfiles", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -3000,7 +3115,7 @@ fn virtual_checkout_sync_fast_forwards_from_the_source_repository() -> TestResul
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["apply", "dotfiles", "--root"])
+        .args(["apply", "dotfiles", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -3014,7 +3129,7 @@ fn virtual_checkout_sync_fast_forwards_from_the_source_repository() -> TestResul
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["sync", "dotfiles", "--no-prompt", "--root"])
+        .args(["sync", "dotfiles", "--no-prompt", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -3041,7 +3156,7 @@ fn virtual_checkout_sync_reports_conflict_without_mutating_either_side() -> Test
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["apply", "dotfiles", "--root"])
+        .args(["apply", "dotfiles", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -3054,7 +3169,7 @@ fn virtual_checkout_sync_reports_conflict_without_mutating_either_side() -> Test
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["sync", "dotfiles", "--no-prompt", "--root"])
+        .args(["sync", "dotfiles", "--no-prompt", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -3081,7 +3196,7 @@ fn virtual_checkout_log_lists_commits_scoped_to_the_overlay() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["apply", "dotfiles", "--root"])
+        .args(["apply", "dotfiles", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -3090,7 +3205,7 @@ fn virtual_checkout_log_lists_commits_scoped_to_the_overlay() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["log", "dotfiles", "--root"])
+        .args(["log", "dotfiles", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -3120,7 +3235,7 @@ fn log_resolves_revisions_in_the_overlay_repository_and_keeps_piped_output_plain
         command
             .arg("--home")
             .arg(&home)
-            .args(["log", "--overlay", "dotfiles", "log-base", "--root"])
+            .args(["log", "--overlay", "dotfiles", "log-base", "--target"])
             .arg(root.path())
             .env("XDG_STATE_HOME", state.path())
             .env("CLICOLOR_FORCE", "1");
@@ -3137,7 +3252,7 @@ fn log_resolves_revisions_in_the_overlay_repository_and_keeps_piped_output_plain
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&home)
-        .args(["log", "--overlay", "dotfiles", "missing", "--root"])
+        .args(["log", "--overlay", "dotfiles", "missing", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", state.path())
         .assert()
@@ -3160,7 +3275,7 @@ fn virtual_checkout_unapply_removes_only_when_clean() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["apply", "dotfiles", "--root"])
+        .args(["apply", "dotfiles", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -3171,7 +3286,7 @@ fn virtual_checkout_unapply_removes_only_when_clean() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["unapply", "dotfiles", "--root"])
+        .args(["unapply", "dotfiles", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -3183,7 +3298,7 @@ fn virtual_checkout_unapply_removes_only_when_clean() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["unapply", "dotfiles", "--root"])
+        .args(["unapply", "dotfiles", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()

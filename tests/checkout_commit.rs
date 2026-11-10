@@ -73,7 +73,7 @@ impl Fixture {
 
     fn apply(&self) {
         self.command("apply")
-            .args(["ov", "--no-prompt", "--root"])
+            .args(["ov", "--no-prompt", "--target"])
             .arg(&self.home)
             .assert()
             .success();
@@ -81,7 +81,7 @@ impl Fixture {
 
     fn add(&self) {
         self.command("add")
-            .args(["--overlay", "ov", "--root"])
+            .args(["--overlay", "ov", "--target"])
             .arg(&self.home)
             .arg(&self.target)
             .assert()
@@ -90,7 +90,7 @@ impl Fixture {
 
     fn commit_command(&self) -> Command {
         let mut cmd = self.command("commit");
-        cmd.args(["ov", "--no-prompt", "--message", "selected", "--root"])
+        cmd.args(["ov", "--no-prompt", "--message", "selected", "--target"])
             .arg(&self.home);
         cmd
     }
@@ -156,14 +156,14 @@ fn full_staging_status_diff_commit_and_sync_share_clean_filters_and_ignored_mode
     .unwrap();
     fixture
         .command("status")
-        .args(["ov", "--verbose", "--root"])
+        .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
         .stdout(contains("applied"));
     fixture
         .command("diff")
-        .args(["ov", "--root"])
+        .args(["ov", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -180,7 +180,7 @@ fn full_staging_status_diff_commit_and_sync_share_clean_filters_and_ignored_mode
     let before_preview = inventory();
     fixture
         .command("add")
-        .args(["--overlay", "ov", "--dry-run", "--root"])
+        .args(["--overlay", "ov", "--dry-run", "--target"])
         .arg(&fixture.home)
         .arg(&fixture.target)
         .assert()
@@ -202,7 +202,7 @@ fn full_staging_status_diff_commit_and_sync_share_clean_filters_and_ignored_mode
     assert_eq!(indexed.mode, 0o100644);
     fixture
         .command("diff")
-        .args(["ov", "--root"])
+        .args(["ov", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -210,7 +210,7 @@ fn full_staging_status_diff_commit_and_sync_share_clean_filters_and_ignored_mode
     fixture.commit_command().assert().success();
     fixture
         .command("status")
-        .args(["ov", "--verbose", "--root"])
+        .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -227,14 +227,14 @@ fn full_staging_status_diff_commit_and_sync_share_clean_filters_and_ignored_mode
     commit_index(&repo);
     fixture
         .command("sync")
-        .args(["ov", "--no-prompt", "--root"])
+        .args(["ov", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
         .stdout(contains("fast-forwarded"));
     fixture
         .command("status")
-        .args(["ov", "--verbose", "--root"])
+        .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -278,7 +278,7 @@ fn stale_checkpoints_recognize_raw_head_targets_and_sync_converges() {
     commit_index(&repo);
     fixture
         .command("sync")
-        .args(["ov", "--no-prompt", "--root"])
+        .args(["ov", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -291,7 +291,7 @@ fn stale_checkpoints_recognize_raw_head_targets_and_sync_converges() {
     fs::write(&checkpoint, baseline).unwrap();
     fixture
         .command("status")
-        .args(["ov", "--verbose", "--root"])
+        .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
         .failure()
@@ -299,13 +299,13 @@ fn stale_checkpoints_recognize_raw_head_targets_and_sync_converges() {
         .stdout(contains("⚠️ conflict:").not());
     fixture
         .command("sync")
-        .args(["ov", "--no-prompt", "--root"])
+        .args(["ov", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .success();
     fixture
         .command("status")
-        .args(["ov", "--verbose", "--root"])
+        .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -428,7 +428,7 @@ fn clean_symlinks_and_gitlinks_do_not_enter_checkout_views_or_regular_file_commi
     fixture.apply();
     fixture
         .command("status")
-        .args(["ov", "--verbose", "--root"])
+        .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -492,7 +492,7 @@ fn clean_symlinks_and_gitlinks_do_not_enter_checkout_views_or_regular_file_commi
     );
     fixture
         .command("status")
-        .args(["ov", "--verbose", "--root"])
+        .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()

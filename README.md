@@ -106,8 +106,9 @@ over apply hosts/my-machine
 ```
 
 `--home` or `OVER_HOME` selects the source repository (default `~/.dotfiles`).
-`--root` selects the destination meaning of `~` for commands supporting it
-(default your home directory). Existing `~/.over` repositories remain usable
+`--target` (or `OVER_TARGET`) selects the destination meaning of `~` for commands
+supporting it (default your home directory). Explicit flags override environment
+variables. Existing `~/.over` repositories remain usable
 through source overrides; they are not moved automatically.
 
 A root `repository` setting can switch a clone's origin to a canonical remote
