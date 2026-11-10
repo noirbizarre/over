@@ -437,6 +437,60 @@ fn named_lint_follows_uses_unless_disabled() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn lint_groups_transitive_dependency_warnings_under_alphabetical_headings() -> TestResult {
+    let tmp = TempDir::new()?;
+    for (name, config) in [
+        ("alpha", "uses = ['middle']"),
+        ("middle", "uses = ['zulu']"),
+        ("zulu", "targt = '~'"),
+    ] {
+        fs::create_dir_all(tmp.path().join(name))?;
+        fs::write(tmp.path().join(name).join("over.toml"), config)?;
+    }
+    let output = Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["lint", "alpha"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output)?;
+    assert!(stdout.contains("1 error, 2 warnings found"), "{stdout}");
+    let headings: Vec<_> = stdout
+        .lines()
+        .filter(|line| line.starts_with("Overlay "))
+        .collect();
+    assert_eq!(
+        headings,
+        ["Overlay alpha", "Overlay middle", "Overlay zulu"]
+    );
+    for name in ["alpha", "middle"] {
+        assert!(
+            stdout.contains(&format!(
+                "Overlay {name}\n  warning: depends on overlay \"zulu\""
+            )),
+            "{stdout}"
+        );
+    }
+    assert!(stdout.contains("Overlay zulu\n  error:"), "{stdout}");
+    assert!(stdout.contains("    --> zulu/over.toml"), "{stdout}");
+    assert!(
+        stdout.contains("    = fix the errors in \"zulu\" first"),
+        "{stdout}"
+    );
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["lint", "alpha", "--no-uses"])
+        .assert()
+        .success()
+        .stdout(contains("No issues found"));
+    Ok(())
+}
+
 // ── doctor integration tests (#149) ──────────────────────────────────────
 
 #[test]

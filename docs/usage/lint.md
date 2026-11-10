@@ -48,6 +48,35 @@ pre-validates the raw keys first, so a typo (e.g. `targt` instead of
 that `uses` it, and flags cycles in the `uses` graph. See
 [ADR-009](../adr/009-lint-is-a-separate-tolerant-pass.md).
 
+## Diagnostic output
+
+Findings are grouped under overlay headings in alphabetical order, with errors
+before warnings within each overlay. Only overlays with findings are shown; the
+repository-root overlay is displayed as `.`.
+
+Configuration and graph errors stay on the overlay responsible for them. Every
+transitive consumer receives a warning identifying the invalid overlay, once per
+consumer and invalid dependency even when multiple dependency paths reach it.
+For example, if `alpha` uses `middle`, which uses a broken `zulu`:
+
+```text
+Overlay alpha
+  warning: depends on overlay "zulu" which has configuration errors
+    = fix the errors in "zulu" first
+
+Overlay middle
+  warning: depends on overlay "zulu" which has configuration errors
+    = fix the errors in "zulu" first
+
+Overlay zulu
+  error: ...
+```
+
+A consumer's own errors remain errors. Ownership conflicts and resolution
+failures that depend on a composition's metadata remain errors on that
+composition. Warnings alone do not make a dependency invalid. Lint exits
+unsuccessfully while any original errors remain; warnings alone do not fail lint.
+
 ## Composed target ownership
 
 Each selected overlay is checked together with its transitive `uses` dependencies.

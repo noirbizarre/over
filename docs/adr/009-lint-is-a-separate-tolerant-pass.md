@@ -46,3 +46,17 @@ executes hooks, writes Git objects, or persists state. The current machine and h
 directory provide the default context; `--root` selects another target root.
 Resolution failures become diagnostics and do not stop unrelated compositions.
 Ownership errors follow ADR-008's flat union rather than traversal-order precedence.
+
+## Amendment: dependency impact and grouped output
+
+Configuration and graph errors belong to the overlay responsible for them.
+Every transitive `uses` consumer receives one warning per invalid dependency,
+regardless of how many errors or paths lead to that dependency. These warnings
+do not replace a consumer's independent errors. Context-dependent resolution
+failures and composition ownership conflicts remain errors on the composition;
+they do not establish that a dependency is invalid in every consumer's context.
+
+Diagnostics sort by overlay name first, then severity and message. The lint CLI
+renders alphabetical overlay sections with errors before warnings inside each
+section, keeping an overlay's findings together even when severities differ.
+The summary and exit status still count original errors and dependency warnings.
