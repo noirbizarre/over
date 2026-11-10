@@ -8,7 +8,7 @@ the same options, output, and exit status.
 Usage: over status [OPTIONS] [NAME]
 
 Arguments:
-  [NAME]  Name of the overlay to check (default_overlay if configured, all overlays otherwise)
+  [NAME]  Name of the overlay to check (infer context, then default_overlay, then all overlays)
 
 Options:
   -H, --home <HOME>      Configuration and overlays root [env: OVER_HOME=]
@@ -20,11 +20,10 @@ Options:
   -h, --help             Print help
 ```
 
-When `NAME` is omitted, a configured `default_overlay` (see
-[Default overlay selection](../configuration/root.md#default-overlay-selection))
-narrows the report to just that overlay; pass `--all` to report on every
-overlay regardless.
-Without a configured default, omitting `NAME` selects every overlay.
+When `NAME` is omitted, [infer from context](selection.md), then use a configured
+`default_overlay`. With neither, report on every overlay. Ambiguous context
+requires an explicit name; pass `--all` to report on every overlay regardless
+of context or default.
 
 Explicit `NAME` and `--all` retain the configured default's
 [data context](../configuration/overlay.md#consumer-metadata-data). Each target resolves

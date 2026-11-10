@@ -60,11 +60,16 @@ facts, before metadata composition; it cannot depend on the `data` it selects.
 
 | Commands | Without an explicit name |
 | --- | --- |
-| `apply`, `unapply`, `commit` | Use the default, otherwise prompt |
-| `status`, `diff`, `sync` | Use the default, otherwise all overlays; `--all` overrides selection |
-| `data` | Use the default, otherwise fail without prompting |
+| `apply`, `unapply`, `commit`, `restore`, `data` | Infer context, then use the default, otherwise require an explicit overlay |
+| `status`, `diff`, `sync` | Infer context, then use the default, otherwise all overlays; `--all` overrides selection |
+| `add`, `git add`, `git mount` | Infer context, otherwise require an explicit overlay; no default fallback |
+| `log` | Infer context, otherwise source-repository history; no default selection |
 | `lint` | Check the repository; the default does not narrow it |
 | `doctor` | Check all overlay configuration and state; a name only narrows Git-exclude diagnostics |
+
+See [contextual overlay selection](../usage/selection.md) for ranked evidence,
+Git associations, sibling files, and ambiguity errors. Ambiguity does not fall
+through to the default.
 
 The default also contributes the host [data context](overlay.md#consumer-metadata-data).
 An explicit name or `--all` changes command selection, but retains that context.

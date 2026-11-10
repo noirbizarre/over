@@ -11,8 +11,7 @@ use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
 use super::{
-    CLI, discover_repo, get_overlay_config, main_repo_root, repo_relative_path, select_overlay,
-    set_overlay_config,
+    CLI, discover_repo, get_overlay_config, main_repo_root, repo_relative_path, set_overlay_config,
 };
 
 #[derive(Args, Debug)]
@@ -20,7 +19,11 @@ pub struct Params {
     #[clap(required = true, help = "Files, directories, or glob patterns to add")]
     files: Vec<String>,
 
-    #[clap(short, long, help = "Name of the target overlay")]
+    #[clap(
+        short,
+        long,
+        help = "Select the target overlay (otherwise infer from file context)"
+    )]
     overlay: Option<String>,
 
     #[clap(long, short = 'n', help = "Run without applying changes")]
@@ -50,8 +53,18 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let home = cli.resolve_home()?;
     let over_repo = Repository::new(home);
 
-    // Resolve overlay
-    let overlay = select_overlay(&over_repo, &git_repo, args.overlay.as_deref())?;
+    let resolved = resolve_inputs_with_missing(&args.files, true)?;
+    let root = home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?;
+    let selection_ctx = Context::builder()
+        .repository(over_repo.clone())
+        .root(root.clone())
+        .build();
+    let paths = resolved.clone();
+    let explicit = args.overlay.clone();
+    let overlay = tokio::task::spawn_blocking(move || {
+        crate::selection::select(&selection_ctx, explicit.as_deref(), &paths, false)
+    })
+    .await??;
 
     if cli.debug {
         tracing::debug!(?overlay, "resolved overlay");
@@ -59,7 +72,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     // Validate that the repo root is under the overlay target.
     // Use main repo root (not worktree) for the overlay path computation.
-    let root = home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?;
     let _rel_path = repo_relative_path(&over_repo, &overlay, &root, &repo_root)?;
 
     ui::info(format!(
@@ -84,7 +96,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .build();
 
     let ctx = ctx.resolve_data()?;
-    let resolved = resolve_inputs_with_missing(&args.files, true)?;
 
     overlay.add_files(&ctx, &resolved).await.inspect_err(|e| {
         ui::warn(format!(

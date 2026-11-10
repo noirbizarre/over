@@ -18,6 +18,7 @@ pub mod overlays;
 pub mod plan;
 pub mod restore;
 pub mod secrets;
+pub mod selection;
 pub mod stage;
 pub mod status;
 pub mod sync;

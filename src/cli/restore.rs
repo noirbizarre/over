@@ -1,10 +1,9 @@
 use std::path::PathBuf;
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{Context as _, Result};
 use clap::Args;
 
 use crate::cli::CLI;
-use crate::desired::DesiredTree;
 use crate::exec::{Context, Ctx};
 use crate::overlays::{Overlay, Repository};
 use crate::restore::{self, RestoreOptions};
@@ -19,7 +18,7 @@ pub struct Params {
     #[clap(
         short,
         long,
-        help = "Select an overlay (otherwise use default or infer ownership)"
+        help = "Select an overlay (otherwise infer from context, then use default_overlay)"
     )]
     overlay: Option<String>,
     #[clap(
@@ -99,58 +98,8 @@ fn resolved(ctx: &Ctx, overlay: &Overlay) -> Result<Ctx> {
 }
 
 fn select(ctx: Ctx, name: Option<&str>, paths: &[PathBuf]) -> Result<(Ctx, Overlay)> {
-    let selected = match name {
-        Some(name) => Some(ctx.repository.get(name)?),
-        None => ctx.repository.default_overlay(&ctx)?,
-    };
-    if let Some(overlay) = selected {
-        return Ok((resolved(&ctx, &overlay)?, overlay));
-    }
-    let mut candidates = Vec::new();
-    for overlay in ctx.repository.overlays()? {
-        // Unrelated machine-specific templates must not prevent ownership inference.
-        let candidate = (|| -> Result<_> {
-            let ctx = resolved(&ctx, &overlay)?;
-            let tree = DesiredTree::build_own(&ctx, &overlay)?;
-            let routing = overlay.resolve_mappings(&ctx)?;
-            let mut specificity = Vec::new();
-            for path in paths {
-                let logical = routing.logical_path_for(path)?;
-                let target = routing.target_for(&logical);
-                let owner = restore::owner(&tree, &target)?;
-                specificity.push(owner.target.components().count());
-            }
-            Ok((specificity, ctx))
-        })();
-        match candidate {
-            Ok((specificity, ctx)) => candidates.push((specificity, ctx, overlay)),
-            Err(error) => {
-                tracing::debug!(overlay = %overlay.name, %error, "skipping restore inference candidate")
-            }
-        }
-    }
-    ensure!(
-        !candidates.is_empty(),
-        "cannot infer an owning virtual checkout; specify --overlay"
-    );
-    // Summing depths could choose opposite owners for different paths. Require
-    // one overlay to be at least as specific for every requested file instead.
-    let winner = candidates
-        .iter()
-        .enumerate()
-        .position(|(index, (depths, _, _))| {
-            candidates
-                .iter()
-                .enumerate()
-                .all(|(other, (other_depths, _, _))| {
-                    index == other
-                        || (depths != other_depths
-                            && depths.iter().zip(other_depths).all(|(a, b)| a >= b))
-                })
-        })
-        .context("ambiguous checkout ownership; specify --overlay")?;
-    let (_, ctx, overlay) = candidates.remove(winner);
-    Ok((ctx, overlay))
+    let overlay = crate::selection::select(&ctx, name, paths, true)?;
+    Ok((resolved(&ctx, &overlay)?, overlay))
 }
 
 #[cfg(test)]

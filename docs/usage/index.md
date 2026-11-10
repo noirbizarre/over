@@ -63,11 +63,12 @@ Commands that support `-r`/`--target` use it as the destination meaning of `~`.
 Resolution priority is `--target`, then `OVER_TARGET`, then your home directory.
 This does not select the source repository. Consult each page's syntax for supported flags.
 
-An explicit overlay name selects that overlay. Omitted-name behavior differs:
-apply/unapply/commit use the configured default or prompt; status/diff/sync use
-the default or all overlays (`--all` forces all). Data requires a name or default;
-restore uses an explicit `--overlay`, the default, or inferred path ownership;
-lint and doctor have broader diagnostic scopes. See
+An explicit overlay name selects that overlay. Otherwise commands first try
+[contextual overlay selection](selection.md): Git associations, ownership,
+managed siblings, then target containment. Context precedes a configured default;
+ambiguous contexts require an explicit overlay. Status/diff/sync retain their
+all-overlay fallback outside an inferable/default context (`--all` forces all).
+Lint and doctor retain their broader diagnostic scopes. See
 [default selection](../configuration/root.md#default-overlay-selection).
 
 For concepts and your first successful apply, start with

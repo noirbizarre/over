@@ -9,11 +9,15 @@ Usage: over git mount [OPTIONS]
 
 Options:
   -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME]
-  -o, --overlay <OVERLAY>  Name of the target overlay
+  -o, --overlay <OVERLAY>  Select the target overlay (otherwise infer from repository context)
   -d, --debug              Toggle debug traces
   -v, --verbose            Toggle verbose output
   -h, --help               Print help
 ```
+
+Without `--overlay`, [infer from repository context](selection.md), preferring
+its existing explicit `over.overlay` association. Missing or ambiguous selection
+requires an explicit overlay; mount does not fall back to `default_overlay`.
 
 ## Example
 

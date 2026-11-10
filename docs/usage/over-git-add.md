@@ -12,13 +12,18 @@ Arguments:
 
 Options:
   -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME]
-  -o, --overlay <OVERLAY>  Name of the target overlay
+  -o, --overlay <OVERLAY>  Select the target overlay (otherwise infer from file context)
   -d, --debug              Toggle debug traces
   -n, --dry-run            Run without applying changes
   -f, --force              Overwrite without prompting
   -v, --verbose            Toggle verbose output
   -h, --help               Print help
 ```
+
+Without `--overlay`, [infer from the input paths](selection.md), preferring an
+explicit repository `over.overlay` association. All inferred operands must agree;
+ambiguous or missing selection requires an explicit overlay. The configured
+default does not choose an ingestion destination.
 
 Added files are also excluded from this repository's `git status` via the
 same per-overlay `.git/info/exclude` block that `over apply` maintains.

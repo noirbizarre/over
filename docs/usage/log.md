@@ -32,9 +32,11 @@ checkout's history excludes its independently mapped source directories.
 - With an overlay name or `--overlay NAME`: shows commits touching that
   overlay's managed paths. Errors if the named overlay isn't
   checkout-materialized.
-- Without an overlay name: guesses the overlay from the current directory (the
-  most specific virtual checkout containing it); if none matches, falls
-  back to the repository containing the configured Over home.
+- Without an overlay name: [infer the overlay from context](selection.md), then
+  select its containing virtual-checkout unit or all its units when outside a
+  checkout. Ambiguity requires an explicit overlay. With no contextual candidate,
+  fall back to the repository containing the configured Over home. A selected
+  overlay must be checkout-materialized.
 
 Path filtering compares each commit's tree with its first parent (or an empty
 tree for the initial commit). Commits changing only unrelated paths are skipped,

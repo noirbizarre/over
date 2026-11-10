@@ -8,7 +8,7 @@ into the overlay's own source repository, as a normal git commit.
 Usage: over commit [OPTIONS] [NAME]
 
 Arguments:
-  [NAME]  Name of the overlay to commit (uses default_overlay if configured)
+  [NAME]  Name of the overlay to commit (otherwise infer context, then use default_overlay)
 
 Options:
   -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME=]
@@ -20,9 +20,9 @@ Options:
   -h, --help               Print help
 ```
 
-When `NAME` is omitted, the repository's configured `default_overlay` (if
-any) is used instead of prompting interactively — see
-[Default overlay selection](../configuration/root.md#default-overlay-selection).
+When `NAME` is omitted, [infer from context](selection.md), then use the
+repository's configured `default_overlay`. Missing or ambiguous selection
+requires an explicit name.
 
 An explicit `NAME` retains the configured default's
 [data context](../configuration/overlay.md#consumer-metadata-data) for path rendering.

@@ -19,10 +19,12 @@ Options:
 
 ## Selection and Composition
 
-Without `NAME`, the command resolves the configured `default_overlay`, including
-machine-based templates such as `{{ machine.hostname }}`, and its transitive
-`uses` dependencies. If no default is configured, it fails with an error asking
-for a name or a default. It never prompts or implicitly aggregates all overlays.
+Without `NAME`, [infer from context](selection.md), then use the configured
+`default_overlay`, including machine-based templates such as
+`{{ machine.hostname }}`. If neither selects an overlay, fail with an actionable
+error. Ambiguity requires an explicit name, even with a default. The selected
+overlay includes its transitive `uses` dependencies. The command never prompts
+or implicitly aggregates all overlays.
 
 With `NAME`, the command composes the default context (when configured) with the
 named overlay and both transitive dependency closures. Without a default, only
@@ -48,7 +50,7 @@ serialization failures produce a nonzero exit status. Selection, resolution,
 and serialization failures do not write a JSON payload to stdout.
 
 ```sh
-# Dump the default host context
+# Dump the contextual overlay data, falling back to default_overlay
 over data
 
 # Compose the host context with another overlay

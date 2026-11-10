@@ -17,7 +17,9 @@ use crate::utils::short_path;
 
 #[derive(Args, Debug)]
 pub struct Params {
-    #[clap(help = "Name of the overlay to unapply (uses default_overlay if configured)")]
+    #[clap(
+        help = "Name of the overlay to unapply (otherwise infer context, then use default_overlay)"
+    )]
     name: Option<String>,
 
     #[clap(
@@ -69,12 +71,11 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .repository(repo)
         .build();
 
-    let overlay = select_overlay(
-        &ctx.repository,
-        &ctx,
-        args.name.as_deref(),
-        "Choose the overlay to unapply",
-    )?;
+    let selection_ctx = ctx.clone();
+    let name = args.name.clone();
+    let overlay =
+        tokio::task::spawn_blocking(move || select_overlay(&selection_ctx, name.as_deref()))
+            .await??;
     if cli.debug {
         tracing::debug!(?overlay, "resolved overlay");
     }

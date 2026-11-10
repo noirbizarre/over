@@ -329,11 +329,13 @@ fn unknown_keys_do_not_hide_invalid_recognized_settings() -> TestResult {
 fn apply_without_name_empty_repo_fails() -> TestResult {
     let tmp = TempDir::new()?;
     let mut cmd = Command::cargo_bin("over")?;
+    // Fallback tests need a cwd outside any developer repository association.
+    cmd.current_dir(tmp.path().parent().unwrap());
     cmd.arg("--home").arg(tmp.path());
     cmd.args(["apply", "--dry-run"]);
     cmd.assert()
         .failure()
-        .stderr(contains("no overlays found in repository"));
+        .stderr(contains("cannot infer an overlay"));
     Ok(())
 }
 
@@ -344,6 +346,7 @@ fn apply_without_name_uses_configured_default_overlay() -> TestResult {
     let repo = setup_overlay_repo();
     fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
     Command::cargo_bin("over")?
+        .current_dir(repo.path().parent().unwrap())
         .arg("--home")
         .arg(repo.path())
         .args(["apply", "--dry-run"])
@@ -383,6 +386,7 @@ fn apply_without_name_misconfigured_default_overlay_fails() -> TestResult {
         b"default_overlay = \"does-not-exist\"",
     )?;
     Command::cargo_bin("over")?
+        .current_dir(repo.path().parent().unwrap())
         .arg("--home")
         .arg(repo.path())
         .args(["apply", "--dry-run"])
@@ -1019,6 +1023,7 @@ fn status_unknown_overlay_fails() -> TestResult {
 fn status_empty_repository_reports_no_overlays() -> TestResult {
     let tmp = TempDir::new()?;
     Command::cargo_bin("over")?
+        .current_dir(tmp.path().parent().unwrap())
         .arg("--home")
         .arg(tmp.path())
         .arg("status")
@@ -1040,6 +1045,7 @@ fn status_without_name_narrows_to_configured_default_overlay() -> TestResult {
     let root = TempDir::new()?;
 
     Command::cargo_bin("over")?
+        .current_dir(repo.path().parent().unwrap())
         .arg("--home")
         .arg(repo.path())
         .args(["status", "--target"])
@@ -1181,6 +1187,7 @@ fn diff_unknown_overlay_fails() -> TestResult {
 fn diff_empty_repository_reports_no_overlays() -> TestResult {
     let tmp = TempDir::new()?;
     Command::cargo_bin("over")?
+        .current_dir(tmp.path().parent().unwrap())
         .arg("--home")
         .arg(tmp.path())
         .arg("diff")
@@ -1202,6 +1209,7 @@ fn diff_without_name_narrows_to_configured_default_overlay() -> TestResult {
     let root = TempDir::new()?;
 
     Command::cargo_bin("over")?
+        .current_dir(repo.path().parent().unwrap())
         .arg("--home")
         .arg(repo.path())
         .args(["diff", "--target"])
@@ -1305,6 +1313,7 @@ fn sync_empty_repository_reports_no_overlays() -> TestResult {
     let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     Command::cargo_bin("over")?
+        .current_dir(tmp.path().parent().unwrap())
         .arg("--home")
         .arg(tmp.path())
         .arg("sync")
@@ -1330,6 +1339,7 @@ fn sync_without_name_narrows_to_configured_default_overlay() -> TestResult {
     let root = TempDir::new()?;
 
     Command::cargo_bin("over")?
+        .current_dir(repo.path().parent().unwrap())
         .arg("--home")
         .arg(repo.path())
         .args(["sync", "--verbose", "--target"])
@@ -1680,6 +1690,7 @@ fn unapply_without_name_uses_configured_default_overlay() -> TestResult {
     fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
     let root = TempDir::new()?;
     Command::cargo_bin("over")?
+        .current_dir(repo.path().parent().unwrap())
         .arg("--home")
         .arg(repo.path())
         .args(["unapply", "--target"])
