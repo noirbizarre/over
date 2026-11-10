@@ -107,9 +107,10 @@ pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
 }
 
 /// Paths that changed both locally and in the source repository since
-/// `base_oid`, to different content — the set `over commit` must refuse to
-/// commit over (per-file, never the whole checkout) until resolved
-/// manually. Empty whenever [`inspect`] wouldn't report [`Status::Conflict`].
+/// `base_oid`, to different content. Detection is per-file, but `over commit`
+/// blocks the whole command when any selected checkout has conflicting paths,
+/// preventing a partial commit across the selection. Empty whenever [`inspect`]
+/// wouldn't report [`Status::Conflict`].
 pub(crate) fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
     let Some(record) = state::record_for_blocking(&entry.target)? else {
         return Ok(Vec::new());
@@ -145,9 +146,10 @@ pub(crate) fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
 }
 
 /// Per-file changes between a virtual checkout's `base_oid` and the
-/// target's current on-disk content — the detail `over status`/`over diff`
-/// list underneath the aggregate [`Status`] line, and what `over commit`
-/// stages. Empty for a checkout with no recorded association (mirrors
+/// target's current on-disk content, retained as a test helper for base-relative
+/// comparisons. Command reports distinguish staged and unstaged changes instead;
+/// `over add` stages selected snapshots and `over commit` records only staged
+/// changes. Empty for a checkout with no recorded association (mirrors
 /// [`inspect`]'s own `Missing`/`Broken` fallback).
 #[cfg(test)]
 pub(crate) fn file_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
