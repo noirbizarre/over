@@ -6,6 +6,15 @@
 
 **Status:** accepted
 
+## Safety amendment (#195)
+
+The [current safety contract](../usage/safety.md) applies ordinary conflict
+authorization to sidecar links as well. Force authorizes ordinary filesystem
+replacement; real-checkout loss requires separate confirmation or
+`--discard-checkout`. No-prompt alone refuses unresolved conflicts. Ownership
+boundaries cannot be overridden. Absorb prepares copies without following
+directory links, but no operation promises whole-apply rollback.
+
 ## Context
 
 Applying an overlay could copy its files into the target, or symlink them.

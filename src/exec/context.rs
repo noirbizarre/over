@@ -68,8 +68,11 @@ pub struct Context {
     /// Toggle verbose output
     pub verbose: bool,
 
-    /// Run overwriting everything without prompt
+    /// Overwrite ordinary filesystem conflicts, not protected checkouts.
     pub force: bool,
+
+    /// Explicitly authorize loss of an owned real checkout's local data/history.
+    pub discard_checkout: bool,
 
     /// Disable interactive prompts (fail on conflict)
     pub no_prompt: bool,
@@ -131,6 +134,7 @@ pub struct ContextBuilder {
     debug: bool,
     verbose: bool,
     force: bool,
+    discard_checkout: bool,
     no_prompt: bool,
     no_uses: bool,
     root: PathBuf,
@@ -170,6 +174,11 @@ impl ContextBuilder {
 
     pub fn no_prompt(mut self, v: bool) -> Self {
         self.no_prompt = v;
+        self
+    }
+
+    pub fn discard_checkout(mut self, v: bool) -> Self {
+        self.discard_checkout = v;
         self
     }
 
@@ -215,6 +224,7 @@ impl ContextBuilder {
             debug: self.debug,
             verbose: self.verbose,
             force: self.force,
+            discard_checkout: self.discard_checkout,
             no_prompt: self.no_prompt,
             no_uses: self.no_uses,
             root: self.root,
@@ -257,6 +267,7 @@ impl Context {
             debug: self.debug,
             verbose: self.verbose,
             force: self.force,
+            discard_checkout: self.discard_checkout,
             no_prompt: self.no_prompt,
             no_uses: self.no_uses,
             root: self.root.clone(),
@@ -276,6 +287,7 @@ impl Context {
             debug: self.debug,
             verbose: self.verbose,
             force: self.force,
+            discard_checkout: self.discard_checkout,
             no_prompt: self.no_prompt,
             no_uses: self.no_uses,
             root: self.root.clone(),
@@ -295,6 +307,7 @@ impl Context {
             debug: self.debug,
             verbose: self.verbose,
             force: self.force,
+            discard_checkout: self.discard_checkout,
             no_prompt: self.no_prompt,
             no_uses: self.no_uses,
             root: self.root.clone(),
@@ -331,6 +344,7 @@ impl Context {
             debug: self.debug,
             verbose: self.verbose,
             force: self.force,
+            discard_checkout: self.discard_checkout,
             no_prompt: self.no_prompt,
             no_uses: self.no_uses,
             root: self.root.clone(),
@@ -363,6 +377,23 @@ pub type Ctx = Arc<Context>;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn checkout_disposal_authorization_survives_context_copies() {
+        let ctx = super::Context::builder().discard_checkout(true).build();
+        assert!(
+            ctx.with_progress(indicatif::ProgressBar::hidden())
+                .discard_checkout
+        );
+        assert!(
+            ctx.with_multiprogress(indicatif::MultiProgress::new())
+                .discard_checkout
+        );
+        assert!(
+            ctx.with_resolved_overlay("ov".into(), "/target".into())
+                .discard_checkout
+        );
+        assert!(ctx.with_strict_paths().discard_checkout);
+    }
     use super::*;
     use assert_fs::TempDir;
     use assert_fs::prelude::*;

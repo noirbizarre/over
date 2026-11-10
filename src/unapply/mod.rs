@@ -3,41 +3,16 @@
 //! [`Plan`] vocabulary `apply`/`status`/`diff`/`sync` already share
 //! (ADR-011).
 //!
-//! Deliberately does not rely on any persisted apply-time state: everything
-//! here is derived by re-walking the overlay's current `DesiredTree` and
-//! comparing it, read-only, against actual state — exactly like
-//! [`Plan::build`] — before removing anything. An entry is only ever
-//! removed when it *still* matches exactly what the overlay would
-//! materialize there right now ([`Operation::Noop`]); anything else (a
-//! [`Operation::Conflict`], or a checkout that isn't fully in sync) is left
-//! untouched and reported, never forced — see [`Outcome`].
+//! Re-walk current desired state and recheck ownership before removal.
+//! Ordinary scaffolds are only removed empty, links must still match their
+//! source, and partial blocks preserve unrelated bytes. Virtual checkouts use
+//! their verified association/scope and retain dirty files. Real checkouts
+//! need a disposal-specific assessment and explicit confirmation or
+//! `--discard-checkout`: clean Git status does not prove recoverability of
+//! ignored files, other refs, reflogs or repository-local configuration.
 //!
-//! Two safety properties fall out of this on their own, without any extra
-//! bookkeeping:
-//!
-//! - Directories are only ever removed with a non-recursive `fs::remove_dir`
-//!   (never `remove_dir_all`), so a directory that still holds anything
-//!   else — another overlay's files, unrelated user content, or simply a
-//!   user's home directory (`target = "~"`) — is silently left alone. There
-//!   is no need to track "did `over` create this directory or did it
-//!   already exist": emptiness is the only signal, and it's always
-//!   re-checked at removal time.
-//! - A git checkout — the overlay's own root checkout, or any declared
-//!   (non-root) repository alike — is only ever removed when
-//!   [`status::git::inspect_content`] reports [`Status::Applied`] (fully in
-//!   sync with its upstream, nothing uncommitted or unpushed), per ADR-014's
-//!   "never discard uncommitted changes or local commits implicitly".
-//!   Deliberately `inspect_content`, not the (root/declared-aware)
-//!   `status::git::inspect` `over status`/`over diff` use (#140, ADR-021):
-//!   this destructive gate must stay exactly as strict for a declared
-//!   repository as for the root checkout, never relaxed just because
-//!   `status`/`diff`'s *reporting* got more lenient about a declared
-//!   repository's unrelated content.
-//!
-//! Everything unapply removes is therefore also reversible: symlinks and
-//! directories come back with a plain `over apply` (overlay source content
-//! is never touched), and a checkout is only ever removed when there was
-//! nothing local-only left to lose.
+//! Reports distinguish proposed operations from executed/retained outcomes.
+//! No removal is a general promise of rollback or historical restoration.
 
 use std::fmt;
 use std::fs;
@@ -66,6 +41,9 @@ pub enum Outcome {
     /// Target still matches exactly what this overlay would materialize
     /// there — safe to remove (or already removed, under `--dry-run`).
     Removed,
+    /// Owned virtual-checkout files were removed, but protected contents keep
+    /// the container directory in place. The projection is successfully gone.
+    RemovedProjectionRetainedDirectory,
     /// Nothing exists at the target — already unapplied, or never applied.
     AlreadyAbsent,
     /// Target exists but doesn't match what this overlay would create
@@ -77,6 +55,10 @@ pub enum Outcome {
     /// merge in progress, or not a valid repo). Never touched — resolve
     /// with `over sync` or plain git first.
     CheckoutNotClean { status: Status },
+    /// Real checkout removal requires its own explicit authorization.
+    CheckoutDisposal { reason: String },
+    /// Nonrecursive scaffold cleanup preserved unrelated contents.
+    RetainedDirectory,
 }
 
 impl Outcome {
@@ -86,7 +68,9 @@ impl Outcome {
     pub fn needs_attention(&self) -> bool {
         matches!(
             self,
-            Outcome::NotOwned { .. } | Outcome::CheckoutNotClean { .. }
+            Outcome::NotOwned { .. }
+                | Outcome::CheckoutNotClean { .. }
+                | Outcome::CheckoutDisposal { .. }
         )
     }
 }
@@ -121,10 +105,15 @@ impl fmt::Display for EntryOutcome {
         match &self.outcome {
             Outcome::Removed => write!(
                 f,
-                "{} {} {}",
+                "{} {} {}{}",
                 emojis::TRASH,
                 style::white("remove:"),
-                target
+                target,
+                if matches!(self.entry.intent, MaterializationIntent::Checkout) {
+                    " (recursive removal, including local files and Git history)"
+                } else {
+                    ""
+                }
             ),
             Outcome::AlreadyAbsent => write!(
                 f,
@@ -148,6 +137,13 @@ impl fmt::Display for EntryOutcome {
                 target,
                 status_word(status),
             ),
+            Outcome::CheckoutDisposal { reason } => {
+                write!(f, "skip: {target} (checkout disposal: {reason})")
+            }
+            Outcome::RetainedDirectory => write!(f, "retain nonempty directory: {target}"),
+            Outcome::RemovedProjectionRetainedDirectory => {
+                write!(f, "removed projection; retained directory: {target}")
+            }
         }
     }
 }
@@ -156,6 +152,7 @@ impl fmt::Display for EntryOutcome {
 /// declared.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
+    /// Removed entries/projections, including those whose container remains.
     pub removed: usize,
     pub already_absent: usize,
     pub not_owned: usize,
@@ -178,6 +175,7 @@ impl fmt::Display for Counts {
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     entries: Vec<EntryOutcome>,
+    guards: Vec<crate::materialize::disposal::PathGuard>,
 }
 
 impl Report {
@@ -187,30 +185,21 @@ impl Report {
     /// "still exactly what this overlay would create here", safe to
     /// remove; `Conflict` means "something else is there", never touched).
     ///
-    /// [`Plan`]'s classification is deliberately too coarse for
-    /// `Checkout` entries (`CheckoutMaterializer` collapses everything but
-    /// `Missing` to `Noop`, ADR-014) — [`status::git::inspect_content`] is
-    /// used directly instead, so only a fully-in-sync checkout
-    /// (`Status::Applied`) is ever removed.
-    ///
-    /// Deliberately `inspect_content`, not `status::git::inspect` (#140,
-    /// ADR-021): the latter reports a declared (non-root) repository as
-    /// `Applied` once its *declared configuration* is satisfied, ignoring
-    /// uncommitted changes/local commits by design — exactly the content
-    /// this destructive removal must never discard. Removing a declared
-    /// repository's whole directory tree is exactly as irreversible as
-    /// removing the root checkout's, so this gate stays as strict as
-    /// before #140 for both.
+    /// Real checkout reporting status is deliberately not deletion authority:
+    /// the disposal assessment verifies identity and discloses local loss.
     pub fn build(desired: &DesiredTree) -> Result<Self> {
         let plan = Plan::build(desired)?;
         let mut entries = Vec::with_capacity(plan.len());
         for step in plan.steps() {
             let outcome = match (&step.entry.intent, &step.operation) {
                 (MaterializationIntent::Checkout, _) => {
-                    match status::git::inspect_content(&step.entry)? {
-                        Status::Missing => Outcome::AlreadyAbsent,
-                        Status::Applied => Outcome::Removed,
-                        other => Outcome::CheckoutNotClean { status: other },
+                    if !step.entry.target.exists() && !step.entry.target.is_symlink() {
+                        Outcome::AlreadyAbsent
+                    } else {
+                        Outcome::CheckoutDisposal {
+                            reason: crate::materialize::disposal::assess(&step.entry)?
+                                .description(),
+                        }
                     }
                 }
                 // Same strict "only ever remove when fully clean" gate as
@@ -259,7 +248,11 @@ impl Report {
                 outcome,
             });
         }
-        Ok(Self { entries })
+        let guards = entries
+            .iter()
+            .map(|entry| crate::materialize::disposal::PathGuard::capture(&entry.entry.target))
+            .collect::<Result<_>>()?;
+        Ok(Self { entries, guards })
     }
 
     pub fn entries(&self) -> &[EntryOutcome] {
@@ -274,10 +267,14 @@ impl Report {
         let mut counts = Counts::default();
         for e in &self.entries {
             match e.outcome {
-                Outcome::Removed => counts.removed += 1,
+                Outcome::Removed | Outcome::RemovedProjectionRetainedDirectory => {
+                    counts.removed += 1
+                }
                 Outcome::AlreadyAbsent => counts.already_absent += 1,
                 Outcome::NotOwned { .. } => counts.not_owned += 1,
                 Outcome::CheckoutNotClean { .. } => counts.checkout_needs_attention += 1,
+                Outcome::CheckoutDisposal { .. } => counts.checkout_needs_attention += 1,
+                Outcome::RetainedDirectory => {}
             }
         }
         counts
@@ -306,16 +303,90 @@ impl Report {
     /// directories that contain them, giving a formerly overlay-only
     /// directory a chance to become empty before its own removal is
     /// attempted).
-    pub async fn execute(&self, ctx: Ctx) -> Result<()> {
+    pub async fn execute(&self, ctx: Ctx) -> Result<Self> {
         if ctx.dry_run {
-            return Ok(());
+            let mut preview = self.clone();
+            if ctx.discard_checkout {
+                for entry in &mut preview.entries {
+                    if matches!(entry.outcome, Outcome::CheckoutDisposal { .. })
+                        && matches!(
+                            crate::materialize::disposal::assess(&entry.entry)?,
+                            crate::materialize::disposal::Assessment::RequiresConsent { .. }
+                        )
+                    {
+                        entry.outcome = Outcome::Removed;
+                    }
+                }
+            }
+            return Ok(preview);
         }
-        for entry_outcome in self.entries.iter().rev() {
+        let mut executed = self.clone();
+        for (entry_outcome, guard) in executed.entries.iter_mut().zip(&executed.guards).rev() {
+            guard.verify()?;
+            if matches!(entry_outcome.entry.intent, MaterializationIntent::Checkout)
+                && matches!(entry_outcome.outcome, Outcome::CheckoutDisposal { .. })
+            {
+                entry_outcome.outcome = match crate::materialize::disposal::remove_checkout(
+                    ctx.clone(),
+                    entry_outcome.entry.clone(),
+                )
+                .await?
+                {
+                    crate::materialize::disposal::Removal::Removed => Outcome::Removed,
+                    crate::materialize::disposal::Removal::Retained(reason) => {
+                        Outcome::CheckoutDisposal { reason }
+                    }
+                };
+                continue;
+            }
             if matches!(entry_outcome.outcome, Outcome::Removed) {
                 dematerialize(&entry_outcome.entry).await?;
+                let target = &entry_outcome.entry.target;
+                if matches!(entry_outcome.entry.intent, MaterializationIntent::Directory)
+                    && target.exists()
+                {
+                    entry_outcome.outcome = Outcome::RetainedDirectory;
+                } else if matches!(
+                    entry_outcome.entry.intent,
+                    MaterializationIntent::SymlinkFile { .. }
+                        | MaterializationIntent::SymlinkDirectory { .. }
+                ) && (target.exists() || target.is_symlink())
+                {
+                    entry_outcome.outcome = Outcome::NotOwned {
+                        current: actual::inspect(target)?,
+                    };
+                }
+                if entry_outcome.entry.intent.is_virtual_checkout() {
+                    entry_outcome.outcome =
+                        if crate::materialize::virtual_checkout::state::record_for_blocking(target)?
+                            .is_some()
+                        {
+                            Outcome::CheckoutNotClean {
+                                status: status::virtual_checkout::inspect(&entry_outcome.entry)?,
+                            }
+                        } else if target.is_dir() {
+                            // Dropping the verified association means teardown succeeded,
+                            // even when an independent mapped destination keeps the root.
+                            Outcome::RemovedProjectionRetainedDirectory
+                        } else {
+                            Outcome::Removed
+                        };
+                }
+                if let MaterializationIntent::PartialFile { marker, .. } =
+                    &entry_outcome.entry.intent
+                    && target.exists()
+                    && !matches!(
+                        partial::find_block(&fs::read_to_string(target)?, marker),
+                        BlockState::Absent
+                    )
+                {
+                    entry_outcome.outcome = Outcome::NotOwned {
+                        current: actual::inspect(target)?,
+                    };
+                }
             }
         }
-        Ok(())
+        Ok(executed)
     }
 }
 
@@ -328,11 +399,33 @@ impl Report {
 async fn dematerialize(entry: &DesiredEntry) -> Result<()> {
     match &entry.intent {
         MaterializationIntent::Directory => remove_dir_if_empty(entry.target.clone()).await,
+        MaterializationIntent::SymlinkFile {
+            source,
+            link_type: crate::actions::symlink::LinkType::Hard,
+        } => {
+            // Hard-link creation may fall back to a soft link (e.g. across
+            // filesystems); accept only that exact source, never a foreign link.
+            if entry.target.is_symlink() {
+                return remove_symlink_if_unchanged(entry.target.clone(), source.clone()).await;
+            }
+            let source = source.clone();
+            let target = entry.target.clone();
+            spawn_blocking(move || -> Result<()> {
+                if target.is_file() && crate::actions::symlink::hard_link_matches(&source, &target)?
+                {
+                    fs::remove_file(&target)?;
+                }
+                Ok(())
+            })
+            .await?
+        }
         MaterializationIntent::SymlinkFile { source, .. }
         | MaterializationIntent::SymlinkDirectory { source, .. } => {
             remove_symlink_if_unchanged(entry.target.clone(), source.clone()).await
         }
-        MaterializationIntent::Checkout => remove_checkout_if_clean(entry.clone()).await,
+        MaterializationIntent::Checkout => {
+            anyhow::bail!("real checkout removal requires explicit disposal assessment")
+        }
         MaterializationIntent::VirtualCheckout
         | MaterializationIntent::ScopedVirtualCheckout(_) => {
             remove_virtual_checkout_if_clean(entry.clone()).await
@@ -392,7 +485,7 @@ async fn remove_symlink_if_unchanged(target: PathBuf, source: PathBuf) -> Result
 /// drifted (hand-edited) or gone malformed since classification is left
 /// untouched, never forced.
 ///
-/// If stripping the block leaves nothing (or only whitespace) behind, the
+/// If stripping the block leaves nothing behind, the
 /// file itself is removed — mirroring [`remove_dir_if_empty`]'s "a
 /// directory disappears exactly when it turns out to hold nothing but
 /// what this overlay put there". Otherwise the file is rewritten with
@@ -403,6 +496,16 @@ async fn remove_partial_block_if_unchanged(
     expected: String,
 ) -> Result<()> {
     spawn_blocking(move || {
+        let metadata = match fs::symlink_metadata(&target) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        anyhow::ensure!(
+            metadata.file_type().is_file(),
+            "partial target '{}' changed type",
+            target.display()
+        );
         let current = match fs::read_to_string(&target) {
             Ok(s) => s,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -411,11 +514,11 @@ async fn remove_partial_block_if_unchanged(
         match partial::find_block(&current, &marker) {
             BlockState::Found(existing) if existing == expected => {
                 let stripped = partial::remove_block(&current, &marker);
-                if stripped.trim().is_empty() {
+                if stripped.is_empty() {
                     fs::remove_file(&target)
                         .with_context(|| format!("failed to remove {}", target.display()))?;
                 } else {
-                    fs::write(&target, stripped)
+                    crate::actions::fs::replace_file(&target, stripped, |permissions| permissions)
                         .with_context(|| format!("failed to write {}", target.display()))?;
                 }
                 Ok(())
@@ -426,36 +529,15 @@ async fn remove_partial_block_if_unchanged(
     .await?
 }
 
-/// Remove a git checkout's whole target directory, only if
-/// [`status::git::inspect_content`] still reports [`Status::Applied`] right
-/// now — re-checked here (not just trusted from classification) for the
-/// same classify→execute race-safety reason as
-/// [`remove_symlink_if_unchanged`]. Anything else is left alone.
-///
-/// `inspect_content`, not `status::git::inspect` — see [`Report::build`]'s
-/// doc comment (#140, ADR-021): this destructive removal must never be
-/// fooled by a declared repository's config-only "Applied" status into
-/// discarding uncommitted/unpushed content.
-async fn remove_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
-    spawn_blocking(move || {
-        if !matches!(status::git::inspect_content(&entry)?, Status::Applied) {
-            return Ok(());
-        }
-        fs::remove_dir_all(&entry.target)?;
-        Ok(())
-    })
-    .await?
-}
-
-/// Remove a virtual checkout's whole target directory, only if
+/// Remove only a virtual checkout's owned files and empty directories, only if
 /// [`status::virtual_checkout::inspect`] still reports [`Status::Applied`]
-/// right now — same re-check-before-destroying reasoning as
-/// [`remove_checkout_if_clean`]. Also drops the XDG association record
+/// right now. Also drops the XDG association record
 /// (#141): once the target is gone, the record would otherwise dangle,
 /// and a future virtual checkout re-materialized at the same path must not
 /// be misread as already having history against a `base_oid` it never
 /// actually started from.
 async fn remove_virtual_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
+    let association_key = crate::materialize::virtual_checkout::state::key_for(&entry.target);
     let inspect_entry = entry.clone();
     let is_clean = spawn_blocking(move || {
         anyhow::Ok(matches!(
@@ -483,6 +565,13 @@ async fn remove_virtual_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
         let scope = removal_entry.intent.checkout_scope();
         let tree = git::scoped_subtree(&repo, &base, &managed, &scope)?;
         let tracked = git::tracked_blobs(&tree)?;
+        for (path, expected) in git::tracked_entries(&tree)? {
+            anyhow::ensure!(
+                git::entries_match(git::target_entry(&target, &path)?, Some(expected)),
+                "checkout mode/content changed at '{}'",
+                target.join(path).display()
+            );
+        }
         anyhow::ensure!(
             git::diff_scoped_target(&target, &tracked, &scope)?.is_empty(),
             "checkout changed while removing '{}'",
@@ -510,7 +599,7 @@ async fn remove_virtual_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
         }
     })
     .await??;
-    crate::materialize::virtual_checkout::state::remove(&entry.target).await
+    crate::materialize::virtual_checkout::state::remove_key(association_key).await
 }
 
 #[cfg(test)]
@@ -926,13 +1015,21 @@ mod tests {
     }
 
     fn checkout_entry(target: PathBuf) -> DesiredEntry {
+        let url = git2::Repository::open(&target)
+            .ok()
+            .and_then(|repo| {
+                repo.find_remote("origin")
+                    .ok()
+                    .and_then(|remote| remote.url().ok().map(String::from))
+            })
+            .unwrap_or_default();
         DesiredEntry {
             target,
             provenance: Provenance::Git {
                 overlay: "ov".to_string(),
                 repo_key: ".".to_string(),
                 config: Box::new(crate::actions::git::config::GitRepoConfig {
-                    url: String::new(),
+                    url,
                     branch: None,
                     tag: None,
                     rev: None,
@@ -951,12 +1048,15 @@ mod tests {
     }
 
     #[test]
-    fn clean_checkout_classifies_as_removed() {
+    fn a_clean_checkout_still_discloses_repository_local_loss() {
         let td = TempDir::new().unwrap();
         init_committed_repo(td.path());
         let desired = DesiredTree::from_entries(vec![checkout_entry(td.path().to_path_buf())]);
         let report = Report::build(&desired).unwrap();
-        assert_eq!(report.entries()[0].outcome, Outcome::Removed);
+        assert!(matches!(
+            report.entries()[0].outcome,
+            Outcome::CheckoutDisposal { .. }
+        ));
     }
 
     #[test]
@@ -968,9 +1068,7 @@ mod tests {
         let report = Report::build(&desired).unwrap();
         assert!(matches!(
             report.entries()[0].outcome,
-            Outcome::CheckoutNotClean {
-                status: Status::Modified
-            }
+            Outcome::CheckoutDisposal { .. }
         ));
         assert!(report.needs_attention());
     }
@@ -1005,6 +1103,188 @@ mod tests {
     }
 
     // ── execute ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_hard_link_intent_removes_its_matching_soft_link_fallback() {
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("source");
+        let target = td.path().join("target");
+        fs::write(&source, "overlay").unwrap();
+        // Install the fallback directly so this regression does not depend on
+        // whether the test machine happens to span multiple filesystems.
+        symlink::symlink_file(&source, &target).unwrap();
+        let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            target: target.clone(),
+            provenance: Provenance::Overlay {
+                overlay: "ov".into(),
+                source: source.clone(),
+            },
+            intent: MaterializationIntent::SymlinkFile {
+                source: source.clone(),
+                link_type: LinkType::Hard,
+            },
+            permissions: None,
+        }]);
+        let report = Report::build(&desired).unwrap();
+        assert_eq!(report.entries()[0].outcome, Outcome::Removed);
+        let executed = report.execute(Context::builder().build()).await.unwrap();
+        assert_eq!(executed.entries()[0].outcome, Outcome::Removed);
+        assert_eq!(executed.counts().removed, 1);
+        assert!(!executed.needs_attention());
+        assert!(!target.is_symlink());
+        assert_eq!(fs::read_to_string(source).unwrap(), "overlay");
+    }
+
+    #[tokio::test]
+    async fn a_hard_link_intent_preserves_a_foreign_soft_link_after_classification() {
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("source");
+        let foreign = td.path().join("foreign");
+        let target = td.path().join("target");
+        fs::write(&source, "overlay").unwrap();
+        // Even a foreign path to the same inode is not our soft-link fallback.
+        fs::hard_link(&source, &foreign).unwrap();
+        symlink::symlink_file(&source, &target).unwrap();
+        let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            target: target.clone(),
+            provenance: Provenance::Overlay {
+                overlay: "ov".into(),
+                source: source.clone(),
+            },
+            intent: MaterializationIntent::SymlinkFile {
+                source,
+                link_type: LinkType::Hard,
+            },
+            permissions: None,
+        }]);
+        let report = Report::build(&desired).unwrap();
+        fs::remove_file(&target).unwrap();
+        symlink::symlink_file(&foreign, &target).unwrap();
+        let executed = report.execute(Context::builder().build()).await.unwrap();
+        assert!(matches!(
+            executed.entries()[0].outcome,
+            Outcome::NotOwned { .. }
+        ));
+        assert_eq!(executed.counts().removed, 0);
+        assert_eq!(executed.counts().not_owned, 1);
+        assert!(executed.needs_attention());
+        assert_eq!(fs::read_link(target).unwrap(), foreign);
+    }
+
+    #[tokio::test]
+    async fn partial_drift_after_classification_is_reported_as_retained() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file");
+        fs::write(&target, "# >>> over: m >>>\nalias x=y\n# <<< over: m <<<\n").unwrap();
+        let desired =
+            DesiredTree::from_entries(vec![partial_entry(target.clone(), "alias x=y", "m")]);
+        let report = Report::build(&desired).unwrap();
+        let changed = "# >>> over: m >>>\nlocal edit\n# <<< over: m <<<\n";
+        fs::write(&target, changed).unwrap();
+        let executed = report.execute(Context::builder().build()).await.unwrap();
+        assert!(matches!(
+            executed.entries()[0].outcome,
+            Outcome::NotOwned { .. }
+        ));
+        assert_eq!(executed.counts().removed, 0);
+        assert_eq!(executed.counts().not_owned, 1);
+        assert!(executed.needs_attention());
+        assert_eq!(fs::read_to_string(target).unwrap(), changed);
+    }
+
+    #[tokio::test]
+    async fn removing_a_partial_block_preserves_a_whitespace_only_remainder() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("file");
+        fs::write(
+            &target,
+            " \t\n# >>> over: m >>>\nalias x=y\n# <<< over: m <<<\n\n",
+        )
+        .unwrap();
+        let desired =
+            DesiredTree::from_entries(vec![partial_entry(target.clone(), "alias x=y", "m")]);
+        let executed = Report::build(&desired)
+            .unwrap()
+            .execute(Context::builder().build())
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(target).unwrap(), " \t\n\n");
+        assert_eq!(executed.entries()[0].outcome, Outcome::Removed);
+        assert_eq!(executed.counts().removed, 1);
+        assert!(!executed.needs_attention());
+    }
+
+    #[tokio::test]
+    async fn removing_a_virtual_projection_reports_its_retained_container() {
+        use crate::desired::CheckoutScope;
+        use crate::materialize::virtual_checkout::state::{self, VirtualCheckoutRecord};
+
+        let xdg = TempDir::new().unwrap();
+        // Like the other virtual-checkout tests, nextest process isolation
+        // keeps this environment mutation away from concurrent test readers.
+        unsafe {
+            std::env::set_var("XDG_STATE_HOME", xdg.path());
+        }
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("source");
+        let target = td.path().join("target");
+        fs::create_dir_all(&source).unwrap();
+        init_committed_repo(&source);
+        fs::create_dir_all(target.join("mapped")).unwrap();
+        fs::write(target.join("README.md"), "# Test").unwrap();
+        fs::write(target.join("mapped/private"), "independent data").unwrap();
+        let scope = CheckoutScope {
+            target_excludes: vec![PathBuf::from("mapped")],
+            ..Default::default()
+        };
+        let base_oid = git2::Repository::open(&source)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target()
+            .unwrap()
+            .to_string();
+        state::persist(
+            &target,
+            VirtualCheckoutRecord {
+                overlay: "ov".into(),
+                base_oid,
+                scope: scope.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            target: target.clone(),
+            provenance: Provenance::Overlay {
+                overlay: "ov".into(),
+                source,
+            },
+            intent: MaterializationIntent::ScopedVirtualCheckout(scope),
+            permissions: None,
+        }]);
+        let report = Report::build(&desired).unwrap();
+        assert_eq!(report.entries()[0].outcome, Outcome::Removed);
+        let executed = report.execute(Context::builder().build()).await.unwrap();
+        assert_eq!(
+            executed.entries()[0].outcome,
+            Outcome::RemovedProjectionRetainedDirectory
+        );
+        assert_eq!(executed.counts().removed, 1);
+        assert_eq!(executed.counts().checkout_needs_attention, 0);
+        assert!(!executed.needs_attention());
+        assert!(!executed.has_pending_removals());
+        let message = executed.entries()[0].to_string();
+        assert!(message.contains("removed projection; retained directory:"));
+        assert!(!message.contains("remove:"));
+        assert!(!target.join("README.md").exists());
+        assert_eq!(
+            fs::read_to_string(target.join("mapped/private")).unwrap(),
+            "independent data"
+        );
+        assert!(state::record_for_blocking(&target).unwrap().is_none());
+    }
 
     #[tokio::test]
     async fn execute_removes_matching_symlink() {
@@ -1175,9 +1455,12 @@ mod tests {
 
         let desired = DesiredTree::from_entries(vec![checkout_entry(dest_td.path().to_path_buf())]);
         let report = Report::build(&desired).unwrap();
-        assert_eq!(report.entries()[0].outcome, Outcome::Removed);
+        assert!(matches!(
+            report.entries()[0].outcome,
+            Outcome::CheckoutDisposal { .. }
+        ));
 
-        let ctx = Context::builder().build();
+        let ctx = Context::builder().discard_checkout(true).build();
         report.execute(ctx).await.unwrap();
         assert!(!dest_td.path().join(".git").exists());
     }
@@ -1196,7 +1479,7 @@ mod tests {
         let report = Report::build(&desired).unwrap();
         assert!(report.needs_attention());
 
-        let ctx = Context::builder().build();
+        let ctx = Context::builder().no_prompt(true).build();
         report.execute(ctx).await.unwrap();
         assert!(
             dest_td.path().join(".git").exists(),
@@ -1272,10 +1555,10 @@ mod tests {
         let report = Report::build(&desired).unwrap();
         assert!(matches!(
             report.entries()[0].outcome,
-            Outcome::CheckoutNotClean { .. }
+            Outcome::CheckoutDisposal { .. }
         ));
 
-        let ctx = Context::builder().build();
+        let ctx = Context::builder().no_prompt(true).build();
         report.execute(ctx).await.unwrap();
         assert!(
             dest_td.path().join(".git").exists(),

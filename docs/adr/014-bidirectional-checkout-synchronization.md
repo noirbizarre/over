@@ -2,6 +2,15 @@
 
 **Status:** accepted
 
+## Safety amendment (#195)
+
+The [current safety contract](../usage/safety.md) clarifies that `--abort`
+hard-resets tracked/index changes only for an in-progress merge; it is not
+equivalent to Git's protective merge abort. Other operation states refuse.
+Abort previews do not reset, and all sync previews avoid Git-object/state writes.
+Fast-forward checkout refuses ignored obstructions before advancing the local
+branch. Virtual refresh retains existing access permissions.
+
 ## Context
 
 ADR-011/012 both explicitly deferred "turning `Checkout` entries into real

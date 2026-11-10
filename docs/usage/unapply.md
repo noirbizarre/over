@@ -1,9 +1,9 @@
 # `over unapply`
 
 Remove a given overlay's own entries from the target: unlink files and
-directories `over apply` created there, and remove a fully-synced git
-checkout. The overlay source itself is never touched, so a plain `over
-apply` afterwards fully restores everything.
+directories `over apply` created there, and remove owned checkouts subject to
+their disposal safeguards. The overlay source itself is never touched.
+Reapply reconstructs the current configured projection, not historical user data.
 
 ```text
 Usage: over unapply [OPTIONS] [NAME]
@@ -16,6 +16,8 @@ Options:
   -r, --root <ROOT>  The target root directory (~)
   -d, --debug        Toggle debug traces
   -n, --dry-run      Report what would be removed without removing anything
+      --no-prompt    Leave risky checkouts untouched instead of prompting
+      --discard-checkout  Discard owned real checkouts, including local files and Git history
   -v, --verbose      Toggle verbose output
   -h, --help         Print help
 ```
@@ -42,11 +44,13 @@ not recursively remove its shared app dependencies. See
 
 ## What it does
 
-`unapply` never trusts a persisted record of what a previous `apply` did.
-Instead it re-walks the overlay's current desired state and compares it,
+`unapply` does not use a historical apply log as removal authority.
+It re-walks the overlay's current desired state and compares it,
 read-only, against actual filesystem/git state using the reconciliation model
 shared with `apply` and `status`. `diff` shares desired-state selection but
-presents Git changes independently. `unapply` only
+presents Git changes independently. Virtual checkouts also use their persisted
+XDG association, verified against the current overlay, source and scope before
+removal. `unapply` only
 removes an entry that *still* matches exactly what the overlay would
 materialize there right now:
 
@@ -58,11 +62,12 @@ materialize there right now:
   removal) — never `rm -rf`. A directory that still holds anything else
   (unrelated user files, another overlay's content) is silently left in
   place.
-- A git checkout (the overlay's own root checkout, or any nested `git`
-  entry) is removed only when it's fully in sync with its upstream: no
-  uncommitted changes, no unpushed commits, no merge/rebase in progress.
-  Anything else is left untouched — resolve with `over sync` or plain git
-  first.
+- A real Git checkout (root or nested `git` entry) requires explicit disposal
+  confirmation, default No, or `--discard-checkout`. This can discard local
+  edits, ignored files, branches, stashes and Git metadata/history. Even clean
+  status does not prove those are backed up. With `--no-prompt` alone it is
+  retained and reported. Foreign identities, independent checkout units and
+  shared/external Git layouts cannot be overridden.
 - A [virtual checkout](../adr/022-virtual-checkout-materialization.md) is
   removed only when it's fully applied: no local edits, and not behind the
   source repository. Anything else is left untouched — resolve with `over
@@ -72,6 +77,9 @@ materialize there right now:
   For mapped layouts, only owned files and empty directories are removed;
   independently mapped destinations are protected. A dirty mapped checkout
   survives removal of a clean residual checkout around it.
+  When protected contents keep the container directory in place, the report
+  says the projection was removed and the directory retained. This counts as
+  one successfully removed projection, not removal of the directory itself.
 
 Removal proceeds deepest-target-first, so a directory that only ever held
 overlay-managed content becomes empty (and is then removed) once its
@@ -86,15 +94,13 @@ contents are gone.
 - Remove anything not recognizably its own: a foreign file, a changed
   symlink target, or a non-empty directory are always left alone, with no
   `--force` escape hatch (there's nothing to force through).
-- Discard uncommitted changes or local commits in a git checkout —
-  reusing the exact same read-only inspection `over sync`/`over status`
-  rely on (see
-  [ADR-014](../adr/014-bidirectional-checkout-synchronization.md)).
+- Discard real-checkout data/history without separate explicit confirmation
+  or `--discard-checkout`, or discard dirty virtual-checkout content at all.
 
-Because unapply only ever removes exactly-matching, safe state, every
-removal is reversible: symlinks and directories come back with a plain
-`over apply`, and a checkout is only ever removed when there was nothing
-local-only left to lose.
+There is no general backup or rollback. Symlinks and configured directories
+can be recreated with apply, but discarded checkout-local data/history,
+previous overwrite/absorb content, packages and hook effects are not restored.
+See the [operation inventory and recovery limitations](safety.md).
 
 See
 [ADR-015](../adr/015-unapply-reuses-plan-classification-and-only-removes-safely-reversible-state.md)

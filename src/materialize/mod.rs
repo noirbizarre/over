@@ -40,7 +40,7 @@
 
 mod checkout;
 mod partial;
-mod symlink;
+pub(crate) mod symlink;
 pub mod virtual_checkout;
 
 use anyhow::Result;
@@ -170,3 +170,4 @@ mod tests {
         assert!(registry.find(&e.intent).is_some());
     }
 }
+pub(crate) mod disposal;

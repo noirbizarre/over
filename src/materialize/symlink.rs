@@ -90,8 +90,14 @@ impl Materializer for SymlinkMaterializer {
                     other => Ok(Operation::Conflict { current: other }),
                 }
             }
-            MaterializationIntent::SymlinkFile { source, .. } => {
+            MaterializationIntent::SymlinkFile { source, link_type } => {
                 let actual = actual::inspect(&entry.target)?;
+                if matches!(link_type, LinkType::Hard)
+                    && matches!(actual, ActualState::File)
+                    && crate::actions::symlink::hard_link_matches(source, &entry.target)?
+                {
+                    return Ok(Operation::Noop);
+                }
                 Ok(match actual {
                     ActualState::Missing => Operation::Create,
                     ActualState::Symlink { ref points_to } if points_to == source => {
@@ -148,9 +154,9 @@ impl Materializer for SymlinkMaterializer {
         match &step.operation {
             Operation::Migrate {
                 from,
+                to,
                 blocked: None,
-                ..
-            } => materialize_migration(ctx, &step.entry, from).await,
+            } => materialize_migration(ctx, &step.entry, from, to).await,
             // Defensive: `Plan::execute`'s `is_actionable` never calls
             // `materialize` for a blocked migration — but never silently
             // fall through to the plain `build_action` path below either,
@@ -177,34 +183,23 @@ impl Materializer for SymlinkMaterializer {
 }
 
 /// `entry.target` already exists as a real directory. If it's actually a
-/// git checkout, return the [`Operation::Migrate`] reconciling it to
-/// `entry.intent` (#129) — safe (`blocked: None`) when fully in sync with
-/// its upstream, blocked otherwise (never silently discarded, never routed
-/// through force/no_prompt/absorb-diff — the exact safety gate
-/// `CheckoutMaterializer::classify` already relies on for the reverse
-/// direction, reused here via `status::git::inspect_checkout` rather than
-/// re-derived). `None` when `entry.target` isn't a checkout at all — the
-/// fast `.git`-presence check skips the `git2` call entirely for the
-/// overwhelmingly common case, leaving the caller to decide its own
-/// default.
+/// git checkout, return a migration with disposal-specific authority checks.
+/// Consent-required steps remain actionable so execution can request the
+/// dedicated authorization; forbidden ownership boundaries stay blocked.
 fn checkout_migration(entry: &DesiredEntry) -> Result<Option<Operation>> {
     if !entry.target.join(".git").exists() {
         return Ok(None);
     }
-    Ok(match status::git::inspect_checkout(&entry.target)? {
-        // `.git` exists but isn't a valid repo — not actually a checkout.
-        Status::Broken => None,
-        Status::Applied => Some(Operation::Migrate {
-            from: MaterializationIntent::Checkout,
-            to: entry.intent.clone(),
-            blocked: None,
-        }),
-        unsafe_status => Some(Operation::Migrate {
-            from: MaterializationIntent::Checkout,
-            to: entry.intent.clone(),
-            blocked: Some(status::describe(&unsafe_status)),
-        }),
-    })
+    let assessment = super::disposal::assess(entry)?;
+    Ok(Some(Operation::Migrate {
+        from: MaterializationIntent::Checkout,
+        to: entry.intent.clone(),
+        // Consent-required removal stays actionable; hard boundaries do not.
+        blocked: match assessment {
+            super::disposal::Assessment::Forbidden(reason) => Some(reason),
+            super::disposal::Assessment::RequiresConsent { .. } => None,
+        },
+    }))
 }
 
 /// `entry.target` already exists as a real directory. If it's actually a
@@ -252,7 +247,10 @@ fn virtual_checkout_migration(entry: &DesiredEntry) -> Result<Option<Operation>>
 /// `recurse -> directory-level symlink` rule change (#129) collapse the
 /// directory safely instead of falling back to `Operation::Conflict`;
 /// removing it loses nothing the overlay didn't already provide.
-fn directory_is_symlink_mirror(target: &Path, source: &Path) -> Result<bool> {
+pub(crate) fn directory_is_symlink_mirror(target: &Path, source: &Path) -> Result<bool> {
+    if !source.is_dir() {
+        return Ok(false);
+    }
     for dir_entry in fs::read_dir(target)? {
         let dir_entry = dir_entry?;
         let path = dir_entry.path();
@@ -288,10 +286,14 @@ async fn materialize_migration(
     ctx: Ctx,
     entry: &DesiredEntry,
     from: &MaterializationIntent,
+    to: &MaterializationIntent,
 ) -> Result<()> {
     if ctx.dry_run {
         return Ok(());
     }
+    let association_key = from
+        .is_virtual_checkout()
+        .then(|| crate::materialize::virtual_checkout::state::key_for(&entry.target));
 
     if let MaterializationIntent::SymlinkDirectory { source, .. } = &entry.intent
         && let Provenance::Overlay { overlay, .. } = &entry.provenance
@@ -306,16 +308,24 @@ async fn materialize_migration(
     }
 
     if matches!(from, MaterializationIntent::Checkout) {
-        match status::git::inspect_checkout(&entry.target)? {
-            Status::Applied => {}
-            other => {
-                bail!(
-                    "refusing to migrate '{}': checkout {} since it was classified — rerun to re-evaluate",
-                    entry.target.display(),
-                    status::describe(&other),
-                );
-            }
+        if let super::disposal::Removal::Retained(reason) =
+            super::disposal::remove_checkout(ctx.clone(), entry.clone()).await?
+        {
+            bail!("{reason}");
         }
+    } else if !from.is_virtual_checkout() {
+        // Re-run the exact transition check; a newly added real file or a
+        // changed link must not inherit an old migration's authority.
+        anyhow::ensure!(
+            matches!(
+                SymlinkMaterializer.classify(entry)?,
+                Operation::Migrate { from: current_from, to: current_to, blocked: None }
+                    if same_link_transition_intent(from, &current_from)
+                        && same_link_transition_intent(to, &current_to)
+            ),
+            "migration target '{}' changed since classification",
+            entry.target.display()
+        );
     }
     if from.is_virtual_checkout() {
         match status::virtual_checkout::inspect(entry)? {
@@ -328,17 +338,41 @@ async fn materialize_migration(
                 );
             }
         }
-        // The target is about to be removed and replaced by a symlink —
-        // the XDG association would otherwise dangle (and could
-        // misattribute a future virtual checkout re-materialized at the
-        // same path to this stale `base_oid`).
-        crate::materialize::virtual_checkout::state::remove(&entry.target).await?;
     }
 
-    let target = entry.target.clone();
-    spawn_blocking(move || remove_target(&target)).await??;
+    if !matches!(from, MaterializationIntent::Checkout) {
+        let target = entry.target.clone();
+        spawn_blocking(move || remove_target(&target)).await??;
+    }
 
-    build_action(ctx.clone(), entry).execute(ctx).await
+    build_action(ctx.clone(), entry).execute(ctx).await?;
+    if let Some(key) = association_key {
+        // Keep recovery information until the filesystem transition succeeds.
+        crate::materialize::virtual_checkout::state::remove_key(key).await?;
+    }
+    Ok(())
+}
+
+fn same_link_transition_intent(
+    left: &MaterializationIntent,
+    right: &MaterializationIntent,
+) -> bool {
+    // Only reconstructible link/scaffold transitions carry automatic deletion
+    // authority; a newly initialized checkout must require its own consent.
+    match (left, right) {
+        (MaterializationIntent::Directory, MaterializationIntent::Directory) => true,
+        (
+            MaterializationIntent::SymlinkDirectory {
+                source: left_source,
+                link_type: left_type,
+            },
+            MaterializationIntent::SymlinkDirectory {
+                source: right_source,
+                link_type: right_type,
+            },
+        ) => left_source == right_source && left_type == right_type,
+        _ => false,
+    }
 }
 
 /// Translate an entry into the existing, tested `Action` that materializes
@@ -346,11 +380,11 @@ async fn materialize_migration(
 /// `actions::symlink` types.
 ///
 /// Dispatches on `provenance`, not just `intent`, because two different
-/// existing actions handle symlinks with different conflict semantics:
+/// existing actions handle symlinks with different link capabilities:
 /// regular per-file overlay entries go through `EnsureLink`/`EnsureDirLink`
 /// (interactive skip/overwrite/absorb/diff resolution, ADR-006), while
-/// `.link.*` sidecar entries go through `EnsureSymlink` (unconditional
-/// overwrite, and the only one of the two that supports hard links).
+/// `.link.*` sidecar entries go through `EnsureSymlink` (which also supports
+/// hard links). Both honor the same conflict authorization policy.
 fn build_action(ctx: Ctx, entry: &DesiredEntry) -> Box<dyn Action> {
     let is_sidecar = matches!(entry.provenance, Provenance::SymlinkSidecar { .. });
 
@@ -562,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_clean_checkout_is_migrate_to_symlink_directory() {
+    fn a_clean_checkout_without_ownership_cannot_migrate_automatically() {
         let td = TempDir::new().unwrap();
         init_committed_repo(td.path());
         let m = SymlinkMaterializer;
@@ -577,14 +611,14 @@ mod tests {
             Operation::Migrate { from, to, blocked } => {
                 assert!(matches!(from, MaterializationIntent::Checkout));
                 assert!(matches!(to, MaterializationIntent::SymlinkDirectory { .. }));
-                assert!(blocked.is_none());
+                assert!(blocked.unwrap().contains("association"));
             }
             other => panic!("expected Migrate, got {other:?}"),
         }
     }
 
     #[test]
-    fn classify_dirty_checkout_is_migrate_blocked_not_conflict() {
+    fn a_dirty_checkout_without_ownership_has_a_non_overridable_block() {
         // A dirty checkout must never classify as `Operation::Conflict`
         // (force/no_prompt/absorb-diff would discard it) nor as a bare
         // `Noop`/`Migrate{blocked: None}` (silently invisible) — it must be
@@ -607,7 +641,7 @@ mod tests {
                 ..
             } => {
                 assert!(matches!(from, MaterializationIntent::Checkout));
-                assert!(reason.contains("uncommitted"));
+                assert!(reason.contains("association"));
             }
             other => panic!("expected blocked Migrate, got {other:?}"),
         }
@@ -837,11 +871,141 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_new_real_file_prevents_execution_of_an_old_mirror_migration() {
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("source");
+        let target = td.path().join("target");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("file"), "overlay").unwrap();
+        symlink::symlink_file(source.join("file"), target.join("file")).unwrap();
+        let entry = DesiredEntry {
+            target: target.clone(),
+            provenance: Provenance::Overlay {
+                overlay: "ov".into(),
+                source: source.clone(),
+            },
+            intent: MaterializationIntent::SymlinkDirectory {
+                source,
+                link_type: LinkType::Soft,
+            },
+            permissions: None,
+        };
+        let operation = SymlinkMaterializer.classify(&entry).unwrap();
+        assert!(matches!(
+            operation,
+            Operation::Migrate { blocked: None, .. }
+        ));
+        fs::write(target.join("private"), "new user data").unwrap();
+        let ctx = Context::builder()
+            .force(true)
+            .discard_checkout(true)
+            .build();
+        assert!(
+            SymlinkMaterializer
+                .materialize(ctx, &PlanStep { entry, operation })
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("private")).unwrap(),
+            "new user data"
+        );
+        assert!(target.join("file").is_symlink());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_checkout_initialized_in_a_mirror_cannot_inherit_its_deletion_authority() {
+        use std::os::unix::fs::MetadataExt;
+
+        let _xdg = isolate_xdg_state();
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("source");
+        let target = td.path().join("target");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("file"), "overlay").unwrap();
+        symlink::symlink_file(source.join("file"), target.join("file")).unwrap();
+        let entry = DesiredEntry {
+            target: target.clone(),
+            provenance: Provenance::Overlay {
+                overlay: "ov".into(),
+                source: source.clone(),
+            },
+            intent: MaterializationIntent::SymlinkDirectory {
+                source,
+                link_type: LinkType::Soft,
+            },
+            permissions: None,
+        };
+        let operation = SymlinkMaterializer.classify(&entry).unwrap();
+        assert!(matches!(
+            operation,
+            Operation::Migrate {
+                from: MaterializationIntent::Directory,
+                blocked: None,
+                ..
+            }
+        ));
+        let inode = fs::metadata(&target).unwrap().ino();
+        // Initialize in place: inode guards alone cannot detect this change
+        // from reconstructible links into consent-requiring repository data.
+        init_committed_repo(&target);
+        git2::Repository::open(&target)
+            .unwrap()
+            .config()
+            .unwrap()
+            .set_str("over.overlay", "ov")
+            .unwrap();
+        fs::write(target.join("private"), "local data").unwrap();
+        assert_eq!(fs::metadata(&target).unwrap().ino(), inode);
+        assert!(matches!(
+            SymlinkMaterializer.classify(&entry).unwrap(),
+            Operation::Migrate {
+                from: MaterializationIntent::Checkout,
+                blocked: None,
+                ..
+            }
+        ));
+
+        let error = SymlinkMaterializer
+            .materialize(
+                Context::builder().no_prompt(true).build(),
+                &PlanStep { entry, operation },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("changed since classification"));
+        assert!(target.join(".git").is_dir());
+        assert!(target.join("file").is_symlink());
+        assert_eq!(
+            fs::read_to_string(target.join("private")).unwrap(),
+            "local data"
+        );
+        assert_eq!(
+            git2::Repository::open(&target)
+                .unwrap()
+                .config()
+                .unwrap()
+                .get_string("over.overlay")
+                .unwrap(),
+            "ov"
+        );
+    }
+
+    #[tokio::test]
     async fn materialize_migrate_checkout_to_symlink_replaces_directory() {
         let td = TempDir::new().unwrap();
         let checkout_dir = td.child("checkout");
         checkout_dir.create_dir_all().unwrap();
         init_committed_repo(checkout_dir.path());
+        git2::Repository::open(checkout_dir.path())
+            .unwrap()
+            .config()
+            .unwrap()
+            .set_str("over.overlay", "ov")
+            .unwrap();
 
         let source = td.child("elsewhere");
         source.create_dir_all().unwrap();
@@ -871,7 +1035,7 @@ mod tests {
                 blocked: None,
             },
         };
-        let ctx = Context::builder().build();
+        let ctx = Context::builder().discard_checkout(true).build();
         m.materialize(ctx, &step).await.unwrap();
 
         assert!(
@@ -891,6 +1055,15 @@ mod tests {
 
         let source = td.child("elsewhere");
         source.create_dir_all().unwrap();
+        let old_key = crate::materialize::virtual_checkout::state::key_for(checkout_dir.path());
+        let mut other =
+            crate::materialize::virtual_checkout::state::record_for_blocking(checkout_dir.path())
+                .unwrap()
+                .unwrap();
+        other.overlay = "independent".into();
+        crate::materialize::virtual_checkout::state::persist(source.path(), other.clone())
+            .await
+            .unwrap();
 
         let m = SymlinkMaterializer;
         let target = checkout_dir.path().to_path_buf();
@@ -932,10 +1105,19 @@ mod tests {
         // The XDG association must be dropped too, so a virtual checkout
         // later re-materialized at the same path never gets misattributed
         // to this stale `base_oid`.
+        let saved = crate::materialize::virtual_checkout::state::state_file()
+            .unwrap()
+            .inspect_blocking()
+            .unwrap();
         assert!(
-            crate::materialize::virtual_checkout::state::record_for_blocking(&target)
-                .unwrap()
-                .is_none()
+            !saved.checkouts.contains_key(&old_key),
+            "old deployment association must actually be removed"
+        );
+        assert_eq!(
+            crate::materialize::virtual_checkout::state::record_for_blocking(source.path())
+                .unwrap(),
+            Some(other),
+            "replacement link must not redirect association cleanup to another checkout"
         );
     }
 

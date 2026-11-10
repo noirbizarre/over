@@ -204,24 +204,49 @@ pub(crate) fn apply_tree_diff(
     for (path, (oid, mode)) in &to_entries {
         if from_entries.get(path) != Some(&(*oid, *mode)) {
             let on_disk = target.join(path);
+            crate::materialize::disposal::validate_relative_ancestors(target, &on_disk)?;
+            anyhow::ensure!(
+                !on_disk.is_symlink(),
+                "refusing to write through symlink '{}'",
+                on_disk.display()
+            );
             if let Some(parent) = on_disk.parent() {
                 fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create '{}'", parent.display()))?;
             }
             let content = read_blob(repo, *oid)?;
-            fs::write(&on_disk, content)
-                .with_context(|| format!("failed to write '{}'", on_disk.display()))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&on_disk, fs::Permissions::from_mode(*mode as u32 & 0o777))?;
-            }
+            crate::actions::fs::replace_file(&on_disk, content, |permissions| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    // Git records executability, not private access bits such as 0600.
+                    let existing = permissions.mode();
+                    let bits = if *mode & 0o111 != 0 {
+                        existing | ((existing & 0o444) >> 2)
+                    } else {
+                        existing & !0o111
+                    };
+                    fs::Permissions::from_mode(bits)
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = mode;
+                    permissions
+                }
+            })
+            .with_context(|| format!("failed to write '{}'", on_disk.display()))?;
         }
     }
 
     for path in from_entries.keys() {
         if !to_entries.contains_key(path) {
             let on_disk = target.join(path);
+            crate::materialize::disposal::validate_relative_ancestors(target, &on_disk)?;
+            anyhow::ensure!(
+                !on_disk.is_symlink(),
+                "refusing to remove changed symlink '{}'",
+                on_disk.display()
+            );
             match fs::remove_file(&on_disk) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1033,6 +1058,58 @@ mod tests {
                 .unwrap();
         }
         repo
+    }
+
+    #[cfg(target_os = "linux")]
+    #[rstest::rstest]
+    fn virtual_refresh_preserves_metadata_without_touching_an_unowned_hardlink(
+        #[values(false, true)] hardlinked: bool,
+    ) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let source = TempDir::new().unwrap();
+        source.child("file").write_str("old").unwrap();
+        let repo = init_committed_repo(source.path());
+        let from = repo.head().unwrap().peel_to_tree().unwrap();
+        let new_blob = repo.blob(b"new").unwrap();
+        let to = build_content_tree(
+            &repo,
+            &BTreeMap::from([(PathBuf::from("file"), (new_blob, 0o100755))]),
+        )
+        .unwrap();
+        let destination = TempDir::new().unwrap();
+        let target = destination.path().join("file");
+        let alias = destination.path().join("unowned");
+        fs::write(&alias, "old").unwrap();
+        fs::set_permissions(&alias, fs::Permissions::from_mode(0o600)).unwrap();
+        xattr::set(&alias, "user.over-regression", b"keep metadata").unwrap();
+        if hardlinked {
+            fs::hard_link(&alias, &target).unwrap();
+        } else {
+            fs::copy(&alias, &target).unwrap();
+            xattr::set(&target, "user.over-regression", b"keep metadata").unwrap();
+        }
+        let original = fs::metadata(&alias).unwrap();
+
+        apply_tree_diff(&repo, destination.path(), &from, &to).unwrap();
+
+        let refreshed = fs::metadata(&target).unwrap();
+        let untouched = fs::metadata(&alias).unwrap();
+        assert_eq!(
+            (refreshed.uid(), refreshed.gid()),
+            (original.uid(), original.gid())
+        );
+        assert_eq!(refreshed.permissions().mode() & 0o7777, 0o700);
+        assert_eq!(untouched.mode(), original.mode());
+        assert_eq!(untouched.ino(), original.ino());
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert_eq!(fs::read(&alias).unwrap(), b"old");
+        for path in [&target, &alias] {
+            assert_eq!(
+                xattr::get(path, "user.over-regression").unwrap(),
+                Some(b"keep metadata".to_vec())
+            );
+        }
     }
 
     #[cfg(unix)]

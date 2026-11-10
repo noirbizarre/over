@@ -16,9 +16,10 @@ Options:
   -r, --root <ROOT>  The target root directory (~)
   -d, --debug        Toggle debug traces
   -n, --dry-run      Run without applying changes
-  -f, --force        Overwrite without prompting
+  -f, --force        Overwrite ordinary filesystem conflicts without prompting
   -v, --verbose      Toggle verbose output
       --no-prompt    Fail on conflict instead of prompting
+      --discard-checkout  Discard owned real checkouts, including local files and Git history
       --no-uses      Skip dependency operations, retaining dependency data
   -i, --install      Install associated applications
   -h, --help         Print help
@@ -36,6 +37,11 @@ Options:
   Git provisioning, and post-apply hooks do not require `--install`.
 - A file that already exists at the target triggers an interactive prompt
   (skip, overwrite, absorb, diff) unless `--force` or `--no-prompt` is given.
+- The same conflict policy applies to `.link.*` sidecars. No-prompt alone
+  refuses conflicts; force explicitly authorizes replacing them, including
+  conflicting directories. Checkout disposal requires separate confirmation
+  or `--discard-checkout`; force alone is insufficient. Ownership and mapping
+  boundaries cannot be overridden. See [Safety and recovery](safety.md).
 - `--dry-run`/`--verbose` print the structured reconciliation plan (one line
   per entry: create/no-op/conflict) before executing it, rather than just
   reporting success or failure. See
@@ -58,6 +64,15 @@ over status hosts/laptop
 Use the preview to inspect conflicts and planned changes before applying.
 See [Examples](../examples.md#compose-a-host) for the corresponding composition
 and [`over unapply`](unapply.md) for reversing a selected overlay's own entries.
+
+Apply has no whole-command rollback or permanent overwrite/absorb backup.
+Absorb changes source content as well as the target. Reapply/unapply cannot
+recover previously overwritten user data.
+
+With `--install`, available configuration and ownership validation runs first,
+then packages/install scripts run before file materialization. Later failure
+does not undo package or script changes. External commands retain their own
+prompt policies; Over's force/no-prompt flags do not control child prompts.
 
 ## Lifecycle hooks
 

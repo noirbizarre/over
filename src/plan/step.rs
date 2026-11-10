@@ -30,7 +30,8 @@ pub enum Operation {
     Migrate {
         from: MaterializationIntent,
         to: MaterializationIntent,
-        /// `None`: safe to perform automatically. `Some(reason)`: the
+        /// `None`: executable with the backend's authorization checks (real
+        /// checkout disposal still requires consent). `Some(reason)`: the
         /// migration is understood but can't proceed yet (e.g. a dirty
         /// checkout) — never executed, even under `--force`
         /// ([`super::Plan::execute`] skips it exactly like `Noop`), but
@@ -259,12 +260,17 @@ impl fmt::Display for PlanStep {
                 },
             ) => write!(
                 f,
-                "{} {} {} ({} -> {})",
+                "{} {} {} ({} -> {}; removes the old target before replacement{})",
                 emojis::MIGRATE,
                 style::white("migrate:"),
                 target,
                 intent_label(from),
                 intent_label(to),
+                if matches!(from, MaterializationIntent::Checkout) {
+                    "; local files and Git history require confirmation or --discard-checkout"
+                } else {
+                    ""
+                },
             ),
             (
                 _,

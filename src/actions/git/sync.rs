@@ -98,13 +98,19 @@ pub(crate) fn pull(repo: &Repository) -> Result<PullOutcome> {
         let mut branch_ref = repo
             .find_reference(&branch_refname)
             .with_context(|| format!("local branch ref '{branch_refname}' not found"))?;
-        branch_ref.set_target(fetch_commit.id(), "over sync: fast-forward")?;
+        let old = branch_ref.target().context("branch has no direct target")?;
+        let incoming = repo.find_commit(fetch_commit.id())?;
+        // Checkout against the old HEAD before moving it: force would lose
+        // ignored obstructions that a clean status deliberately excludes.
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.safe().overwrite_ignored(false);
+        repo.checkout_tree(incoming.as_object(), Some(&mut checkout))?;
+        if let Err(error) = branch_ref.set_target(fetch_commit.id(), "over sync: fast-forward") {
+            anyhow::bail!(
+                "checkout updated but branch could not advance from {old}: {error}; inspect the working tree before retrying"
+            );
+        }
         repo.set_head(&branch_refname)?;
-        // Force: the working directory must move from the pre-fetch tree
-        // to the fast-forwarded one; safe because the caller only ever
-        // reaches this branch on a *clean* working tree (checked before
-        // `pull` is invoked).
-        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
         return Ok(PullOutcome::FastForwarded);
     }
 
@@ -113,7 +119,9 @@ pub(crate) fn pull(repo: &Repository) -> Result<PullOutcome> {
         // directory and puts the repo in a merging state; does not move
         // HEAD. Caller inspects the index below before deciding whether to
         // commit or leave it for the user.
-        repo.merge(&[&fetch_commit], None, None)?;
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.safe().overwrite_ignored(false);
+        repo.merge(&[&fetch_commit], None, Some(&mut checkout))?;
 
         let mut index = repo.index()?;
         if index.has_conflicts() {
@@ -149,10 +157,13 @@ pub(crate) fn pull(repo: &Repository) -> Result<PullOutcome> {
 /// Abort an in-progress merge left by a conflicted [`pull`]: resets the
 /// index and working directory back to `HEAD` (which a plain `git2::merge`
 /// never moves, conflicted or not — confirmed against git2's own docs) and
-/// clears `MERGE_HEAD`/`MERGE_MSG`. Mirrors `git merge --abort` without
-/// needing to persist a "pre-merge HEAD" anywhere: `HEAD` already *is* the
-/// pre-merge commit.
+/// clears `MERGE_HEAD`/`MERGE_MSG`. Unlike Git's protective merge abort,
+/// this explicit operation also discards post-conflict tracked/index edits.
 pub(crate) fn abort_merge(repo: &Repository) -> Result<()> {
+    anyhow::ensure!(
+        repo.state() == git2::RepositoryState::Merge,
+        "refusing to abort a non-merge Git operation"
+    );
     let head_commit = repo
         .head()
         .context("failed to resolve HEAD")?
@@ -279,6 +290,28 @@ mod tests {
         assert_eq!(pull(&repo).unwrap(), PullOutcome::FastForwarded);
         assert!(dest_td.path().join("clone").join("new.txt").exists());
         assert_eq!(repo.state(), RepositoryState::Clean);
+    }
+
+    #[test]
+    fn pull_preserves_ignored_obstructions_without_advancing_head_or_index() {
+        let source_td = TempDir::new().unwrap();
+        let source = init_committed_repo(source_td.path());
+        let dest_td = TempDir::new().unwrap();
+        let clone = dest_td.path().join("clone");
+        let repo = clone_with_tracking(source_td.path(), &clone);
+        fs::write(repo.path().join("info/exclude"), "private\n").unwrap();
+        fs::write(clone.join("private"), "only local copy").unwrap();
+        fs::write(source_td.path().join("private"), "upstream").unwrap();
+        commit_all(&source, "track formerly ignored path");
+        let head = repo.head().unwrap().target();
+        let index = fs::read(repo.path().join("index")).unwrap();
+        assert!(pull(&repo).is_err());
+        assert_eq!(repo.head().unwrap().target(), head);
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+        assert_eq!(
+            fs::read_to_string(clone.join("private")).unwrap(),
+            "only local copy"
+        );
     }
 
     #[test]

@@ -77,6 +77,8 @@ impl Default for SyncOptions {
 /// What happened to a single checkout/worktree during `over sync`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncOutcome {
+    /// Prospective action based on local state; no network or writes occurred.
+    Preview { path: PathBuf, action: String },
     /// Already level with (or ahead of) its upstream; nothing to pull.
     UpToDate { path: PathBuf },
     /// Local branch had no divergent commits; its ref was moved forward.
@@ -124,6 +126,7 @@ impl SyncOutcome {
             | SyncOutcome::Conflict { path }
             | SyncOutcome::Blocked { path, .. }
             | SyncOutcome::Aborted { path } => path,
+            SyncOutcome::Preview { path, .. } => path,
         }
     }
 
@@ -139,6 +142,7 @@ impl SyncOutcome {
             SyncOutcome::Conflict { .. } => "conflict",
             SyncOutcome::Blocked { .. } => "blocked",
             SyncOutcome::Aborted { .. } => "aborted",
+            SyncOutcome::Preview { .. } => "preview",
         }
     }
 }
@@ -147,6 +151,7 @@ impl fmt::Display for SyncOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let target = short_path(&self.path().to_string_lossy());
         match self {
+            SyncOutcome::Preview { action, .. } => write!(f, "would {action}: {target}"),
             SyncOutcome::UpToDate { .. } => {
                 write!(
                     f,
@@ -358,12 +363,23 @@ fn sync_unit(unit: &SyncUnit, opts: &SyncOptions) -> Result<SyncOutcome> {
         // remote-tracking state is already on disk from the last real
         // fetch/clone, without contacting the network.
         let (ahead, behind) = status_git::ahead_behind(&repo)?.unwrap_or((0, 0));
-        return Ok(if opts.pull && behind > 0 {
-            SyncOutcome::FastForwarded { path }
+        let action = if opts.pull && behind > 0 && ahead > 0 {
+            "merge (cached upstream; fetch may change affected paths)"
+        } else if opts.pull && behind > 0 {
+            "fast-forward (cached upstream; fetch may change affected paths)"
         } else if opts.push && ahead > 0 {
-            SyncOutcome::Pushed { path }
+            "push (cached upstream)"
         } else {
-            SyncOutcome::UpToDate { path }
+            "leave unchanged (cached upstream)"
+        };
+        if opts.pull && behind > 0 {
+            for message in pull_preview(&repo, &path, ahead > 0)? {
+                crate::ui::info(message)?;
+            }
+        }
+        return Ok(SyncOutcome::Preview {
+            path,
+            action: action.into(),
         });
     }
 
@@ -397,6 +413,83 @@ fn sync_unit(unit: &SyncUnit, opts: &SyncOptions) -> Result<SyncOutcome> {
     Ok(outcome)
 }
 
+fn pull_preview(repo: &Repository, path: &Path, divergent: bool) -> Result<Vec<String>> {
+    let head = repo.head()?.peel_to_commit()?;
+    let branch = git2::Branch::wrap(repo.head()?);
+    let upstream = branch.upstream()?.get().peel_to_commit()?;
+    // HEAD-to-upstream would mislabel local-only additions as incoming deletions.
+    // Reading the merge base avoids simulating a merge (and writing objects).
+    let base = if divergent {
+        repo.find_commit(repo.merge_base(head.id(), upstream.id())?)?
+    } else {
+        head
+    };
+    let diff = repo.diff_tree_to_tree(Some(&base.tree()?), Some(&upstream.tree()?), None)?;
+    let mut messages = Vec::new();
+    for delta in diff.deltas() {
+        if let Some(relative) = delta.new_file().path().or(delta.old_file().path()) {
+            messages.push(format!(
+                "{} {:?}: {}",
+                if divergent {
+                    "incoming candidate (merge-base to cached upstream; merge may conflict)"
+                } else {
+                    "would reconcile"
+                },
+                delta.status(),
+                path.join(relative).display()
+            ));
+        }
+    }
+    Ok(messages)
+}
+
+fn abort_preview(repo: &Repository, path: &Path) -> Result<Vec<String>> {
+    let head = repo.head()?.peel_to_tree()?;
+    let mut restored_paths = Vec::new();
+    head.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
+        if entry.kind() != Some(git2::ObjectType::Tree) {
+            let Ok(name) = entry.name() else {
+                return git2::TreeWalkResult::Abort;
+            };
+            restored_paths.push(Path::new(root).join(name));
+        }
+        git2::TreeWalkResult::Ok
+    })?;
+    let mut options = git2::StatusOptions::new();
+    options
+        .include_untracked(true)
+        .include_ignored(true)
+        .recurse_untracked_dirs(true)
+        .recurse_ignored_dirs(true)
+        .update_index(false);
+    let mut messages = Vec::new();
+    for entry in repo.statuses(Some(&mut options))?.iter() {
+        let relative = Path::new(entry.path()?);
+        let status = entry.status();
+        // Untracked/ignored entries alone are not tracked changes being discarded.
+        let tracked = !(status - (git2::Status::WT_NEW | git2::Status::IGNORED)).is_empty();
+        if tracked {
+            messages.push(format!(
+                "would discard tracked/index merge changes: {}",
+                path.join(relative).display()
+            ));
+        }
+        // A path removed from the index can still obstruct restoring HEAD, as can
+        // a file/directory replacement at an ancestor or descendant of that path.
+        if status.intersects(git2::Status::WT_NEW | git2::Status::IGNORED)
+            && restored_paths
+                .iter()
+                .any(|restored| restored.starts_with(relative) || relative.starts_with(restored))
+        {
+            messages.push(format!(
+                "untracked/ignored obstruction may be overwritten when restoring HEAD: {}",
+                path.join(relative).display()
+            ));
+        }
+    }
+    Ok(messages)
+}
+
 /// Handle a repository already mid-merge (or some other non-`Clean`
 /// libgit2 state) when `over sync` starts.
 fn handle_unresolved_state(
@@ -405,6 +498,18 @@ fn handle_unresolved_state(
     opts: &SyncOptions,
 ) -> Result<SyncOutcome> {
     if opts.abort {
+        if repo.state() != RepositoryState::Merge {
+            return Ok(SyncOutcome::Blocked { path: path.to_path_buf(), reason: "only an in-progress merge can be aborted; resolve other Git operations manually".into() });
+        }
+        if opts.dry_run {
+            for message in abort_preview(repo, path)? {
+                crate::ui::info(message)?;
+            }
+            return Ok(SyncOutcome::Preview {
+                path: path.to_path_buf(),
+                action: "abort merge and discard uncommitted tracked/index changes".into(),
+            });
+        }
         git_sync::abort_merge(repo)?;
         return Ok(SyncOutcome::Aborted {
             path: path.to_path_buf(),
@@ -453,7 +558,10 @@ async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Resu
             }
             if opts.dry_run {
                 reconcile_virtual_checkout(entry, true).await?;
-                return Ok(SyncOutcome::FastForwarded { path });
+                return Ok(SyncOutcome::Preview {
+                    path,
+                    action: "refresh virtual checkout from source".into(),
+                });
             }
             reconcile_virtual_checkout(entry, false).await?;
             Ok(SyncOutcome::FastForwarded { path })
@@ -604,11 +712,10 @@ async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Resu
         vc_state::verify(&inspect_entry, &verification_record)?;
         let (repo, managed_path) = vc_git::discover_source(&source)?;
         let from_tree = vc_git::base_tree(&repo, Some(&base_oid))?;
-        let from_subtree = vc_git::scoped_subtree(&repo, &from_tree, &managed_path, &scope)?;
         let to_tree = vc_git::base_tree(&repo, None)?;
-        let to_subtree = vc_git::scoped_subtree(&repo, &to_tree, &managed_path, &scope)?;
-        let base_entries = vc_git::tracked_entries(&from_subtree)?;
-        let head_entries = vc_git::tracked_entries(&to_subtree)?;
+        // Entry maps are read-only; filtered subtree construction writes objects.
+        let base_entries = vc_git::scoped_entries(&repo, &from_tree, &managed_path, &scope)?;
+        let head_entries = vc_git::scoped_entries(&repo, &to_tree, &managed_path, &scope)?;
         let index = repo.index()?;
         anyhow::ensure!(
             !index.has_conflicts(),
@@ -641,6 +748,19 @@ async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Resu
             // Do not rewrite converged files: they may have private permissions
             // or be read-only. Unchanged local/index paths remain untouched too.
             if !vc_git::entries_match(local, head) {
+                if dry_run {
+                    crate::ui::info(format!(
+                        "would {}: {}",
+                        if head.is_none() {
+                            "remove"
+                        } else if local.is_none() {
+                            "create"
+                        } else {
+                            "replace"
+                        },
+                        target.join(relative).display()
+                    ))?;
+                }
                 if let Some(base) = base {
                     updates_from.insert(relative.clone(), base);
                 }
@@ -797,6 +917,159 @@ mod tests {
         repo
     }
 
+    fn checkout_snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        fn collect(
+            root: &Path,
+            directory: &Path,
+            files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
+        ) {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    collect(root, &path, files);
+                } else {
+                    files.insert(
+                        path.strip_prefix(root).unwrap().to_path_buf(),
+                        fs::read(path).unwrap(),
+                    );
+                }
+            }
+        }
+        // Include .git so object creation, index writes and cleared merge state
+        // cannot hide behind an otherwise unchanged working tree.
+        let mut files = std::collections::BTreeMap::new();
+        collect(root, root, &mut files);
+        files
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn pull_preview_only_lists_incoming_additions_without_mutating_the_checkout(
+        #[case] divergent: bool,
+    ) {
+        let source_td = TempDir::new().unwrap();
+        let source = init_committed_repo_ret(source_td.path());
+        let dest_td = TempDir::new().unwrap();
+        let path = dest_td.path().join("checkout");
+        let repo = clone_with_tracking(source_td.path(), &path);
+        if divergent {
+            fs::write(path.join("local.txt"), "local").unwrap();
+            commit_all(&repo, "local addition");
+        }
+        fs::write(source_td.path().join("upstream.txt"), "upstream").unwrap();
+        commit_all(&source, "upstream addition");
+        git_sync::fetch_origin(&repo).unwrap();
+        let before = checkout_snapshot(&path);
+
+        let messages = pull_preview(&repo, &path, divergent).unwrap();
+        let prefix = if divergent {
+            "incoming candidate (merge-base to cached upstream; merge may conflict)"
+        } else {
+            "would reconcile"
+        };
+        assert_eq!(
+            messages,
+            vec![format!(
+                "{prefix} Added: {}",
+                path.join("upstream.txt").display()
+            )]
+        );
+        let unit = SyncUnit {
+            path: path.clone(),
+            overlay: "ov".into(),
+            repo_key: ROOT_PATH.into(),
+            worktree: None,
+        };
+        let outcome = sync_unit(
+            &unit,
+            &SyncOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(outcome, SyncOutcome::Preview { .. }));
+        assert_eq!(checkout_snapshot(&path), before);
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn abort_preview_separates_restoration_obstructions_from_unrelated_untracked_files(
+        #[case] ignored: bool,
+    ) {
+        let source_td = TempDir::new().unwrap();
+        let source = init_committed_repo_ret(source_td.path());
+        fs::write(source_td.path().join("restore.txt"), "committed").unwrap();
+        fs::create_dir(source_td.path().join("blocked")).unwrap();
+        fs::write(source_td.path().join("blocked/child.txt"), "committed").unwrap();
+        commit_all(&source, "restoration paths");
+        let dest_td = TempDir::new().unwrap();
+        let path = dest_td.path().join("checkout");
+        let repo = clone_with_tracking(source_td.path(), &path);
+        fs::write(path.join("README.md"), "local").unwrap();
+        commit_all(&repo, "local edit");
+        fs::write(source_td.path().join("README.md"), "upstream").unwrap();
+        commit_all(&source, "upstream edit");
+        assert_eq!(
+            git_sync::pull(&repo).unwrap(),
+            git_sync::PullOutcome::Conflict
+        );
+        fs::write(path.join("staged.txt"), "staged addition").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("staged.txt")).unwrap();
+        index.remove_path(Path::new("restore.txt")).unwrap();
+        index.remove_path(Path::new("blocked/child.txt")).unwrap();
+        index.write().unwrap();
+        fs::write(path.join("restore.txt"), "untracked replacement").unwrap();
+        fs::remove_dir_all(path.join("blocked")).unwrap();
+        fs::write(path.join("blocked"), "ancestor obstruction").unwrap();
+        fs::write(path.join("unrelated.txt"), "keep me").unwrap();
+        if ignored {
+            fs::write(
+                repo.path().join("info/exclude"),
+                "restore.txt\nblocked\nunrelated.txt\n",
+            )
+            .unwrap();
+        }
+        let before = checkout_snapshot(&path);
+
+        let messages = abort_preview(&repo, &path).unwrap();
+        for relative in ["README.md", "staged.txt"] {
+            assert!(messages.contains(&format!(
+                "would discard tracked/index merge changes: {}",
+                path.join(relative).display()
+            )));
+        }
+        for relative in ["restore.txt", "blocked"] {
+            assert!(messages.contains(&format!(
+                "untracked/ignored obstruction may be overwritten when restoring HEAD: {}",
+                path.join(relative).display()
+            )));
+        }
+        assert!(
+            !messages
+                .iter()
+                .any(|message| message.contains("unrelated.txt"))
+        );
+        assert!(matches!(
+            handle_unresolved_state(
+                &repo,
+                &path,
+                &SyncOptions {
+                    abort: true,
+                    dry_run: true,
+                    ..Default::default()
+                }
+            )
+            .unwrap(),
+            SyncOutcome::Preview { .. }
+        ));
+        assert_eq!(repo.state(), RepositoryState::Merge);
+        assert_eq!(checkout_snapshot(&path), before);
+    }
+
     #[test]
     fn sync_units_non_bare_is_a_single_unit_at_target() {
         let td = TempDir::new().unwrap();
@@ -915,7 +1188,7 @@ mod tests {
         let outcomes = sync(&desired, &opts).await.unwrap();
         assert_eq!(outcomes.len(), 1);
         // Reports what *would* happen (behind its now-fetched upstream)...
-        assert!(matches!(outcomes[0], SyncOutcome::FastForwarded { .. }));
+        assert!(matches!(outcomes[0], SyncOutcome::Preview { .. }));
         // ...without actually updating the checkout's working tree.
         assert!(!checkout_path.join("new.txt").exists());
     }
@@ -1081,8 +1354,9 @@ mod tests {
         let outcomes = sync(&desired, &opts).await.unwrap();
         assert_eq!(
             outcomes[0],
-            SyncOutcome::FastForwarded {
-                path: target_td.path().to_path_buf()
+            SyncOutcome::Preview {
+                path: target_td.path().to_path_buf(),
+                action: "refresh virtual checkout from source".into(),
             }
         );
         // Reports what *would* happen without actually touching the target.

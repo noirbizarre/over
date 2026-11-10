@@ -17,7 +17,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 use crate::desired::{DesiredEntry, Provenance};
 use crate::materialize::virtual_checkout::git;
@@ -123,7 +123,9 @@ pub async fn commit_entries(
     let (outcome, persist) =
         tokio::task::spawn_blocking(move || commit_blocking(&entries, &opts)).await??;
     for (target, record) in persist {
-        state::persist(&target, record).await?;
+        state::persist(&target, record).await.with_context(|| {
+            format!("{outcome}; commit/source update succeeded but checkpoint persistence failed at '{}'; inspect HEAD and checkout status before retrying", target.display())
+        })?;
     }
     Ok(outcome)
 }
@@ -400,6 +402,44 @@ mod tests {
         // Nothing left to commit now.
         let outcome2 = commit(&e, &CommitOptions::default()).await.unwrap();
         assert_eq!(outcome2, CommitOutcome::NothingToCommit);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn checkpoint_failure_reports_the_successful_commit_instead_of_implying_rollback() {
+        use std::os::unix::fs::PermissionsExt;
+        let xdg = isolate_xdg_state();
+        let td = TempDir::new().unwrap();
+        td.child("a.txt").write_str("original").unwrap();
+        let repo = init_committed_repo(td.path());
+        let target = td.child("target");
+        materialize_and_record(td.path(), target.path()).await;
+        fs::write(target.path().join("a.txt"), "edited").unwrap();
+        let mut index = repo.index().unwrap();
+        let selected = index.get_path(std::path::Path::new("a.txt"), 0).unwrap();
+        index.add_frombuffer(&selected, b"edited").unwrap();
+        index.write().unwrap();
+        let before = repo.head().unwrap().target();
+        let state_dir = xdg.path().join("over");
+        let permissions = fs::metadata(&state_dir).unwrap().permissions();
+        fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = commit(
+            &entry(target.path().into(), td.path().into()),
+            &CommitOptions {
+                message: Some("selected update".into()),
+            },
+        )
+        .await;
+        // Restore before asserting so failure cannot strand read-only fixtures.
+        fs::set_permissions(&state_dir, permissions).unwrap();
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("commit/source update succeeded"), "{error}");
+        assert!(error.contains(&repo.head().unwrap().target().unwrap().to_string()[..10]));
+        assert_ne!(repo.head().unwrap().target(), before);
+        assert_eq!(
+            fs::read_to_string(td.path().join("a.txt")).unwrap(),
+            "edited"
+        );
     }
 
     #[tokio::test]

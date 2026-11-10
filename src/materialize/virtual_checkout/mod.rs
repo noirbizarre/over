@@ -84,6 +84,12 @@ impl Materializer for VirtualCheckoutMaterializer {
         // to `checkout`) — always safe to migrate away from: removing a
         // symlink never loses source content.
         if let ActualState::Symlink { points_to } = &actual {
+            let Provenance::Overlay { source, .. } = &entry.provenance else {
+                unreachable!()
+            };
+            if points_to != source {
+                return Ok(Operation::Conflict { current: actual });
+            }
             return Ok(Operation::Migrate {
                 from: reconstruct_symlink_intent(points_to),
                 to: entry.intent.clone(),
@@ -115,7 +121,12 @@ impl Materializer for VirtualCheckoutMaterializer {
         {
             return Ok(Operation::Create);
         }
-        if matches!(actual, ActualState::Directory) && actual::is_symlink_only(&entry.target)? {
+        let Provenance::Overlay { source, .. } = &entry.provenance else {
+            unreachable!()
+        };
+        if matches!(actual, ActualState::Directory)
+            && super::symlink::directory_is_symlink_mirror(&entry.target, source)?
+        {
             anyhow::ensure!(
                 scope.target_excludes.is_empty(),
                 "cannot migrate a legacy directory with mapping holes; unapply its old layout first"
@@ -147,7 +158,22 @@ impl Materializer for VirtualCheckoutMaterializer {
             return Ok(());
         }
 
+        if matches!(step.operation, Operation::Create) {
+            anyhow::ensure!(
+                matches!(self.classify(&step.entry)?, Operation::Create),
+                "virtual checkout target changed since classification"
+            );
+        }
+
         if matches!(step.operation, Operation::Migrate { blocked: None, .. }) {
+            anyhow::ensure!(
+                matches!(
+                    self.classify(&step.entry)?,
+                    Operation::Migrate { blocked: None, .. }
+                ),
+                "migration target '{}' changed since classification",
+                step.entry.target.display()
+            );
             if matches!(
                 step.operation,
                 Operation::Migrate {
@@ -314,7 +340,7 @@ mod tests {
         let target = td.path().join("target");
         symlink::symlink_dir(source_dir.path(), &target).unwrap();
 
-        let e = entry(target, td.path().to_path_buf());
+        let e = entry(target, source_dir.path().to_path_buf());
         match m.classify(&e).unwrap() {
             Operation::Migrate { from, to, blocked } => {
                 assert!(matches!(

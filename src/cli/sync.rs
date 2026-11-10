@@ -60,7 +60,10 @@ pub struct Params {
     )]
     continue_: bool,
 
-    #[clap(long, help = "Abort an in-progress merge left by a conflicted sync")]
+    #[clap(
+        long,
+        help = "Abort an in-progress merge, discarding uncommitted tracked/index changes"
+    )]
     abort: bool,
 
     #[clap(long, short = 'n', help = "Report what would happen without syncing")]
@@ -205,6 +208,7 @@ fn summarize(outcomes: &[SyncOutcome]) -> String {
         ("conflict(s)", 0),
         ("blocked", 0),
         ("aborted", 0),
+        ("preview(s)", 0),
     ];
     for outcome in outcomes {
         let idx = match outcome {
@@ -216,6 +220,7 @@ fn summarize(outcomes: &[SyncOutcome]) -> String {
             SyncOutcome::Conflict { .. } => 5,
             SyncOutcome::Blocked { .. } => 6,
             SyncOutcome::Aborted { .. } => 7,
+            SyncOutcome::Preview { .. } => 8,
         };
         counts[idx].1 += 1;
     }

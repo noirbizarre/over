@@ -9,10 +9,8 @@
 //! `actions::git::clone_repositories` already implements, wired into the
 //! `DesiredTree` → `Plan` → `Materializer` pipeline like every other intent.
 //!
-//! `Overlay::apply_inner` still calls `actions::git::clone_repositories`
-//! directly, in parallel, before building its `Plan` (unchanged, ADR-014) —
-//! by the time `Plan::build` classifies a `Checkout` entry during a normal
-//! `apply`, the repository already exists and classifies as `Operation::Noop`.
+//! Apply preflights a plan, reconciles repositories in parallel, then rebuilds
+//! before execution so old migration classifications cannot delete new clones.
 //! This materializer's `materialize` is therefore a correctness fallback
 //! (any other caller of `Plan::execute`, e.g. tests), not the primary path.
 
@@ -176,7 +174,11 @@ impl Materializer for CheckoutMaterializer {
         // silently cloning over whatever's still there.
         if matches!(step.operation, Operation::Migrate { blocked: None, .. }) && !ctx.dry_run {
             let target = step.entry.target.clone();
-            spawn_blocking(move || actions::fs::remove_target(&target)).await??;
+            let source = actions::git::legacy_source(&ctx, overlay, &target)?;
+            spawn_blocking(move || {
+                actions::git::remove_legacy_materialization(&target, Some(&source))
+            })
+            .await??;
         }
 
         actions::git::EnsureGitRepository::new(
@@ -457,7 +459,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn materialize_migrate_removes_symlink_then_clones() {
+    async fn materialize_preserves_a_link_without_verified_legacy_source() {
         use crate::exec::Context;
         use crate::overlays::Repository;
 
@@ -496,11 +498,10 @@ mod tests {
             .build()
             .with_multiprogress(indicatif::MultiProgress::new());
 
-        m.materialize(ctx, &step).await.unwrap();
+        assert!(m.materialize(ctx, &step).await.is_err());
 
-        assert!(!target.is_symlink(), "stale symlink should be gone");
-        assert!(target.join(".git").exists());
-        assert!(target.join("README.md").exists());
+        assert_eq!(fs::read_link(&target).unwrap(), stale_source.path());
+        assert!(!target.join(".git").exists());
     }
 
     #[tokio::test]

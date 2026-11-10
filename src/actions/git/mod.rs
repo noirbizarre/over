@@ -107,32 +107,43 @@ impl fmt::Display for EnsureGitRepository {
     }
 }
 
-/// Remove whatever legacy, symlink-only content already sits at `path` so a
-/// fresh clone can proceed — or refuse outright when it holds anything that
-/// isn't reconstructible (#130).
-///
-/// `Overlay::apply_inner` calls [`clone_repositories`] directly, *before*
-/// building/classifying a [`crate::plan::Plan`] — so a real `over apply`
-/// never actually goes through `CheckoutMaterializer::classify`'s
-/// `Operation::Migrate` detection (#129); it needs the identical reasoning
-/// inline here instead, or a legacy install would just make `git2`'s clone
-/// fail outright (destination already exists) with a confusing raw error.
-/// A stale symlink (a `SymlinkFile`/`SymlinkDirectory` rule that used to
-/// resolve this path) or a whole directory populated file-by-file with
-/// individual symlinks (ADR-006's original default, predating rules and
-/// checkouts entirely) holds no data of its own — removing either is
-/// always safe. A real file anywhere in the way means that can't be
-/// proven, and must never be silently discarded.
-///
-/// A pre-existing *empty* directory is left untouched (not evidence of
-/// anything legacy — just a placeholder `git2` already clones into fine),
-/// and an already-established checkout (`path/.git` exists) is left alone
-/// entirely — the `exists` check just below handles it as a normal,
-/// already-applied repository, exactly like before this function existed.
-fn remove_legacy_materialization(path: &Path) -> Result<()> {
+/// Recover the expected source projection from the declaring overlay, rather
+/// than treating an arbitrary symlink destination as evidence of ownership.
+pub(crate) fn legacy_source(ctx: &Ctx, overlay_name: &str, target: &Path) -> Result<PathBuf> {
+    let overlay = ctx.repository.get(overlay_name)?;
+    let routing = overlay.resolve_mappings(ctx)?;
+    let root = overlay.resolve_target(ctx)?;
+    for key in overlay.git.iter().flat_map(|repos| repos.keys()) {
+        let destination = if key == ROOT_PATH {
+            root.clone()
+        } else {
+            routing.target_for(Path::new(key))
+        };
+        if destination == target {
+            return Ok(if key == ROOT_PATH {
+                overlay.root.clone()
+            } else {
+                overlay.root.join(key)
+            });
+        }
+    }
+    bail!(
+        "no declared source for legacy target '{}'",
+        target.display()
+    )
+}
+
+pub(crate) fn remove_legacy_materialization(path: &Path, source: Option<&Path>) -> Result<()> {
     match actual::inspect(path)? {
         ActualState::Missing => Ok(()),
-        ActualState::Symlink { .. } => remove_target(path),
+        ActualState::Symlink { points_to } => {
+            anyhow::ensure!(
+                source == Some(points_to.as_path()),
+                "refusing to remove foreign legacy link '{}'",
+                path.display()
+            );
+            remove_target(path)
+        }
         ActualState::File => Err(anyhow!(
             "refusing to clone into '{}': a file already exists there \
              (not a reconstructible legacy `over` installation)",
@@ -142,7 +153,13 @@ fn remove_legacy_materialization(path: &Path) -> Result<()> {
             if path.join(".git").exists() || std::fs::read_dir(path)?.next().is_none() {
                 return Ok(());
             }
-            if actual::is_symlink_only(path)? {
+            let owned = match source {
+                Some(source) => {
+                    crate::materialize::symlink::directory_is_symlink_mirror(path, source)?
+                }
+                None => false,
+            };
+            if owned {
                 remove_target(path)
             } else {
                 Err(anyhow!(
@@ -176,7 +193,24 @@ impl Action for EnsureGitRepository {
         // there's nothing legacy to detect here.
         if !is_bare && !ctx.dry_run {
             let path = self.path.clone();
-            spawn_blocking(move || remove_legacy_materialization(&path)).await??;
+            // Existing checkouts need no legacy source; unresolved legacy
+            // ownership must never become an unconditional recursive delete.
+            let source = if self.path.is_symlink()
+                || (self.path.is_dir()
+                    && !self.path.join(".git").exists()
+                    && std::fs::read_dir(&self.path)?.next().is_some())
+            {
+                Some(legacy_source(&ctx, &self.overlay_name, &self.path)?)
+            } else {
+                None
+            };
+            if let Some(source) = &source {
+                let overlay = ctx.repository.get(&self.overlay_name)?;
+                crate::overlays::ignore::SourcePolicy::new(&ctx.repository.root, &overlay)?
+                    .validate_directory_link(&self.path, source)?;
+            }
+            spawn_blocking(move || remove_legacy_materialization(&path, source.as_deref()))
+                .await??;
         }
 
         let repo_path = if is_bare {
@@ -1469,7 +1503,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_removes_legacy_symlink_before_cloning() {
+    async fn execute_preserves_a_legacy_link_without_verified_source_ownership() {
         let (source_td, _source_repo) = create_source_repo();
         let dest_td = TempDir::new().unwrap();
         let stale_source = dest_td.path().join("stale_source");
@@ -1482,15 +1516,13 @@ mod tests {
             git_config(source_td.path().to_str().unwrap()),
             "ov".to_string(),
         );
-        action.execute(multiprogress_ctx()).await.unwrap();
-
-        assert!(!target.is_symlink(), "stale symlink should be gone");
-        assert!(target.join(".git").exists());
-        assert!(target.join("README.md").exists());
+        assert!(action.execute(multiprogress_ctx()).await.is_err());
+        assert_eq!(fs::read_link(&target).unwrap(), stale_source);
+        assert!(!target.join(".git").exists());
     }
 
     #[tokio::test]
-    async fn execute_removes_legacy_symlink_only_directory_before_cloning() {
+    async fn execute_preserves_foreign_links_without_verified_source_ownership() {
         // The actual shape a legacy `over` install predating rules/checkout
         // produces: every file recursed and symlinked individually
         // (ADR-006), not a single top-level symlink.
@@ -1510,13 +1542,11 @@ mod tests {
             git_config(source_td.path().to_str().unwrap()),
             "ov".to_string(),
         );
-        action.execute(multiprogress_ctx()).await.unwrap();
-
-        assert!(target.join(".git").exists());
-        assert!(target.join("README.md").exists());
-        assert!(
-            !target.join("a.txt").is_symlink(),
-            "legacy symlink-only directory should have been replaced wholesale"
+        assert!(action.execute(multiprogress_ctx()).await.is_err());
+        assert!(!target.join(".git").exists());
+        assert_eq!(
+            fs::read_link(target.join("a.txt")).unwrap(),
+            legacy_source.join("a.txt")
         );
     }
 
