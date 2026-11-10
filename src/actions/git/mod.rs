@@ -386,6 +386,25 @@ fn ensure_remotes(
             }
         }
 
+        if let Some(fetch) = &remote_config.fetch {
+            let existing = repo.find_remote(name)?.fetch_refspecs()?;
+            if existing.len() != 1 || existing.get(0)? != Some(fetch.as_str()) {
+                let mut git_cfg = repo.config()?;
+                let key = format!("remote.{name}.fetch");
+                // Replacing each matching multivar separately would leave duplicate refspecs.
+                match git_cfg.remove_multivar(&key, ".*") {
+                    Ok(()) => {}
+                    Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| format!("failed to clear {key}"));
+                    }
+                }
+                git_cfg
+                    .set_str(&key, fetch)
+                    .with_context(|| format!("failed to set {key}"))?;
+            }
+        }
+
         // Apply push refspec if specified (check if already present to be idempotent)
         if let Some(push) = &remote_config.push {
             let existing = repo.find_remote(name.as_str())?;
@@ -891,6 +910,66 @@ mod tests {
         assert_eq!(
             remote.url().unwrap(),
             "https://github.com/upstream/repo.git"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn explicit_fetch_replaces_existing_values_and_remains_idempotent(#[case] existing: bool) {
+        let (_td, repo) = create_source_repo();
+        if existing {
+            repo.remote("managed", "https://example.com/old.git")
+                .unwrap();
+            repo.remote_add_fetch("managed", "+refs/tags/*:refs/tags/*")
+                .unwrap();
+        }
+        let fetch = "+refs/heads/main:refs/remotes/managed/main";
+        let push = "refs/heads/main:refs/heads/main";
+        let mut remotes = HashMap::from([(
+            "managed".to_owned(),
+            config::RemoteConfig {
+                url: "https://example.com/new.git".to_owned(),
+                fetch: Some(fetch.to_owned()),
+                push: Some(push.to_owned()),
+                tagopt: None,
+                extras: HashMap::new(),
+            },
+        )]);
+        for _ in 0..2 {
+            ensure_remotes(&repo, &remotes, false).unwrap();
+            let remote = repo.find_remote("managed").unwrap();
+            assert_eq!(remote.url().unwrap(), "https://example.com/new.git");
+            assert_eq!(
+                remote
+                    .fetch_refspecs()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.unwrap())
+                    .collect::<Vec<_>>(),
+                vec![Some(fetch)]
+            );
+            assert_eq!(
+                remote
+                    .push_refspecs()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.unwrap())
+                    .collect::<Vec<_>>(),
+                vec![Some(push)]
+            );
+        }
+        remotes.get_mut("managed").unwrap().fetch = None;
+        ensure_remotes(&repo, &remotes, false).unwrap();
+        assert_eq!(
+            repo.find_remote("managed")
+                .unwrap()
+                .fetch_refspecs()
+                .unwrap()
+                .iter()
+                .map(|value| value.unwrap())
+                .collect::<Vec<_>>(),
+            vec![Some(fetch)]
         );
     }
 
