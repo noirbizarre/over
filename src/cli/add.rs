@@ -109,7 +109,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         validate_symlink_ingestion(&overlay, symlink_path, &ctx)?;
     }
     for symlink_path in &symlinks {
-        add_symlink(&overlay, &home, symlink_path, &ctx)?;
+        add_symlink(&overlay, symlink_path, &ctx)?;
     }
 
     if !regulars.is_empty() {
@@ -155,7 +155,6 @@ fn validate_symlink_ingestion(
 
 fn add_symlink(
     overlay: &crate::overlays::Overlay,
-    home: &Path,
     symlink_path: &Path,
     ctx: &crate::exec::Context,
 ) -> Result<()> {
@@ -172,10 +171,7 @@ fn add_symlink(
     if ctx.dry_run {
         return Ok(());
     }
-    let link_target = std::fs::read_link(symlink_path)
-        .map_err(|e| anyhow!("failed to read symlink {}: {}", symlink_path.display(), e))?;
-
-    let default_target = compute_default_target(&link_target, &overlay.root, home);
+    let default_target = imported_symlink_target(symlink_path, &overlay.root, ctx)?;
 
     let target: String = Input::with_theme(&DialogTheme::default())
         .with_prompt(format!(
@@ -212,6 +208,21 @@ fn add_symlink(
     Ok(())
 }
 
+fn imported_symlink_target(
+    symlink_path: &Path,
+    overlay_root: &Path,
+    ctx: &Context,
+) -> Result<String> {
+    let link_target = std::fs::read_link(symlink_path)
+        .map_err(|e| anyhow!("failed to read symlink {}: {}", symlink_path.display(), e))?;
+    // read_link returns a path relative to the original link, not to its new sidecar.
+    let parent = symlink_path
+        .parent()
+        .ok_or_else(|| anyhow!("symlink has no parent"))?;
+    let referent = crate::overlays::mapping::absolute(&parent.join(link_target))?;
+    Ok(compute_default_target(&referent, overlay_root, &ctx.root))
+}
+
 fn compute_default_target(link_target: &Path, overlay_root: &Path, home: &Path) -> String {
     if let Ok(rel) = link_target.strip_prefix(overlay_root) {
         return rel.to_string_lossy().to_string();
@@ -227,6 +238,60 @@ fn compute_default_target(link_target: &Path, overlay_root: &Path, home: &Path) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[rstest::rstest]
+    #[case("relative")]
+    #[case("repository_sibling")]
+    #[case("custom_root")]
+    #[case("overlay_source")]
+    fn imported_symlink_sidecars_preserve_the_original_referent(#[case] kind: &str) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo_root = temp.path().join("repo");
+        let root = temp.path().join("deployment");
+        std::fs::create_dir_all(repo_root.join("ov")).unwrap();
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        let referent = match kind {
+            "repository_sibling" => repo_root.join("sibling"),
+            "overlay_source" => repo_root.join("ov/source"),
+            _ => root.join("referent"),
+        };
+        std::fs::write(&referent, "original").unwrap();
+        let raw_target = if kind == "relative" {
+            PathBuf::from("../referent")
+        } else {
+            referent.clone()
+        };
+        let link = root.join("nested/link");
+        std::os::unix::fs::symlink(&raw_target, &link).unwrap();
+        let repo = Repository::new(repo_root.clone());
+        let overlay = repo.get("ov").unwrap();
+        let ctx = Context::builder()
+            .repository(repo)
+            .root(root.clone())
+            .build();
+        let encoded = imported_symlink_target(&link, &overlay.root, &ctx).unwrap();
+        match kind {
+            "custom_root" | "relative" => assert_eq!(encoded, "~/referent"),
+            "repository_sibling" => assert_eq!(encoded, referent.to_string_lossy()),
+            _ => assert_eq!(encoded, "source"),
+        }
+        std::fs::create_dir_all(overlay.root.join("nested")).unwrap();
+        std::fs::write(
+            overlay.root.join("nested/link.link.toml"),
+            toml::to_string(&SymlinkConfig {
+                target: encoded,
+                r#type: crate::actions::symlink::LinkType::Soft,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let tree = crate::desired::DesiredTree::build_own(&ctx, &overlay).unwrap();
+        assert!(tree.entries().iter().any(|entry| entry.target == link && matches!(&entry.intent,
+            crate::desired::MaterializationIntent::SymlinkFile { source, .. } if source == &referent)));
+        assert_eq!(std::fs::read_link(link).unwrap(), raw_target);
+        assert_eq!(std::fs::read_to_string(referent).unwrap(), "original");
+    }
 
     #[cfg(unix)]
     #[rstest::rstest]
@@ -259,7 +324,7 @@ mod tests {
             .root(root)
             .dry_run(true)
             .build();
-        let result = add_symlink(&overlay, &repo_root, &link, &ctx);
+        let result = add_symlink(&overlay, &link, &ctx);
         assert!(result.is_err(), "ingestion must reject {name}");
         assert_eq!(std::fs::read_link(&link).unwrap(), referent);
         assert!(!overlay.root.join(format!("{name}.link.toml")).exists());
