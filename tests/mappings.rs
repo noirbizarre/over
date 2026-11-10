@@ -21,6 +21,8 @@ fn patch_preview_reverse_routes_mapped_paths_without_changing_either_worktree() 
     let repo = git2::Repository::open(&fixture.source).unwrap();
     let index_path = repo.index().unwrap().path().unwrap().to_path_buf();
     let original = fs::read(&index_path).unwrap();
+    // CLI paths use the host's separators, unlike Git's serialized paths.
+    let displayed_source: PathBuf = ["workspace", "client", "etc", "file"].iter().collect();
     fs::write(fixture.etc.join("file"), "mapped candidate\n").unwrap();
     fixture
         .command("add")
@@ -35,7 +37,7 @@ fn patch_preview_reverse_routes_mapped_paths_without_changing_either_worktree() 
         .arg(&fixture.etc)
         .assert()
         .success()
-        .stderr(contains("workspace/client/etc/file"))
+        .stderr(contains(displayed_source.to_string_lossy().as_ref()))
         .stderr(contains("+mapped candidate"));
     assert_eq!(fs::read(index_path).unwrap(), original);
     assert_eq!(
