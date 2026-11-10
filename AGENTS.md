@@ -19,7 +19,7 @@ src/
 ├── cli/          argument types for the CLI (cli/git/ is the `over git` group)
 ├── commit/       `over commit` recording virtual-checkout changes back to the source repository
 ├── desired/      the DesiredTree/DesiredEntry desired-state model
-├── diff/         `over diff` desired-vs-actual comparison
+├── diff/         Git-aware command comparisons; legacy reconciliation reports and partial-block rendering
 ├── doctor/       `over doctor` diagnostics aggregation and limited repair
 ├── exec/         execution context and templating
 ├── git_exclude/  reconciling overlay-managed paths into the host repo's `.git/info/exclude`
