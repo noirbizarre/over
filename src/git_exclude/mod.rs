@@ -293,13 +293,15 @@ pub(crate) fn ensure_sensitive_target_untracked(target: &Path) -> Result<()> {
             .workdir()
             .context("encrypted destination repository has no worktree")?;
         let target = crate::overlays::mapping::location(target)?;
-        let workdir = workdir.canonicalize()?;
-        if let Ok(relative) = target.strip_prefix(workdir) {
-            anyhow::ensure!(
-                repo.index()?.get_path(relative, 0).is_none(),
-                "encrypted destination is already tracked by its host Git repository; untrack it before applying"
-            );
-        }
+        // Match location()'s ordinary Windows prefixes instead of canonicalize()'s verbatim ones.
+        let workdir = crate::overlays::mapping::physical(workdir)?;
+        let relative = target
+            .strip_prefix(workdir)
+            .context("encrypted destination is outside its host Git repository")?;
+        anyhow::ensure!(
+            repo.index()?.get_path(relative, 0).is_none(),
+            "encrypted destination is already tracked by its host Git repository; untrack it before applying"
+        );
     }
     Ok(())
 }
@@ -389,10 +391,10 @@ pub(crate) fn protect_sensitive_target(entry: &crate::desired::DesiredEntry) -> 
     let Some(repo) = discover_enclosing_repo(&entry.target)? else {
         return Ok(());
     };
-    let workdir = repo
-        .workdir()
-        .context("encrypted destination repository has no worktree")?
-        .canonicalize()?;
+    let workdir = crate::overlays::mapping::physical(
+        repo.workdir()
+            .context("encrypted destination repository has no worktree")?,
+    )?;
     let location = crate::overlays::mapping::location(&entry.target)?;
     let relative = location
         .strip_prefix(&workdir)
