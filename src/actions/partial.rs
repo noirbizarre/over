@@ -158,6 +158,12 @@ pub fn discover_partials_selected(
 
 // ── marker lines & pure block operations ────────────────────────────────
 
+/// Canonical declaration content: one optional terminal newline belongs to
+/// the marker separator. Additional terminal newlines remain meaningful.
+pub fn canonical_content(content: &str) -> &str {
+    content.strip_suffix('\n').unwrap_or(content)
+}
+
 fn begin_line(marker: &str) -> String {
     format!("# >>> over: {marker} >>>")
 }
@@ -452,7 +458,11 @@ fn resolve_block_conflict(
                     BlockState::Found(x) => x,
                     _ => current,
                 };
-                ui::info(format!("{}", ContentDiff::from_texts(existing, desired))).ok();
+                ui::info(format!(
+                    "{}",
+                    ContentDiff::from_texts(existing, canonical_content(desired))
+                ))
+                .ok();
                 // Loop back to prompt.
             }
         }
@@ -570,7 +580,7 @@ impl Action for EnsurePartialBlock {
                                 permissions,
                             )?;
                         }
-                        BlockState::Found(existing) if existing == content => {
+                        BlockState::Found(existing) if existing == canonical_content(&content) => {
                             // Already correct — `materialize` is only ever
                             // invoked for `Create`/`Conflict` steps, so this
                             // is a defensive no-op against a classify→

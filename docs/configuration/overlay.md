@@ -240,6 +240,12 @@ alias ll='ls -la'
 # <<< over: aliases <<<
 ```
 
+One optional trailing newline in `content` is the separator before the end
+marker: `"alias x=y"` and `"alias x=y\n"` describe the same block. Additional
+trailing newlines preserve blank lines and are significant. Existing marker
+layouts remain readable; applying an unchanged block does not rewrite it.
+Empty `content` sidecars are skipped. Block operations also support empty blocks.
+
 Hand-edited managed content is a conflict, never silently overwritten. Unapply
 removes only the block, preserving unrelated content. Use
 [permissions](#file-permissions) to manage the destination's mode.

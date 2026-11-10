@@ -512,7 +512,7 @@ async fn remove_partial_block_if_unchanged(
             Err(e) => return Err(e.into()),
         };
         match partial::find_block(&current, &marker) {
-            BlockState::Found(existing) if existing == expected => {
+            BlockState::Found(existing) if existing == partial::canonical_content(&expected) => {
                 let stripped = partial::remove_block(&current, &marker);
                 if stripped.is_empty() {
                     fs::remove_file(&target)
