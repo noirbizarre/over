@@ -1,5 +1,12 @@
 default_install_hook_types = ["pre-commit", "commit-msg"]
 
+# Generators own these bytes; hooks must not rewrite release output or lockfiles.
+exclude = { glob = [
+  "CHANGELOG.md",
+  "Cargo.lock",
+  "mise.lock",
+] }
+
 [[repos]]
 repo = "builtin"
 hooks = [
@@ -13,9 +20,7 @@ hooks = [
   # ends up needing a second pre-commit run.
   { id = "end-of-file-fixer", exclude_types = ["rust"] },
   { id = "mixed-line-ending" },
-  # Snapshots and fixtures record output verbatim, trailing whitespace
-  # included. Trimming it here would fail the tests that assert it.
-  { id = "trailing-whitespace", exclude = "^tests/(snapshots/.*\\.snap|fixtures/.*)$" },
+  { id = "trailing-whitespace" },
 ]
 
 [[repos]]
