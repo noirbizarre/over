@@ -548,6 +548,14 @@ fn handle_unresolved_state(
 ///   `over apply` materializes it).
 async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Result<SyncOutcome> {
     let path = entry.target.clone();
+    // Virtual reconciliation has no pending merge to undo. Dispatch before
+    // inspection so abort cannot refresh files or reach the commit prompt.
+    if opts.abort {
+        return Ok(SyncOutcome::Blocked {
+            path,
+            reason: "virtual checkout has no abortable operation".into(),
+        });
+    }
     let vc_status = status::virtual_checkout::inspect(entry)?;
 
     match vc_status {
@@ -1248,6 +1256,28 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn abort_does_not_inspect_or_prompt_for_a_virtual_checkout() {
+        let xdg = isolate_xdg_state();
+        let td = TempDir::new().unwrap();
+        let entry =
+            virtual_checkout_entry(td.path().join("target"), td.path().join("missing-source"));
+        let outcome = sync_virtual_checkout(
+            &entry,
+            &SyncOptions {
+                abort: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(outcome, SyncOutcome::Blocked { reason, .. } if reason.contains("no abortable operation"))
+        );
+        assert_eq!(fs::read_dir(xdg.path()).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(td.path()).unwrap().count(), 0);
+    }
+
     async fn materialize_virtual_checkout(source_root: &std::path::Path, target: &std::path::Path) {
         let repo = Repository::open(source_root).unwrap();
         fs::create_dir_all(target).unwrap();
@@ -1295,6 +1325,65 @@ mod tests {
             outcomes[0],
             SyncOutcome::UpToDate {
                 path: target_td.path().to_path_buf()
+            }
+        );
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn abort_skips_virtual_refresh_in_a_composition_with_a_real_merge(#[case] dry_run: bool) {
+        let xdg = isolate_xdg_state();
+        let source_td = TempDir::new().unwrap();
+        let source = init_committed_repo_ret(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        materialize_virtual_checkout(source_td.path(), target_td.path()).await;
+        let checkout_td = TempDir::new().unwrap();
+        let checkout = clone_with_tracking(source_td.path(), checkout_td.path());
+        fs::write(checkout_td.path().join("README.md"), "local").unwrap();
+        commit_all(&checkout, "local edit");
+        fs::write(source_td.path().join("README.md"), "upstream").unwrap();
+        commit_all(&source, "upstream edit");
+        assert_eq!(
+            git_sync::pull(&checkout).unwrap(),
+            git_sync::PullOutcome::Conflict
+        );
+        let desired = DesiredTree::from_entries(vec![
+            virtual_checkout_entry(target_td.path().into(), source_td.path().into()),
+            checkout_entry(checkout_td.path().into(), ROOT_PATH, git_config(false)),
+        ]);
+        let target_before = checkout_snapshot(target_td.path());
+        let source_before = checkout_snapshot(source_td.path());
+        let state_before = fs::read(xdg.path().join("over/virtual_checkout.toml")).unwrap();
+        let outcomes = sync(
+            &desired,
+            &SyncOptions {
+                abort: true,
+                dry_run,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(outcomes.iter().any(|outcome| matches!(outcome, SyncOutcome::Blocked { path, reason } if path == target_td.path() && reason.contains("no abortable operation"))));
+        assert!(outcomes.iter().any(|outcome| if dry_run {
+            matches!(outcome, SyncOutcome::Preview { .. })
+        } else {
+            matches!(outcome, SyncOutcome::Aborted { .. })
+        }));
+        assert_eq!(checkout_snapshot(target_td.path()), target_before);
+        assert_eq!(checkout_snapshot(source_td.path()), source_before);
+        assert_eq!(
+            fs::read(xdg.path().join("over/virtual_checkout.toml")).unwrap(),
+            state_before
+        );
+        assert_eq!(
+            checkout.state(),
+            if dry_run {
+                RepositoryState::Merge
+            } else {
+                RepositoryState::Clean
             }
         );
     }
