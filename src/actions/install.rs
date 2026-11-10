@@ -84,7 +84,9 @@ where
             extract(install, platform)
         })
         .unwrap_or_default();
-    if let Some(uses) = &overlay.uses {
+    if !ctx.no_uses
+        && let Some(uses) = &overlay.uses
+    {
         for name in uses {
             let used = ctx
                 .repository
@@ -826,7 +828,9 @@ async fn get_brew_packages(
             }
         }
     }
-    if let Some(uses) = &overlay.uses {
+    if !ctx.no_uses
+        && let Some(uses) = &overlay.uses
+    {
         for name in uses {
             let used = ctx
                 .repository
@@ -1853,6 +1857,54 @@ post = 'echo "after apt"'
             builder = builder.overlay(o);
         }
         builder.build()
+    }
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn disabling_uses_keeps_own_packages_and_excludes_dependency_packages(
+        #[case] no_uses: bool,
+    ) {
+        let (td, repo) = repo_and_root();
+        for (name, uses) in [("host", "uses = ['dependency']"), ("dependency", "")] {
+            let directory = td.child(name);
+            directory.create_dir_all().unwrap();
+            directory.child("over.toml").write_str(&format!(
+                "{uses}\n[install]\napt = ['{name}']\n[install.brew]\ntaps = ['{name}/tap']\npackages = ['{name}']"
+            )).unwrap();
+        }
+        let overlay = repo.get("host").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .no_uses(no_uses)
+            .build();
+        let expected = if no_uses {
+            BTreeSet::from(["host".to_string()])
+        } else {
+            BTreeSet::from(["host".to_string(), "dependency".to_string()])
+        };
+        assert_eq!(
+            get_apt_packages(&ctx, &overlay, &mut HashSet::new())
+                .await
+                .unwrap(),
+            expected
+        );
+        let (taps, packages) = get_brew_packages(&ctx, &overlay, &mut HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            packages
+                .into_iter()
+                .map(|package| package.name)
+                .collect::<BTreeSet<_>>(),
+            expected
+        );
+        assert_eq!(
+            taps,
+            expected.iter().map(|name| format!("{name}/tap")).collect()
+        );
     }
 
     /// Diamond dependency for package collection:
