@@ -117,22 +117,6 @@ pub fn repo_relative_path(
         })
 }
 
-/// Resolve or prompt for an overlay, returning both the overlay and its name.
-///
-/// If `overlay_name` is provided, use it directly. Otherwise check git config,
-/// then fall back to interactive selection.
-pub fn resolve_overlay(
-    over_repo: &Repository,
-    git_repo: &git2::Repository,
-    overlay_name: Option<&str>,
-) -> Result<Overlay> {
-    let overlay = select_overlay(over_repo, git_repo, overlay_name)?;
-    if overlay_name.is_none() && get_overlay_config(git_repo)?.is_none() {
-        set_overlay_config(git_repo, &overlay.name)?;
-    }
-    Ok(overlay)
-}
-
 /// Select without publishing an association so previews and failed validation stay read-only.
 pub fn select_overlay(
     over_repo: &Repository,
@@ -299,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_overlay_with_explicit_name_skips_git_config() {
+    fn an_explicit_overlay_name_skips_git_config_selection() {
         let td = TempDir::new().unwrap();
         let overlay_dir = td.child("myoverlay");
         overlay_dir.create_dir_all().unwrap();
@@ -311,12 +295,12 @@ mod tests {
         let over_repo = Repository::new(td.path().to_path_buf());
         let (_gtd, git_repo) = temp_git_repo();
 
-        let overlay = resolve_overlay(&over_repo, &git_repo, Some("myoverlay")).unwrap();
+        let overlay = select_overlay(&over_repo, &git_repo, Some("myoverlay")).unwrap();
         assert_eq!(overlay.name, "myoverlay");
     }
 
     #[test]
-    fn resolve_overlay_without_explicit_name_uses_git_config() {
+    fn an_omitted_overlay_name_uses_git_config_selection() {
         let td = TempDir::new().unwrap();
         let overlay_dir = td.child("dev");
         overlay_dir.create_dir_all().unwrap();
@@ -329,7 +313,7 @@ mod tests {
         let (_gtd, git_repo) = temp_git_repo();
         set_overlay_config(&git_repo, "dev").unwrap();
 
-        let overlay = resolve_overlay(&over_repo, &git_repo, None).unwrap();
+        let overlay = select_overlay(&over_repo, &git_repo, None).unwrap();
         assert_eq!(overlay.name, "dev");
     }
 }
