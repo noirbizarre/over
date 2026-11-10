@@ -369,7 +369,7 @@ fn symlink_ancestors_and_nested_repositories_cannot_redirect_restore() {
 #[cfg(unix)]
 #[test]
 fn restoring_private_hardlinked_files_preserves_access_and_other_links() {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     let fixture = Fixture::new();
     fs::write(fixture.target.join("file"), "local\n").unwrap();
@@ -381,7 +381,12 @@ fn restoring_private_hardlinked_files_preserves_access_and_other_links() {
     let other = fixture.temp.path().join("other-link");
     fs::hard_link(fixture.target.join("file"), &other).unwrap();
     checked(fixture.restore(&[], &["file"]));
-    assert_eq!(fs::read(other).unwrap(), b"local\n");
+    assert_eq!(fs::read(&other).unwrap(), b"local\n");
+    assert_eq!(fs::read(fixture.target.join("file")).unwrap(), b"HEAD\n");
+    assert_ne!(
+        fs::metadata(&other).unwrap().ino(),
+        fs::metadata(fixture.target.join("file")).unwrap().ino()
+    );
     assert_eq!(
         fs::metadata(fixture.target.join("file"))
             .unwrap()
@@ -390,6 +395,89 @@ fn restoring_private_hardlinked_files_preserves_access_and_other_links() {
             & 0o777,
         0o600
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn restoring_macos_hardlinks_preserves_exact_acls_xattrs_resource_forks_and_ownership() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let fixture = Fixture::new();
+    let file = fixture.target.join("file");
+    let native = |program: &str, arguments: &[&str], path: &Path| {
+        checked(
+            Command::new(program)
+                .args(arguments)
+                .arg(path)
+                .output()
+                .unwrap(),
+        )
+    };
+    // Give the original an inherited ACL, then change the parent's inheritable
+    // ACL so a naive CLONE_ACL merge would alter the restored file's access.
+    native(
+        "/bin/chmod",
+        &[
+            "+a",
+            "everyone allow readattr,file_inherit,directory_inherit",
+        ],
+        &fixture.target,
+    );
+    fs::remove_file(&file).unwrap();
+    fs::write(&file, "local\n").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    native("/bin/chmod", &["+a", "everyone allow readextattr"], &file);
+    native("/bin/chmod", &["-N"], &fixture.target);
+    native(
+        "/bin/chmod",
+        &[
+            "+a",
+            "everyone allow readsecurity,file_inherit,directory_inherit",
+        ],
+        &fixture.target,
+    );
+    native(
+        "/usr/bin/xattr",
+        &["-w", "over.restore", "native attribute"],
+        &file,
+    );
+    fs::write(file.join("..namedfork/rsrc"), b"resource fork").unwrap();
+    let acl = |path: &Path| {
+        String::from_utf8(native("/bin/ls", &["-lde"], path).stdout)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let expected_acl = acl(&file);
+    assert!(!expected_acl.is_empty());
+    let original = fs::metadata(&file).unwrap();
+    let other = fixture.temp.path().join("other-link");
+    fs::hard_link(&file, &other).unwrap();
+
+    checked(fixture.restore(&[], &["file"]));
+
+    let restored = fs::metadata(&file).unwrap();
+    assert_eq!(
+        (restored.uid(), restored.gid(), restored.mode()),
+        (original.uid(), original.gid(), original.mode())
+    );
+    assert_ne!(restored.ino(), original.ino());
+    assert_eq!(fs::metadata(&other).unwrap().ino(), original.ino());
+    for path in [&file, &other] {
+        assert_eq!(acl(path), expected_acl);
+        assert_eq!(
+            native("/usr/bin/xattr", &["-p", "over.restore"], path).stdout,
+            b"native attribute\n"
+        );
+        assert_eq!(
+            fs::read(path.join("..namedfork/rsrc")).unwrap(),
+            b"resource fork"
+        );
+    }
+    assert_eq!(fs::read(file).unwrap(), b"HEAD\n");
+    assert_eq!(fs::read(other).unwrap(), b"local\n");
 }
 
 #[test]

@@ -117,3 +117,12 @@ to a follow-up sharing the existing partial-staging engine.
 
 As with virtual-checkout materialization, worktree writes use stored blob content;
 restore does not introduce Git checkout smudge-filter or line-ending conversion.
+
+Existing files retain private access permissions and native metadata. On Linux,
+shared hard links are detached using a metadata-preserving replacement. On macOS,
+shared hard links require filesystem support for native cloning (for example,
+APFS); the replacement retains extended attributes, resource forks, and the exact
+ACL, and unexpected ownership/mode changes are rejected. A cloning or metadata failure leaves
+the live file and its other links unchanged. Other platforms without native
+metadata cloning refuse shared-file updates. Existing single-link files use
+in-place writes on non-Linux platforms, preserving their native metadata.

@@ -1043,6 +1043,109 @@ fn source_worktree_blob(repo: &Repository, path: &Path, oid: Oid) -> Result<Vec<
     Ok(output.stdout)
 }
 
+/// Darwin clones preserve xattrs/resource forks, but ownership can differ and
+/// ACLs are inherited from the destination directory. Correct those exceptions
+/// explicitly; a best-effort `cp -p` can silently lose security metadata.
+#[cfg(target_os = "macos")]
+fn clone_macos_source(source: &Path, directory: &Path, expected: &fs::Metadata) -> Result<()> {
+    use std::ffi::{c_char, c_int, c_void};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    // These are stable libSystem APIs (clonefile(2), acl(3)); no extra library
+    // or command-line utility is needed, and all operations target open files.
+    unsafe extern "C" {
+        fn fclonefileat(
+            source: c_int,
+            directory: c_int,
+            name: *const c_char,
+            flags: c_int,
+        ) -> c_int;
+        fn acl_init(count: c_int) -> *mut c_void;
+        fn acl_get_fd(file: c_int) -> *mut c_void;
+        fn acl_set_fd(file: c_int, acl: *mut c_void) -> c_int;
+        fn acl_free(acl: *mut c_void) -> c_int;
+    }
+
+    let original = fs::File::open(source)?;
+    let metadata = original.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file() && (metadata.dev(), metadata.ino()) == (expected.dev(), expected.ino()),
+        "source '{}' changed before cloning",
+        source.display()
+    );
+    let parent = fs::File::open(directory)?;
+    // A clone initially inherits destination ACLs, so keep its directory private
+    // until the original ACL is installed. Mode 0700 alone cannot remove an
+    // inherited ACL that grants other users directory traversal.
+    parent.set_permissions(fs::Permissions::from_mode(0o700))?;
+    // SAFETY: zero allocates an owned empty ACL; the live parent descriptor is
+    // used only before the allocation is freed exactly once below.
+    let empty_acl = unsafe { acl_init(0) };
+    anyhow::ensure!(
+        !empty_acl.is_null(),
+        "failed to allocate private clone directory ACL"
+    );
+    let result = unsafe { acl_set_fd(parent.as_raw_fd(), empty_acl) };
+    let error = std::io::Error::last_os_error();
+    // SAFETY: empty_acl is owned and no longer used after this call.
+    unsafe { acl_free(empty_acl) };
+    if result != 0 {
+        return Err(error).context("failed to make clone directory private");
+    }
+    // SAFETY: both descriptors remain open and the destination name is a valid
+    // NUL-terminated string. A failed clone never replaces an existing file.
+    let result =
+        unsafe { fclonefileat(original.as_raw_fd(), parent.as_raw_fd(), c"new".as_ptr(), 0) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!("failed to clone native metadata for '{}'", source.display())
+        });
+    }
+    let cloned = fs::OpenOptions::new()
+        .write(true)
+        .open(directory.join("new"))?;
+    let metadata = cloned.metadata()?;
+    // Unprivileged clones may use the caller's owner/group. Never publish that
+    // silent ownership change, even when cloning itself reported success.
+    anyhow::ensure!(
+        (metadata.uid(), metadata.gid(), metadata.mode())
+            == (expected.uid(), expected.gid(), expected.mode()),
+        "cannot preserve native ownership or mode for '{}'",
+        source.display()
+    );
+    // CLONE_ACL merges inherited destination entries and is not an exact copy.
+    // acl_set_fd instead installs the complete original ACL, including inherited
+    // entries, and reports failure before any live file is replaced.
+    // SAFETY: the source descriptor is live; a non-null result is owned until
+    // acl_free, and is only passed to the matching Darwin ACL APIs.
+    let mut acl = unsafe { acl_get_fd(original.as_raw_fd()) };
+    if acl.is_null() {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(error).context("failed to read source ACL");
+        }
+        // Darwin reports an absent ACL as ENOENT. Install an explicit empty
+        // ACL so inherited permissions on the clone cannot broaden access.
+        // SAFETY: zero requests an owned empty ACL from Darwin's allocator.
+        acl = unsafe { acl_init(0) };
+    }
+    anyhow::ensure!(
+        !acl.is_null(),
+        "failed to allocate source ACL: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: the destination descriptor and the ACL returned above are live.
+    let result = unsafe { acl_set_fd(cloned.as_raw_fd(), acl) };
+    let error = std::io::Error::last_os_error();
+    // SAFETY: this releases the ACL exactly once, after its last use.
+    unsafe { acl_free(acl) };
+    if result != 0 {
+        return Err(error).context("failed to preserve source ACL");
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 // Commit and restore share replacement/rollback semantics. Callers must validate
 // ownership and regular-file ancestors before preparing any filesystem changes.
@@ -1082,15 +1185,22 @@ impl SourceTransaction {
         };
         #[cfg(not(target_os = "linux"))]
         if update.is_some()
-            && let Some(metadata) = &existing
+            && let Some(_metadata) = &existing
         {
-            // Without a native clone, keep the original inode and its ACLs/streams.
-            // Shared inodes cannot be updated without changing somebody else's file.
             #[cfg(unix)]
             {
-                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                use std::os::unix::fs::MetadataExt;
+                // Native cloning clears set-id bits; in-place writes can too.
                 anyhow::ensure!(
-                    metadata.nlink() == 1 && metadata.mode() & 0o6000 == 0,
+                    _metadata.mode() & 0o6000 == 0,
+                    "cannot preserve native metadata for '{}'",
+                    file.display()
+                );
+                // Without a native clone, keep the original inode and its ACLs.
+                // Shared inodes cannot be updated without changing other links.
+                #[cfg(not(target_os = "macos"))]
+                anyhow::ensure!(
+                    _metadata.nlink() == 1,
                     "cannot preserve native metadata for '{}'",
                     file.display()
                 );
@@ -1136,14 +1246,30 @@ impl SourceTransaction {
             has_new: update.is_some(),
             backed_up: false,
             installed: false,
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             in_place: existing.is_some() && update.is_some(),
+            #[cfg(target_os = "macos")]
+            in_place: update.is_some()
+                && existing.as_ref().is_some_and(|metadata| {
+                    use std::os::unix::fs::MetadataExt;
+                    // Single-link files need no clone and work on non-APFS volumes.
+                    metadata.nlink() == 1
+                }),
         });
         if let Some((content, mode)) = update {
             let prepared = directory.join("new");
             // Private creation avoids exposing source secrets even temporarily.
             let mut options = fs::OpenOptions::new();
             options.write(true).create_new(true);
+            #[cfg(target_os = "macos")]
+            if let Some(metadata) = &existing
+                && !self.updates.last().is_some_and(|update| update.in_place)
+            {
+                // Clone before truncating: writes must detach hard links while
+                // retaining resource forks, xattrs, ownership and the exact ACL.
+                clone_macos_source(&file, &directory, metadata)?;
+                options.create_new(false).truncate(true);
+            }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::OpenOptionsExt;
@@ -1528,7 +1654,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[rstest::rstest]
     fn source_transactions_preserve_native_metadata_and_isolate_hardlinks(
         #[values(false, true)] rollback: bool,
@@ -1540,20 +1666,24 @@ mod tests {
         let alias = source.path().join("alias");
         fs::write(&file, b"original").unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
-        xattr::set(&file, "user.over-regression", b"retain me").unwrap();
-        let mut acl = 2_u32.to_le_bytes().to_vec();
-        for (tag, access, id) in [
-            (1_u16, 6_u16, u32::MAX),
-            (2, 4, 12345),
-            (4, 4, u32::MAX),
-            (16, 4, u32::MAX),
-            (32, 0, u32::MAX),
-        ] {
-            acl.extend(tag.to_le_bytes());
-            acl.extend(access.to_le_bytes());
-            acl.extend(id.to_le_bytes());
-        }
-        xattr::set(&file, "system.posix_acl_access", &acl).unwrap();
+        #[cfg(target_os = "linux")]
+        let acl = {
+            xattr::set(&file, "user.over-regression", b"retain me").unwrap();
+            let mut acl = 2_u32.to_le_bytes().to_vec();
+            for (tag, access, id) in [
+                (1_u16, 6_u16, u32::MAX),
+                (2, 4, 12345),
+                (4, 4, u32::MAX),
+                (16, 4, u32::MAX),
+                (32, 0, u32::MAX),
+            ] {
+                acl.extend(tag.to_le_bytes());
+                acl.extend(access.to_le_bytes());
+                acl.extend(id.to_le_bytes());
+            }
+            xattr::set(&file, "system.posix_acl_access", &acl).unwrap();
+            acl
+        };
         fs::hard_link(&file, &alias).unwrap();
         let original = fs::metadata(&file).unwrap();
         let mut transaction = SourceTransaction::default();
@@ -1571,14 +1701,17 @@ mod tests {
             (current.uid(), current.gid(), current.mode()),
             (original.uid(), original.gid(), original.mode())
         );
-        assert_eq!(
-            xattr::get(&file, "system.posix_acl_access").unwrap(),
-            Some(acl)
-        );
-        assert_eq!(
-            xattr::get(&file, "user.over-regression").unwrap(),
-            Some(b"retain me".to_vec())
-        );
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(
+                xattr::get(&file, "system.posix_acl_access").unwrap(),
+                Some(acl)
+            );
+            assert_eq!(
+                xattr::get(&file, "user.over-regression").unwrap(),
+                Some(b"retain me".to_vec())
+            );
+        }
         assert_eq!(
             fs::read(&file).unwrap(),
             if rollback {
