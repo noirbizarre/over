@@ -90,9 +90,16 @@ fn overlap(a: &DesiredEntry, b: &DesiredEntry) -> anyhow::Result<Option<PathBuf>
     // example a control-file basename). Inspect sources, never deployed contents.
     for entry in [a, b] {
         if let MaterializationIntent::ScopedVirtualCheckout(scope) = &entry.intent
-            && let Some((source, _)) = &scope.source_policy
+            && let Some((source, policy)) = &scope.source_policy
         {
-            for candidate in walkdir::WalkDir::new(source) {
+            let candidates = walkdir::WalkDir::new(source)
+                .into_iter()
+                .filter_entry(|candidate| {
+                    // Ignored directories cannot reopen descendants, unlike control-named
+                    // directory points; pruning those would conceal real ownership.
+                    !policy.is_ignored(candidate.path(), candidate.file_type().is_dir())
+                });
+            for candidate in candidates {
                 let candidate = candidate?;
                 let target = entry.target.join(candidate.path().strip_prefix(source)?);
                 if target.starts_with(root)
@@ -642,6 +649,106 @@ mod tests {
         write(&temp, "dependency/config/editor", "dependency");
         let result = lint_overlay_with_context(&context, "selected", true).unwrap();
         assert!(!result.has_errors(), "{result:?}");
+    }
+
+    #[cfg(unix)]
+    #[rstest]
+    #[case("exclude: [private]", "private")]
+    #[case("", ".git")]
+    #[case("", "ignored")]
+    fn checkout_hole_checks_do_not_read_policy_rejected_subtrees(
+        #[case] config: &str,
+        #[case] rejected: &str,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (temp, context) = fixture();
+        write(
+            &temp,
+            "selected/over.yaml",
+            &format!(
+                "uses: [dependency]\nmode: checkout\nmap:\n  config: {{target: '~/outside'}}\n{config}"
+            ),
+        );
+        write(&temp, "selected/config/editor", "mapped");
+        write(&temp, "selected/ordinary", "ordinary");
+        write(&temp, "selected/.overignore", "ignored/\n");
+        write(&temp, &format!("selected/{rejected}/secret"), "excluded");
+        write(
+            &temp,
+            "dependency/over.yaml",
+            "rules:\n  - {path: config, mode: symlink-directory}",
+        );
+        write(&temp, "dependency/config/editor", "independent");
+        let overlay = context.repository.get("selected").unwrap();
+        let desired = crate::desired::DesiredTree::build(&context, &overlay).unwrap();
+        let path = temp.path().join(format!("source/selected/{rejected}"));
+        let permissions = std::fs::metadata(&path).unwrap().permissions();
+        // Restrict only this fixture, and restore it before any fallible assertions.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o0)).unwrap();
+        let unreadable = std::fs::read_dir(&path).is_err();
+        let result = desired.validate_ownership();
+        std::fs::set_permissions(&path, permissions).unwrap();
+        if !unreadable {
+            // Root can bypass fixture permissions, so cannot reproduce this failure.
+            tracing::warn!("permission regression requires an unprivileged test process");
+            return;
+        }
+        result.unwrap();
+    }
+
+    #[test]
+    fn control_named_directory_points_do_not_hide_selected_descendant_conflicts() {
+        use crate::desired::{
+            CheckoutScope, DesiredEntry, DesiredTree, MaterializationIntent, Provenance,
+        };
+        use crate::overlays::ignore::SourcePolicy;
+
+        let (temp, context) = fixture();
+        write(&temp, "selected/over.yaml", "mode: checkout");
+        write(
+            &temp,
+            "selected/block.partial.yaml/selected",
+            "selected descendant",
+        );
+        let overlay = context.repository.get("selected").unwrap();
+        let source = overlay.root.clone();
+        let policy =
+            std::sync::Arc::new(SourcePolicy::new(&context.repository.root, &overlay).unwrap());
+        let entry = DesiredEntry {
+            target: context.root.clone(),
+            provenance: Provenance::Overlay {
+                overlay: "selected".into(),
+                source: source.clone(),
+            },
+            intent: MaterializationIntent::ScopedVirtualCheckout(CheckoutScope {
+                source_policy: Some((source, policy)),
+                ..Default::default()
+            }),
+            permissions: None,
+        };
+        let other = DesiredEntry {
+            target: context.root.join("block.partial.yaml"),
+            provenance: Provenance::Overlay {
+                overlay: "dependency".into(),
+                source: temp.path().join("dependency"),
+            },
+            intent: MaterializationIntent::VirtualCheckout,
+            permissions: None,
+        };
+        let error = DesiredTree::from_entries(vec![entry, other])
+            .validate_ownership()
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(
+                &context
+                    .root
+                    .join("block.partial.yaml/selected")
+                    .display()
+                    .to_string()
+            )
+        );
+        assert!(error.to_string().contains("conflicting target ownership"));
     }
 
     #[rstest]
