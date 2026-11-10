@@ -21,7 +21,6 @@ Copyright &copy; 2026 Axel H. — MIT licensed
 # meaningfully conflict with additions here.
 nav = [
   { "Home" = "index.md" },
-  { "Examples" = "examples.md" },
   { "Configuration" = [
     { "Overview" = "configuration.md" },
     { "Root configuration" = "configuration/root.md" },
@@ -54,6 +53,7 @@ nav = [
       { "over git status" = "usage/over-git-status.md" },
     ] },
   ] },
+  { "Examples" = "examples.md" },
   { "Architecture decisions" = [
     { "Overview" = "adr/README.md" },
     { "001: Original binary layout" = "adr/001-two-binaries-one-crate.md" },
@@ -91,8 +91,8 @@ language = "en"
 
 # The header slot is one line tall and already sits next to the site name, so
 # it gets the mark alone — a wordmark would render as an illegible sliver and
-# repeat the name. `logo.svg` is the project's existing icon mark (also used
-# standalone in the README); `logo-text.svg` is the wordmark variant.
+# repeat the name. `logo.svg` is the icon mark; `over-text.svg` is the wordmark
+# used on the documentation landing page and in the README.
 logo = "images/logo.svg"
 favicon = "images/logo.svg"
 
@@ -102,6 +102,7 @@ features = [
   "content.code.copy",
   "navigation.instant",
   "navigation.sections",
+  "navigation.tabs",
   "navigation.top",
   "navigation.tracking",
   "search.highlight",
