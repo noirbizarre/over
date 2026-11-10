@@ -440,6 +440,52 @@ fn lint_with_errors_exits_nonzero() -> TestResult {
     Ok(())
 }
 
+#[rstest::rstest]
+#[case("target = '~'", 0, 0)]
+#[case("exclude = []", 0, 1)]
+#[case("uses = ['missing']", 1, 0)]
+fn lint_json_reports_counts_and_preserves_exit_status(
+    #[case] config: &str,
+    #[case] errors: usize,
+    #[case] warnings: usize,
+) -> TestResult {
+    let tmp = TempDir::new()?;
+    fs::create_dir_all(tmp.path().join("selected"))?;
+    fs::write(tmp.path().join("selected/over.toml"), config)?;
+    let output = Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(tmp.path())
+        .args(["lint", "selected", "--json"])
+        .env("CLICOLOR_FORCE", "1")
+        .output()?;
+    assert_eq!(output.status.success(), errors == 0);
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(!stdout.contains('\x1b'), "{stdout}");
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(stdout.ends_with('\n'));
+    let report: serde_json::Value = serde_json::from_str(&stdout)?;
+    assert_eq!(report["error_count"], errors);
+    assert_eq!(report["warning_count"], warnings);
+    let diagnostics = report["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), errors + warnings);
+    if let Some(diagnostic) = diagnostics.first() {
+        assert_eq!(diagnostic["overlay"], "selected");
+        assert_eq!(
+            diagnostic["severity"],
+            if errors > 0 { "error" } else { "warning" }
+        );
+    }
+    if warnings > 0 {
+        assert!(
+            diagnostics[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("`exclude`")
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn lint_uses_nonexistent_overlay() -> TestResult {
     let tmp = TempDir::new()?;
@@ -548,21 +594,16 @@ fn lint_groups_transitive_dependency_warnings_under_alphabetical_headings() -> T
     assert!(stdout.contains("1 error, 2 warnings found"), "{stdout}");
     let headings: Vec<_> = stdout
         .lines()
-        .filter(|line| line.starts_with("Overlay "))
+        .filter(|line| ["alpha", "middle", "zulu"].contains(line))
         .collect();
-    assert_eq!(
-        headings,
-        ["Overlay alpha", "Overlay middle", "Overlay zulu"]
-    );
+    assert_eq!(headings, ["alpha", "middle", "zulu"]);
     for name in ["alpha", "middle"] {
         assert!(
-            stdout.contains(&format!(
-                "Overlay {name}\n  warning: depends on overlay \"zulu\""
-            )),
+            stdout.contains(&format!("{name}\n  warning: depends on overlay \"zulu\"")),
             "{stdout}"
         );
     }
-    assert!(stdout.contains("Overlay zulu\n  error:"), "{stdout}");
+    assert!(stdout.contains("zulu\n  error:"), "{stdout}");
     assert!(
         stdout.contains("    = fix the errors in \"zulu\" first"),
         "{stdout}"
