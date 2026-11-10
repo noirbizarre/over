@@ -116,11 +116,16 @@ Ignoring a sidecar suppresses its declaration; negation cannot deploy control
 metadata as ordinary files. Ignores do not unregister overlays or disable their
 configuration. There is no `ignore` descriptor field.
 
-Git administration paths (`.git` directories, their contents, and worktree
-pointer files) are always excluded from deployment and reverse add. Ignore
-negations cannot re-include them, and Over does not parse sidecars or ignore
-rules inside them. A whole-directory link is rejected if it would expose Git
-administration data.
+Source-tree selection always excludes Git administration paths (`.git`
+directories, their contents, and worktree pointer files) from deployment and
+reverse add. Ignore negations cannot re-include them, and Over does not parse
+sidecars or ignore rules inside them. Whole-directory links to content inside
+the overlay source tree are rejected if they would expose Git administration
+data.
+
+This selection policy does not constrain explicit `.link.*` referents outside
+the overlay source tree. Such a declaration can link an external repository
+directory, including its `.git`, or an individual Git administration file.
 
 `exclude` applies independently and cannot be undone by `.overignore` negation.
 Over does not read `.gitignore`, `.ignore`, global Git excludes, ignore files
