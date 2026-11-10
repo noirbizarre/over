@@ -137,9 +137,11 @@ jobs:
           cargo llvm-cov nextest --profile ci --no-report
           cargo llvm-cov report --lcov --output-path lcov.info
 
-      # Keep raw inputs even when a corrupt profile prevents generating lcov.info.
+      # Debug runs need raw inputs even when a corrupt profile prevents generating lcov.info.
       - name: Upload coverage artifacts
-        if: always()
+        if: ${{ always() && runner.debug == '1' }}
+        # Diagnostic upload failures must not fail tests or block Codecov uploads.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.os.flag }}-${{ github.run_attempt }}
