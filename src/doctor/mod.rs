@@ -8,10 +8,11 @@
 //! sanity ([`checks::environment_findings`]) and stale XDG state bookkeeping
 //! ([`checks::xdg_state_findings`]).
 //!
-//! The one exception to "detection-only" is [`repair`]: `over doctor --fix`
+//! Environment diagnostics deliberately write/remove a probe and may create
+//! the XDG state directory. State inspection itself creates no locks or files.
+//! The explicit repair path, [`repair`]: `over doctor --fix`
 //! repairs a malformed `.git/info/exclude` block (#149's literal ask) via
-//! [`crate::git_exclude::repair`] — the *only* thing this command ever
-//! writes, and only ever `over`'s own corrupted marker lines, never
+//! [`crate::git_exclude::repair`] — changing only `over`'s corrupted marker lines, never
 //! user-owned git configuration or content (see ADR-024).
 //!
 //! Each source already has its own well-established human-facing shape

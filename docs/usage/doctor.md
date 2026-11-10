@@ -54,9 +54,20 @@ over doctor
 over doctor --fix
 ```
 
-Start with the read-only report; use `--fix` for the limited repairs described
+Start with the diagnostic report; use `--fix` for the limited repairs described
 below. For descriptor-specific static checks, use [`over lint`](lint.md); for
 the selected overlay's application state, use [`over status`](status.md).
+
+### Diagnostic writes
+
+The environment check deliberately creates the XDG state directory (including
+missing parents), then writes and removes a temporary probe file to verify
+writability. Created directories remain. Probe creation or cleanup failures
+are reported as errors; a cleanup failure can leave the probe file behind.
+This check runs even without `--fix` and is distinct from repair.
+
+Bookkeeping diagnostics inspect atomic state snapshots without creating state
+files, directories, or lock files. They do not repair stale records.
 
 ## `--fix`
 
