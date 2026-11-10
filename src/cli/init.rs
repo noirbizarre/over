@@ -54,6 +54,10 @@ pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
     // Do not discover child overlays until bootstrap tools have unlocked them.
     let repository = crate::overlays::Repository::new(result.destination.clone());
     let hooks = repository.hooks()?;
+    // Bootstrap must not discover encrypted children before unlock hooks execute.
+    let templates = crate::exec::Context::builder()
+        .repository(repository.clone())
+        .build();
     let events: &[crate::hooks::Event] = if result.cloned {
         &[
             crate::hooks::Event::PostClone,
@@ -67,6 +71,7 @@ pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
             &hooks,
             *event,
             crate::hooks::HookContext {
+                templates: &templates,
                 repository: &repository.root,
                 cwd: &repository.root,
                 scope: "repository root",

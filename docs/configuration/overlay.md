@@ -56,8 +56,9 @@ Destination templates can use `machine` facts (`os`, `arch`, `hostname`,
 target = "~/Workspaces/{{ overlay.name | split('/') | last }}"
 ```
 
-Templates apply to supported path fields, not arbitrary strings. File bodies,
-partial content, metadata strings, and shell commands remain literal. See
+Templates apply to supported path fields and lifecycle hook execution fields,
+not arbitrary strings. File bodies, partial content, and metadata strings
+remain literal. See
 [Path resolution](../configuration.md#path-resolution) for relative paths and
 [Default overlay selection](root.md#default-overlay-selection) for bootstrap
 template limitations.
@@ -324,10 +325,16 @@ Declare local commands under `hooks.post-apply`:
 hooks:
   post-apply:
     - './scripts/refresh-cache "$OVER_OVERLAY_TARGET"'
+    - command: ./scripts/report
+      when: machine.os == "linux"
+      env:
+        REPORT_HOST: "{{ machine.hostname }}"
 ```
 
-The script must exist in this overlay's source directory. Commands run there,
-after successful materialization, and do not inherit through descriptors. See
+By default the script must exist in this overlay's source directory. Commands
+run there after successful materialization and do not inherit through descriptors.
+Structured entries can override `cwd`; relative overrides resolve against the
+repository root. Both entry forms support command templates. See
 [Lifecycle hooks](root.md#lifecycle-hooks) for ordering, environment, and retries.
 
 ## Consumer metadata (`data`)
