@@ -1,12 +1,13 @@
 mod checks;
 mod ownership;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use config::ConfigError;
 use globset::GlobBuilder;
+use serde::Serialize;
 use walkdir::WalkDir;
 
 use crate::exec::Context;
@@ -14,7 +15,8 @@ use crate::overlays::{BASENAME, EXTENSIONS, GLOB_PATTERN, Overlay, Repository};
 use crate::ui::style;
 
 /// Severity level for a lint diagnostic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Severity {
     Error,
     Warning,
@@ -30,7 +32,7 @@ impl fmt::Display for Severity {
 }
 
 /// A single lint finding.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Diagnostic {
     pub severity: Severity,
     /// Overlay name (or directory path for parse failures).
@@ -89,9 +91,13 @@ impl Diagnostic {
         if standalone {
             write!(f, "{}", style::cyan(format!("[{}]", self.overlay)))?;
         }
-        write!(f, ": {}", self.message)?;
+        write!(
+            f,
+            ": {}",
+            highlight_inline(&self.message, console::colors_enabled()).replace('\n', "\n  ")
+        )?;
 
-        if let Some(file) = &self.file {
+        if let Some(file) = self.file.as_ref().filter(|_| standalone) {
             // The repository-root overlay has an empty graph identity, not an
             // absolute filesystem path beginning with `/`.
             let overlay = if self.overlay.is_empty() {
@@ -108,11 +114,39 @@ impl Diagnostic {
         }
 
         if let Some(hint) = &self.hint {
-            write!(f, "\n  {} {hint}", console::style("=").dim())?;
+            write!(
+                f,
+                "\n  {} {}",
+                console::style("=").dim(),
+                highlight_inline(hint, console::colors_enabled()).replace('\n', "\n  ")
+            )?;
         }
 
         Ok(())
     }
+}
+
+fn highlight_inline(text: &str, colors: bool) -> String {
+    // Diagnostics retain lightweight inline-code markup for machine consumers;
+    // only the human renderer interprets it, including upstream parser messages.
+    text.split('`')
+        .enumerate()
+        .map(|(index, span)| {
+            if index % 2 == 0 {
+                span.to_owned()
+            } else if span.starts_with("over ") {
+                console::style(span)
+                    .green()
+                    .force_styling(colors)
+                    .to_string()
+            } else {
+                console::style(span)
+                    .cyan()
+                    .force_styling(colors)
+                    .to_string()
+            }
+        })
+        .collect()
 }
 
 impl fmt::Display for Diagnostic {
@@ -129,29 +163,40 @@ impl fmt::Display for GroupedFinding<'_> {
     }
 }
 
-/// Overlay sections for the already sorted lint findings.
+/// Overlay and file sections without changing canonical diagnostic order.
 pub struct GroupedDiagnostics<'a>(&'a LintResult);
 
 impl fmt::Display for GroupedDiagnostics<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut previous = None;
+        let mut overlays = BTreeMap::<_, BTreeMap<_, Vec<_>>>::new();
         for diagnostic in &self.0.diagnostics {
-            if previous != Some(diagnostic.overlay.as_str()) {
-                if previous.is_some() {
-                    writeln!(f)?;
-                }
-                let name = if diagnostic.overlay.is_empty() {
-                    "."
-                } else {
-                    &diagnostic.overlay
-                };
-                writeln!(f, "{}", style::cyan(format!("Overlay {name}")))?;
-                previous = Some(diagnostic.overlay.as_str());
+            overlays
+                .entry(diagnostic.overlay.as_str())
+                .or_default()
+                .entry(diagnostic.file.as_deref())
+                .or_default()
+                .push(diagnostic);
+        }
+        for (index, (overlay, files)) in overlays.into_iter().enumerate() {
+            if index > 0 {
+                writeln!(f)?;
             }
-            // Indent continuation lines too, so file references and hints stay
-            // visually attached to their finding inside the overlay section.
-            for line in GroupedFinding(diagnostic).to_string().lines() {
-                writeln!(f, "  {line}")?;
+            let name = if overlay.is_empty() { "." } else { overlay };
+            writeln!(f, "{}", style::cyan(name))?;
+            // Option ordering places overlay-wide findings before file groups.
+            for (file, diagnostics) in files {
+                let indent = if let Some(file) = file {
+                    writeln!(f, "  {}", style::dim(file))?;
+                    "    "
+                } else {
+                    "  "
+                };
+                for diagnostic in diagnostics {
+                    // Indent continuation lines so multiline details stay with their finding.
+                    for line in GroupedFinding(diagnostic).to_string().lines() {
+                        writeln!(f, "{indent}{line}")?;
+                    }
+                }
             }
         }
         Ok(())
@@ -473,7 +518,14 @@ fn parse_serde_message(msg: &str, overlay_name: &str) -> Diagnostic {
         let hint = if let Some(suggestion) = suggest_key(field) {
             format!("did you mean `{suggestion}`?")
         } else {
-            format!("valid keys are: {}", VALID_OVERLAY_KEYS.join(", "))
+            format!(
+                "valid keys are: {}",
+                VALID_OVERLAY_KEYS
+                    .iter()
+                    .map(|key| format!("`{key}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         };
         return Diagnostic::error(overlay_name, format!("unknown key `{field}`")).with_hint(hint);
     }
@@ -1526,12 +1578,69 @@ mod tests {
         let rendered = console::strip_ansi_codes(&result.grouped().to_string()).into_owned();
         assert_eq!(
             rendered,
-            "Overlay .\n  error: root error\n    --> ./over.toml\n    = repair root\n\nOverlay a\n  warning: first warning\n  warning: second warning\n\nOverlay z\n  error: last error\n"
+            ".\n  over.toml\n    error: root error\n      = repair root\n\na\n  warning: first warning\n  warning: second warning\n\nz\n  error: last error\n"
         );
         assert!(
             console::strip_ansi_codes(&result.diagnostics[1].to_string())
                 .contains("warning[a]: first warning")
         );
+    }
+
+    #[test]
+    fn file_groups_collect_interleaved_findings_after_overlay_wide_findings() {
+        let result = LintResult {
+            diagnostics: vec![
+                Diagnostic::error("a", "first").with_file("over.yaml"),
+                Diagnostic::error("a", "second").with_file("over.toml"),
+                Diagnostic::warning("a", "whole overlay"),
+                Diagnostic::warning("a", "third")
+                    .with_file("over.yaml")
+                    .with_hint("repair\nmore details"),
+            ],
+        };
+        let rendered = result.grouped().to_string();
+        assert_eq!(
+            console::strip_ansi_codes(&rendered),
+            "a\n  warning: whole overlay\n  over.toml\n    error: second\n  over.yaml\n    error: first\n    warning: third\n      = repair\n      more details\n"
+        );
+        assert_eq!(result.diagnostics[0].file.as_deref(), Some("over.yaml"));
+        let standalone = result.diagnostics[0].to_string();
+        assert!(
+            console::strip_ansi_codes(&standalone).contains("error[a]: first\n  --> a/over.yaml")
+        );
+    }
+
+    #[test]
+    fn human_highlighting_distinguishes_commands_without_changing_canonical_text() {
+        let text = "replace `install` with `hooks.install`; run `over apply --install`";
+        let colored = highlight_inline(text, true);
+        assert!(
+            colored.contains(
+                &console::style("install")
+                    .cyan()
+                    .force_styling(true)
+                    .to_string()
+            )
+        );
+        assert!(
+            colored.contains(
+                &console::style("over apply --install")
+                    .green()
+                    .force_styling(true)
+                    .to_string()
+            )
+        );
+        let plain = "replace install with hooks.install; run over apply --install";
+        assert_eq!(console::strip_ansi_codes(&colored), plain);
+        assert_eq!(highlight_inline(text, false), plain);
+        assert_eq!(
+            highlight_inline("an unmatched `key", false),
+            "an unmatched key"
+        );
+        let diagnostic = Diagnostic::warning("a", text).with_hint("run `over lint`");
+        assert!(!diagnostic.to_string().contains('`'));
+        assert_eq!(diagnostic.message, text);
+        assert_eq!(diagnostic.hint.as_deref(), Some("run `over lint`"));
     }
 
     #[rstest]

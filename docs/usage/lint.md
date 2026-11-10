@@ -14,6 +14,7 @@ Options:
   -r, --root <ROOT>  Set the target root directory (~)
   -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
       --no-uses      Skip linting the selected overlay's uses dependencies
+      --json         Output diagnostics as JSON
   -d, --debug        Toggle debug traces
   -v, --verbose      Toggle verbose output
   -h, --help         Print help
@@ -51,9 +52,12 @@ broken overlay to report on anything that `uses` it, and flags dependency cycles
 
 ## Diagnostic output
 
-Findings are grouped under overlay headings in alphabetical order, with errors
-before warnings within each overlay. Only overlays with findings are shown; the
-repository-root overlay is displayed as `.`.
+Findings are grouped by overlay, then file, in alphabetical order, with errors
+before warnings within each file. Findings without an associated file appear
+directly beneath the overlay, before file groups. Only overlays with findings
+are shown; the repository-root overlay is displayed as `.`. Keys and inline
+configuration references are cyan, and commands are green, without backticks
+in human output. Hints and multiline details appear beneath their finding.
 
 Configuration and graph errors stay on the overlay responsible for them. Every
 transitive consumer receives a warning identifying the invalid overlay, once per
@@ -61,15 +65,15 @@ consumer and invalid dependency even when multiple dependency paths reach it.
 For example, if `alpha` uses `middle`, which uses a broken `zulu`:
 
 ```text
-Overlay alpha
+alpha
   warning: depends on overlay "zulu" which has configuration errors
     = fix the errors in "zulu" first
 
-Overlay middle
+middle
   warning: depends on overlay "zulu" which has configuration errors
     = fix the errors in "zulu" first
 
-Overlay zulu
+zulu
   error: ...
 ```
 
@@ -77,6 +81,51 @@ A consumer's own errors remain errors. Ownership conflicts and resolution
 failures that depend on a composition's metadata remain errors on that
 composition. Warnings alone do not make a dependency invalid. Lint exits
 unsuccessfully while any original errors remain; warnings alone do not fail lint.
+
+For a finding associated with a file, the file heading appears above it:
+
+```text
+desktop
+  over.toml
+    warning: unknown key targt ignored
+      = did you mean target?
+```
+
+### JSON output
+
+Use `over lint --json` for agents and scripts. Stdout contains only a JSON report,
+including when there are no findings:
+
+```json
+{
+  "diagnostics": [
+    {
+      "severity": "warning",
+      "overlay": "desktop",
+      "message": "unknown key `targt` ignored",
+      "hint": "did you mean `target`?",
+      "file": "over.toml"
+    }
+  ],
+  "error_count": 0,
+  "warning_count": 1
+}
+```
+
+Diagnostics form a flat list in canonical overlay/severity/message order.
+Severity is `error` or `warning`; absent `hint` and `file` values are `null`.
+Messages and hints retain their original text, including backticks. The root
+overlay's identity is an empty string, displayed as `.` only in human output.
+A clean result has an empty `diagnostics` array and zero counts.
+
+Terminal output is pretty-printed and syntax-colored; setting a nonempty
+`NO_COLOR` disables colors while retaining indentation. Piped or redirected
+output is compact JSON with a trailing newline and no ANSI colors, even when
+color is forced through the environment.
+
+Exit status is unchanged: warnings succeed, errors fail after emitting the
+report. Error summaries and operational failures are reported on stderr;
+operational failures before lint results are available do not emit a JSON report.
 
 ## Composed target ownership
 

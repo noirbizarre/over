@@ -58,6 +58,8 @@ failures and composition ownership conflicts remain errors on the composition;
 they do not establish that a dependency is invalid in every consumer's context.
 
 Diagnostics sort by overlay name first, then severity and message. The lint CLI
-renders alphabetical overlay sections with errors before warnings inside each
-section, keeping an overlay's findings together even when severities differ.
+renders alphabetical overlay and file sections, with errors before warnings
+within each file. Overlay-wide findings appear before the file sections.
+This presentation grouping does not change canonical diagnostic ordering,
+including the flat list exposed by `over lint --json`.
 The summary and exit status still count original errors and dependency warnings.

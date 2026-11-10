@@ -245,13 +245,13 @@ fn fields(
             _ => None,
         };
         let hint = if redact {
-            format!("valid keys are: {}", valid.join(", "))
+            format!("valid keys are: {}", valid.iter().map(|key| format!("`{key}`")).collect::<Vec<_>>().join(", "))
         } else if let Some(migration) = migration {
             migration.into()
         } else if let Some(suggestion) = suggest_key(key, valid) {
             format!("did you mean `{suggestion}`?")
         } else {
-            format!("valid keys are: {}", valid.join(", "))
+            format!("valid keys are: {}", valid.iter().map(|key| format!("`{key}`")).collect::<Vec<_>>().join(", "))
         };
         warnings.push(Warning { file: file.into(), message, hint });
         false
