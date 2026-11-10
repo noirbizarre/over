@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, ensure};
 
+use crate::actions::git::diff::Scratch;
 use crate::desired::{DesiredEntry, DesiredTree, Provenance};
 use crate::exec::Ctx;
 use crate::materialize::virtual_checkout::{git, snapshot, state};
@@ -108,7 +109,7 @@ fn stage_entries(
         dry_run,
         overlay,
         &state::record_for_blocking,
-        &git::source_entry,
+        &snapshot::canonical_source_entry,
     )
 }
 
@@ -155,6 +156,9 @@ fn stage_entries_with(
         let scope = entry.intent.checkout_scope();
         let head = git::base_tree(repo, None)?;
         let tracked = checkout_entries(entry, &record, repo, &managed)?;
+        // Run filters in a private ODB even for previews; canonicalization must
+        // not publish target blobs to the source just to validate a dry run.
+        let scratch = Scratch::new(repo)?;
         let mut candidates: BTreeSet<_> = tracked.keys().cloned().collect();
         candidates.extend(git::walk_owned_files(&entry.target, &scope)?);
         for indexed in index.iter() {
@@ -222,6 +226,15 @@ fn stage_entries_with(
             // secrets. Share patch staging's root-and-ancestor checked read.
             match snapshot::target_content(&entry.target, &relative)? {
                 Some((bytes, mode)) => {
+                    let (oid, mode) = snapshot::canonical_entry(
+                        repo,
+                        &scratch,
+                        &source_path,
+                        &bytes,
+                        mode,
+                        &[indexed_entry, head_entry],
+                    )?;
+                    let blob = scratch.repo.find_blob(oid)?;
                     let index_entry = git2::IndexEntry {
                         ctime: git2::IndexTime::new(0, 0),
                         mtime: git2::IndexTime::new(0, 0),
@@ -230,8 +243,8 @@ fn stage_entries_with(
                         uid: 0,
                         gid: 0,
                         mode: mode as u32,
-                        file_size: bytes.len().try_into().context("file too large to stage")?,
-                        id: git2::Oid::ZERO_SHA1,
+                        file_size: blob.size().try_into().context("file too large to stage")?,
+                        id: oid,
                         flags: 0,
                         flags_extended: 0,
                         path: source_path
@@ -241,7 +254,10 @@ fn stage_entries_with(
                             .into_bytes(),
                     };
                     if !dry_run {
-                        index.add_frombuffer(&index_entry, &bytes)?;
+                        // The snapshot is already clean-filtered. Filtering it
+                        // again can corrupt non-idempotent filters' output.
+                        repo.blob(blob.content())?;
+                        index.add(&index_entry)?;
                     }
                 }
                 None => {

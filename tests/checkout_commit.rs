@@ -169,12 +169,35 @@ fn full_staging_status_diff_commit_and_sync_share_clean_filters_and_ignored_mode
         .success()
         .stdout(contains("diff --git").not());
     fs::write(fixture.target.join("file"), "selected\r\n").unwrap();
+    let inventory = || {
+        walkdir::WalkDir::new(repo.path())
+            .into_iter()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| (entry.path().to_path_buf(), fs::read(entry.path()).unwrap()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let before_preview = inventory();
+    fixture
+        .command("add")
+        .args(["--overlay", "ov", "--dry-run", "--root"])
+        .arg(&fixture.home)
+        .arg(&fixture.target)
+        .assert()
+        .success();
+    // Inventory the entire gitdir, not just its index: filtered previews must
+    // not leave candidate blobs, synthetic trees, or locks in the source.
+    assert_eq!(inventory(), before_preview);
+    assert_eq!(
+        fs::read(fixture.target.join("file")).unwrap(),
+        b"selected\r\n"
+    );
     fixture.add();
-    let indexed = repo
-        .index()
-        .unwrap()
-        .get_path(Path::new("ov/file"), 0)
-        .unwrap();
+    // The CLI runs in another process; libgit2's cached index still contains
+    // this fixture's original staging until explicitly refreshed.
+    let mut index = repo.index().unwrap();
+    index.read(true).unwrap();
+    let indexed = index.get_path(Path::new("ov/file"), 0).unwrap();
     assert_eq!(repo.find_blob(indexed.id).unwrap().content(), b"SELECTED\n");
     assert_eq!(indexed.mode, 0o100644);
     fixture
@@ -216,6 +239,53 @@ fn full_staging_status_diff_commit_and_sync_share_clean_filters_and_ignored_mode
         .assert()
         .success()
         .stdout(contains("applied"));
+}
+
+#[test]
+fn full_staging_applies_non_idempotent_clean_filters_exactly_once() {
+    let fixture = Fixture::new();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("filter.prefix.clean", "sed 's/^/clean:/'")
+        .unwrap();
+    fs::write(
+        fixture.source.join(".gitattributes"),
+        "ov/file filter=prefix\n",
+    )
+    .unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new(".gitattributes")).unwrap();
+    let entry = index.get_path(Path::new("ov/file"), 0).unwrap();
+    index.add_frombuffer(&entry, b"clean:original").unwrap();
+    index.write().unwrap();
+    commit_index(&repo);
+    fixture.apply();
+    // Materialization writes canonical blobs directly. Re-adding those exact
+    // bytes must take the raw fast path rather than prepend a second prefix.
+    fixture.add();
+    index.read(true).unwrap();
+    assert_eq!(
+        repo.find_blob(index.get_path(Path::new("ov/file"), 0).unwrap().id)
+            .unwrap()
+            .content(),
+        b"clean:original"
+    );
+    fs::write(fixture.target.join("file"), "target\n").unwrap();
+    for _ in 0..2 {
+        fixture.add();
+        index.read(true).unwrap();
+        let staged = index.get_path(Path::new("ov/file"), 0).unwrap();
+        assert_eq!(
+            repo.find_blob(staged.id).unwrap().content(),
+            b"clean:target\n"
+        );
+    }
+    assert_eq!(fs::read(fixture.target.join("file")).unwrap(), b"target\n");
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"original"
+    );
 }
 
 #[test]
