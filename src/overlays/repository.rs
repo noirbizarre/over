@@ -17,6 +17,9 @@ use crate::exec;
 pub struct Repository {
     /// Repository root directory
     pub root: PathBuf,
+    // Repeated dependency/root loads share warnings without caching configuration values.
+    #[serde(skip)]
+    pub(crate) warnings: super::schema::Reporter,
 }
 
 impl std::fmt::Display for Repository {
@@ -27,7 +30,17 @@ impl std::fmt::Display for Repository {
 
 impl Repository {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            warnings: super::schema::Reporter::default(),
+        }
+    }
+
+    pub(crate) fn collecting_warnings(&self) -> Self {
+        Self {
+            root: self.root.clone(),
+            warnings: super::schema::Reporter::collecting(),
+        }
     }
 
     /// Read the literal canonical Git remote from the root descriptor only.
@@ -234,9 +247,8 @@ impl Repository {
         let Some(path) = basename.to_str() else {
             return Ok(RootConfig::default());
         };
-        let cfg = Config::builder()
-            .add_source(File::with_name(path).required(false))
-            .build()
+        let mut values = File::with_name(path).required(false)
+            .collect()
             .map_err(|_| {
                 // Parser excerpts can contain executable commands with embedded secrets.
                 anyhow::anyhow!(
@@ -244,8 +256,11 @@ impl Repository {
                     basename.display()
                 )
             })?;
+        let descriptor = super::schema::descriptor_path(&values, &self.root)?;
+        self.warnings
+            .report(super::schema::normalize(&mut values, &descriptor));
         // config can coerce scalar values into strings; a remote must be literal text.
-        if let Some(value) = cfg.collect()?.get("repository") {
+        if let Some(value) = values.get("repository") {
             let ValueKind::String(remote) = &value.kind else {
                 bail!(
                     "`repository` must be a Git remote string in {}",
@@ -255,7 +270,10 @@ impl Repository {
             validate_repository_remote(remote)
                 .with_context(|| format!("invalid `repository` in {}", basename.display()))?;
         }
-        cfg.try_deserialize()
+        Config::builder()
+            .add_source(super::paths::ScopedSource(values))
+            .build()?
+            .try_deserialize()
             .with_context(|| format!("invalid repository root config '{}'", basename.display()))
     }
 }
@@ -397,6 +415,27 @@ mod tests {
         .unwrap();
         let repo = Repository::new(tmp.path().to_path_buf());
         assert_eq!(repo.preferred_format(), Some(Format::Yaml));
+    }
+
+    #[test]
+    fn root_and_overlay_loads_share_source_attributed_warnings_and_reread_changes() {
+        let temp = TempDir::new().unwrap();
+        let descriptor = temp.path().join("over.yaml");
+        fs::write(&descriptor, "extra: true\nhooks: {unknown: false}\n").unwrap();
+        fs::create_dir(temp.path().join("selected")).unwrap();
+        let repo = Repository::new(temp.path().into()).collecting_warnings();
+        assert!(repo.hooks().unwrap().is_empty());
+        repo.get("selected").unwrap();
+        repo.clone().hooks().unwrap();
+        let warnings = repo.warnings.warnings();
+        assert_eq!(warnings.len(), 2);
+        assert!(
+            warnings.iter().all(|warning| warning.file == descriptor),
+            "{warnings:?}"
+        );
+        fs::write(&descriptor, "other_extra: true\n").unwrap();
+        repo.hooks().unwrap();
+        assert_eq!(repo.warnings.warnings().len(), 3);
     }
 
     #[test]

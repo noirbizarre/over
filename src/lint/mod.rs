@@ -3,12 +3,10 @@ mod ownership;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use config::ConfigError;
 use globset::GlobBuilder;
-use noyalib::compat::serde_yaml as serde_yml;
 use walkdir::WalkDir;
 
 use crate::exec::Context;
@@ -335,23 +333,7 @@ fn check_cycles(overlays: &HashMap<String, &Overlay>) -> Vec<Diagnostic> {
 
 /// Valid user-facing top-level keys in an overlay descriptor.
 /// Internal keys (`name`, `root`) set by code are excluded.
-const VALID_OVERLAY_KEYS: &[&str] = &[
-    "data",
-    "default_overlay",
-    "description",
-    "exclude",
-    "format",
-    "git",
-    "hooks",
-    "map",
-    "mode",
-    "overlays",
-    "permissions",
-    "repository",
-    "rules",
-    "target",
-    "uses",
-];
+const VALID_OVERLAY_KEYS: &[&str] = crate::overlays::schema::OVERLAY_KEYS;
 
 /// Find the descriptor file name for an overlay directory.
 /// Returns the first matching `over.{ext}` file found.
@@ -365,108 +347,9 @@ fn find_descriptor_file(dir: &Path) -> Option<String> {
     None
 }
 
-/// Compute the Levenshtein edit distance between two strings.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a_len = a.len();
-    let b_len = b.len();
-    let mut matrix = vec![vec![0usize; b_len + 1]; a_len + 1];
-
-    for (i, row) in matrix.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for (j, cell) in matrix[0].iter_mut().enumerate() {
-        *cell = j;
-    }
-
-    for (i, ac) in a.chars().enumerate() {
-        for (j, bc) in b.chars().enumerate() {
-            let cost = if ac == bc { 0 } else { 1 };
-            matrix[i + 1][j + 1] = (matrix[i][j + 1] + 1)
-                .min(matrix[i + 1][j] + 1)
-                .min(matrix[i][j] + cost);
-        }
-    }
-
-    matrix[a_len][b_len]
-}
-
 /// Find the closest matching key from the valid set (if close enough).
 fn suggest_key(unknown: &str) -> Option<&'static str> {
-    let mut best: Option<(&str, usize)> = None;
-    for &valid in VALID_OVERLAY_KEYS {
-        let dist = edit_distance(unknown, valid);
-        // Only suggest if edit distance is at most 2 or ≤40% of the key length
-        let threshold = 2.max(unknown.len() * 2 / 5);
-        if dist <= threshold && best.is_none_or(|(_, best_dist)| dist < best_dist) {
-            best = Some((valid, dist));
-        }
-    }
-    best.map(|(k, _)| k)
-}
-
-/// Pre-validate an overlay descriptor file by parsing it as a generic
-/// TOML/YAML table and checking top-level keys against the known schema.
-/// Returns diagnostics for unknown keys (before serde even tries to deserialize).
-fn prevalidate_descriptor(dir: &Path, overlay_name: &str) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-
-    for ext in EXTENSIONS {
-        let filename = format!("{BASENAME}.{ext}");
-        let filepath = dir.join(&filename);
-        let Ok(content) = fs::read_to_string(&filepath) else {
-            continue;
-        };
-
-        let keys: Vec<String> = match ext {
-            &"toml" => {
-                let Ok(table) = content.parse::<toml::Table>() else {
-                    // Syntax error — will be caught by Overlay::new() later
-                    return diagnostics;
-                };
-                table.keys().cloned().collect()
-            }
-            _ => {
-                // YAML: parse as serde_yml::Value
-                let Ok(value) = serde_yml::from_str::<serde_yml::Value>(&content) else {
-                    return diagnostics;
-                };
-                match value {
-                    serde_yml::Value::Mapping(map) => map.keys().cloned().collect(),
-                    _ => return diagnostics,
-                }
-            }
-        };
-
-        for key in &keys {
-            // Skip internal keys that are set by code overrides
-            if key == "name" || key == "root" {
-                continue;
-            }
-            if ["default", "defaults", "materialization", "link_dirs"].contains(&key.as_str()) {
-                diagnostics.push(Diagnostic::error(overlay_name, format!("`{key}` is no longer supported in {}", filepath.display()))
-                    .with_file(filepath.to_string_lossy().into_owned())
-                    .with_hint("use scalar `mode`/`permissions` and `rules`; replace link_dirs with rules using mode: symlink-directory"));
-                continue;
-            }
-            if !VALID_OVERLAY_KEYS.contains(&key.as_str()) {
-                let mut diag = Diagnostic::error(overlay_name, format!("unknown key `{key}`"))
-                    .with_file(&filename);
-
-                if let Some(suggestion) = suggest_key(key) {
-                    diag = diag.with_hint(format!("did you mean `{suggestion}`?"));
-                } else {
-                    diag = diag
-                        .with_hint(format!("valid keys are: {}", VALID_OVERLAY_KEYS.join(", ")));
-                }
-                diagnostics.push(diag);
-            }
-        }
-
-        // Only process the first descriptor file found
-        return diagnostics;
-    }
-
-    diagnostics
+    crate::overlays::schema::suggest_key(unknown, VALID_OVERLAY_KEYS)
 }
 
 /// Extract user-friendly diagnostics from a `config::ConfigError`.
@@ -642,6 +525,8 @@ fn diagnostics_from_anyhow_error(
 
 /// Run all lint checks across all overlays in a repository.
 pub fn lint_repository(repo: &Repository) -> LintResult {
+    let repo = repo.collecting_warnings();
+    let repo = &repo;
     let context = default_context(repo);
     lint_dirs(
         repo,
@@ -654,13 +539,8 @@ pub fn lint_repository(repo: &Repository) -> LintResult {
 
 /// Check resolved ownership against an explicit target root and machine context.
 pub fn lint_repository_with_context(ctx: &Context) -> LintResult {
-    lint_dirs(
-        &ctx.repository,
-        discover_overlay_dirs(&ctx.repository),
-        false,
-        true,
-        Some(ctx),
-    )
+    let repo = ctx.repository.collecting_warnings();
+    lint_dirs(&repo, discover_overlay_dirs(&repo), false, true, Some(ctx))
 }
 
 fn default_context(repo: &Repository) -> Option<std::sync::Arc<Context>> {
@@ -697,6 +577,8 @@ fn lint_overlay_inner(
     include_uses: bool,
     ctx: Option<&Context>,
 ) -> anyhow::Result<LintResult> {
+    let repo = repo.collecting_warnings();
+    let repo = &repo;
     // Components remove harmless `./` and trailing separators without requiring
     // a descriptor to parse before lint can produce its friendlier diagnostics.
     let relative: PathBuf = Path::new(name)
@@ -724,6 +606,18 @@ fn lint_dirs(
     include_uses: bool,
     ctx: Option<&Context>,
 ) -> LintResult {
+    // Entry points supply one silent collector shared by discovery and ownership reloads.
+    let warning_root = match crate::overlays::mapping::absolute(&repo.root) {
+        Ok(root) => root,
+        Err(error) => {
+            return LintResult {
+                diagnostics: vec![Diagnostic::error(
+                    ".",
+                    format!("cannot resolve repository root: {error:#}"),
+                )],
+            };
+        }
+    };
     let mut diagnostics = Vec::new();
     let mut parsed_overlays: HashMap<String, Overlay> = HashMap::new();
     let mut failed_overlays: HashSet<String> = HashSet::new();
@@ -740,21 +634,6 @@ fn lint_dirs(
         }
         // Check for multiple descriptor formats
         diagnostics.extend(check_multiple_descriptors(&dir, &name));
-
-        // Pre-validate config keys against known schema
-        let prevalidation: Vec<_> = dir
-            .ancestors()
-            .take_while(|path| path.starts_with(&repo.root))
-            .flat_map(|path| prevalidate_descriptor(path, &name))
-            .collect();
-        let has_unknown_keys = prevalidation.iter().any(|d| d.severity == Severity::Error);
-        diagnostics.extend(prevalidation);
-
-        // If there are unknown keys, skip deserialization (it would fail with raw serde errors)
-        if has_unknown_keys {
-            failed_overlays.insert(name.clone());
-            continue;
-        }
 
         // Try to parse the overlay
         let descriptor_file = find_descriptor_file(&dir);
@@ -908,6 +787,26 @@ fn lint_dirs(
         );
     }
 
+    for warning in repo.warnings.warnings() {
+        // Attribute shared ancestor findings to their declaring directory, once per pass.
+        let directory = warning.file.parent().unwrap_or(&warning_root);
+        let name = directory
+            .strip_prefix(&warning_root)
+            .unwrap_or(directory)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let file = warning
+            .file
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        diagnostics.push(
+            Diagnostic::warning(name, warning.message)
+                .with_file(file)
+                .with_hint(warning.hint),
+        );
+    }
+
     // Keep each overlay together even if another overlay has more severe findings.
     diagnostics.sort_by(|a, b| {
         a.overlay
@@ -1013,6 +912,7 @@ impl Ord for Severity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::overlays::schema::edit_distance;
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use rstest::rstest;
@@ -1030,7 +930,7 @@ mod tests {
         let (td, repo) = setup_repo();
         td.child("clean").create_dir_all().unwrap();
         td.child("broken/over.toml")
-            .write_str("targt = '~'")
+            .write_str("mode = 'invalid'")
             .unwrap();
 
         let result = lint_overlay(&repo, "clean", include_uses).unwrap();
@@ -1045,7 +945,7 @@ mod tests {
             ("selected", "uses = ['left', 'right']"),
             ("left", "uses = ['shared']"),
             ("right", "uses = ['shared']"),
-            ("shared", "targt = '~'"),
+            ("shared", "exclude = ['[']"),
         ] {
             td.child(format!("{name}/over.toml"))
                 .write_str(config)
@@ -1136,13 +1036,14 @@ mod tests {
     }
 
     #[rstest]
-    fn selected_broken_descriptors_keep_typo_hints() {
+    fn selected_descriptors_warn_with_typo_hints() {
         let (td, repo) = setup_repo();
         td.child("broken/over.toml")
             .write_str("targt = '~'")
             .unwrap();
         let result = lint_overlay(&repo, "broken", true).unwrap();
-        assert!(result.has_errors());
+        assert!(!result.has_errors());
+        assert_eq!(result.warning_count(), 1);
         assert!(result.diagnostics.iter().any(|d| {
             d.hint
                 .as_deref()
@@ -1157,6 +1058,27 @@ mod tests {
     }
 
     #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn non_normalized_repository_roots_keep_warning_overlay_names_relative(#[case] relative: bool) {
+        let cwd = std::env::current_dir().unwrap();
+        let temp = tempfile::tempdir_in(&cwd).unwrap();
+        std::fs::create_dir(temp.path().join("selected")).unwrap();
+        std::fs::create_dir(temp.path().join("unused")).unwrap();
+        std::fs::write(temp.path().join("selected/over.toml"), "extra = true").unwrap();
+        let root = if relative {
+            temp.path().strip_prefix(&cwd).unwrap().to_path_buf()
+        } else {
+            temp.path().join("unused/..")
+        };
+        let result = lint_overlay(&Repository::new(root), "selected", false).unwrap();
+        assert!(!result.has_errors(), "{:?}", result.diagnostics);
+        assert_eq!(result.warning_count(), 1);
+        assert_eq!(result.diagnostics[0].overlay, "selected");
+        assert_eq!(result.diagnostics[0].file.as_deref(), Some("over.toml"));
+    }
+
+    #[rstest]
     fn descriptorless_selections_follow_inherited_uses() {
         let (td, repo) = setup_repo();
         td.child("hosts/over.toml")
@@ -1164,7 +1086,7 @@ mod tests {
             .unwrap();
         td.child("hosts/laptop").create_dir_all().unwrap();
         td.child("dependency/over.toml")
-            .write_str("targt = '~'")
+            .write_str("exclude = ['[']")
             .unwrap();
         assert!(
             lint_overlay(&repo, "hosts/laptop", true)
@@ -1465,8 +1387,8 @@ mod tests {
     }
 
     #[rstest]
-    #[case("targt = '~'", 1)]
-    #[case("targt = '~'\nexclud = []", 2)]
+    #[case("mode = 'invalid'", 1)]
+    #[case("uses = ['missing', 'also_missing']", 2)]
     #[case("exclude = ['[']", 1)]
     #[case("uses = ['missing']", 1)]
     fn dependency_errors_warn_every_transitive_consumer_once(
@@ -1501,7 +1423,7 @@ mod tests {
             .write_str("uses = ['broken', 'missing']")
             .unwrap();
         td.child("broken/over.toml")
-            .write_str("targt = '~'")
+            .write_str("mode = 'invalid'")
             .unwrap();
         let result = lint_overlay(&repo, "consumer", true).unwrap();
         assert_eq!(result.error_count(), 2);
@@ -1622,7 +1544,8 @@ mod tests {
             .unwrap();
 
         let result = lint_repository(&repo);
-        assert!(result.has_errors());
+        assert!(!result.has_errors());
+        assert_eq!(result.warning_count(), 1);
         let diag = result
             .diagnostics
             .iter()
@@ -1642,7 +1565,7 @@ mod tests {
             .unwrap();
 
         let result = lint_repository(&repo);
-        assert!(result.has_errors());
+        assert!(!result.has_errors());
         let diag = result
             .diagnostics
             .iter()
@@ -1681,7 +1604,7 @@ mod tests {
     }
 
     #[rstest]
-    fn unknown_key_prevents_raw_serde_error_leaking() {
+    fn unknown_keys_warn_without_raw_serde_errors() {
         let (td, repo) = setup_repo();
         let ov = td.child("skip_deser");
         ov.create_dir_all().unwrap();
@@ -1691,8 +1614,8 @@ mod tests {
             .unwrap();
 
         let result = lint_repository(&repo);
-        assert!(result.has_errors());
-        // Should only have the pre-validation error, not a raw serde error
+        assert!(!result.has_errors());
+        // Ignored fields must not reach typed validation as an error.
         for diag in &result.diagnostics {
             assert!(
                 !diag.message.contains("expected one of"),
@@ -1734,7 +1657,8 @@ mod tests {
             .unwrap();
 
         let result = lint_repository(&repo);
-        assert!(result.has_errors());
+        assert!(!result.has_errors());
+        assert_eq!(result.warning_count(), 1);
         let diag = result
             .diagnostics
             .iter()
@@ -1974,31 +1898,13 @@ mod tests {
     }
 
     #[rstest]
-    fn prevalidate_descriptor_without_file_returns_no_diagnostics() {
-        let td = TempDir::new().unwrap();
-        // No descriptor file — should return empty diagnostics
-        let diags = prevalidate_descriptor(td.path(), "empty-overlay");
-        assert!(diags.is_empty());
-    }
-
-    #[rstest]
-    fn prevalidate_descriptor_ignores_non_mapping_yaml() {
-        let td = TempDir::new().unwrap();
-        // A YAML file that is a scalar, not a mapping
-        td.child("over.yaml").write_str("just a string").unwrap();
-        let diags = prevalidate_descriptor(td.path(), "scalar-overlay");
-        assert!(diags.is_empty());
-    }
-
-    #[rstest]
-    fn prevalidate_descriptor_skips_internal_name_and_root_keys() {
+    fn internal_name_and_root_keys_remain_tolerated() {
         let td = TempDir::new().unwrap();
         // A TOML file with internal keys `name` and `root` alongside valid keys
         td.child("over.toml")
             .write_str("name = \"test\"\nroot = \"/tmp\"\ntarget = \"~\"")
             .unwrap();
-        let diags = prevalidate_descriptor(td.path(), "internal-keys");
-        // Should produce no diagnostics — `name` and `root` are skipped, `target` is valid
-        assert!(diags.is_empty());
+        let result = lint_overlay(&Repository::new(td.path().into()), ".", false).unwrap();
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     }
 }

@@ -10,6 +10,8 @@ use crate::overlays;
 
 #[derive(Debug)]
 pub struct Initialization {
+    // Origin rechecks and CLI hook loading must share already-emitted descriptor warnings.
+    pub(crate) repository: overlays::Repository,
     pub destination: PathBuf,
     pub cloned: bool,
     pub canonical: Option<String>,
@@ -35,11 +37,7 @@ impl Initialization {
             );
         }
         // Do not overwrite a new canonical value edited while the prompt was open.
-        if overlays::Repository::new(self.destination.clone())
-            .validate_initialization()?
-            .as_ref()
-            != Some(canonical)
-        {
+        if self.repository.validate_initialization()?.as_ref() != Some(canonical) {
             bail!("repository configuration changed during initialization; retry");
         }
         if origin.is_some() {
@@ -130,11 +128,16 @@ pub fn initialize(destination: PathBuf, source: Option<&str>) -> Result<Initiali
 
 fn finish_initialization(destination: PathBuf, cloned: bool) -> Result<Initialization> {
     let repo = open_checkout(&destination)?;
-    let canonical = overlays::Repository::new(destination.clone())
-        .validate_initialization()
-        .with_context(|| format!("invalid Over repository at {}; checkout preserved: fix its root descriptor and retry", destination.display()))?;
+    let repository = overlays::Repository::new(destination.clone());
+    let canonical = repository.validate_initialization().with_context(|| {
+        format!(
+            "invalid Over repository at {}; checkout preserved: fix its root descriptor and retry",
+            destination.display()
+        )
+    })?;
     let (origin, push_url) = origin_urls(&repo)?;
     let mut result = Initialization {
+        repository,
         destination,
         cloned,
         canonical,

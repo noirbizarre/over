@@ -74,8 +74,9 @@ and scripts before running them. See [Safety and recovery](usage/safety.md).
 ## Migrate legacy installation configuration
 
 The top-level `install` key and its package-manager/platform tables are removed.
-Descriptors using them fail with migration guidance, including inherited ancestor
-descriptors. Replace them with explicit `hooks.install` commands or scripts:
+Descriptors using them warn with migration guidance and ignore those declarations,
+including inherited ancestor descriptors. Replace them with explicit
+`hooks.install` commands or scripts:
 
 ```yaml
 # Replace an old install.apt package list with an explicit command.

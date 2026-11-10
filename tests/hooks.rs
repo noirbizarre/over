@@ -822,7 +822,6 @@ fn invalid_repositories_and_unapproved_origin_changes_never_run_init_hooks() {
 }
 
 #[rstest]
-#[case("hooks: {unknown-event: [never_log_this_hook_secret]}")]
 #[case("hooks: {post-apply: never_log_this_hook_secret}")]
 #[case("hooks: {post-apply: [{never_log_this_hook_secret: value}]}")]
 #[case("hooks: {post-apply: [\"never_log_this_hook_secret}")]
@@ -837,6 +836,29 @@ fn invalid_hook_diagnostics_do_not_expose_command_values(#[case] descriptor: &st
         .failure()
         .get_output()
         .clone();
+    for bytes in [&output.stdout, &output.stderr] {
+        assert!(!String::from_utf8_lossy(bytes).contains("never_log_this_hook_secret"));
+    }
+}
+
+#[test]
+fn unknown_hook_keys_warn_without_leaking_secrets_or_preventing_known_hooks() {
+    let fixture = Fixture::new();
+    fixture.config("over.yaml", json!({"hooks": {
+        "never_log_this_hook_secret": {"invalid": "never_log_this_hook_secret"},
+        "post-apply": [{"command": "echo known >> \"$HOOK_TRACE\"", "never_log_this_hook_secret": "never_log_this_hook_secret"}]
+    }}));
+    fixture.config("selected/over.yaml", json!({}));
+    let output = fixture
+        .apply("selected")
+        .arg("--debug")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    assert_eq!(fixture.trace(), "known\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.matches("unknown key ignored").count(), 2, "{stderr}");
     for bytes in [&output.stdout, &output.stderr] {
         assert!(!String::from_utf8_lossy(bytes).contains("never_log_this_hook_secret"));
     }

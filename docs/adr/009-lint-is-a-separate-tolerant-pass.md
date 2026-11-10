@@ -18,22 +18,23 @@ actionable.
 ::apply`. It re-implements overlay discovery so it can continue past a
 parse failure — reporting, for instance, "overlay X `uses` overlay Y, which
 failed to parse" instead of silently treating Y as nonexistent. Before
-deserializing at all, `prevalidate_descriptor` parses the raw TOML/YAML as a
-generic table and checks top-level keys against a hand-maintained `VALID_
-OVERLAY_KEYS` list, offering a Levenshtein-distance typo suggestion
-(`targt` → "did you mean `target`?") instead of letting `serde`'s error
-surface. Diagnostics carry a `Severity` (error/warning) with a defined sort
+deserialization, shared descriptor inspection checks top-level and nested keys,
+offering a Levenshtein-distance typo suggestion (`targt` → "did you mean
+`target`?") instead of letting `serde`'s error surface. Unknown and removed keys
+are discarded with warnings in both runtime loading and lint; invalid recognized
+settings still produce errors. Diagnostics carry a `Severity` (error/warning) with a defined sort
 order, which `apply`'s plain `anyhow::Error` propagation has no equivalent
 of.
 
 ## Consequences
 
 Lint messages stay readable and specific — confirmed by tests that assert
-no raw `serde`/`config` error text leaks through. The cost is duplication:
-`VALID_OVERLAY_KEYS` must be kept in sync by hand with `Overlay`'s actual
-`#[derive(Deserialize)]` fields — nothing generates it from the struct — so
-a new field added without updating the constant makes `lint` misreport it
-as an unknown-key typo. `discover_overlay_dirs` also duplicates `Repository
+no raw `serde`/`config` error text leaks through. Schema inspection lives in
+`overlays::schema`, shared by runtime loading and lint. Its recognized-key lists
+must be kept in sync with the deserialized models; no schema is generated from
+the structs. Lint collects source-attributed warnings without duplicate runtime
+output, and warnings alone do not invalidate dependencies. `discover_overlay_dirs`
+also duplicates `Repository
 ::overlays()`'s glob-walk logic rather than sharing it, which can drift if
 one changes without the other.
 

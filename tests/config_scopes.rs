@@ -97,9 +97,6 @@ fn inherited_local_git_sources_keep_the_declaring_root() {
 }
 
 #[rstest]
-#[case("install: {apt: [curl]}\n", "migrate to `hooks.install`")]
-#[case("defaults: {materialization: checkout}\n", "no longer supported")]
-#[case("link_dirs: [config/*]\n", "no longer supported")]
 #[case("permissions: [{path: secret, mode: '600'}]\n", "octal string")]
 #[case("rules: [{path: config, materialization: checkout}]\n", "mode")]
 #[case("rules: [{path: config}]\n", "must set mode or permissions")]
@@ -111,10 +108,7 @@ fn inherited_local_git_sources_keep_the_declaring_root() {
     "rules: [{path: 'config/*', permissions: '600'}]\n",
     "requires mode: symlink-directory"
 )]
-fn obsolete_or_invalid_ancestor_rules_are_not_hidden_by_children(
-    #[case] config: &str,
-    #[case] message: &str,
-) {
+fn invalid_ancestor_rules_are_not_hidden_by_children(#[case] config: &str, #[case] message: &str) {
     let temp = TempDir::new().unwrap();
     write(temp.path(), "over.yaml", config);
     write(
@@ -124,6 +118,28 @@ fn obsolete_or_invalid_ancestor_rules_are_not_hidden_by_children(
     );
     let error = Repository::new(temp.path().into()).get("ov").unwrap_err();
     assert!(format!("{error:#}").contains(message), "{error:#}");
+}
+
+#[rstest]
+#[case("install: {apt: [curl]}\n")]
+#[case("default: checkout\ndefaults: {materialization: checkout}\n")]
+#[case("materialization: checkout\nlink_dirs: [config/*]\n")]
+#[case("rules: [{path: config, mode: checkout, materialization: old}]\n")]
+fn removed_ancestor_keys_warn_without_preventing_child_loading(#[case] config: &str) {
+    let temp = TempDir::new().unwrap();
+    write(temp.path(), "over.yaml", config);
+    write(temp.path(), "ov/over.yaml", "mode: symlink\n");
+    let repo = Repository::new(temp.path().into());
+    repo.get("ov").unwrap();
+    let result = over::lint::lint_overlay(&repo, "ov", false).unwrap();
+    assert!(!result.has_errors(), "{:?}", result.diagnostics);
+    assert!(result.warning_count() > 0);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.overlay.is_empty())
+    );
 }
 
 #[test]
@@ -305,7 +321,11 @@ fn lint_retains_migration_guidance_for_removed_nested_syntax(
         result
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains(hint)),
+            .any(|diagnostic| diagnostic.message.contains(hint)
+                || diagnostic
+                    .hint
+                    .as_deref()
+                    .is_some_and(|value| value.contains(hint))),
         "{:?}",
         result.diagnostics
     );

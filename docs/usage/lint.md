@@ -41,11 +41,12 @@ over lint hosts/laptop --no-uses
 over lint hosts/laptop --root /tmp/over-preview
 ```
 
-Unlike `apply --dry-run`, `lint` never deserializes a descriptor blindly: it
-pre-validates the raw keys first, so a typo (e.g. `targt` instead of
-`target`) is reported as "did you mean `target`?" rather than as a raw
-`serde` error. It also continues past a broken overlay to report on anything
-that `uses` it, and flags cycles in the `uses` graph. See
+Both `lint` and `apply` inspect descriptor keys before deserialization. Unknown
+keys, including nested and removed settings, are ignored with warnings; a typo
+such as `targt` can include a "did you mean `target`?" hint. Lint reports these
+warnings once per declaration and continues checking recognized settings, so a
+warning does not hide a genuine configuration error. It also continues past a
+broken overlay to report on anything that `uses` it, and flags dependency cycles. See
 [ADR-009](../adr/009-lint-is-a-separate-tolerant-pass.md).
 
 ## Diagnostic output

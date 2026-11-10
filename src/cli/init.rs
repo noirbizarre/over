@@ -52,7 +52,7 @@ pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
         .context("origin update task failed")??;
     }
     // Do not discover child overlays until bootstrap tools have unlocked them.
-    let repository = crate::overlays::Repository::new(result.destination.clone());
+    let repository = result.repository.clone();
     let hooks = repository.hooks()?;
     // Bootstrap must not discover encrypted children before unlock hooks execute.
     let templates = crate::exec::Context::builder()
