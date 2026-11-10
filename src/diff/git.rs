@@ -1,7 +1,6 @@
 //! Resolve owned Git comparisons independently of reconciliation health.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, ensure};
@@ -9,6 +8,7 @@ use git2::{IndexEntryExtendedFlag, Oid, Repository};
 
 use crate::actions::git::diff::{Comparison, Scratch, View};
 use crate::desired::{CheckoutScope, DesiredEntry, DesiredTree, MaterializationIntent, Provenance};
+use crate::materialize::virtual_checkout::snapshot::{honors_filemode, target_content};
 use crate::materialize::virtual_checkout::{git as vc, state};
 use crate::materialize::{Materializer, PartialFileMaterializer, SymlinkMaterializer};
 use crate::overlays::MaterializationKind;
@@ -302,11 +302,7 @@ fn virtual_comparisons(
     let (repo, managed) = vc::discover_source(source)?;
     let scope = entry.intent.checkout_scope();
     let base = vc::base_tree(&repo, Some(&record.base_oid))?;
-    let filemode = match repo.config()?.get_bool("core.filemode") {
-        Ok(value) => cfg!(unix) && value,
-        Err(error) if error.code() == git2::ErrorCode::NotFound => cfg!(unix),
-        Err(error) => return Err(error.into()),
-    };
+    let filemode = honors_filemode(&repo)?;
     let mut base_entries = vc::tracked_entries(&base)?;
     let owns = |path: &Path| -> bool {
         path.strip_prefix(&managed)
@@ -454,55 +450,4 @@ fn target_files(root: &Path, scope: &CheckoutScope) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(files)
-}
-
-fn target_content(root: &Path, relative: &Path) -> Result<Option<(Vec<u8>, i32)>> {
-    let file = root.join(relative);
-    let mut path = root.to_path_buf();
-    for component in relative.components() {
-        path.push(component);
-        let metadata = match path.symlink_metadata() {
-            Ok(metadata) => metadata,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                ) =>
-            {
-                return Ok(None);
-            }
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("failed to inspect '{}'", path.display()));
-            }
-        };
-        ensure!(
-            !metadata.is_symlink(),
-            "virtual checkout path '{}' is a symlink",
-            path.display()
-        );
-        ensure!(
-            metadata.is_dir() || metadata.is_file(),
-            "unsupported virtual checkout target entry '{}'",
-            path.display()
-        );
-        if path == file {
-            // A directory replacing a tracked file is that file's deletion;
-            // target_files separately supplies any added descendants.
-            return if metadata.is_file() {
-                Ok(Some((
-                    fs::read(&path)?,
-                    i32::from(vc::on_disk_filemode(&path)?),
-                )))
-            } else {
-                Ok(None)
-            };
-        }
-        if metadata.is_file() {
-            // A regular ancestor replaced the old subtree. Its descendants are
-            // absent, rather than an invalid traversal through that ancestor.
-            return Ok(None);
-        }
-    }
-    Ok(None)
 }

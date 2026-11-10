@@ -14,6 +14,67 @@ struct Fixture {
     config: PathBuf,
 }
 
+#[test]
+fn patch_preview_reverse_routes_mapped_paths_without_changing_either_worktree() {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let index_path = repo.index().unwrap().path().unwrap().to_path_buf();
+    let original = fs::read(&index_path).unwrap();
+    // CLI paths use the host's separators, unlike Git's serialized paths.
+    let displayed_source: PathBuf = ["workspace", "client", "etc", "file"].iter().collect();
+    fs::write(fixture.etc.join("file"), "mapped candidate\n").unwrap();
+    fixture
+        .command("add")
+        .args([
+            "--patch",
+            "--dry-run",
+            "--overlay",
+            "workspace/client",
+            "--root",
+        ])
+        .arg(&fixture.home)
+        .arg(&fixture.etc)
+        .assert()
+        .success()
+        .stderr(contains(displayed_source.to_string_lossy().as_ref()))
+        .stderr(contains("+mapped candidate"));
+    assert_eq!(fs::read(index_path).unwrap(), original);
+    assert_eq!(
+        fs::read(fixture.etc.join("file")).unwrap(),
+        b"mapped candidate\n"
+    );
+    assert_eq!(
+        fs::read(fixture.source.join("workspace/client/etc/file")).unwrap(),
+        b"etc\n"
+    );
+}
+
+#[test]
+fn patch_mode_never_falls_back_to_ingesting_non_checkout_files() {
+    let fixture = Fixture::new(false);
+    fixture.apply();
+    let fresh = fixture.base.join("fresh");
+    fs::write(&fresh, "keep this file\n").unwrap();
+    fixture
+        .command("add")
+        .args([
+            "--patch",
+            "--dry-run",
+            "--overlay",
+            "workspace/client",
+            "--root",
+        ])
+        .arg(&fixture.home)
+        .arg(&fresh)
+        .assert()
+        .failure()
+        .stderr(contains("not owned by a virtual checkout"));
+    assert!(!fresh.is_symlink());
+    assert_eq!(fs::read(fresh).unwrap(), b"keep this file\n");
+    assert!(!fixture.source.join("workspace/client/fresh").exists());
+}
+
 impl Fixture {
     fn new(checkout: bool) -> Self {
         let temp = TempDir::new().unwrap();

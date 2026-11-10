@@ -1,5 +1,7 @@
 //! Stage virtual-checkout content in the source index without moving targets.
 
+pub(crate) mod patch;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -100,6 +102,24 @@ fn stage_entries(
     dry_run: bool,
     overlay: &Overlay,
 ) -> Result<()> {
+    stage_entries_with(
+        entries,
+        selections,
+        dry_run,
+        overlay,
+        &state::record_for_blocking,
+        &git::source_entry,
+    )
+}
+
+fn stage_entries_with(
+    entries: &[DesiredEntry],
+    selections: &[PathBuf],
+    dry_run: bool,
+    overlay: &Overlay,
+    record_for: &impl Fn(&Path) -> Result<Option<state::VirtualCheckoutRecord>>,
+    source_entry: &impl Fn(&git2::Repository, &Path) -> Result<Option<(git2::Oid, i32)>>,
+) -> Result<()> {
     // One in-memory index per repository prevents sibling units from overwriting
     // each other's changes; write only after every selected unit passes preflight.
     let mut repositories: BTreeMap<PathBuf, (git2::Repository, git2::Index)> = BTreeMap::new();
@@ -110,13 +130,12 @@ fn stage_entries(
         {
             continue;
         }
-        let record = state::record_for_blocking(&entry.target)?.with_context(|| {
+        let record = record_for(&entry.target)?.with_context(|| {
             format!(
                 "no checkout at '{}'; run over apply first",
                 entry.target.display()
             )
         })?;
-        state::verify(entry, &record)?;
         let Provenance::Overlay { source, .. } = &entry.provenance else {
             unreachable!()
         };
@@ -135,15 +154,7 @@ fn stage_entries(
             .expect("repository inserted above");
         let scope = entry.intent.checkout_scope();
         let head = git::base_tree(repo, None)?;
-        let head_view = git::scoped_subtree(repo, &head, &managed, &scope)?;
-        let base = git::base_tree(repo, Some(&record.base_oid))?;
-        let base_view = git::scoped_subtree(repo, &base, &managed, &scope)?;
-        ensure!(
-            head_view.id() == base_view.id(),
-            "checkout '{}' is behind its source; sync before staging",
-            entry.target.display()
-        );
-        let tracked = git::tracked_entries(&head_view)?;
+        let tracked = checkout_entries(entry, &record, repo, &managed)?;
         let mut candidates: BTreeSet<_> = tracked.keys().cloned().collect();
         candidates.extend(git::walk_owned_files(&entry.target, &scope)?);
         for indexed in index.iter() {
@@ -192,7 +203,7 @@ fn stage_entries(
                 .context("source has no working directory")?
                 .join(&source_path);
             let head_entry = tracked.get(&relative).copied();
-            let worktree_entry = git::source_entry(repo, &source_path)?;
+            let worktree_entry = source_entry(repo, &source_path)?;
             let indexed_entry = index
                 .get_path(&source_path, 0)
                 .map(|item| (item.id, item.mode as i32));
@@ -247,4 +258,29 @@ fn stage_entries(
         }
     }
     Ok(())
+}
+
+fn checkout_entries(
+    entry: &DesiredEntry,
+    record: &state::VirtualCheckoutRecord,
+    repo: &git2::Repository,
+    managed: &Path,
+) -> Result<BTreeMap<PathBuf, (git2::Oid, i32)>> {
+    state::verify(entry, record)?;
+    let scope = entry.intent.checkout_scope();
+    // Compare filtered entries without creating synthetic source objects during
+    // preflight, including cancelled sessions and dry runs.
+    let head = git::scoped_entries(repo, &git::base_tree(repo, None)?, managed, &scope)?;
+    let base = git::scoped_entries(
+        repo,
+        &git::base_tree(repo, Some(&record.base_oid))?,
+        managed,
+        &scope,
+    )?;
+    ensure!(
+        head == base,
+        "checkout '{}' is behind its source; sync before staging",
+        entry.target.display()
+    );
+    Ok(head)
 }

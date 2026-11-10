@@ -30,6 +30,13 @@ pub struct Params {
 
     #[clap(long, short, help = "Overwrite without prompting")]
     force: bool,
+
+    #[clap(
+        short = 'p',
+        long,
+        help = "Interactively stage virtual-checkout changes by hunk"
+    )]
+    patch: bool,
 }
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
@@ -84,6 +91,15 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let routing = overlay.resolve_mappings(&ctx)?;
     for path in &resolved {
         routing.logical_path_for(path)?;
+    }
+
+    if args.patch {
+        // Patch selection must never fall through to move-and-link ingestion.
+        let overlay = overlay.clone();
+        return tokio::task::spawn_blocking(move || {
+            crate::stage::patch::run(&ctx, &overlay, &resolved, crate::ui::patch::select)
+        })
+        .await?;
     }
 
     let (symlinks, regulars): (Vec<_>, Vec<_>) = resolved.iter().partition(|p| p.is_symlink());

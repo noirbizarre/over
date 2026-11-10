@@ -17,6 +17,7 @@
 //! symlinks/files could silently discard it.
 
 pub(crate) mod git;
+pub(crate) mod snapshot;
 pub(crate) mod state;
 
 use std::path::Path;
