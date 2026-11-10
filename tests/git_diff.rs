@@ -558,7 +558,9 @@ fn read_only_sources_can_be_diffed_without_repository_or_target_writes(#[case] c
     } else {
         fixture.source.join("ov/file")
     };
-    fs::write(file, "edit\n").unwrap();
+    // This tests read-only inspection, not Git's stat cache: a different size
+    // makes the edit observable even when filesystem timestamps are coarse.
+    fs::write(file, "edited content\n").unwrap();
     let before = inventory(&fixture.source);
     let mut permissions = Vec::new();
     for entry in walkdir::WalkDir::new(&fixture.source) {
@@ -576,7 +578,7 @@ fn read_only_sources_can_be_diffed_without_repository_or_target_writes(#[case] c
     }
     let output = checked(output.unwrap());
     assert_eq!(read_only_before, read_only_after);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("+edit"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("+edited content"));
     assert_eq!(before, inventory(&fixture.source));
 }
 
@@ -664,7 +666,12 @@ fn selecting_all_overlays_diffs_shared_symlink_dependencies_once() {
     fs::write(fixture.source.join("ov/over.toml"), "uses = ['dep']\n").unwrap();
     fixture.commit();
     fixture.over("apply", &["--no-prompt"]);
-    fs::write(fixture.source.join("dep/file"), "dependency edit\n").unwrap();
+    // Keep deduplication independent of same-size edits hitting Git's stat cache.
+    fs::write(
+        fixture.source.join("dep/file"),
+        "dependency edited content\n",
+    )
+    .unwrap();
     let mut command = fixture.command("diff", &[]);
     // `--all` conflicts with an explicit overlay name, so construct that selector.
     let mut all = Command::new(assert_cmd::cargo::cargo_bin!("over"));
@@ -679,7 +686,7 @@ fn selecting_all_overlays_diffs_shared_symlink_dependencies_once() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout)
-            .matches("+dependency edit")
+            .matches("+dependency edited content")
             .count(),
         1
     );

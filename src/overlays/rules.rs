@@ -103,38 +103,66 @@ impl PolicyScope {
     }
 }
 
-pub(super) fn resolve_properties(
-    overlay: &Overlay,
+/// Keep the declaring scope so diagnostics can explain inherited winners;
+/// `None` identifies its baseline, while `Some` is a zero-based rule index.
+pub(crate) type AssignmentOrigin<'a> = (&'a PolicyScope, Option<usize>);
+
+pub(crate) struct ResolvedProperties<'a> {
+    pub mode: MaterializationKind,
+    pub permissions: Option<FileMode>,
+    pub mode_origin: Option<AssignmentOrigin<'a>>,
+    pub permissions_origin: Option<AssignmentOrigin<'a>>,
+}
+
+pub(crate) fn resolve_with_origins<'a>(
+    overlay: &'a Overlay,
     relative: &Path,
     is_directory: bool,
-) -> (MaterializationKind, Option<FileMode>) {
+) -> ResolvedProperties<'a> {
+    let mut resolved = ResolvedProperties {
+        mode: MaterializationKind::Symlink,
+        permissions: None,
+        mode_origin: None,
+        permissions_origin: None,
+    };
     let source = overlay
         .scopes
         .last()
         .map(|scope| &scope.root)
         .unwrap_or(&overlay.root)
         .join(relative);
-    let mut mode = MaterializationKind::Symlink;
-    let mut permissions = None;
     for scope in &overlay.scopes {
         if let Some(value) = scope.mode {
-            mode = value;
+            resolved.mode = value;
+            resolved.mode_origin = Some((scope, None));
         }
         if let Some(value) = scope.permissions {
-            permissions = Some(value);
+            resolved.permissions = Some(value);
+            resolved.permissions_origin = Some((scope, None));
         }
-        for rule in &scope.rules {
+        for (index, rule) in scope.rules.iter().enumerate() {
             if scope.matches(rule, &source, is_directory) {
                 if let Some(value) = rule.mode {
-                    mode = value;
+                    resolved.mode = value;
+                    resolved.mode_origin = Some((scope, Some(index)));
                 }
                 if let Some(value) = rule.permissions {
-                    permissions = Some(value);
+                    resolved.permissions = Some(value);
+                    resolved.permissions_origin = Some((scope, Some(index)));
                 }
             }
         }
     }
-    (mode, permissions)
+    resolved
+}
+
+pub(super) fn resolve_properties(
+    overlay: &Overlay,
+    relative: &Path,
+    is_directory: bool,
+) -> (MaterializationKind, Option<FileMode>) {
+    let resolved = resolve_with_origins(overlay, relative, is_directory);
+    (resolved.mode, resolved.permissions)
 }
 
 pub(super) fn resolve(overlay: &Overlay, relative: &Path) -> MaterializationKind {
@@ -146,17 +174,7 @@ pub(crate) fn mode_origin<'a>(
     overlay: &'a Overlay,
     relative: &Path,
 ) -> Option<(&'a PolicyScope, Option<usize>)> {
-    let source = overlay.root.join(relative);
-    overlay.scopes.iter().rev().find_map(|scope| {
-        scope
-            .rules
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, rule)| rule.mode.is_some() && scope.matches(rule, &source, true))
-            .map(|(index, _)| (scope, Some(index)))
-            .or_else(|| scope.mode.map(|_| (scope, None)))
-    })
+    resolve_with_origins(overlay, relative, true).mode_origin
 }
 
 #[cfg(test)]

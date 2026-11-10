@@ -1,14 +1,21 @@
+use std::path::PathBuf;
+
 use anyhow::{Result, bail};
 use clap::Args;
 
 use crate::cli::CLI;
-use crate::lint::{lint_overlay, lint_repository};
+use crate::exec::Context;
+use crate::lint::{lint_overlay_with_context, lint_repository_with_context};
 use crate::overlays::Repository;
 use crate::ui;
 use crate::ui::style;
 
 #[derive(Args, Debug)]
 pub struct Params {
+    /// Set the target root directory (~)
+    #[arg(short, long)]
+    pub root: Option<PathBuf>,
+
     /// Check only this overlay and its uses dependencies
     #[arg(value_name = "OVERLAY")]
     pub overlay: Option<String>,
@@ -21,9 +28,15 @@ pub struct Params {
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let home = cli.resolve_home()?;
     let repo = Repository::new(home);
+    let root = args
+        .root
+        .clone()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?;
+    let ctx = Context::builder().repository(repo).root(root).build();
     let result = match &args.overlay {
-        Some(name) => lint_overlay(&repo, name, !args.no_uses)?,
-        None => lint_repository(&repo),
+        Some(name) => lint_overlay_with_context(&ctx, name, !args.no_uses)?,
+        None => lint_repository_with_context(&ctx),
     };
 
     if result.diagnostics.is_empty() {

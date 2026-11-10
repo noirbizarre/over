@@ -149,29 +149,99 @@ fn check_invalid_rules_globs(overlay: &Overlay) -> Vec<Diagnostic> {
     diagnostics
 }
 
-/// Report provably shadowed properties within a scope; other scopes intentionally override.
+/// Warn about same-scope overlap; inheritance alone is intentional policy composition.
 fn check_duplicate_rule_paths(overlay: &Overlay) -> Vec<Diagnostic> {
+    use crate::overlays::mapping::lexical;
+    use crate::overlays::rules::resolve_with_origins;
+
     let mut diagnostics = Vec::new();
     for scope in &overlay.scopes {
         for (index, rule) in scope.rules.iter().enumerate() {
             for (later_index, later) in scope.rules.iter().enumerate().skip(index + 1) {
-                // Glob-language containment is not implied by a textual prefix.
-                if rule.is_glob()
-                    || later.is_glob()
-                    || !rule.path.eq(&later.path)
-                        && !std::path::Path::new(&rule.path).starts_with(&later.path)
-                        && later.path != "."
-                {
+                let mode = rule.mode.is_some() && later.mode.is_some();
+                let permissions = rule.permissions.is_some() && later.permissions.is_some();
+                if !mode && !permissions {
                     continue;
                 }
-                let mode_shadowed = rule.mode.is_some() && later.mode.is_some();
-                let permissions_shadowed =
-                    rule.permissions.is_some() && later.permissions.is_some();
-                if mode_shadowed || permissions_shadowed {
-                    diagnostics.push(Diagnostic::warning(&overlay.name, format!("duplicate rule path or shadowed prefix '{}': rule {} overrides {} from rule {} in {}", rule.path, later_index + 1, if mode_shadowed && permissions_shadowed { "mode and permissions" } else if mode_shadowed { "mode" } else { "permissions" }, index + 1, scope.descriptor.display()))
-                        .with_file(scope.descriptor.to_string_lossy().into_owned()).with_hint("remove the ineffective property or reorder the rules"));
-                    break;
+                let first = lexical(&scope.root.join(&rule.path));
+                let second = lexical(&scope.root.join(&later.path));
+                let literal = !rule.is_glob() && !later.is_glob();
+                let witness = if literal {
+                    if first.starts_with(&second) {
+                        Some((first.clone(), first.is_dir()))
+                    } else if second.starts_with(&first) {
+                        Some((second.clone(), second.is_dir()))
+                    } else {
+                        None
+                    }
+                } else {
+                    // Observed overlap is evidence, not a claim of glob-language containment.
+                    let mut witness = None;
+                    for entry in WalkDir::new(&overlay.root).sort_by_file_name() {
+                        match entry {
+                            Ok(entry)
+                                if entry.file_type().is_dir()
+                                    && scope.matches(rule, entry.path(), true)
+                                    && scope.matches(later, entry.path(), true) =>
+                            {
+                                witness = Some((entry.path().to_path_buf(), true));
+                                break;
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                diagnostics.push(Diagnostic::error(
+                                    &overlay.name,
+                                    format!("cannot inspect rule overlap: {error}"),
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    witness
+                };
+                let Some((witness, is_dir)) = witness else {
+                    continue;
+                };
+                let Ok(relative) = witness.strip_prefix(&overlay.root) else {
+                    continue;
+                };
+                let resolved = resolve_with_origins(overlay, relative, is_dir);
+                let mut winners = Vec::new();
+                for (property, active, origin, value) in [
+                    (
+                        "mode",
+                        mode,
+                        resolved.mode_origin,
+                        resolved.mode.to_string(),
+                    ),
+                    (
+                        "permissions",
+                        permissions,
+                        resolved.permissions_origin,
+                        resolved
+                            .permissions
+                            .map(|value| value.to_string())
+                            .unwrap_or_default(),
+                    ),
+                ] {
+                    if active && let Some((winner_scope, winner_index)) = origin {
+                        winners.push(format!(
+                            "{property}={value} wins from {} in {}",
+                            winner_index
+                                .map(|index| format!("rule {}", index + 1))
+                                .unwrap_or_else(|| "scope baseline".to_owned()),
+                            winner_scope.descriptor.display()
+                        ));
+                    }
                 }
+                let relation = if literal && first.starts_with(&second) {
+                    "duplicate rule path or shadowed prefix"
+                } else {
+                    "overlapping rule paths"
+                };
+                diagnostics.push(Diagnostic::warning(&overlay.name, format!("{relation} '{}' and '{}': rules {} and {} overlap at '{}'; {}", rule.path, later.path, index + 1, later_index + 1, witness.display(), winners.join("; ")))
+                    .with_file(scope.descriptor.to_string_lossy().into_owned())
+                    .with_hint("later matching assignments win per property; nearer scope baselines reset inherited values; remove redundant assignments or narrow selectors"));
             }
         }
     }
@@ -529,6 +599,103 @@ mod tests {
         // We must keep td alive; use Box::leak for test simplicity
         Box::leak(Box::new(td));
         overlay
+    }
+
+    #[test]
+    fn overlap_diagnostics_name_the_final_winner_for_each_property() {
+        let overlay = setup_overlay(
+            r#"
+[[rules]]
+path = 'config'
+mode = 'checkout'
+permissions = '600'
+[[rules]]
+path = 'config/editor'
+mode = 'symlink-directory'
+permissions = '644'
+[[rules]]
+path = 'config'
+mode = 'symlink'
+"#,
+        );
+        let diagnostics = check_duplicate_rule_paths(&overlay);
+        let overlap = diagnostics
+            .iter()
+            .find(|diag| diag.message.contains("rules 1 and 2"))
+            .unwrap();
+        assert!(
+            overlap.message.contains("mode=symlink wins from rule 3"),
+            "{overlap:?}"
+        );
+        assert!(
+            overlap.message.contains("permissions=644 wins from rule 2"),
+            "{overlap:?}"
+        );
+        assert!(overlap.message.contains("overlapping rule paths"));
+    }
+
+    #[test]
+    fn normalized_rule_aliases_share_the_same_precedence_namespace() {
+        let overlay = setup_overlay(
+            r#"
+[[rules]]
+path = './unused/../config'
+permissions = '600'
+[[rules]]
+path = 'config'
+permissions = '644'
+"#,
+        );
+        let diagnostics = check_duplicate_rule_paths(&overlay);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("permissions=644 wins from rule 2")
+        );
+    }
+
+    #[test]
+    fn observed_glob_overlap_reports_one_witness_and_the_effective_winner() {
+        let overlay = setup_overlay(
+            r#"
+[[rules]]
+path = 'config/*'
+mode = 'symlink-directory'
+[[rules]]
+path = 'config/editor*'
+mode = 'symlink-directory'
+"#,
+        );
+        std::fs::create_dir_all(overlay.root.join("config/editor-one")).unwrap();
+        std::fs::create_dir_all(overlay.root.join("config/editor-two")).unwrap();
+        let diagnostics = check_duplicate_rule_paths(&overlay);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("editor-one"));
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("mode=symlink-directory wins from rule 2")
+        );
+    }
+
+    #[test]
+    fn overlap_explanations_respect_a_nearer_scope_baseline() {
+        let temp = TempDir::new().unwrap();
+        temp.child("over.yaml").write_str("rules:\n  - {path: child/config, mode: checkout}\n  - {path: child/config, mode: symlink-directory}").unwrap();
+        temp.child("child/over.yaml")
+            .write_str("mode: symlink")
+            .unwrap();
+        let overlay = Repository::new(temp.path().to_owned())
+            .get("child")
+            .unwrap();
+        let diagnostics = check_duplicate_rule_paths(&overlay);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("mode=symlink wins from scope baseline")
+        );
     }
 
     // ── uses checks ──────────────────────────────────────────────────────

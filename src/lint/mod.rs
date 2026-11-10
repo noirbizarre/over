@@ -1,4 +1,5 @@
 mod checks;
+mod ownership;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -10,6 +11,7 @@ use globset::GlobBuilder;
 use noyalib::compat::serde_yaml as serde_yml;
 use walkdir::WalkDir;
 
+use crate::exec::Context;
 use crate::overlays::{BASENAME, EXTENSIONS, GLOB_PATTERN, Overlay, Repository};
 use crate::ui::style;
 
@@ -213,7 +215,9 @@ fn check_cycles(overlays: &HashMap<String, &Overlay>) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut fully_visited: HashSet<String> = HashSet::new();
 
-    for name in overlays.keys() {
+    let mut names: Vec<_> = overlays.keys().collect();
+    names.sort();
+    for name in names {
         if fully_visited.contains(name) {
             continue;
         }
@@ -587,7 +591,34 @@ fn diagnostics_from_anyhow_error(
 
 /// Run all lint checks across all overlays in a repository.
 pub fn lint_repository(repo: &Repository) -> LintResult {
-    lint_dirs(repo, discover_overlay_dirs(repo), false, true)
+    let context = default_context(repo);
+    lint_dirs(
+        repo,
+        discover_overlay_dirs(repo),
+        false,
+        true,
+        context.as_deref(),
+    )
+}
+
+/// Check resolved ownership against an explicit target root and machine context.
+pub fn lint_repository_with_context(ctx: &Context) -> LintResult {
+    lint_dirs(
+        &ctx.repository,
+        discover_overlay_dirs(&ctx.repository),
+        false,
+        true,
+        Some(ctx),
+    )
+}
+
+fn default_context(repo: &Repository) -> Option<std::sync::Arc<Context>> {
+    dirs::home_dir().map(|root| {
+        Context::builder()
+            .repository(repo.clone())
+            .root(root)
+            .build()
+    })
 }
 
 /// Lint one overlay, optionally including its transitive `uses` dependencies.
@@ -595,6 +626,25 @@ pub fn lint_overlay(
     repo: &Repository,
     name: &str,
     include_uses: bool,
+) -> anyhow::Result<LintResult> {
+    let context = default_context(repo);
+    lint_overlay_inner(repo, name, include_uses, context.as_deref())
+}
+
+/// Lint a selected composition using the caller's deployment context.
+pub fn lint_overlay_with_context(
+    ctx: &Context,
+    name: &str,
+    include_uses: bool,
+) -> anyhow::Result<LintResult> {
+    lint_overlay_inner(&ctx.repository, name, include_uses, Some(ctx))
+}
+
+fn lint_overlay_inner(
+    repo: &Repository,
+    name: &str,
+    include_uses: bool,
+    ctx: Option<&Context>,
 ) -> anyhow::Result<LintResult> {
     // Components remove harmless `./` and trailing separators without requiring
     // a descriptor to parse before lint can produce its friendlier diagnostics.
@@ -613,7 +663,7 @@ pub fn lint_overlay(
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("overlay path is not valid UTF-8"))?
         .replace('\\', "/");
-    Ok(lint_dirs(repo, vec![(dir, name)], true, include_uses))
+    Ok(lint_dirs(repo, vec![(dir, name)], true, include_uses, ctx))
 }
 
 fn lint_dirs(
@@ -621,12 +671,16 @@ fn lint_dirs(
     mut dirs: Vec<(PathBuf, String)>,
     scoped: bool,
     include_uses: bool,
+    ctx: Option<&Context>,
 ) -> LintResult {
     let mut diagnostics = Vec::new();
     let mut parsed_overlays: HashMap<String, Overlay> = HashMap::new();
     let mut failed_overlays: HashSet<String> = HashSet::new();
     let all_names: HashSet<String> = dirs.iter().map(|(_, name)| name.clone()).collect();
     let mut visited = HashSet::new();
+    // Dependencies are graph nodes, not independent composition selections.
+    let mut roots: Vec<_> = dirs.iter().map(|(_, name)| name.clone()).collect();
+    roots.sort();
 
     while let Some((dir, name)) = dirs.pop() {
         // Mark failed loads too, so shared broken dependencies are reported once.
@@ -654,7 +708,15 @@ fn lint_dirs(
         // Try to parse the overlay
         let descriptor_file = find_descriptor_file(&dir);
         match Overlay::new(repo, &dir) {
-            Ok(overlay) => {
+            Ok(mut overlay) => {
+                // Path spelling must not turn a shared graph node into two owners.
+                if let Some(uses) = &mut overlay.uses {
+                    for dependency in uses {
+                        *dependency = crate::overlays::mapping::lexical(Path::new(dependency))
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                    }
+                }
                 if dir == repo.root
                     && let Err(error) = repo.canonical_repository()
                 {
@@ -667,7 +729,7 @@ fn lint_dirs(
                     }
                     Err(error) => diagnostics.push(Diagnostic::error(&name, format!("{error:#}"))),
                 }
-                if scoped && include_uses {
+                if include_uses {
                     for dep in overlay.uses.iter().flatten() {
                         let dir = repo.root.join(dep);
                         if dir.is_dir() {
@@ -737,14 +799,108 @@ fn lint_dirs(
         .collect();
     diagnostics.extend(check_cycles(&overlay_refs));
 
+    if let Some(ctx) = ctx {
+        // Existing precise errors already prevent a complete ownership analysis.
+        let invalid: HashSet<_> = diagnostics
+            .iter()
+            .filter(|diag| diag.severity == Severity::Error)
+            .map(|diag| diag.overlay.clone())
+            .collect();
+        let mut seen = HashSet::new();
+        for root in roots {
+            // Known graph failures already have precise tolerant diagnostics.
+            if !valid_closure(
+                &root,
+                &parsed_overlays,
+                &invalid,
+                include_uses,
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+            ) {
+                continue;
+            }
+            let Some(overlay) = parsed_overlays.get(&root) else {
+                continue;
+            };
+            let mut context = Context::builder()
+                .repository(repo.clone())
+                .root(ctx.root.clone())
+                .machine(ctx.machine.clone())
+                .overlay(overlay.clone())
+                .no_uses(!include_uses)
+                .build()
+                .with_strict_paths();
+            let desired = (|| -> anyhow::Result<_> {
+                context = context.resolve_data()?;
+                let target = overlay.resolve_target(&context)?;
+                context = context.with_resolved_overlay(
+                    overlay.name.clone(),
+                    target.to_string_lossy().into_owned(),
+                );
+                crate::desired::DesiredTree::build(&context, overlay)
+            })();
+            match desired {
+                Ok(tree) => diagnostics.extend(ownership::check(&root, &tree, &mut seen)),
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    diagnostics.push(Diagnostic::error(&root, format!("cannot resolve desired ownership: {message}"))
+                            .with_hint("fix the named declaration or provide missing template data/defaults; destinations use the current machine and --root"));
+                }
+            }
+        }
+    } else {
+        diagnostics.push(
+            Diagnostic::error(
+                ".",
+                "cannot resolve ownership: could not determine home directory",
+            )
+            .with_hint("supply an explicit target root with --root"),
+        );
+    }
+
     // Sort: errors first, then warnings; within same severity, by overlay name
     diagnostics.sort_by(|a, b| {
         a.severity
             .cmp(&b.severity)
             .then_with(|| a.overlay.cmp(&b.overlay))
+            .then_with(|| a.message.cmp(&b.message))
     });
 
     LintResult { diagnostics }
+}
+
+fn valid_closure(
+    name: &str,
+    overlays: &HashMap<String, Overlay>,
+    invalid: &HashSet<String>,
+    include_uses: bool,
+    active: &mut HashSet<String>,
+    done: &mut HashSet<String>,
+) -> bool {
+    if invalid.contains(name) {
+        return false;
+    }
+    if done.contains(name) {
+        return true;
+    }
+    let Some(overlay) = overlays.get(name) else {
+        return false;
+    };
+    if !active.insert(name.to_owned()) {
+        return false;
+    }
+    if include_uses
+        && overlay
+            .uses
+            .iter()
+            .flatten()
+            .any(|dep| !valid_closure(dep, overlays, invalid, true, active, done))
+    {
+        return false;
+    }
+    active.remove(name);
+    done.insert(name.to_owned());
+    true
 }
 
 // Implement Ord for Severity so errors sort before warnings
@@ -845,7 +1001,7 @@ mod tests {
     }
 
     #[rstest]
-    fn dependency_cycles_are_only_checked_when_dependencies_are_included() {
+    fn excluding_operations_does_not_hide_unresolvable_dependency_metadata() {
         let (td, repo) = setup_repo();
         td.child("a/over.toml").write_str("uses = ['b']").unwrap();
         td.child("b/over.toml").write_str("uses = ['a']").unwrap();
@@ -856,11 +1012,18 @@ mod tests {
                 .iter()
                 .any(|d| d.message.contains("cycle detected"))
         );
+        let result = lint_overlay(&repo, "a", false).unwrap();
         assert!(
-            lint_overlay(&repo, "a", false)
-                .unwrap()
+            result
                 .diagnostics
-                .is_empty()
+                .iter()
+                .any(|diag| diag.message.contains("cycle in data dependencies"))
+        );
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("cycle detected"))
         );
     }
 

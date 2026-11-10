@@ -34,6 +34,37 @@ fn setup_overlay_repo() -> TempDir {
 }
 
 #[test]
+fn doctor_ownership_diagnostics_use_the_requested_target_root() -> TestResult {
+    let temp = TempDir::new()?;
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    for name in ["selected", "dependency"] {
+        fs::create_dir_all(source.join(name))?;
+        fs::write(source.join(name).join("file"), name)?;
+    }
+    fs::write(
+        source.join("selected/over.yaml"),
+        "uses: [dependency]\ntarget: '~/shared'",
+    )?;
+    fs::write(
+        source.join("dependency/over.yaml"),
+        format!("target: {:?}", target.join("shared").to_string_lossy()),
+    )?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&source)
+        .args(["doctor", "--root"])
+        .arg(&target)
+        .env("XDG_STATE_HOME", temp.path().join("state"))
+        .assert()
+        .code(1)
+        .stdout(contains("conflicting target ownership"))
+        .stdout(contains("dependency"))
+        .stdout(contains("selected"));
+    Ok(())
+}
+
+#[test]
 fn runs() -> TestResult {
     let mut cmd = Command::cargo_bin("over")?;
     cmd.assert().success();
