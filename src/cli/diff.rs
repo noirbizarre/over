@@ -4,14 +4,13 @@ use anyhow::{Result, anyhow};
 use clap::Args;
 use dirs::home_dir;
 
+use crate::actions::git::diff::View;
 use crate::cli::CLI;
 use crate::desired::DesiredTree;
-use crate::diff::Report;
+use crate::diff::git::Report;
 use crate::exec::Context;
 use crate::overlays::{Overlay, Repository};
 use crate::ui;
-use crate::ui::{emojis, style};
-use crate::utils::short_path;
 
 #[derive(Args, Debug)]
 pub struct Params {
@@ -33,6 +32,20 @@ pub struct Params {
         help = "Diff every overlay, retaining configured default_overlay data"
     )]
     all: bool,
+
+    #[clap(
+        long,
+        alias = "cached",
+        conflicts_with = "all_changes",
+        help = "Show staged changes instead of unstaged changes"
+    )]
+    staged: bool,
+
+    #[clap(long, help = "Show both staged and unstaged changes")]
+    all_changes: bool,
+
+    #[clap(long, help = "Use Git's configured difftool")]
+    difftool: bool,
 }
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
@@ -68,20 +81,75 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         return Ok(());
     }
 
+    let views = if args.all_changes {
+        vec![View::Staged, View::Unstaged]
+    } else if args.staged {
+        vec![View::Staged]
+    } else {
+        vec![View::Unstaged]
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    let mut linked_paths = std::collections::BTreeMap::<_, std::collections::BTreeSet<_>>::new();
     for overlay in &overlays {
-        print_overlay_diff(cli, &repo, &root, overlay, args.no_uses)?;
+        let report = build_overlay_diff(&repo, &root, overlay, args.no_uses, views.clone()).await?;
+        for diagnostic in &report.diagnostics {
+            eprintln!("{diagnostic}");
+        }
+        for mut comparison in report.comparisons {
+            if comparison.trees.is_none() {
+                let paths = linked_paths
+                    .entry((comparison.repository.clone(), comparison.view))
+                    .or_default();
+                comparison.scope.retain(|path| paths.insert(path.clone()));
+            }
+            if comparison.scope.is_empty() {
+                continue;
+            }
+            // Dependencies can occur in several selected roots; never launch a tool twice.
+            let key = (
+                comparison.repository.clone(),
+                comparison.scope.clone(),
+                comparison.view,
+                comparison.trees,
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            eprintln!(
+                "Overlay {} — repository {} — {}{}\n  scope: {}",
+                overlay.name,
+                comparison.repository.display(),
+                if comparison.view == View::Staged {
+                    "staged"
+                } else {
+                    "unstaged"
+                },
+                comparison
+                    .baseline
+                    .as_ref()
+                    .map(|base| format!(" (recorded base {base})"))
+                    .unwrap_or_default(),
+                comparison
+                    .scope
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            comparison.present(args.difftool).await?;
+        }
     }
 
     Ok(())
 }
 
-fn print_overlay_diff(
-    cli: &CLI,
+async fn build_overlay_diff(
     repo: &Repository,
     root: &Path,
     overlay: &Overlay,
     no_uses: bool,
-) -> Result<()> {
+    views: Vec<View>,
+) -> Result<Report> {
     let ctx = Context::builder()
         .root(root.to_path_buf())
         .repository(repo.clone())
@@ -94,31 +162,12 @@ fn print_overlay_diff(
 
     // Full `uses` graph (not `build_own`): diff reports on everything an
     // overlay pulls in, exactly like `status` and `Overlay::apply` do.
-    let desired = DesiredTree::build(&ctx, overlay)?;
-    let report = Report::build(&desired)?;
-
-    ui::info(format!(
-        "{} {} {} {} {}",
-        emojis::PACKAGE,
-        style::white_b("Overlay"),
-        style::cyan(&overlay.name),
-        style::white_b("->"),
-        style::cyan(&short_path(&target.to_string_lossy())),
-    ))
-    .ok();
-
-    if !report.needs_attention() {
-        ui::info(format!("  {}", style::white("no differences"))).ok();
-    }
-
-    for diff_entry in report.entries() {
-        if cli.verbose || diff_entry.needs_attention() {
-            ui::info(format!("  {diff_entry}")).ok();
-        }
-    }
-    ui::info("").ok();
-
-    Ok(())
+    let overlay = overlay.clone();
+    tokio::task::spawn_blocking(move || {
+        let desired = DesiredTree::build(&ctx, &overlay)?;
+        Report::build(&desired, &views)
+    })
+    .await?
 }
 
 #[cfg(test)]
@@ -140,6 +189,9 @@ mod tests {
             root: Some(root),
             no_uses: false,
             all: false,
+            staged: false,
+            all_changes: false,
+            difftool: false,
         }
     }
 

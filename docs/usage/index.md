@@ -19,7 +19,7 @@ workflows.
 | [`over doctor`](doctor.md) | Check the environment and overlays for issues |
 | [`over completion`](completion.md) | Generate shell completion scripts |
 | [`over status`](status.md) | Inspect resolved configuration and reconciliation health |
-| [`over diff`](diff.md) | Show differences between desired and actual overlay state |
+| [`over diff`](diff.md) | Show Git changes for managed overlay paths, with staged and difftool views |
 | [`over sync`](sync.md) | Reconcile a checkout-materialized overlay with its git source |
 | [`over unapply`](unapply.md) | Remove a given overlay's own entries from the target |
 | [`over commit`](commit.md) | Commit local changes in a checkout-materialized overlay back to its source repository |

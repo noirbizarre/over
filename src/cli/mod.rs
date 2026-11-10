@@ -96,10 +96,7 @@ pub enum Commands {
     )]
     Status(status::Params),
 
-    #[clap(
-        name = "diff",
-        about = "Show differences between desired and actual overlay state"
-    )]
+    #[clap(name = "diff", about = "Show Git changes for managed overlay paths")]
     Diff(diff::Params),
 
     #[clap(

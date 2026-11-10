@@ -1,6 +1,8 @@
 # ADR-013: `diff` has its own taxonomy and uses `similar` for content diffs, amending ADR-011
 
-**Status:** accepted
+**Status:** command presentation superseded by
+[ADR-026](026-git-aware-diff-delegates-presentation-to-git.md). The legacy
+reconciliation model and partial-block renderer remain available.
 
 ## Context
 

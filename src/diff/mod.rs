@@ -1,4 +1,8 @@
-//! Overlay diff (#109): compares desired rendered content/metadata
+//! Git-aware command comparisons live in [`git`], independently of deployment
+//! health. The legacy reconciliation report below remains available to library
+//! consumers; its content renderer also serves partial-block diagnostics.
+//!
+//! Legacy overlay diff (#109): compares desired rendered content/metadata
 //! against actual filesystem (and git) state, so differences are
 //! inspectable before reconciliation.
 //!
@@ -28,6 +32,7 @@
 //!   merge mechanics are #110's job, not this one's.
 
 mod content;
+pub(crate) mod git;
 
 use std::fmt;
 use std::fs;

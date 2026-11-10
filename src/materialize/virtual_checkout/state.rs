@@ -94,10 +94,17 @@ pub(crate) fn verify_live_target_in(
     state_file: &StateFile<VirtualCheckoutState>,
     entry: &crate::desired::DesiredEntry,
 ) -> Result<()> {
+    let state = state_file.inspect_blocking()?;
+    verify_live_target_snapshot(&state, entry)
+}
+
+pub(crate) fn verify_live_target_snapshot(
+    state: &VirtualCheckoutState,
+    entry: &crate::desired::DesiredEntry,
+) -> Result<()> {
     let crate::desired::Provenance::Overlay { overlay, source } = &entry.provenance else {
         anyhow::bail!("virtual checkout has no overlay source");
     };
-    let state = state_file.inspect_blocking()?;
     let desired_key = key_for(&entry.target);
     for (target, record) in &state.checkouts {
         if target == &desired_key || &record.overlay != overlay {
@@ -153,7 +160,7 @@ pub(crate) fn state_file() -> Result<StateFile<VirtualCheckoutState>> {
 /// for a target that has just been materialized (so it exists), but
 /// there's no reason to make this key computation itself fallible for a
 /// clearly non-fatal, best-effort concern.
-fn key_for(target: &Path) -> String {
+pub(crate) fn key_for(target: &Path) -> String {
     let resolved = target.canonicalize().unwrap_or_else(|_| {
         if target.is_absolute() {
             target.to_path_buf()

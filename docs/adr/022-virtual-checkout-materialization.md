@@ -10,6 +10,11 @@ The ownership and automatic-recording decisions below are amended by
 [ADR-025](025-directory-mappings-and-checkout-staging.md): mappings partition
 checkouts, and `over add` stages snapshots before a staged-only `over commit`.
 
+Diff views are amended by
+[ADR-026](026-git-aware-diff-delegates-presentation-to-git.md): recorded
+base/index and index/target comparisons use private snapshots and Git's
+configured presentation, independently of aggregate checkout status.
+
 ## Context
 
 Issue #141 asks for a second, distinct materialization mode: an overlay's

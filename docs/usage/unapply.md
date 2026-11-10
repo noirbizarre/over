@@ -32,8 +32,9 @@ Only the selected overlay's own entries are removed.
 
 `unapply` never trusts a persisted record of what a previous `apply` did.
 Instead it re-walks the overlay's current desired state and compares it,
-read-only, against actual filesystem/git state — the same
-`DesiredTree`/`Plan` model `apply`/`status`/`diff` already share — and only
+read-only, against actual filesystem/git state using the reconciliation model
+shared with `apply` and `status`. `diff` shares desired-state selection but
+presents Git changes independently. `unapply` only
 removes an entry that *still* matches exactly what the overlay would
 materialize there right now:
 
