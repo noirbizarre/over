@@ -79,6 +79,25 @@ impl DesiredTree {
         &self.entries
     }
 
+    /// Find the outermost scaffold that must be replaced before inspecting a child.
+    pub(crate) fn blocking_scaffold(&self, target: &Path) -> Result<Option<PathBuf>> {
+        let ancestors: Vec<_> = target.ancestors().skip(1).collect();
+        for ancestor in ancestors.into_iter().rev() {
+            if !self.entries.iter().any(|entry| {
+                entry.target == ancestor && matches!(entry.intent, MaterializationIntent::Directory)
+            }) {
+                continue;
+            }
+            match ancestor.symlink_metadata() {
+                Ok(metadata) if !metadata.is_dir() => return Ok(Some(ancestor.to_path_buf())),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(None)
+    }
+
     /// Reject incompatible claims independently of deployment authorization.
     pub fn validate_ownership(&self) -> Result<()> {
         let issues = super::ownership::check(self);

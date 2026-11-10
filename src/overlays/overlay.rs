@@ -546,8 +546,19 @@ impl Overlay {
             ui::info(format!("{plan}")).ok();
         }
         plan.validate_boundaries()?;
+        if self.git.is_some() && plan.has_blocked_children() {
+            // Parallel clone provisioning cannot run through an obstructed scaffold.
+            // The plan authorizes its replacement before provisioning inspects children.
+            plan.prepare_scaffolds(ctx_with_target.clone()).await?;
+            plan = Plan::build(&desired)?;
+            plan.validate_boundaries()?;
+        }
         // Classify every ownership scope before cloning can mutate a destination.
-        actions::git::clone_repositories(ctx.clone(), self, &target).await?;
+        if !ctx.dry_run || !plan.has_blocked_children() {
+            // A preview cannot inspect clone destinations through a scaffold it
+            // deliberately leaves intact; the plan reports those pending children.
+            actions::git::clone_repositories(ctx.clone(), self, &target).await?;
+        }
         if self.git.is_some() {
             // Cloning may already perform a legacy-checkout migration;
             // never execute the stale pre-clone destructive operation.

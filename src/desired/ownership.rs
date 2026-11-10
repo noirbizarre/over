@@ -114,17 +114,28 @@ pub(crate) fn check(tree: &DesiredTree) -> Vec<OwnershipIssue> {
     let locations: Vec<_> = tree
         .entries()
         .iter()
-        .map(|entry| match mapping::location(&entry.target) {
-            Ok(location) => Some(location),
-            Err(error) => {
-                diagnostics.push(OwnershipIssue {
-                    key: None,
-                    message: format!(
-                        "cannot resolve ownership location '{}': {error:#}",
-                        entry.target.display()
-                    ),
-                });
-                None
+        .map(|entry| {
+            match mapping::location(&entry.target).or_else(|error| {
+                // Only an explicitly managed scaffold can authorize a future namespace;
+                // an unrelated ENOTDIR must remain an error rather than look absent.
+                match tree.blocking_scaffold(&entry.target)? {
+                    Some(parent) => {
+                        Ok(mapping::location(&parent)?.join(entry.target.strip_prefix(parent)?))
+                    }
+                    None => Err(error),
+                }
+            }) {
+                Ok(location) => Some(location),
+                Err(error) => {
+                    diagnostics.push(OwnershipIssue {
+                        key: None,
+                        message: format!(
+                            "cannot resolve ownership location '{}': {error:#}",
+                            entry.target.display()
+                        ),
+                    });
+                    None
+                }
             }
         })
         .collect();

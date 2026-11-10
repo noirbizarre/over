@@ -114,6 +114,13 @@ mod tests {
     }
 
     #[test]
+    fn a_child_of_a_regular_file_is_an_inspection_error_not_a_missing_path() {
+        let td = TempDir::new().unwrap();
+        td.child("blocker").write_str("keep").unwrap();
+        assert!(inspect(&td.path().join("blocker/child")).is_err());
+    }
+
+    #[test]
     fn real_directory_reports_directory() {
         let td = TempDir::new().unwrap();
         let dir = td.child("adir");
