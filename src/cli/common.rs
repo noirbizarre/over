@@ -2,12 +2,10 @@ use std::env::current_dir;
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow, bail};
-use dialoguer::FuzzySelect;
 use dirs::home_dir;
 
 use crate::exec;
-use crate::overlays::{Overlay, Repository};
-use crate::ui::style::DialogTheme;
+use crate::overlays::Overlay;
 
 /// Check whether a string contains glob metacharacters.
 pub fn is_glob_pattern(s: &str) -> bool {
@@ -81,43 +79,42 @@ pub(crate) fn resolve_inputs_with_missing(
     Ok(resolved)
 }
 
-/// Resolve which overlay a single-`NAME`-argument command (`apply`,
-/// `unapply`) should act on: an explicit CLI name always wins; if
-/// omitted, the repository's templated `default_overlay` is tried next
-/// (#128); only if neither applies does this fall back to the existing
-/// interactive `FuzzySelect` prompt.
-pub fn select_overlay(
-    repo: &Repository,
-    ctx: &exec::Context,
-    name: Option<&str>,
-    prompt: &str,
-) -> Result<Overlay> {
-    if let Some(name) = name {
-        return repo.get(name);
+/// Resolve single-overlay commands without guessing or prompting on ambiguity.
+pub fn select_overlay(ctx: &exec::Context, name: Option<&str>) -> Result<Overlay> {
+    crate::selection::select(ctx, name, &[], true)
+}
+
+/// Re-run a cwd-sensitive test alone, including when libtest runs tests in parallel.
+#[cfg(test)]
+pub(crate) fn run_in_isolated_process() -> bool {
+    const CHILD: &str = "OVER_CLI_ISOLATED_TEST";
+    let thread = std::thread::current();
+    let name = thread.name().expect("test thread has a name");
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return false;
     }
-    if let Some(overlay) = repo.default_overlay(ctx)? {
-        return Ok(overlay);
-    }
-    // No-prompt callers (including commit) must fail before dialoguer touches the terminal.
-    if ctx.no_prompt {
-        bail!("overlay selection requires an explicit name or default_overlay with --no-prompt");
-    }
-    let overlays = repo.overlays()?;
-    if overlays.is_empty() {
-        bail!("no overlays found in repository");
-    }
-    let selection = FuzzySelect::with_theme(&DialogTheme::default())
-        .with_prompt(prompt)
-        .default(0)
-        .items(&overlays[..])
-        .interact()
-        .map_err(|e| anyhow!("overlay selection cancelled: {}", e))?;
-    Ok(overlays[selection].clone())
+    let temp = assert_fs::TempDir::new().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture", "--test-threads=1"])
+        .env(CHILD, name)
+        // Set process-global inputs before any child runtime threads start.
+        .env("XDG_STATE_HOME", temp.path().join("state"))
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{name}:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::overlays::Repository;
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use rstest::rstest;
@@ -132,6 +129,9 @@ mod tests {
         #[case] default: Option<&str>,
         #[case] succeeds: bool,
     ) {
+        if run_in_isolated_process() {
+            return;
+        }
         let temp = TempDir::new().unwrap();
         temp.child("ov/over.toml")
             .write_str("target = '~'")
@@ -146,10 +146,15 @@ mod tests {
             .repository(repo.clone())
             .no_prompt(true)
             .build();
-        let result = select_overlay(&repo, &ctx, name, "Select");
+        let result = select_overlay(&ctx, name);
         assert_eq!(result.is_ok(), succeeds);
         if name.is_none() && default.is_none() {
-            assert!(result.unwrap_err().to_string().contains("no-prompt"));
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("cannot infer an overlay")
+            );
         }
     }
 
@@ -255,13 +260,15 @@ mod tests {
 
         let repo = Repository::new(tmp.path().to_path_buf());
         let ctx = exec::Context::builder().repository(repo.clone()).build();
-        let overlay =
-            select_overlay(&repo, &ctx, Some("explicit-one"), "Choose an overlay").unwrap();
+        let overlay = select_overlay(&ctx, Some("explicit-one")).unwrap();
         assert_eq!(overlay.name, "explicit-one");
     }
 
     #[test]
     fn select_overlay_uses_default_when_name_omitted() {
+        if run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("over.toml"),
@@ -274,21 +281,27 @@ mod tests {
 
         let repo = Repository::new(tmp.path().to_path_buf());
         let ctx = exec::Context::builder().repository(repo.clone()).build();
-        let overlay = select_overlay(&repo, &ctx, None, "Choose an overlay").unwrap();
+        let overlay = select_overlay(&ctx, None).unwrap();
         assert_eq!(overlay.name, "myoverlay");
     }
 
     #[test]
     fn select_overlay_no_default_and_empty_repo_errors() {
+        if run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let repo = Repository::new(tmp.path().to_path_buf());
         let ctx = exec::Context::builder().repository(repo.clone()).build();
-        let result = select_overlay(&repo, &ctx, None, "Choose an overlay");
+        let result = select_overlay(&ctx, None);
         assert!(result.is_err());
     }
 
     #[test]
     fn select_overlay_misconfigured_default_errors_without_prompting() {
+        if run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("over.toml"),
@@ -299,7 +312,7 @@ mod tests {
         let ctx = exec::Context::builder().repository(repo.clone()).build();
         // Must error, not silently fall through to an interactive prompt
         // that would hang the test suite waiting on stdin.
-        let result = select_overlay(&repo, &ctx, None, "Choose an overlay");
+        let result = select_overlay(&ctx, None);
         assert!(result.is_err());
     }
 }

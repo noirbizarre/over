@@ -15,7 +15,7 @@ use crate::ui;
 #[derive(Args, Debug)]
 pub struct Params {
     #[clap(
-        help = "Name of the overlay to check (default_overlay if configured, all overlays otherwise)"
+        help = "Name of the overlay to check (infer context, then default_overlay, then all overlays)"
     )]
     name: Option<String>,
 
@@ -75,7 +75,9 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 .root(root.clone())
                 .repository(repo.clone())
                 .build();
-            match repo.default_overlay(&ctx)? {
+            match tokio::task::spawn_blocking(move || crate::selection::infer_or_default(&ctx))
+                .await??
+            {
                 Some(overlay) => vec![overlay],
                 None => repo.overlays()?,
             }
@@ -203,6 +205,9 @@ mod tests {
 
     #[tokio::test]
     async fn diff_empty_repository() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(&cli, &params(None, tmp.path().to_path_buf())).await;
@@ -211,6 +216,9 @@ mod tests {
 
     #[tokio::test]
     async fn diff_missing_overlay_target_reports_missing() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -226,6 +234,9 @@ mod tests {
 
     #[tokio::test]
     async fn diff_named_overlay_only() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -242,6 +253,9 @@ mod tests {
 
     #[tokio::test]
     async fn diff_unknown_overlay_errors() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -257,6 +271,9 @@ mod tests {
 
     #[tokio::test]
     async fn diff_conflicting_file_shows_content_diff() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -273,6 +290,9 @@ mod tests {
 
     #[tokio::test]
     async fn diff_multiple_overlays() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -291,6 +311,9 @@ mod tests {
     /// instead of reporting on every overlay (#128).
     #[tokio::test]
     async fn diff_default_overlay_narrows_omitted_name() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("over.toml"), "default_overlay = \"alpha\"").unwrap();
         let root = tmp.child("root");
@@ -310,6 +333,9 @@ mod tests {
     /// `default_overlay` is configured (#128).
     #[tokio::test]
     async fn diff_all_flag_overrides_configured_default() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("over.toml"), "default_overlay = \"alpha\"").unwrap();
         let root = tmp.child("root");
@@ -331,6 +357,9 @@ mod tests {
     /// not a silent fallback to "all overlays" (#128).
     #[tokio::test]
     async fn diff_misconfigured_default_overlay_errors() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         fs::write(
             tmp.path().join("over.toml"),

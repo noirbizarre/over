@@ -61,7 +61,11 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .ok_or_else(|| anyhow!("could not determine home directory"))?;
 
     let (name, revision) = select_input(&repo, args)?;
-    let (git_repo, managed_path, label) = resolve_scope(&repo, &root, name)?;
+    let scope_repo = repo.clone();
+    let name = name.map(str::to_owned);
+    let (git_repo, managed_path, label) =
+        tokio::task::spawn_blocking(move || resolve_scope(&scope_repo, &root, name.as_deref()))
+            .await??;
     let entries = log_scoped_entries(&git_repo, &managed_path, args.limit, revision)?;
     let colors = log_colors_enabled();
 
@@ -123,19 +127,22 @@ fn resolve_scope(
             .map(|(git_repo, managed_path)| (git_repo, managed_path, name.to_string()));
     }
 
-    // No name given: guess from the current directory — the first overlay
-    // (by longest/most-specific resolved target) whose virtual checkout
-    // contains the current directory.
-    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let ctx = Context::builder()
+        .root(root.to_path_buf())
+        .repository(repo.clone())
+        .build();
+    let inferred = crate::selection::infer(&ctx, &[])?;
+    let cwd = ctx.absolute_path(Path::new("."))?;
+    // Selection identifies an overlay; history still honors its containing checkout unit.
     let mut best: Option<(usize, GitRepository, HistoryScope, String)> = None;
-    for overlay in repo.overlays()? {
+    for overlay in inferred.iter() {
         let ctx = Context::builder()
             .root(root.to_path_buf())
             .repository(repo.clone())
             .overlay(overlay.clone())
             .build();
         let ctx = ctx.resolve_data()?;
-        let desired = match DesiredTree::build_own(&ctx, &overlay) {
+        let desired = match DesiredTree::build_own(&ctx, overlay) {
             Ok(desired) => desired,
             Err(error) => {
                 // Inference must not make unrelated machine-specific configs mandatory.
@@ -182,6 +189,12 @@ fn resolve_scope(
 
     if let Some((_, git_repo, scope, name)) = best {
         return Ok((git_repo, vec![scope], name));
+    }
+
+    if let Some(overlay) = inferred {
+        return checkout_scope(repo, root, &overlay)
+            .with_context(|| format!("overlay '{}' is not checkout-materialized", overlay.name))
+            .map(|(git_repo, managed)| (git_repo, managed, overlay.name));
     }
 
     // Nothing matched (or matched but isn't checkout-materialized): fall
@@ -578,25 +591,6 @@ mod tests {
         CLI::parse_from(vec!["over", "--home", home.to_str().unwrap()])
     }
 
-    /// Points `$XDG_STATE_HOME` at a fresh, writable temp dir for the
-    /// duration of the returned guard's lifetime — `execute` runs the real
-    /// `over log` command end to end, which reads `VirtualCheckoutState`
-    /// via the real, non-injectable `XdgDirs::new()` for `VirtualCheckout`
-    /// overlays, so every test here must isolate this or it silently
-    /// touches the real `$XDG_STATE_HOME/over/virtual_checkout.toml`.
-    ///
-    /// # Safety
-    /// `env::set_var` is only unsound when other threads read/write the
-    /// process environment concurrently; `cargo nextest` runs each test in
-    /// its own process, matching `xdg::tests`' own `set_env` justification.
-    fn isolate_xdg_state() -> TempDir {
-        let tmp = TempDir::new().unwrap();
-        unsafe {
-            std::env::set_var("XDG_STATE_HOME", tmp.path());
-        }
-        tmp
-    }
-
     fn params(name: Option<&str>, root: PathBuf) -> Params {
         params_with_limit(name, root, 20)
     }
@@ -848,11 +842,13 @@ mod tests {
         #[case] error: &str,
         #[values(false, true)] infer: bool,
     ) {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let (git_repo, _) = setup_nested_checkout_overlay(tmp.path());
         tmp.child("invalid/over.toml").write_str(config).unwrap();
         let repo = Repository::new(tmp.path().to_path_buf());
-        // Matching the real cwd avoids process-global cwd changes while testing inference.
         let root = if infer {
             std::env::current_dir().unwrap()
         } else {
@@ -886,7 +882,9 @@ mod tests {
 
     #[tokio::test]
     async fn log_named_non_checkout_overlay_errors() {
-        let _xdg = isolate_xdg_state();
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -901,7 +899,9 @@ mod tests {
 
     #[tokio::test]
     async fn log_named_checkout_overlay_lists_commits() {
-        let _xdg = isolate_xdg_state();
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let ov = tmp.path().join("dotfiles");
         fs::create_dir_all(&ov).unwrap();
@@ -922,7 +922,9 @@ mod tests {
 
     #[tokio::test]
     async fn log_no_name_falls_back_to_whole_repository() {
-        let _xdg = isolate_xdg_state();
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         init_repo(tmp.path());
         fs::write(tmp.path().join("README.md"), "hello").unwrap();
@@ -983,7 +985,9 @@ mod tests {
 
     #[tokio::test]
     async fn log_limit_flag_is_honored_end_to_end() {
-        let _xdg = isolate_xdg_state();
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let (repo, ov) = setup_nested_checkout_overlay(tmp.path());
         fs::write(ov.join("a.txt"), "changed").unwrap();
@@ -1003,9 +1007,13 @@ mod tests {
 
     #[tokio::test]
     async fn log_no_name_guesses_the_overlay_from_the_current_directory() {
-        let _xdg = isolate_xdg_state();
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
-        let (_, ov) = setup_nested_checkout_overlay(tmp.path());
+        let (git_repo, _) = setup_nested_checkout_overlay(tmp.path());
+        fs::write(tmp.path().join("unrelated.txt"), "unrelated").unwrap();
+        commit_all(&git_repo, "unrelated change");
 
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -1020,13 +1028,22 @@ mod tests {
             .build();
         overlay.apply(&ctx).await.unwrap();
 
-        let original_cwd = std::env::current_dir().unwrap();
+        // Only this subprocess changes cwd, and make_cli must preserve the inference input.
         std::env::set_current_dir(root.path()).unwrap();
         let cli = make_cli(tmp.path().to_path_buf());
+        assert_eq!(std::env::current_dir().unwrap(), root.path());
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let (resolved, scopes, label) = resolve_scope(&repo, root.path(), None).unwrap();
+        assert_eq!(resolved.path(), git_repo.path());
+        assert_eq!(label, "dotfiles");
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].managed, Path::new("dotfiles"));
+        // Whole-repository fallback also succeeds, so verify it cannot leak unrelated history.
+        let entries = log_scoped_entries(&resolved, &scopes, 20, None).unwrap();
+        let summaries: Vec<_> = entries.iter().map(|entry| entry.summary.as_str()).collect();
+        assert_eq!(summaries, vec!["initial"]);
         let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
-        std::env::set_current_dir(original_cwd).unwrap();
 
         assert!(result.is_ok(), "log should succeed: {:?}", result.err());
-        let _ = ov;
     }
 }

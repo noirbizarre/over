@@ -568,7 +568,7 @@ fn current_ignore_policy_cannot_be_bypassed_by_a_historical_source() {
 }
 
 #[test]
-fn configured_defaults_select_an_overlay_and_overlapping_inference_is_ambiguous() {
+fn overlapping_inference_remains_ambiguous_with_a_default_and_accepts_an_explicit_override() {
     let fixture = Fixture::new();
     fs::create_dir(fixture.source.join("other")).unwrap();
     fs::write(
@@ -594,9 +594,21 @@ fn configured_defaults_select_an_overlay_and_overlapping_inference_is_ambiguous(
         b"preserved\n"
     );
     fs::write(fixture.source.join("over.toml"), "default_overlay = 'ov'\n").unwrap();
+    let output = fixture
+        .command("restore")
+        .arg(fixture.target.join("file"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ambiguous overlay"));
+    assert_eq!(
+        fs::read(fixture.target.join("file")).unwrap(),
+        b"preserved\n"
+    );
     checked(
         fixture
             .command("restore")
+            .args(["--overlay", "ov"])
             .arg(fixture.target.join("file"))
             .output()
             .unwrap(),

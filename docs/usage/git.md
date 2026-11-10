@@ -12,10 +12,12 @@ repository is distinct from the source overlay repository selected by `--home`.
 | [`over git status`](over-git-status.md) | Inspect the associated overlay from the host repository |
 
 Mount records the selected overlay in the host's Git config as `over.overlay`.
-Mount and add accept `--overlay` to override this association and prompt when
-neither is available. Status requires an existing association and reports an
-error if none is configured. These commands do not use `default_overlay` as their
-association-selection fallback.
+Mount and add accept `--overlay` to override this association, then use
+[contextual inference](selection.md) when omitted. Missing or ambiguous selection
+requires an explicit overlay. Status requires an existing association and reports
+an error if none is configured. These commands do not use `default_overlay` as
+their association-selection fallback. Only repository-local or enabled worktree
+associations count; worktree values override shared local values.
 
 From an existing host repository, with a matching overlay already defined:
 

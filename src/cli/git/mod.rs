@@ -1,11 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use clap::Subcommand;
 
 use crate::cli::CLI;
 use crate::overlays::{Overlay, Repository};
-use crate::ui::style::DialogTheme;
 
 mod add;
 mod mount;
@@ -71,15 +70,7 @@ pub fn main_repo_root(repo: &git2::Repository) -> Result<PathBuf> {
 
 /// Read `over.overlay` from the repository's local git config.
 pub fn get_overlay_config(repo: &git2::Repository) -> Result<Option<String>> {
-    let config = repo.config()?;
-    match config.get_string("over.overlay") {
-        Ok(name) => Ok(Some(name)),
-        Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
-        Err(e) => Err(anyhow!(
-            "failed to read over.overlay from git config: {}",
-            e
-        )),
-    }
+    crate::actions::git::association::read(repo)
 }
 
 /// Write `over.overlay` to the repository's local git config.
@@ -123,38 +114,16 @@ pub fn select_overlay(
     git_repo: &git2::Repository,
     overlay_name: Option<&str>,
 ) -> Result<Overlay> {
-    select_overlay_with(over_repo, git_repo, overlay_name, |overlays| {
-        dialoguer::FuzzySelect::with_theme(&DialogTheme::default())
-            .with_prompt("Choose the target overlay")
-            .default(0)
-            .items(overlays)
-            .interact()
-            .map_err(|e| anyhow!("overlay selection cancelled: {}", e))
-    })
-}
-
-fn select_overlay_with(
-    over_repo: &Repository,
-    git_repo: &git2::Repository,
-    overlay_name: Option<&str>,
-    select: impl FnOnce(&[Overlay]) -> Result<usize>,
-) -> Result<Overlay> {
-    if let Some(name) = overlay_name {
-        return over_repo.get(name);
-    }
-
-    // Try git config
-    if let Some(name) = get_overlay_config(git_repo)? {
-        return over_repo.get(&name);
-    }
-
-    // Interactive selection
-    let overlays = over_repo.overlays()?;
-    if overlays.is_empty() {
-        bail!("no overlays found in repository");
-    }
-
-    Ok(overlays[select(&overlays)?].clone())
+    let ctx = crate::exec::Context::builder()
+        .repository(over_repo.clone())
+        .root(dirs::home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?)
+        .build();
+    let path = match git_repo.workdir() {
+        Some(path) => path.to_path_buf(),
+        // Bare workspaces own their siblings, not the Git administration directory's children.
+        None => main_repo_root(git_repo)?,
+    };
+    crate::selection::select(&ctx, overlay_name, &[path], false)
 }
 
 #[cfg(test)]
@@ -167,13 +136,37 @@ mod tests {
     #[test]
     fn selecting_an_unassociated_overlay_does_not_publish_configuration() {
         let td = TempDir::new().unwrap();
-        td.child("ov/over.toml").write_str("target = '~'").unwrap();
-        let over_repo = Repository::new(td.path().to_path_buf());
         let (_gtd, git_repo) = temp_git_repo();
+        td.child("ov/over.toml")
+            .write_str(&format!(
+                "target = '{}'",
+                git_repo.workdir().unwrap().display()
+            ))
+            .unwrap();
+        let over_repo = Repository::new(td.path().to_path_buf());
         let before = fs::read(git_repo.path().join("config")).unwrap();
-        let overlay = select_overlay_with(&over_repo, &git_repo, None, |_| Ok(0)).unwrap();
+        let overlay = select_overlay(&over_repo, &git_repo, None).unwrap();
         assert_eq!(overlay.name, "ov");
         assert_eq!(fs::read(git_repo.path().join("config")).unwrap(), before);
+        assert_eq!(get_overlay_config(&git_repo).unwrap(), None);
+    }
+
+    #[test]
+    fn an_unassociated_bare_workspace_uses_its_managed_siblings_for_inference() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        let git_repo = git2::Repository::init_bare(workspace.join(".git")).unwrap();
+        for name in ["one", "two"] {
+            temp.child(format!("over/{name}/over.toml"))
+                .write_str(&format!("target = '{}'", workspace.display()))
+                .unwrap();
+        }
+        temp.child("over/one/file").write_str("managed").unwrap();
+        let over_repo = Repository::new(temp.path().join("over"));
+        assert_eq!(
+            select_overlay(&over_repo, &git_repo, None).unwrap().name,
+            "one"
+        );
         assert_eq!(get_overlay_config(&git_repo).unwrap(), None);
     }
 

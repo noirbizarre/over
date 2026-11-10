@@ -19,6 +19,8 @@ fn descriptor(repo: &Path, name: &str, content: &str) -> std::io::Result<()> {
 
 fn command(repo: &Path) -> Result<Command, Box<dyn Error>> {
     let mut command = Command::cargo_bin("over")?;
+    // Contextual selection must not inherit the developer checkout's Git association.
+    command.current_dir(repo.parent().unwrap());
     command.arg("--home").arg(repo).arg("data");
     Ok(command)
 }
@@ -164,6 +166,7 @@ fn the_environment_can_select_the_repository() -> TestResult {
     descriptor(repo.path(), "host", "data: {source: environment}")?;
     assert_json(
         Command::cargo_bin("over")?
+            .current_dir(repo.path().parent().unwrap())
             .env("OVER_HOME", repo.path())
             .arg("data"),
         json!({"source": "environment"}),
@@ -191,7 +194,7 @@ fn diagnostic_flags_do_not_contaminate_json_stdout(#[case] flag: &str) -> TestRe
 }
 
 #[rstest]
-#[case("{}", None, "{}", "provide NAME or configure default_overlay")]
+#[case("{}", None, "{}", "cannot infer an overlay")]
 #[case("{}", Some("missing"), "{}", "overlay 'missing' not found")]
 #[case("default_overlay: missing", None, "{}", "default_overlay")]
 #[case("default_overlay: missing", Some("selected"), "{}", "default_overlay")]

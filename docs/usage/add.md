@@ -10,7 +10,7 @@ Arguments:
 
 Options:
   -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME=]
-  -o, --overlay <OVERLAY>  Name of the target overlay
+  -o, --overlay <OVERLAY>  Select the target overlay (otherwise infer from file context)
   -d, --debug              Toggle debug traces
   -r, --target <TARGET>    Set the target directory (defaults to ~) [env: OVER_TARGET=]
   -n, --dry-run            Run without applying changes
@@ -19,6 +19,10 @@ Options:
   -p, --patch              Interactively stage virtual-checkout changes by hunk
   -h, --help               Print help
 ```
+
+Without `--overlay`, [infer from the input paths](selection.md). Managed siblings
+can identify an overlay for a new file. Ambiguous or missing context requires an
+explicit overlay; `default_overlay` does not select an ingestion destination.
 
 For symlink materialization, files are moved into the overlay and replaced
 in place by a symlink pointing back at the overlay copy — the same

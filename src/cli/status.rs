@@ -15,7 +15,7 @@ use crate::ui;
 #[derive(Args, Debug)]
 pub struct Params {
     #[clap(
-        help = "Name of the overlay to check (default_overlay if configured, all overlays otherwise)"
+        help = "Name of the overlay to check (infer context, then default_overlay, then all overlays)"
     )]
     name: Option<String>,
 
@@ -64,8 +64,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 .repository(repo.clone())
                 .build();
             // Drop secret-bearing parser/template causes while preserving diagnostic context.
-            match repo
-                .default_overlay(&ctx)
+            match tokio::task::spawn_blocking(move || crate::selection::infer_or_default(&ctx))
+                .await?
                 .map_err(|error| anyhow!("{error}"))?
             {
                 Some(overlay) => vec![Ok(overlay)],
@@ -281,6 +281,9 @@ mod tests {
 
     #[tokio::test]
     async fn status_empty_repository() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(&cli, &params(None, tmp.path().to_path_buf())).await;
@@ -289,6 +292,9 @@ mod tests {
 
     #[tokio::test]
     async fn status_missing_overlay_target_reports_missing() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -304,6 +310,9 @@ mod tests {
 
     #[tokio::test]
     async fn status_named_overlay_only() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -320,6 +329,9 @@ mod tests {
 
     #[tokio::test]
     async fn status_unknown_overlay_errors() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -338,6 +350,9 @@ mod tests {
     /// create the block as a side effect, even though it returns an unhealthy exit.
     #[tokio::test]
     async fn status_reports_a_missing_exclude_block_with_failure_without_writing() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -364,6 +379,9 @@ mod tests {
 
     #[tokio::test]
     async fn status_conflicting_file_is_reported() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -380,6 +398,9 @@ mod tests {
 
     #[tokio::test]
     async fn status_multiple_overlays() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
@@ -398,6 +419,9 @@ mod tests {
     /// instead of reporting on every overlay (#128).
     #[tokio::test]
     async fn status_default_overlay_narrows_omitted_name() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("over.toml"), "default_overlay = \"alpha\"").unwrap();
         let root = tmp.child("root");
@@ -417,6 +441,9 @@ mod tests {
     /// `default_overlay` is configured (#128).
     #[tokio::test]
     async fn status_all_flag_overrides_configured_default() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("over.toml"), "default_overlay = \"alpha\"").unwrap();
         let root = tmp.child("root");
@@ -438,6 +465,9 @@ mod tests {
     /// not a silent fallback to "all overlays" (#128).
     #[tokio::test]
     async fn status_misconfigured_default_overlay_errors() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
         let tmp = TempDir::new().unwrap();
         fs::write(
             tmp.path().join("over.toml"),

@@ -2,6 +2,11 @@
 
 **Status:** accepted
 
+**Amended by #228:** [Contextual overlay selection](../usage/selection.md) now
+precedes the configured default. Missing single-overlay selection reports an
+actionable error instead of prompting; ambiguous context never falls through.
+The default metadata-composition contract below remains in effect.
+
 ## Context
 
 \#113 asks for a repository root that can designate one overlay as the

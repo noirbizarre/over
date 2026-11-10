@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result};
 use clap::Args;
 
 use crate::cli::CLI;
@@ -19,14 +19,15 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let repo = Repository::new(cli.resolve_home()?);
     let ctx = Context::builder()
         .repository(repo.clone())
+        .root(dirs::home_dir().context("could not determine home directory")?)
         .no_prompt(true)
         .build();
-    let selected = match &args.name {
-        Some(name) => repo.get(name)?,
-        None => repo.default_overlay(&ctx)?.ok_or_else(|| {
-            anyhow!("no overlay selected; provide NAME or configure default_overlay")
-        })?,
-    };
+    let explicit = args.name.clone();
+    let selection_ctx = ctx.clone();
+    let selected = tokio::task::spawn_blocking(move || {
+        crate::selection::select(&selection_ctx, explicit.as_deref(), &[], true)
+    })
+    .await??;
     let data = repo.resolve_data(&ctx, Some(&selected))?;
 
     // Serialize before writing so a serialization error cannot leave partial JSON on stdout.

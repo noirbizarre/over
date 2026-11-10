@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use clap::Args;
-use dialoguer::{FuzzySelect, Input};
+use dialoguer::Input;
 use dirs::home_dir;
 
 use crate::actions::symlink::SymlinkConfig;
@@ -19,7 +19,11 @@ pub struct Params {
     #[clap(required = true, help = "Files, directories, or glob patterns to add")]
     files: Vec<String>,
 
-    #[clap(short, long, help = "Name of the target overlay")]
+    #[clap(
+        short,
+        long,
+        help = "Select the target overlay (otherwise infer from file context)"
+    )]
     overlay: Option<String>,
 
     #[clap(
@@ -56,27 +60,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         tracing::debug!(?repo, "repository");
     }
 
-    let overlay = match &args.overlay {
-        Some(name) => repo.get(name)?,
-        None => {
-            let overlays = repo.overlays()?;
-            if overlays.is_empty() {
-                bail!("no overlays found in repository");
-            }
-            let selection = FuzzySelect::with_theme(&DialogTheme::default())
-                .with_prompt("Choose the target overlay")
-                .default(0)
-                .items(&overlays[..])
-                .interact()
-                .map_err(|e| anyhow!("overlay selection cancelled: {}", e))?;
-            overlays[selection].clone()
-        }
-    };
-
-    if cli.debug {
-        tracing::debug!(?overlay, "resolved overlay");
-    }
-
     let ctx = Context::builder()
         .dry_run(args.dry_run)
         .debug(cli.debug)
@@ -89,11 +72,20 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 .ok_or_else(|| anyhow!("could not determine home directory"))?,
         )
         .repository(repo)
-        .overlay(overlay.clone())
         .build();
 
     let resolved = resolve_inputs_with_missing(&args.files, true)?;
-    let ctx = ctx.resolve_data()?;
+    let selection_ctx = ctx.clone();
+    let paths = resolved.clone();
+    let explicit = args.overlay.clone();
+    let overlay = tokio::task::spawn_blocking(move || {
+        crate::selection::select(&selection_ctx, explicit.as_deref(), &paths, false)
+    })
+    .await??;
+    if cli.debug {
+        tracing::debug!(?overlay, "resolved overlay");
+    }
+    let ctx = ctx.with_overlay(overlay.clone()).resolve_data()?;
     let routing = overlay.resolve_mappings(&ctx)?;
     for path in &resolved {
         routing.logical_path_for(path)?;

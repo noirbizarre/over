@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
 use clap::Args;
-use dialoguer::{FuzzySelect, MultiSelect};
+use dialoguer::MultiSelect;
 use dirs::home_dir;
 use noyalib::compat::serde_yaml as serde_yml;
 
@@ -15,12 +15,16 @@ use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
 use super::{
-    CLI, discover_repo, get_overlay_config, main_repo_root, repo_relative_path, set_overlay_config,
+    CLI, discover_repo, main_repo_root, repo_relative_path, select_overlay, set_overlay_config,
 };
 
 #[derive(Args, Debug)]
 pub struct Params {
-    #[clap(short, long, help = "Name of the target overlay")]
+    #[clap(
+        short,
+        long,
+        help = "Select the target overlay (otherwise infer from repository context)"
+    )]
     overlay: Option<String>,
 }
 
@@ -63,32 +67,17 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let home = cli.resolve_home()?;
     let over_repo = Repository::new(home);
 
-    // Resolve overlay (flag > git config > prompt)
-    let overlay = if let Some(ref name) = args.overlay {
-        over_repo.get(name)?
-    } else if let Some(name) = get_overlay_config(&git_repo)? {
-        let overlay = over_repo.get(&name)?;
-        ui::info(format!(
-            "{} {} {}",
-            emojis::PACKAGE,
-            style::white("Using overlay from git config:"),
-            style::cyan(&name),
-        ))
-        .ok();
-        overlay
-    } else {
-        let overlays = over_repo.overlays()?;
-        if overlays.is_empty() {
-            bail!("no overlays found in repository");
-        }
-        let selection = FuzzySelect::with_theme(&DialogTheme::default())
-            .with_prompt("Choose the target overlay")
-            .default(0)
-            .items(&overlays[..])
-            .interact()
-            .map_err(|e| anyhow!("overlay selection cancelled: {}", e))?;
-        overlays[selection].clone()
-    };
+    let selection_repo = over_repo.clone();
+    let git_path = git_repo.path().to_path_buf();
+    let explicit = args.overlay.clone();
+    let overlay = tokio::task::spawn_blocking(move || {
+        select_overlay(
+            &selection_repo,
+            &git2::Repository::open(git_path)?,
+            explicit.as_deref(),
+        )
+    })
+    .await??;
 
     if cli.debug {
         tracing::debug!(?overlay, "resolved overlay");

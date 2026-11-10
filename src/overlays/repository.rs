@@ -88,6 +88,24 @@ impl Repository {
     }
 
     fn discover_overlays(&self, strict: bool) -> Result<Vec<Result<Overlay>>> {
+        let dirs = self.overlay_dirs(strict)?;
+        let mut overlays = Vec::new();
+        for dir in dirs {
+            match Overlay::new(self, &dir)
+                .with_context(|| format!("failed to load overlay at {}", dir.display()))
+            {
+                Ok(overlay) => overlays.push(Ok(overlay)),
+                Err(e) if strict => overlays.push(Err(e)),
+                Err(e) => {
+                    tracing::warn!("skipping badly formatted overlay {}: {}", dir.display(), e,);
+                }
+            }
+        }
+        Ok(overlays)
+    }
+
+    /// Preserve discovered locations so selection can report a broken contextual descriptor.
+    pub(crate) fn overlay_dirs(&self, strict: bool) -> Result<Vec<PathBuf>> {
         let glob = GlobBuilder::new(&GLOB_PATTERN)
             .literal_separator(true)
             .build()?
@@ -128,24 +146,13 @@ impl Repository {
         dirs.retain(|path| !path.starts_with(self.root.join(".over")));
         dirs.dedup();
 
-        let mut overlays = Vec::new();
-        for (idx, dir) in dirs.iter().enumerate() {
-            // Skip if this dir is a parent of another dir (more specific overlay wins)
-            if matches!(dirs.get(idx + 1), Some(next) if next.starts_with(dir)) {
-                continue;
-            }
-            match Overlay::new(self, dir)
-                .with_context(|| format!("failed to load overlay at {}", dir.display()))
-            {
-                Ok(overlay) => overlays.push(Ok(overlay)),
-                Err(e) if strict => overlays.push(Err(e)),
-                Err(e) => {
-                    tracing::warn!("skipping badly formatted overlay {}: {}", dir.display(), e,);
-                }
-            }
-        }
-
-        Ok(overlays)
+        // Keep discovery's leaf policy without discarding locations whose descriptor is broken.
+        Ok(dirs
+            .iter()
+            .enumerate()
+            .filter(|(idx, dir)| !matches!(dirs.get(idx + 1), Some(next) if next.starts_with(dir)))
+            .map(|(_, dir)| dir.clone())
+            .collect())
     }
 
     /// Get an overlay by its name/relative path

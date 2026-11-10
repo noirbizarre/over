@@ -1,3 +1,4 @@
+pub mod association;
 pub mod config;
 pub(crate) mod diff;
 pub(crate) mod index;

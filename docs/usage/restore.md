@@ -13,7 +13,7 @@ Arguments:
 
 Options:
   -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME=]
-  -o, --overlay <OVERLAY>  Select an overlay (otherwise use default or infer ownership)
+  -o, --overlay <OVERLAY>  Select an overlay (otherwise infer from context, then use default_overlay)
   -d, --debug              Toggle debug traces
   -r, --target <TARGET>    Set the target directory (defaults to ~) [env: OVER_TARGET=]
       --source <REV>       Restore from a Git revision instead of the default source
@@ -62,11 +62,12 @@ Supply one or more literal file paths, relative to the current directory or
 absolute. Missing paths can select deleted tracked files. Directories and globs
 are not expanded; quote names containing shell metacharacters.
 
-`--overlay NAME` takes priority, followed by the configured `default_overlay`.
-Otherwise, Over infers ownership from all selected paths, including mapped
-destinations outside the base target. Ambiguous or missing ownership requires an
-explicit `--overlay`. `--target` sets the destination meaning of `~`; it does not
-change how relative file arguments are resolved.
+`--overlay NAME` takes priority, followed by [contextual inference](selection.md)
+from all selected paths, including mapped destinations outside the base target.
+With no contextual candidates, use the configured `default_overlay`. Ambiguous
+selection requires an explicit `--overlay`, even with a default. `--target` sets
+the destination meaning of `~`; it does not change how relative file arguments
+are resolved.
 
 Only the selected overlay's own virtual-checkout files are eligible. Ignored and
 control files, other materializations, nested declared repositories, and paths
