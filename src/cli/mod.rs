@@ -317,13 +317,14 @@ mod tests {
     }
 
     #[test]
-    fn lint_accepts_an_overlay_and_no_uses_flag() {
-        let args = CLI::parse_from(["over", "lint", "myoverlay", "--no-uses"]);
+    fn lint_accepts_an_overlay_and_no_uses_and_json_flags() {
+        let args = CLI::parse_from(["over", "lint", "myoverlay", "--no-uses", "--json"]);
         let Some(Commands::Lint(params)) = args.cmd else {
             panic!("expected lint command");
         };
         assert_eq!(params.overlay.as_deref(), Some("myoverlay"));
         assert!(params.no_uses);
+        assert!(params.json);
     }
 
     #[test]
