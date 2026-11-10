@@ -1,9 +1,9 @@
 {
-    "id": "dotfiles",
-    "version": "1.0.0",
-    "name": "Over Dotfiles",
+    "id": "over",
+    "version": "0.1.0",
+    "name": "Over",
     "description": "Apply dotfiles overlays using over, a git-based files overlay manager",
-    "documentationURL": "https://github.com/noirbizarre/over/tree/main/features/dotfiles",
+    "documentationURL": "https://noirbizarre.github.io/over/devcontainer/",
     "licenseURL": "https://github.com/noirbizarre/over/blob/main/LICENSE",
     "keywords": [
         "dotfiles",
@@ -31,10 +31,10 @@
         "version": {
             "type": "string",
             "description": "Version (tag) of the over Docker image to install from",
-            "default": "latest"
+            "default": "0.1.0"
         }
     },
-    "postCreateCommand": "/usr/local/share/over-dotfiles/setup.sh",
+    "postCreateCommand": "/usr/local/share/over/setup.sh",
     "installsAfter": [
         "ghcr.io/devcontainers/features/common-utils",
         "ghcr.io/devcontainers/features/git"

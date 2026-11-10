@@ -66,6 +66,7 @@ uv = "latest"
 
 # --- begin project-specific tools ---
 # Add project-wide tools here; tools needed by only one task belong on that task.
+devcontainer-cli = "latest"
 # --- end project-specific tools ---
 
 [hooks]
@@ -244,10 +245,6 @@ git tpl diff --exit-code --stat
 #
 # Artwork tasks belong here rather than in `default` or `check`: they rewrite
 # committed binaries, so a routine run would dirty the working tree every time.
-
-# Keep project-only tooling below the template boundary while extending [tools].
-[tools.devcontainer-cli]
-version = "latest"
 
 [tasks."test:features"]
 description = "Test Dev Container Feature installation and lifecycle (requires Docker)"

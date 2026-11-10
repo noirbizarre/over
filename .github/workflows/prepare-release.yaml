@@ -137,6 +137,11 @@ jobs:
           # Only the first `version =` belongs to [package].
           sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
           cargo update --workspace
+          # A Feature release installs the matching image unless explicitly overridden.
+          jq --arg version "$VERSION" \
+            '.version = $version | .options.version.default = $version' \
+            devcontainer/devcontainer-feature.json > "$RUNNER_TEMP/over-feature.json"
+          jq --indent 4 . "$RUNNER_TEMP/over-feature.json" > devcontainer/devcontainer-feature.json
 
       - name: Commit and push
         if: steps.version.outputs.changed == 'true' && !inputs.dry_run
