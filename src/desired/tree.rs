@@ -79,6 +79,40 @@ impl DesiredTree {
         &self.entries
     }
 
+    /// Find the outermost scaffold that must be replaced before inspecting a child.
+    pub(crate) fn blocking_scaffold(&self, target: &Path) -> Result<Option<PathBuf>> {
+        let ancestors: Vec<_> = target.ancestors().skip(1).collect();
+        for ancestor in ancestors.into_iter().rev() {
+            if !self.entries.iter().any(|entry| {
+                entry.target == ancestor && matches!(entry.intent, MaterializationIntent::Directory)
+            }) {
+                continue;
+            }
+            match ancestor.symlink_metadata() {
+                Ok(metadata) if !metadata.is_dir() => return Ok(Some(ancestor.to_path_buf())),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(None)
+    }
+
+    /// Reject incompatible claims independently of deployment authorization.
+    pub fn validate_ownership(&self) -> Result<()> {
+        let issues = super::ownership::check(self);
+        anyhow::ensure!(
+            issues.is_empty(),
+            "{}",
+            issues
+                .into_iter()
+                .map(|issue| issue.message)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        Ok(())
+    }
+
     /// Test-only: build a tree directly from a list of entries, bypassing
     /// `Overlay`/config resolution. Used by other modules' tests
     /// (`crate::sync`) that exercise entry-level behavior without needing
@@ -234,7 +268,7 @@ fn collect_own_entries(
 }
 
 fn attach_source_policy(entries: &mut [DesiredEntry], policy: &Arc<SourcePolicy>) {
-    for entry in entries {
+    for entry in entries.iter_mut() {
         if entry.intent.is_virtual_checkout()
             && let Provenance::Overlay { source, .. } = &entry.provenance
         {
@@ -258,7 +292,7 @@ fn finalize_entries(
         .filter(|entry| !matches!(entry.intent, MaterializationIntent::Directory))
         .map(|entry| (entry.target.clone(), entry.intent.clone()))
         .collect();
-    for entry in entries {
+    for entry in entries.iter_mut() {
         if entry.intent.is_virtual_checkout() {
             let mut scope = entry.intent.checkout_scope();
             for (target, _) in &independent {
@@ -300,14 +334,18 @@ fn finalize_entries(
             }
         }
     }
-    for (index, (target, _)) in independent.iter().enumerate() {
-        anyhow::ensure!(
-            !independent[index + 1..]
-                .iter()
-                .any(|(other, _)| other == target),
-            "multiple entries own mapped target '{}'",
-            target.display()
-        );
+    for (index, entry) in entries.iter().enumerate() {
+        for other in &entries[index + 1..] {
+            // Mapping does not change the compatibility of shared partial files.
+            if entry.target == other.target
+                && let Some((target, reason)) = super::ownership::conflict(entry, other)?
+            {
+                anyhow::bail!(
+                    "multiple entries own mapped target '{}': {reason}",
+                    target.display()
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -695,6 +733,61 @@ mod tests {
             .repository(repo)
             .no_uses(true)
             .build()
+    }
+
+    #[rstest]
+    #[case("one", "two", "600", "600", None)]
+    #[case("one", "one", "600", "600", Some("duplicate partial marker"))]
+    #[case("one", "two", "600", "644", Some("incompatible file-wide permissions"))]
+    #[tokio::test]
+    async fn unrelated_mappings_preserve_partial_compatibility_and_refuse_invalid_claims(
+        #[case] first: &str,
+        #[case] second: &str,
+        #[case] first_mode: &str,
+        #[case] second_mode: &str,
+        #[case] expected_error: Option<&str>,
+    ) {
+        let (td, repo) = repo_and_root();
+        td.child("ov/over.yaml").write_str(&format!(
+            "map:\n  config: {{target: '~/mapped'}}\nrules:\n  - {{path: first, permissions: '{first_mode}'}}\n  - {{path: second, permissions: '{second_mode}'}}"
+        )).unwrap();
+        td.child("ov/config/file")
+            .write_str("mapped content")
+            .unwrap();
+        for (name, marker) in [("first", first), ("second", second)] {
+            td.child(format!("ov/{name}.partial.yaml"))
+                .write_str(&format!(
+                    "target: '~/shell'\nmarker: {marker}\ncontent: {name}"
+                ))
+                .unwrap();
+        }
+        let overlay = repo.get("ov").unwrap();
+        let root = td.path().join("home");
+        let context = Context::builder()
+            .repository(repo)
+            .root(root.clone())
+            .force(true)
+            .no_prompt(true)
+            .build();
+        if let Some(expected) = expected_error {
+            let error = overlay.apply(&context).await.unwrap_err();
+            assert!(error.to_string().contains(expected), "{error:#}");
+            assert!(!root.exists());
+        } else {
+            overlay.apply(&context).await.unwrap();
+            let content = std::fs::read_to_string(root.join("shell")).unwrap();
+            assert!(content.contains("first"), "{content}");
+            assert!(content.contains("second"), "{content}");
+            assert_eq!(
+                std::fs::read_to_string(root.join("mapped/file")).unwrap(),
+                "mapped content"
+            );
+            overlay.apply(&context).await.unwrap();
+            assert_eq!(
+                std::fs::read_to_string(root.join("shell")).unwrap(),
+                content
+            );
+        }
     }
 
     #[rstest]

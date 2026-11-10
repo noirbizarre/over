@@ -200,9 +200,182 @@ pub(crate) fn apply_tree_diff(
 ) -> Result<()> {
     let from_entries = tracked_entries(from_tree)?;
     let to_entries = tracked_entries(to_tree)?;
+    preflight_tree_changes(
+        repo,
+        target,
+        Path::new(""),
+        &from_entries,
+        &from_entries,
+        &to_entries,
+    )?
+    .apply(target)
+}
 
-    for (path, (oid, mode)) in &to_entries {
-        if from_entries.get(path) != Some(&(*oid, *mode)) {
+/// The complete removal/write order is computed before any mutation. In
+/// particular, a late directory obstruction cannot follow an earlier file write.
+pub(crate) struct TreeChanges {
+    removed: Vec<PathBuf>,
+    directories: Vec<PathBuf>,
+    writes: Vec<(PathBuf, Vec<u8>, i32)>,
+}
+
+pub(crate) fn preflight_tree_changes(
+    repo: &Repository,
+    target: &Path,
+    managed: &Path,
+    owned: &BTreeMap<PathBuf, (Oid, i32)>,
+    from: &BTreeMap<PathBuf, (Oid, i32)>,
+    to: &BTreeMap<PathBuf, (Oid, i32)>,
+) -> Result<TreeChanges> {
+    let removed: Vec<_> = from
+        .keys()
+        .filter(|path| !to.contains_key(*path))
+        .cloned()
+        .collect();
+    let mut directories = std::collections::BTreeSet::new();
+    let mut writes = Vec::new();
+    for path in from.keys().chain(to.keys()) {
+        if from.get(path) == to.get(path) {
+            continue;
+        }
+        let mut current = target.to_path_buf();
+        for component in std::iter::once(None).chain(path.components().map(Some)) {
+            if let Some(component) = component {
+                current.push(component);
+            }
+            let metadata = match current.symlink_metadata() {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to inspect '{}'", current.display()));
+                }
+            };
+            anyhow::ensure!(
+                !metadata.is_symlink(),
+                "refusing changed symlink '{}'",
+                current.display()
+            );
+            if metadata.is_file() {
+                anyhow::ensure!(
+                    !metadata.permissions().readonly(),
+                    "file '{}' is read-only",
+                    current.display()
+                );
+                if current != target.join(path) {
+                    let ancestor = current.strip_prefix(target)?;
+                    // ENOTDIR is acceptable only for an old leaf this plan owns
+                    // and removes; unrelated files remain hard obstructions.
+                    anyhow::ensure!(
+                        removed.iter().any(|path| path == ancestor),
+                        "unowned file obstruction '{}'",
+                        current.display()
+                    );
+                    let expected = from.get(ancestor).copied();
+                    let local = super::snapshot::canonical_target_entry(
+                        repo,
+                        target,
+                        ancestor,
+                        &managed.join(ancestor),
+                        &[expected],
+                    )?;
+                    anyhow::ensure!(
+                        entries_match(local, expected),
+                        "modified file obstruction '{}'",
+                        current.display()
+                    );
+                }
+                break;
+            }
+            anyhow::ensure!(
+                metadata.is_dir(),
+                "unsupported obstruction '{}'",
+                current.display()
+            );
+            if current == target.join(path) {
+                anyhow::ensure!(
+                    !removed.contains(path),
+                    "directory replaced old leaf '{}'",
+                    current.display()
+                );
+            }
+            if current == target.join(path) && to.contains_key(path) {
+                // Raw inventory deliberately includes ignored files, empty
+                // foreign directories, symlinks, and independently owned holes.
+                for entry in walkdir::WalkDir::new(&current) {
+                    let entry = entry?;
+                    let relative = entry.path().strip_prefix(target)?;
+                    if entry.file_type().is_dir() {
+                        anyhow::ensure!(
+                            owned.keys().any(|path| path.starts_with(relative)),
+                            "unowned directory obstruction '{}'",
+                            entry.path().display()
+                        );
+                        directories.insert(relative.to_path_buf());
+                    } else {
+                        anyhow::ensure!(
+                            entry.file_type().is_file()
+                                && removed.iter().any(|path| path == relative),
+                            "unowned obstruction '{}'",
+                            entry.path().display()
+                        );
+                    }
+                }
+            }
+        }
+    }
+    for path in &removed {
+        let expected = from.get(path).copied();
+        let local = super::snapshot::canonical_target_entry(
+            repo,
+            target,
+            path,
+            &managed.join(path),
+            &[expected],
+        )?;
+        anyhow::ensure!(
+            local.is_none() || entries_match(local, expected),
+            "modified removal '{}'",
+            target.join(path).display()
+        );
+    }
+    for (path, (oid, mode)) in to {
+        if from.get(path) != Some(&(*oid, *mode)) {
+            // Resolve every blob before removing old leaves; corrupt/missing Git
+            // objects must never leave a half-applied shape transition.
+            writes.push((path.clone(), read_blob(repo, *oid)?, *mode));
+        }
+    }
+    let mut directories: Vec<_> = directories.into_iter().collect();
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    Ok(TreeChanges {
+        removed,
+        directories,
+        writes,
+    })
+}
+
+impl TreeChanges {
+    pub(crate) fn apply(self, target: &Path) -> Result<()> {
+        for path in self.removed {
+            let on_disk = target.join(path);
+            crate::materialize::disposal::validate_relative_ancestors(target, &on_disk)?;
+            match fs::remove_file(&on_disk) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to remove '{}'", on_disk.display()));
+                }
+            }
+        }
+        for path in self.directories {
+            // Never recursively delete: a raced-in foreign entry must stop us.
+            let directory = target.join(path);
+            crate::materialize::disposal::validate_relative_ancestors(target, &directory)?;
+            fs::remove_dir(directory)?;
+        }
+        for (path, content, mode) in self.writes {
             let on_disk = target.join(path);
             crate::materialize::disposal::validate_relative_ancestors(target, &on_disk)?;
             anyhow::ensure!(
@@ -214,14 +387,13 @@ pub(crate) fn apply_tree_diff(
                 fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create '{}'", parent.display()))?;
             }
-            let content = read_blob(repo, *oid)?;
             crate::actions::fs::replace_file(&on_disk, content, |permissions| {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
                     // Git records executability, not private access bits such as 0600.
                     let existing = permissions.mode();
-                    let bits = if *mode & 0o111 != 0 {
+                    let bits = if mode & 0o111 != 0 {
                         existing | ((existing & 0o444) >> 2)
                     } else {
                         existing & !0o111
@@ -236,29 +408,8 @@ pub(crate) fn apply_tree_diff(
             })
             .with_context(|| format!("failed to write '{}'", on_disk.display()))?;
         }
+        Ok(())
     }
-
-    for path in from_entries.keys() {
-        if !to_entries.contains_key(path) {
-            let on_disk = target.join(path);
-            crate::materialize::disposal::validate_relative_ancestors(target, &on_disk)?;
-            anyhow::ensure!(
-                !on_disk.is_symlink(),
-                "refusing to remove changed symlink '{}'",
-                on_disk.display()
-            );
-            match fs::remove_file(&on_disk) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    return Err(e)
-                        .with_context(|| format!("failed to remove '{}'", on_disk.display()));
-                }
-            }
-        }
-    }
-
-    Ok(())
 }
 
 /// Git-blob hash of the file currently on disk at `path` — the same `Oid`
@@ -413,6 +564,54 @@ pub(crate) fn diff_scoped_target(
     }
 
     changes.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(changes)
+}
+
+/// Shared status/commit/sync view: both content and executable changes use the
+/// source repository's attributes and configuration, never the host repository's.
+pub(crate) fn diff_canonical_target(
+    repo: &Repository,
+    managed: &Path,
+    target: &Path,
+    tracked: &BTreeMap<PathBuf, (Oid, i32)>,
+    scope: &CheckoutScope,
+) -> Result<Vec<FileChange>> {
+    let mut paths: std::collections::BTreeSet<_> = tracked.keys().cloned().collect();
+    paths.extend(walk_owned_files(target, scope)?);
+    let scratch = crate::actions::git::diff::Scratch::new(repo)?;
+    // Target publication can succeed before its checkpoint is persisted. Accept
+    // raw HEAD blobs too, or retrying would clean them twice and invent conflicts.
+    let head = base_tree(repo, None)?;
+    let head_entries = scoped_entries(repo, &head, managed, scope)?;
+    let mut changes = Vec::new();
+    for path in paths {
+        if is_overlay_metadata(&path) {
+            continue;
+        }
+        let expected = tracked.get(&path).copied();
+        let local = match super::snapshot::target_content(target, &path)? {
+            Some((content, mode)) => Some(super::snapshot::canonical_entry(
+                repo,
+                &scratch,
+                &managed.join(&path),
+                &content,
+                mode,
+                &[expected, head_entries.get(&path).copied()],
+            )?),
+            None => None,
+        };
+        if !entries_match(local, expected) {
+            changes.push(FileChange {
+                path,
+                kind: match (expected, local) {
+                    (_, None) => FileChangeKind::Deleted,
+                    (None, _) => FileChangeKind::Added,
+                    _ => FileChangeKind::Modified,
+                },
+                local_oid: local.map(|entry| entry.0),
+            });
+        }
+    }
     Ok(changes)
 }
 
@@ -736,7 +935,7 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
         let staged = index.get_path(path, 0);
         let new = staged.as_ref().map(|entry| (entry.id, entry.mode as i32));
         let file = workdir.join(path);
-        let current = source_entry(repo, path)?;
+        let current = super::snapshot::canonical_source_entry(repo, path)?;
         anyhow::ensure!(
             entries_match(current, old) || entries_match(current, new),
             "source file '{}' has unstaged edits",
@@ -754,7 +953,10 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
             // Already-converged sources need no filesystem writes, preserving
             // their metadata and avoiding failures on read-only directories.
             if !entries_match(current, new) {
-                updates.push((file, Some((read_blob(repo, entry.id)?, entry.mode))));
+                updates.push((
+                    file,
+                    Some((source_worktree_blob(repo, path, entry.id)?, entry.mode)),
+                ));
             }
         } else {
             builder.remove(path.clone());
@@ -804,6 +1006,146 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
     }
 }
 
+/// Native Git applies external/process smudge filters as well as EOL conversion;
+/// raw blobs belong at virtual targets, never in the source's real worktree.
+fn source_worktree_blob(repo: &Repository, path: &Path, oid: Oid) -> Result<Vec<u8>> {
+    let mut command = std::process::Command::new("git");
+    command.current_dir(repo.workdir().context("source has no working directory")?);
+    // Hooks and parent Git commands may export routing for another repository.
+    for name in [
+        "GIT_DIR",
+        "GIT_COMMON_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+    ] {
+        command.env_remove(name);
+    }
+    let output = command
+        .args(["cat-file", "--filters"])
+        .arg({
+            let mut argument = std::ffi::OsString::from("--path=");
+            argument.push(path);
+            argument
+        })
+        .arg(oid.to_string())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .context("failed to run Git smudge filters")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Git smudge filters failed for '{}' ({})",
+        path.display(),
+        output.status
+    );
+    Ok(output.stdout)
+}
+
+/// Darwin clones preserve xattrs/resource forks, but ownership can differ and
+/// ACLs are inherited from the destination directory. Correct those exceptions
+/// explicitly; a best-effort `cp -p` can silently lose security metadata.
+#[cfg(target_os = "macos")]
+fn clone_macos_source(source: &Path, directory: &Path, expected: &fs::Metadata) -> Result<()> {
+    use std::ffi::{c_char, c_int, c_void};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    // These are stable libSystem APIs (clonefile(2), acl(3)); no extra library
+    // or command-line utility is needed, and all operations target open files.
+    unsafe extern "C" {
+        fn fclonefileat(
+            source: c_int,
+            directory: c_int,
+            name: *const c_char,
+            flags: c_int,
+        ) -> c_int;
+        fn acl_init(count: c_int) -> *mut c_void;
+        fn acl_get_fd(file: c_int) -> *mut c_void;
+        fn acl_set_fd(file: c_int, acl: *mut c_void) -> c_int;
+        fn acl_free(acl: *mut c_void) -> c_int;
+    }
+
+    let original = fs::File::open(source)?;
+    let metadata = original.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file() && (metadata.dev(), metadata.ino()) == (expected.dev(), expected.ino()),
+        "source '{}' changed before cloning",
+        source.display()
+    );
+    let parent = fs::File::open(directory)?;
+    // A clone initially inherits destination ACLs, so keep its directory private
+    // until the original ACL is installed. Mode 0700 alone cannot remove an
+    // inherited ACL that grants other users directory traversal.
+    parent.set_permissions(fs::Permissions::from_mode(0o700))?;
+    // SAFETY: zero allocates an owned empty ACL; the live parent descriptor is
+    // used only before the allocation is freed exactly once below.
+    let empty_acl = unsafe { acl_init(0) };
+    anyhow::ensure!(
+        !empty_acl.is_null(),
+        "failed to allocate private clone directory ACL"
+    );
+    let result = unsafe { acl_set_fd(parent.as_raw_fd(), empty_acl) };
+    let error = std::io::Error::last_os_error();
+    // SAFETY: empty_acl is owned and no longer used after this call.
+    unsafe { acl_free(empty_acl) };
+    if result != 0 {
+        return Err(error).context("failed to make clone directory private");
+    }
+    // SAFETY: both descriptors remain open and the destination name is a valid
+    // NUL-terminated string. A failed clone never replaces an existing file.
+    let result =
+        unsafe { fclonefileat(original.as_raw_fd(), parent.as_raw_fd(), c"new".as_ptr(), 0) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!("failed to clone native metadata for '{}'", source.display())
+        });
+    }
+    let cloned = fs::OpenOptions::new()
+        .write(true)
+        .open(directory.join("new"))?;
+    let metadata = cloned.metadata()?;
+    // Unprivileged clones may use the caller's owner/group. Never publish that
+    // silent ownership change, even when cloning itself reported success.
+    anyhow::ensure!(
+        (metadata.uid(), metadata.gid(), metadata.mode())
+            == (expected.uid(), expected.gid(), expected.mode()),
+        "cannot preserve native ownership or mode for '{}'",
+        source.display()
+    );
+    // CLONE_ACL merges inherited destination entries and is not an exact copy.
+    // acl_set_fd instead installs the complete original ACL, including inherited
+    // entries, and reports failure before any live file is replaced.
+    // SAFETY: the source descriptor is live; a non-null result is owned until
+    // acl_free, and is only passed to the matching Darwin ACL APIs.
+    let mut acl = unsafe { acl_get_fd(original.as_raw_fd()) };
+    if acl.is_null() {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(error).context("failed to read source ACL");
+        }
+        // Darwin reports an absent ACL as ENOENT. Install an explicit empty
+        // ACL so inherited permissions on the clone cannot broaden access.
+        // SAFETY: zero requests an owned empty ACL from Darwin's allocator.
+        acl = unsafe { acl_init(0) };
+    }
+    anyhow::ensure!(
+        !acl.is_null(),
+        "failed to allocate source ACL: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: the destination descriptor and the ACL returned above are live.
+    let result = unsafe { acl_set_fd(cloned.as_raw_fd(), acl) };
+    let error = std::io::Error::last_os_error();
+    // SAFETY: this releases the ACL exactly once, after its last use.
+    unsafe { acl_free(acl) };
+    if result != 0 {
+        return Err(error).context("failed to preserve source ACL");
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 // Commit and restore share replacement/rollback semantics. Callers must validate
 // ownership and regular-file ancestors before preparing any filesystem changes.
@@ -818,10 +1160,60 @@ struct PreparedSourceUpdate {
     has_new: bool,
     backed_up: bool,
     installed: bool,
+    #[cfg(not(target_os = "linux"))]
+    in_place: bool,
 }
 
 impl SourceTransaction {
     pub(crate) fn prepare(&mut self, file: PathBuf, update: Option<(Vec<u8>, u32)>) -> Result<()> {
+        let existing = match file.symlink_metadata() {
+            Ok(metadata) => {
+                anyhow::ensure!(
+                    metadata.is_file(),
+                    "source '{}' is not a regular file",
+                    file.display()
+                );
+                anyhow::ensure!(
+                    !metadata.permissions().readonly(),
+                    "source '{}' is read-only",
+                    file.display()
+                );
+                Some(metadata)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        #[cfg(not(target_os = "linux"))]
+        if update.is_some()
+            && let Some(_metadata) = &existing
+        {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                // Native cloning clears set-id bits; in-place writes can too.
+                anyhow::ensure!(
+                    _metadata.mode() & 0o6000 == 0,
+                    "cannot preserve native metadata for '{}'",
+                    file.display()
+                );
+                // Without a native clone, keep the original inode and its ACLs.
+                // Shared inodes cannot be updated without changing other links.
+                #[cfg(not(target_os = "macos"))]
+                anyhow::ensure!(
+                    _metadata.nlink() == 1,
+                    "cannot preserve native metadata for '{}'",
+                    file.display()
+                );
+            }
+            #[cfg(windows)]
+            anyhow::ensure!(
+                winapi_util::file::information(fs::File::open(&file)?)?.number_of_links() == 1,
+                "cannot preserve hard-linked source '{}'",
+                file.display()
+            );
+            #[cfg(not(any(unix, windows)))]
+            anyhow::bail!("cannot preserve native metadata for '{}'", file.display());
+        }
         let parent = file.parent().context("source file has no parent")?;
         let mut missing = Vec::new();
         let mut ancestor = parent;
@@ -854,12 +1246,30 @@ impl SourceTransaction {
             has_new: update.is_some(),
             backed_up: false,
             installed: false,
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            in_place: existing.is_some() && update.is_some(),
+            #[cfg(target_os = "macos")]
+            in_place: update.is_some()
+                && existing.as_ref().is_some_and(|metadata| {
+                    use std::os::unix::fs::MetadataExt;
+                    // Single-link files need no clone and work on non-APFS volumes.
+                    metadata.nlink() == 1
+                }),
         });
         if let Some((content, mode)) = update {
             let prepared = directory.join("new");
             // Private creation avoids exposing source secrets even temporarily.
             let mut options = fs::OpenOptions::new();
             options.write(true).create_new(true);
+            #[cfg(target_os = "macos")]
+            if let Some(metadata) = &existing
+                && !self.updates.last().is_some_and(|update| update.in_place)
+            {
+                // Clone before truncating: writes must detach hard links while
+                // retaining resource forks, xattrs, ownership and the exact ACL.
+                clone_macos_source(&file, &directory, metadata)?;
+                options.create_new(false).truncate(true);
+            }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::OpenOptionsExt;
@@ -884,17 +1294,43 @@ impl SourceTransaction {
                         access |= (access & 0o444) >> 2;
                     }
                 }
-                output.set_permissions(fs::Permissions::from_mode(access & 0o7777))?;
+                let desired = fs::Permissions::from_mode(access & 0o7777);
+                #[cfg(target_os = "linux")]
+                if let Some(metadata) = &existing {
+                    crate::actions::fs::clone_linux_metadata(&file, &prepared, metadata, desired)?;
+                } else {
+                    output.set_permissions(desired)?;
+                }
+                #[cfg(not(target_os = "linux"))]
+                output.set_permissions(desired)?;
             }
             #[cfg(not(unix))]
             let _ = mode;
             output.sync_all()?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        if self.updates.last().is_some_and(|update| update.in_place) {
+            // Read every backup before applying any write, so unreadable sources
+            // cannot fail halfway through an otherwise valid commit.
+            fs::copy(&file, directory.join("old"))?;
         }
         Ok(())
     }
 
     pub(crate) fn apply(&mut self) -> Result<()> {
         for update in &mut self.updates {
+            #[cfg(not(target_os = "linux"))]
+            if update.in_place {
+                update.backed_up = true;
+                // Mark before the write: an I/O error can leave partial bytes.
+                update.installed = true;
+                let prepared = update.directory.join("new");
+                let permissions = fs::metadata(&prepared)?.permissions();
+                crate::actions::fs::replace_file(&update.file, fs::read(&prepared)?, |_| {
+                    permissions
+                })?;
+                continue;
+            }
             match fs::rename(&update.file, update.directory.join("old")) {
                 Ok(()) => update.backed_up = true,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -916,6 +1352,17 @@ impl SourceTransaction {
         let mut errors = Vec::new();
         for update in self.updates.iter_mut().rev() {
             let result = (|| -> Result<()> {
+                #[cfg(not(target_os = "linux"))]
+                if update.in_place && update.installed {
+                    let backup = update.directory.join("old");
+                    let permissions = fs::metadata(&backup)?.permissions();
+                    crate::actions::fs::replace_file(&update.file, fs::read(&backup)?, |_| {
+                        permissions
+                    })?;
+                    update.installed = false;
+                    update.backed_up = false;
+                    return Ok(());
+                }
                 if update.installed {
                     fs::remove_file(&update.file)?;
                     update.installed = false;
@@ -1187,6 +1634,95 @@ mod tests {
                 & 0o777,
             0o700
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_preparation_rejects_readonly_updates_and_deletions_before_mutation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = TempDir::new().unwrap();
+        source.child("file").write_str("original").unwrap();
+        let file = source.path().join("file");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap();
+        for update in [None, Some((b"new".to_vec(), 0o100644))] {
+            let mut transaction = SourceTransaction::default();
+            assert!(transaction.prepare(file.clone(), update).is_err());
+            transaction.rollback().unwrap();
+            assert_eq!(fs::read(&file).unwrap(), b"original");
+            assert_eq!(fs::read_dir(source.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[rstest::rstest]
+    fn source_transactions_preserve_native_metadata_and_isolate_hardlinks(
+        #[values(false, true)] rollback: bool,
+    ) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let source = TempDir::new().unwrap();
+        let file = source.path().join("file");
+        let alias = source.path().join("alias");
+        fs::write(&file, b"original").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+        #[cfg(target_os = "linux")]
+        let acl = {
+            xattr::set(&file, "user.over-regression", b"retain me").unwrap();
+            let mut acl = 2_u32.to_le_bytes().to_vec();
+            for (tag, access, id) in [
+                (1_u16, 6_u16, u32::MAX),
+                (2, 4, 12345),
+                (4, 4, u32::MAX),
+                (16, 4, u32::MAX),
+                (32, 0, u32::MAX),
+            ] {
+                acl.extend(tag.to_le_bytes());
+                acl.extend(access.to_le_bytes());
+                acl.extend(id.to_le_bytes());
+            }
+            xattr::set(&file, "system.posix_acl_access", &acl).unwrap();
+            acl
+        };
+        fs::hard_link(&file, &alias).unwrap();
+        let original = fs::metadata(&file).unwrap();
+        let mut transaction = SourceTransaction::default();
+        transaction
+            .prepare(file.clone(), Some((b"new".to_vec(), 0o100644)))
+            .unwrap();
+        transaction.apply().unwrap();
+        if rollback {
+            transaction.rollback().unwrap();
+        } else {
+            transaction.cleanup().unwrap();
+        }
+        let current = fs::metadata(&file).unwrap();
+        assert_eq!(
+            (current.uid(), current.gid(), current.mode()),
+            (original.uid(), original.gid(), original.mode())
+        );
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(
+                xattr::get(&file, "system.posix_acl_access").unwrap(),
+                Some(acl)
+            );
+            assert_eq!(
+                xattr::get(&file, "user.over-regression").unwrap(),
+                Some(b"retain me".to_vec())
+            );
+        }
+        assert_eq!(
+            fs::read(&file).unwrap(),
+            if rollback {
+                b"original".as_slice()
+            } else {
+                b"new".as_slice()
+            }
+        );
+        assert_eq!(fs::read(&alias).unwrap(), b"original");
+        assert_eq!(fs::metadata(&alias).unwrap().ino(), original.ino());
+        assert_eq!(current.ino() == original.ino(), rollback);
     }
 
     #[cfg(unix)]

@@ -55,15 +55,8 @@ pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
     let base_entries = git::scoped_entries(&repo, &base_tree, &managed_path, &scope)?;
     let base_blobs = blob_ids(&base_entries);
 
-    let local_changes = git::diff_scoped_target(&entry.target, &base_blobs, &scope)?;
-    // Hash equality alone would let unapply discard a chmod-only target edit.
-    let mut local_modes_match = true;
-    for (path, expected) in &base_entries {
-        if !git::entries_match(git::target_entry(&entry.target, path)?, Some(*expected)) {
-            local_modes_match = false;
-            break;
-        }
-    }
+    let local_changes =
+        git::diff_canonical_target(&repo, &managed_path, &entry.target, &base_entries, &scope)?;
 
     let head_tree = git::base_tree(&repo, None)?;
     let head_entries = git::scoped_entries(&repo, &head_tree, &managed_path, &scope)?;
@@ -75,7 +68,7 @@ pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
     let staged = git::staged_changes(&repo, &managed_path, &scope)?;
     Ok(
         match (
-            local_changes.is_empty() && staged.is_empty() && local_modes_match,
+            local_changes.is_empty() && staged.is_empty(),
             source_drifted,
         ) {
             (true, false) => Status::Applied,
@@ -107,9 +100,10 @@ pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
 }
 
 /// Paths that changed both locally and in the source repository since
-/// `base_oid`, to different content — the set `over commit` must refuse to
-/// commit over (per-file, never the whole checkout) until resolved
-/// manually. Empty whenever [`inspect`] wouldn't report [`Status::Conflict`].
+/// `base_oid`, to different content. Detection is per-file, but `over commit`
+/// blocks the whole command when any selected checkout has conflicting paths,
+/// preventing a partial commit across the selection. Empty whenever [`inspect`]
+/// wouldn't report [`Status::Conflict`].
 pub(crate) fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
     let Some(record) = state::record_for_blocking(&entry.target)? else {
         return Ok(Vec::new());
@@ -125,13 +119,10 @@ pub(crate) fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
     let (repo, managed_path) = git::discover_source(source)?;
 
     let base_tree = git::base_tree(&repo, Some(&record.base_oid))?;
-    let base_blobs = blob_ids(&git::scoped_entries(
-        &repo,
-        &base_tree,
-        &managed_path,
-        &scope,
-    )?);
-    let local_changes = git::diff_scoped_target(&entry.target, &base_blobs, &scope)?;
+    let base_entries = git::scoped_entries(&repo, &base_tree, &managed_path, &scope)?;
+    let base_blobs = blob_ids(&base_entries);
+    let local_changes =
+        git::diff_canonical_target(&repo, &managed_path, &entry.target, &base_entries, &scope)?;
 
     let head_tree = git::base_tree(&repo, None)?;
     let head_blobs = blob_ids(&git::scoped_entries(
@@ -145,9 +136,10 @@ pub(crate) fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
 }
 
 /// Per-file changes between a virtual checkout's `base_oid` and the
-/// target's current on-disk content — the detail `over status`/`over diff`
-/// list underneath the aggregate [`Status`] line, and what `over commit`
-/// stages. Empty for a checkout with no recorded association (mirrors
+/// target's current on-disk content, retained as a test helper for base-relative
+/// comparisons. Command reports distinguish staged and unstaged changes instead;
+/// `over add` stages selected snapshots and `over commit` records only staged
+/// changes. Empty for a checkout with no recorded association (mirrors
 /// [`inspect`]'s own `Missing`/`Broken` fallback).
 #[cfg(test)]
 pub(crate) fn file_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
@@ -164,13 +156,8 @@ pub(crate) fn file_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
     let scope = entry.intent.checkout_scope();
     let (repo, managed_path) = git::discover_source(source)?;
     let base_tree = git::base_tree(&repo, Some(&record.base_oid))?;
-    let base_blobs = blob_ids(&git::scoped_entries(
-        &repo,
-        &base_tree,
-        &managed_path,
-        &scope,
-    )?);
-    git::diff_scoped_target(&entry.target, &base_blobs, &scope)
+    let base_entries = git::scoped_entries(&repo, &base_tree, &managed_path, &scope)?;
+    git::diff_canonical_target(&repo, &managed_path, &entry.target, &base_entries, &scope)
 }
 
 pub(crate) fn staged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
@@ -203,10 +190,10 @@ pub(crate) fn unstaged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> 
             && !git::is_overlay_metadata(relative)
             && git::is_supported_mode(indexed.mode)
         {
-            blobs.insert(relative.to_path_buf(), indexed.id);
+            blobs.insert(relative.to_path_buf(), (indexed.id, indexed.mode as i32));
         }
     }
-    git::diff_scoped_target(&entry.target, &blobs, &scope)
+    git::diff_canonical_target(&repo, &managed, &entry.target, &blobs, &scope)
 }
 
 /// Paths that changed both locally (since `base`) and in the source

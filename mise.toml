@@ -106,8 +106,8 @@ run = "cargo fmt --all -- --check"
 [tasks.lint]
 description = "Lint the code"
 # `-Dclippy::all` rather than the template's `-D warnings`: this predates the
-# template attachment and AGENTS.md documents it as the convention. Keep the
-# two in sync with the `clippy` prek hook below.
+# template attachment and AGENTS.md documents it as the convention. Keep this
+# task aligned with that guidance; Clippy runs explicitly and in CI, not hooks.
 run = "cargo clippy --all-targets --all-features -- -Dclippy::all"
 
 [tasks.spell]
@@ -185,9 +185,9 @@ run = "gh ship validate"
 # --- Template ---------------------------------------------------------------
 #
 # This project is rendered from rust.tpl. `git tpl update` advances
-# refs/tpl/<id> and touches nothing else — not HEAD, not the index, not the
-# worktree — so running it is always safe and never a decision. The changes
-# arrive only when you merge:
+# refs/tpl/<id> without changing HEAD or the index. It may save migrated
+# answers in .config/git.tpl.toml as an unstaged edit. Rendered files reach
+# the worktree only when you merge:
 #
 #   mise run tpl:check       # has it moved?
 #   mise run tpl:update      # bring the rendered ref up to date
@@ -200,7 +200,7 @@ run = "gh ship validate"
 # release archives and mise installs them directly.
 
 [tasks."tpl:update"]
-description = "Re-render the template into refs/tpl/<id> (leaves the worktree alone)"
+description = "Advance refs/tpl/<id>; may save migrated answers without merging rendered files"
 # `raw_args` so `--ref`, `--dirty` and `--answer` reach git-tpl.
 raw_args = true
 run = "git tpl update"

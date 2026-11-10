@@ -115,6 +115,314 @@ fn commit_index(repo: &git2::Repository) {
 }
 
 #[test]
+fn full_staging_status_diff_commit_and_sync_share_clean_filters_and_ignored_modes() {
+    let fixture = Fixture::new();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    repo.config()
+        .unwrap()
+        .set_bool("core.filemode", false)
+        .unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("filter.upper.clean", "tr a-z A-Z")
+        .unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("filter.upper.smudge", "tr A-Z a-z")
+        .unwrap();
+    fs::write(
+        fixture.source.join(".gitattributes"),
+        "ov/file text eol=crlf filter=upper\n",
+    )
+    .unwrap();
+    fs::write(fixture.source.join("ov/file"), "original\r\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new(".gitattributes")).unwrap();
+    let entry = index.get_path(Path::new("ov/file"), 0).unwrap();
+    index.add_frombuffer(&entry, b"ORIGINAL\n").unwrap();
+    index.write().unwrap();
+    commit_index(&repo);
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "original\r\n").unwrap();
+    fs::set_permissions(
+        fixture.source.join("ov/file"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fs::set_permissions(
+        fixture.target.join("file"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fixture
+        .command("status")
+        .args(["ov", "--verbose", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("applied"));
+    fixture
+        .command("diff")
+        .args(["ov", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("diff --git").not());
+    fs::write(fixture.target.join("file"), "selected\r\n").unwrap();
+    let inventory = || {
+        walkdir::WalkDir::new(repo.path())
+            .into_iter()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| (entry.path().to_path_buf(), fs::read(entry.path()).unwrap()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let before_preview = inventory();
+    fixture
+        .command("add")
+        .args(["--overlay", "ov", "--dry-run", "--root"])
+        .arg(&fixture.home)
+        .arg(&fixture.target)
+        .assert()
+        .success();
+    // Inventory the entire gitdir, not just its index: filtered previews must
+    // not leave candidate blobs, synthetic trees, or locks in the source.
+    assert_eq!(inventory(), before_preview);
+    assert_eq!(
+        fs::read(fixture.target.join("file")).unwrap(),
+        b"selected\r\n"
+    );
+    fixture.add();
+    // The CLI runs in another process; libgit2's cached index still contains
+    // this fixture's original staging until explicitly refreshed.
+    let mut index = repo.index().unwrap();
+    index.read(true).unwrap();
+    let indexed = index.get_path(Path::new("ov/file"), 0).unwrap();
+    assert_eq!(repo.find_blob(indexed.id).unwrap().content(), b"SELECTED\n");
+    assert_eq!(indexed.mode, 0o100644);
+    fixture
+        .command("diff")
+        .args(["ov", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("diff --git").not());
+    fixture.commit_command().assert().success();
+    fixture
+        .command("status")
+        .args(["ov", "--verbose", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("applied"));
+    let entry = repo
+        .index()
+        .unwrap()
+        .get_path(Path::new("ov/file"), 0)
+        .unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_frombuffer(&entry, b"UPSTREAM\n").unwrap();
+    index.write().unwrap();
+    fs::write(fixture.source.join("ov/file"), "upstream\r\n").unwrap();
+    commit_index(&repo);
+    fixture
+        .command("sync")
+        .args(["ov", "--no-prompt", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("fast-forwarded"));
+    fixture
+        .command("status")
+        .args(["ov", "--verbose", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("applied"));
+}
+
+#[test]
+fn committing_filtered_targets_publishes_smudged_source_bytes() {
+    let fixture = Fixture::new();
+    let repo = configure_prefix_filter(&fixture);
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "selected\n").unwrap();
+    fixture.add();
+    fixture.commit_command().assert().success();
+    assert_native_source_is_clean(&fixture);
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"selected\n"
+    );
+    let tree = repo.head().unwrap().peel_to_tree().unwrap();
+    assert_eq!(
+        repo.find_blob(tree.get_path(Path::new("ov/file")).unwrap().id())
+            .unwrap()
+            .content(),
+        b"clean:selected\n"
+    );
+}
+
+#[test]
+fn stale_checkpoints_recognize_raw_head_targets_and_sync_converges() {
+    let fixture = Fixture::new();
+    let repo = configure_prefix_filter(&fixture);
+    fixture.apply();
+    let checkpoint = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let baseline = fs::read(&checkpoint).unwrap();
+    let mut index = repo.index().unwrap();
+    let entry = index.get_path(Path::new("ov/file"), 0).unwrap();
+    index.add_frombuffer(&entry, b"clean:upstream\n").unwrap();
+    index.write().unwrap();
+    fs::write(fixture.source.join("ov/file"), "upstream\n").unwrap();
+    commit_index(&repo);
+    fixture
+        .command("sync")
+        .args(["ov", "--no-prompt", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("fast-forwarded"));
+    assert_eq!(
+        fs::read(fixture.target.join("file")).unwrap(),
+        b"clean:upstream\n"
+    );
+    // Recreate a checkpoint-write failure after target publication succeeded.
+    fs::write(&checkpoint, baseline).unwrap();
+    fixture
+        .command("status")
+        .args(["ov", "--verbose", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .failure()
+        .stdout(contains("1 diverged"))
+        .stdout(contains("⚠️ conflict:").not());
+    fixture
+        .command("sync")
+        .args(["ov", "--no-prompt", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success();
+    fixture
+        .command("status")
+        .args(["ov", "--verbose", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("applied"));
+    assert_eq!(
+        fs::read(fixture.target.join("file")).unwrap(),
+        b"clean:upstream\n"
+    );
+    assert_native_source_is_clean(&fixture);
+}
+
+#[test]
+fn raw_canonical_source_bytes_are_rejected_as_native_git_unstaged_edits() {
+    let fixture = Fixture::new();
+    configure_prefix_filter(&fixture);
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "selected\n").unwrap();
+    fixture.add();
+    // Raw blobs are valid at the target, but re-clean differently in a real worktree.
+    fs::write(fixture.source.join("ov/file"), "clean:original").unwrap();
+    fixture
+        .commit_command()
+        .assert()
+        .failure()
+        .stderr(contains("unstaged edits"));
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"clean:original"
+    );
+}
+
+fn configure_prefix_filter(fixture: &Fixture) -> git2::Repository {
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let mut config = repo.config().unwrap();
+    config
+        .set_str("filter.prefix.clean", "sed 's/^/clean:/'")
+        .unwrap();
+    config
+        .set_str("filter.prefix.smudge", "sed 's/^clean://'")
+        .unwrap();
+    config.set_bool("filter.prefix.required", true).unwrap();
+    fs::write(
+        fixture.source.join(".gitattributes"),
+        "ov/file filter=prefix\n",
+    )
+    .unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new(".gitattributes")).unwrap();
+    let entry = index.get_path(Path::new("ov/file"), 0).unwrap();
+    index.add_frombuffer(&entry, b"clean:original").unwrap();
+    index.write().unwrap();
+    commit_index(&repo);
+    assert_native_source_is_clean(fixture);
+    repo
+}
+
+fn assert_native_source_is_clean(fixture: &Fixture) {
+    let output = std::process::Command::new("git")
+        .current_dir(&fixture.source)
+        .args(["diff", "--exit-code", "HEAD", "--", "ov/file"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn full_staging_applies_non_idempotent_clean_filters_exactly_once() {
+    let fixture = Fixture::new();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("filter.prefix.clean", "sed 's/^/clean:/'")
+        .unwrap();
+    fs::write(
+        fixture.source.join(".gitattributes"),
+        "ov/file filter=prefix\n",
+    )
+    .unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new(".gitattributes")).unwrap();
+    let entry = index.get_path(Path::new("ov/file"), 0).unwrap();
+    index.add_frombuffer(&entry, b"clean:original").unwrap();
+    index.write().unwrap();
+    commit_index(&repo);
+    fixture.apply();
+    // Materialization writes canonical blobs directly. Re-adding those exact
+    // bytes must take the raw fast path rather than prepend a second prefix.
+    fixture.add();
+    index.read(true).unwrap();
+    assert_eq!(
+        repo.find_blob(index.get_path(Path::new("ov/file"), 0).unwrap().id)
+            .unwrap()
+            .content(),
+        b"clean:original"
+    );
+    fs::write(fixture.target.join("file"), "target\n").unwrap();
+    for _ in 0..2 {
+        fixture.add();
+        index.read(true).unwrap();
+        let staged = index.get_path(Path::new("ov/file"), 0).unwrap();
+        assert_eq!(
+            repo.find_blob(staged.id).unwrap().content(),
+            b"clean:target\n"
+        );
+    }
+    assert_eq!(fs::read(fixture.target.join("file")).unwrap(), b"target\n");
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"original"
+    );
+}
+
+#[test]
 fn clean_symlinks_and_gitlinks_do_not_enter_checkout_views_or_regular_file_commits() {
     let fixture = Fixture::new();
     fixture.apply();

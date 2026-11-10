@@ -19,7 +19,7 @@ src/
 ├── cli/          argument types for the CLI (cli/git/ is the `over git` group)
 ├── commit/       `over commit` recording virtual-checkout changes back to the source repository
 ├── desired/      the DesiredTree/DesiredEntry desired-state model
-├── diff/         `over diff` desired-vs-actual comparison
+├── diff/         Git-aware command comparisons; legacy reconciliation reports and partial-block rendering
 ├── doctor/       `over doctor` diagnostics aggregation and limited repair
 ├── exec/         execution context and templating
 ├── git_exclude/  reconciling overlay-managed paths into the host repo's `.git/info/exclude`
@@ -35,7 +35,10 @@ src/
 └── utils.rs      shared helpers
 ```
 
-Dependencies point inward. Nothing in the library knows a command exists.
+Core/domain and action modules keep dependencies inward: reusable behavior
+does not depend on CLI command types or dispatch. The library also exports
+`cli` for the thin binary entry point; that outer layer wires commands to the
+reusable modules.
 
 ## Build/Test
 

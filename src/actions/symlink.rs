@@ -10,7 +10,7 @@ use noyalib::compat::serde_yaml as serde_yml;
 use serde::{Deserialize, Serialize};
 use symlink::{symlink_dir, symlink_file};
 
-use crate::exec::{Action, Context, Ctx, MachineInfo};
+use crate::exec::{Action, Context, Ctx};
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
@@ -245,18 +245,18 @@ pub fn discover_symlinks_selected(
 /// available when rendering an overlay's own `target =` template.
 #[derive(Serialize)]
 struct SymlinkTemplateContext<'a> {
-    data: &'a crate::overlays::DataMap,
+    // Flatten the existing fields without resolving overlays again: resolution renders paths itself.
+    #[serde(flatten)]
+    ctx: &'a Context,
     env: HashMap<String, String>,
     overlays: &'a HashMap<String, String>,
-    machine: &'a MachineInfo,
 }
 
 pub fn render_symlink_target(template: &str, ctx: &Context) -> Result<String> {
     let state = SymlinkTemplateContext {
-        data: &ctx.data,
+        ctx,
         env: std::env::vars().collect(),
         overlays: ctx.resolved_overlays.as_ref(),
-        machine: &ctx.machine,
     };
 
     crate::exec::templates::render_path(template, &state, ctx.strict_paths)

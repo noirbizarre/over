@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 use anyhow::{Context as _, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 
-use crate::desired::{DesiredTree, MaterializationIntent};
+use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent};
 use crate::exec::Ctx;
 use crate::materialize::MaterializerRegistry;
 use crate::ui::style;
@@ -28,6 +28,72 @@ static SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
         .tick_chars(style::TICK_CHARS_BRAILLE_4_6_DOWN.as_str())
 });
 
+fn classify(
+    desired: &DesiredTree,
+    entry: &DesiredEntry,
+    registry: &MaterializerRegistry,
+) -> Result<Operation> {
+    let mut operation = match registry.find(&entry.intent) {
+        Some(materializer) => materializer.classify(entry)?,
+        None => Operation::Deferred,
+    };
+    if let crate::desired::Provenance::Git {
+        overlay, repo_key, ..
+    } = &entry.provenance
+        && matches!(operation, Operation::Migrate { .. })
+    {
+        // Only the composed tree knows the declaring overlay source;
+        // arbitrary symlinks are not proof of a legacy installation.
+        let source = desired
+            .sources
+            .iter()
+            .find(|selection| selection.overlay.name == *overlay)
+            .map(|selection| (selection.overlay.root.join(repo_key), &selection.policy));
+        let owned = match source {
+            Some((source, policy)) => {
+                let matches = if entry.target.is_symlink() {
+                    std::fs::read_link(&entry.target)? == source
+                } else {
+                    crate::materialize::symlink::directory_is_symlink_mirror(
+                        &entry.target,
+                        &source,
+                    )?
+                };
+                if matches {
+                    policy.validate_directory_link(&entry.target, &source)?;
+                }
+                matches
+            }
+            None => false,
+        };
+        if !owned {
+            operation = Operation::Conflict {
+                current: super::actual::inspect(&entry.target)?,
+            };
+        }
+    }
+    if matches!(entry.intent, MaterializationIntent::Directory)
+        && !desired.entries().iter().any(|other| {
+            other.target == entry.target && matches!(other.intent, MaterializationIntent::Checkout)
+        })
+        && !entry.target.is_symlink()
+        && ((entry.target.join(".git").exists() && git2::Repository::open(&entry.target).ok()
+            .and_then(|repo| repo.config().ok())
+            .and_then(|config| config.get_string("over.overlay").ok())
+            .is_some_and(|name| matches!(&entry.provenance, crate::desired::Provenance::Overlay { overlay, .. } if *overlay == name)))
+            || crate::materialize::virtual_checkout::state::record_for_blocking(&entry.target)?.is_some())
+    {
+        // A parent checkout is indivisible: never force-overwrite its
+        // individual editable files after a recursive-rule change.
+        operation = Operation::Migrate {
+            from: MaterializationIntent::VirtualCheckout,
+            to: entry.intent.clone(),
+            blocked: Some("checkout to recursive links requires unapplying its old layout first".into()),
+        };
+    }
+    Ok(operation)
+}
+
 /// The reconciliation plan for a [`DesiredTree`]: one [`PlanStep`] per
 /// [`DesiredEntry`], classified against actual state by whichever
 /// [`crate::materialize::Materializer`] owns its intent.
@@ -39,84 +105,34 @@ static SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
 #[derive(Debug, Clone, Default)]
 pub struct Plan {
     steps: Vec<PlanStep>,
-    guards: Vec<crate::materialize::disposal::PathGuard>,
+    guards: Vec<Option<crate::materialize::disposal::PathGuard>>,
+    // Children behind a replaceable scaffold have no inspectable actual state yet.
+    blocked_by: Vec<Option<std::path::PathBuf>>,
+    desired: DesiredTree,
 }
 
 impl Plan {
     /// Classify every entry in `desired` against current state, asking the
     /// registered [`Materializer`](crate::materialize::Materializer) that
     /// owns each entry's intent. Since #110 every intent has a registered
-    /// backend, so [`Operation::Deferred`] is unreachable in practice — kept
-    /// as a defensive fallback if that ever stops being true.
+    /// backend. Children blocked by a replaceable scaffold are deferred until
+    /// execution can classify their actual state without following that parent.
     pub fn build(desired: &DesiredTree) -> Result<Self> {
         let registry = MaterializerRegistry::default();
         let mut steps = Vec::with_capacity(desired.len());
+        let mut blocked_by = Vec::with_capacity(desired.len());
         for entry in desired.entries() {
-            let mut operation = match registry.find(&entry.intent) {
-                Some(materializer) => materializer.classify(entry)?,
-                None => Operation::Deferred,
-            };
-            if let crate::desired::Provenance::Git {
-                overlay, repo_key, ..
-            } = &entry.provenance
-                && matches!(operation, Operation::Migrate { .. })
-            {
-                // Only the composed tree knows the declaring overlay source;
-                // arbitrary symlinks are not proof of a legacy installation.
-                let source = desired
-                    .sources
-                    .iter()
-                    .find(|selection| selection.overlay.name == *overlay)
-                    .map(|selection| (selection.overlay.root.join(repo_key), &selection.policy));
-                let owned = match source {
-                    Some((source, policy)) => {
-                        let matches = if entry.target.is_symlink() {
-                            std::fs::read_link(&entry.target)? == source
-                        } else {
-                            crate::materialize::symlink::directory_is_symlink_mirror(
-                                &entry.target,
-                                &source,
-                            )?
-                        };
-                        if matches {
-                            policy.validate_directory_link(&entry.target, &source)?;
-                        }
-                        matches
-                    }
-                    None => false,
-                };
-                if !owned {
-                    operation = Operation::Conflict {
-                        current: super::actual::inspect(&entry.target)?,
-                    };
-                }
+            let blocker = desired.blocking_scaffold(&entry.target)?;
+            blocked_by.push(blocker.clone());
+            if blocker.is_some() {
+                // Do not read through a scaffold symlink or pretend ENOTDIR means missing.
+                steps.push(PlanStep {
+                    entry: entry.clone(),
+                    operation: Operation::Deferred,
+                });
+                continue;
             }
-            if matches!(entry.intent, MaterializationIntent::Directory)
-                && !desired.entries().iter().any(|other| {
-                    other.target == entry.target
-                        && matches!(other.intent, MaterializationIntent::Checkout)
-                })
-                && !entry.target.is_symlink()
-                && ((entry.target.join(".git").exists() && git2::Repository::open(&entry.target).ok()
-                    .and_then(|repo| repo.config().ok())
-                    .and_then(|config| config.get_string("over.overlay").ok())
-                    .is_some_and(|name| matches!(&entry.provenance, crate::desired::Provenance::Overlay { overlay, .. } if *overlay == name)))
-                    || crate::materialize::virtual_checkout::state::record_for_blocking(
-                        &entry.target,
-                    )?
-                    .is_some())
-            {
-                // A parent checkout is indivisible: never force-overwrite its
-                // individual editable files after a recursive-rule change.
-                operation = Operation::Migrate {
-                    from: MaterializationIntent::VirtualCheckout,
-                    to: entry.intent.clone(),
-                    blocked: Some(
-                        "checkout to recursive links requires unapplying its old layout first"
-                            .into(),
-                    ),
-                };
-            }
+            let operation = classify(desired, entry, &registry)?;
             steps.push(PlanStep {
                 entry: entry.clone(),
                 operation,
@@ -124,9 +140,21 @@ impl Plan {
         }
         let guards = steps
             .iter()
-            .map(|step| crate::materialize::disposal::PathGuard::capture(&step.entry.target))
+            .zip(&blocked_by)
+            .map(|(step, blocker)| {
+                if blocker.is_some() {
+                    Ok(None)
+                } else {
+                    crate::materialize::disposal::PathGuard::capture(&step.entry.target).map(Some)
+                }
+            })
             .collect::<Result<_>>()?;
-        Ok(Self { steps, guards })
+        Ok(Self {
+            steps,
+            guards,
+            blocked_by,
+            desired: desired.clone(),
+        })
     }
 
     pub fn steps(&self) -> &[PlanStep] {
@@ -147,12 +175,35 @@ impl Plan {
             .any(|s| matches!(s.operation, Operation::Conflict { .. }))
     }
 
+    /// Provisioning must wait until child destinations can be inspected safely.
+    pub(crate) fn has_blocked_children(&self) -> bool {
+        self.blocked_by.iter().any(Option::is_some)
+    }
+
+    /// Reconcile scaffolds before parallel repository provisioning needs them.
+    pub(crate) async fn prepare_scaffolds(&self, ctx: Ctx) -> Result<()> {
+        self.validate_boundaries()?;
+        let mut scaffolds = Self {
+            desired: self.desired.clone(),
+            ..Self::default()
+        };
+        for (index, step) in self.steps.iter().enumerate() {
+            if matches!(step.entry.intent, MaterializationIntent::Directory) {
+                // Keep clone orchestration in its normal progress-aware dispatcher;
+                // only the parent authorization must happen before provisioning.
+                scaffolds.steps.push(step.clone());
+                scaffolds.guards.push(self.guards[index].clone());
+                scaffolds.blocked_by.push(self.blocked_by[index].clone());
+            }
+        }
+        scaffolds.execute(ctx).await
+    }
+
     /// Execute every actionable step (`Create`/`Conflict`/an unblocked
     /// `Migrate`) in the plan's deterministic order (`DesiredTree` sorts
     /// entries by target path, so a directory's entry always precedes
-    /// anything nested under it). `Noop`/`Deferred` steps are skipped — the
-    /// former because there's nothing to do, the latter because it's
-    /// unreachable in practice since #110 (kept as a defensive fallback). A
+    /// anything nested under it). Blocked children are reclassified after their
+    /// scaffold is replaced; remaining `Noop`/`Deferred` steps are skipped. A
     /// blocked `Migrate` fails preflight: silently skipping it could let
     /// descendants write through an unresolved parent and run success hooks.
     pub async fn execute(&self, ctx: Ctx) -> Result<()> {
@@ -164,7 +215,7 @@ impl Plan {
 
         let registry = MaterializerRegistry::default();
         let mut guards = self.guards.clone();
-        for guard in &guards {
+        for guard in guards.iter().flatten() {
             guard.verify()?;
         }
         let progress = ProgressBar::new_spinner()
@@ -172,7 +223,35 @@ impl Plan {
             .with_message("");
 
         for (index, step) in self.steps.iter().enumerate() {
-            if let Some(guard) = guards.get(index) {
+            let refreshed;
+            let step = if let Some(parent) = &self.blocked_by[index] {
+                if ctx.dry_run {
+                    progress.println(format!(
+                        "inspect '{}' after replacing scaffold '{}'",
+                        step.entry.target.display(),
+                        parent.display()
+                    ));
+                    continue;
+                }
+                anyhow::ensure!(
+                    self.desired
+                        .blocking_scaffold(&step.entry.target)?
+                        .is_none(),
+                    "scaffold '{}' was not replaced; refusing child writes",
+                    parent.display()
+                );
+                // Parent replacement changes both location and actual state. Reuse the
+                // full classifier so checkout ownership/migration boundaries still apply.
+                refreshed = PlanStep {
+                    entry: step.entry.clone(),
+                    operation: classify(&self.desired, &step.entry, &registry)?,
+                };
+                validate_boundary(&refreshed)?;
+                &refreshed
+            } else {
+                step
+            };
+            if let Some(Some(guard)) = guards.get(index) {
                 guard.verify()?;
             }
             if !is_actionable(&step.operation) {
@@ -213,9 +292,15 @@ impl Plan {
                 // A completed parent-link migration intentionally changes the
                 // physical locations of its children. Refresh only that scope.
                 for (child, guard) in self.steps.iter().zip(&mut guards).skip(index + 1) {
-                    if child.entry.target.starts_with(&step.entry.target) {
-                        *guard =
-                            crate::materialize::disposal::PathGuard::capture(&child.entry.target)?;
+                    if child.entry.target.starts_with(&step.entry.target)
+                        && self
+                            .desired
+                            .blocking_scaffold(&child.entry.target)?
+                            .is_none()
+                    {
+                        *guard = Some(crate::materialize::disposal::PathGuard::capture(
+                            &child.entry.target,
+                        )?);
                     }
                 }
             }
@@ -228,27 +313,32 @@ impl Plan {
     /// Refuse before any child can execute through an unresolved parent.
     pub(crate) fn validate_boundaries(&self) -> Result<()> {
         for step in &self.steps {
-            if matches!(step.entry.intent, MaterializationIntent::Checkout)
-                && matches!(step.operation, Operation::Conflict { .. })
-            {
-                anyhow::bail!(
-                    "refusing checkout replacement at '{}': legacy source ownership is not established; move it aside or unapply its old layout",
-                    step.entry.target.display()
-                );
-            }
-            if let Operation::Migrate {
-                blocked: Some(reason),
-                ..
-            } = &step.operation
-            {
-                anyhow::bail!(
-                    "migration blocked at '{}': {reason}",
-                    step.entry.target.display()
-                );
-            }
+            validate_boundary(step)?;
         }
         Ok(())
     }
+}
+
+fn validate_boundary(step: &PlanStep) -> Result<()> {
+    if matches!(step.entry.intent, MaterializationIntent::Checkout)
+        && matches!(step.operation, Operation::Conflict { .. })
+    {
+        anyhow::bail!(
+            "refusing checkout replacement at '{}': legacy source ownership is not established; move it aside or unapply its old layout",
+            step.entry.target.display()
+        );
+    }
+    if let Operation::Migrate {
+        blocked: Some(reason),
+        ..
+    } = &step.operation
+    {
+        anyhow::bail!(
+            "migration blocked at '{}': {reason}",
+            step.entry.target.display()
+        );
+    }
+    Ok(())
 }
 
 impl fmt::Display for Plan {
@@ -310,12 +400,22 @@ impl fmt::Display for Plan {
             repair,
             deferred,
         )?;
-        for step in self
+        for (index, step) in self
             .steps
             .iter()
-            .filter(|s| !matches!(s.operation, Operation::Noop))
+            .enumerate()
+            .filter(|(_, s)| !matches!(s.operation, Operation::Noop))
         {
-            writeln!(f, "  {step}")?;
+            if let Some(parent) = &self.blocked_by[index] {
+                writeln!(
+                    f,
+                    "  inspect '{}' after replacing scaffold '{}'",
+                    step.entry.target.display(),
+                    parent.display()
+                )?;
+            } else {
+                writeln!(f, "  {step}")?;
+            }
         }
         Ok(())
     }
@@ -376,12 +476,196 @@ mod tests {
         (td, repo)
     }
 
+    #[rstest]
+    #[case(false, false)]
+    #[case(true, false)]
+    #[case(true, true)]
+    #[tokio::test]
+    async fn a_file_scaffold_requires_authorization_before_nested_content_is_materialized(
+        #[case] force: bool,
+        #[case] dry_run: bool,
+    ) {
+        let (td, repo) = repo_and_root();
+        td.child("ov/over.yaml")
+            .write_str("target: '~/blocked'")
+            .unwrap();
+        td.child("ov/nested/deeper/file")
+            .write_str("managed")
+            .unwrap();
+        td.child("home/blocked")
+            .write_str("preserve until authorized")
+            .unwrap();
+        let overlay = repo.get("ov").unwrap();
+        let context = Context::builder()
+            .repository(repo)
+            .root(td.path().join("home"))
+            .no_prompt(true)
+            .force(force)
+            .dry_run(dry_run)
+            .build();
+        let desired = DesiredTree::build(&context, &overlay).unwrap();
+        desired.validate_ownership().unwrap();
+        let plan = Plan::build(&desired).unwrap();
+        assert!(plan.has_conflicts());
+        let result = overlay.apply(&context).await;
+        if force && !dry_run {
+            result.unwrap();
+            assert_eq!(
+                fs::read_to_string(td.path().join("home/blocked/nested/deeper/file")).unwrap(),
+                "managed"
+            );
+            assert!(
+                Plan::build(&desired)
+                    .unwrap()
+                    .steps()
+                    .iter()
+                    .all(|step| matches!(step.operation, Operation::Noop))
+            );
+        } else {
+            assert_eq!(result.is_err(), !dry_run);
+            assert_eq!(
+                fs::read_to_string(td.path().join("home/blocked")).unwrap(),
+                "preserve until authorized"
+            );
+            assert_eq!(fs::read_dir(td.path().join("home")).unwrap().count(), 1);
+        }
+    }
+
     fn ctx(root: PathBuf, repo: Repository, overlay: Option<Overlay>) -> Ctx {
         let mut builder = Context::builder().root(root).repository(repo).verbose(true);
         if let Some(o) = overlay {
             builder = builder.overlay(o);
         }
         builder.build()
+    }
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn replacing_a_foreign_scaffold_link_never_writes_through_its_old_referent(
+        #[case] force: bool,
+    ) {
+        let (td, repo) = repo_and_root();
+        td.child("ov/over.yaml")
+            .write_str("target: '~/blocked'")
+            .unwrap();
+        td.child("ov/nested/file").write_str("managed").unwrap();
+        td.child("foreign/nested/file")
+            .write_str("foreign content")
+            .unwrap();
+        td.child("home").create_dir_all().unwrap();
+        symlink::symlink_dir(td.path().join("foreign"), td.path().join("home/blocked")).unwrap();
+        let overlay = repo.get("ov").unwrap();
+        let context = Context::builder()
+            .repository(repo)
+            .root(td.path().join("home"))
+            .no_prompt(true)
+            .force(force)
+            .build();
+        let desired = DesiredTree::build(&context, &overlay).unwrap();
+        let plan = Plan::build(&desired).unwrap();
+        assert_eq!(
+            plan.blocked_by
+                .iter()
+                .filter(|parent| parent.is_some())
+                .count(),
+            2
+        );
+        assert!(format!("{plan}").contains("after replacing scaffold"));
+        let result = plan.execute(context).await;
+        assert_eq!(
+            fs::read_to_string(td.path().join("foreign/nested/file")).unwrap(),
+            "foreign content"
+        );
+        assert!(!td.path().join("foreign/nested/file").is_symlink());
+        if force {
+            result.unwrap();
+            assert!(!td.path().join("home/blocked").is_symlink());
+            assert_eq!(
+                fs::read_to_string(td.path().join("home/blocked/nested/file")).unwrap(),
+                "managed"
+            );
+        } else {
+            assert!(result.is_err());
+            assert!(td.path().join("home/blocked").is_symlink());
+        }
+    }
+
+    #[rstest]
+    #[case("file")]
+    #[case("nested/file")]
+    fn an_unmanaged_non_directory_ancestor_remains_a_planning_error(#[case] suffix: &str) {
+        let td = TempDir::new().unwrap();
+        td.child("blocker").write_str("unmanaged").unwrap();
+        let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            target: td.path().join("blocker").join(suffix),
+            provenance: Provenance::Overlay {
+                overlay: "ov".into(),
+                source: td.path().join("source"),
+            },
+            intent: MaterializationIntent::SymlinkFile {
+                source: td.path().join("source"),
+                link_type: LinkType::Soft,
+            },
+            permissions: None,
+        }]);
+        assert!(desired.validate_ownership().is_err());
+        assert!(Plan::build(&desired).is_err());
+        assert_eq!(
+            fs::read_to_string(td.path().join("blocker")).unwrap(),
+            "unmanaged"
+        );
+    }
+
+    #[rstest]
+    #[case(false, false)]
+    #[case(true, false)]
+    #[case(true, true)]
+    #[tokio::test]
+    async fn clone_provisioning_waits_for_scaffold_replacement_authorization(
+        #[case] force: bool,
+        #[case] dry_run: bool,
+    ) {
+        let (td, repo) = repo_and_root();
+        let upstream = git2::Repository::init(td.path().join("upstream")).unwrap();
+        let tree_id = upstream.index().unwrap().write_tree().unwrap();
+        let tree = upstream.find_tree(tree_id).unwrap();
+        let signature = git2::Signature::now("Fixture", "fixture@example.com").unwrap();
+        upstream
+            .commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+            .unwrap();
+        td.child("ov/over.yaml")
+            .write_str(&format!(
+                "target: '~/blocked'\ngit:\n  checkout: '{}'",
+                td.path().join("upstream").display()
+            ))
+            .unwrap();
+        td.child("ov/checkout/config").write_str("overlay").unwrap();
+        td.child("home/blocked").write_str("preserve").unwrap();
+        let overlay = repo.get("ov").unwrap();
+        let context = Context::builder()
+            .repository(repo)
+            .root(td.path().join("home"))
+            .no_prompt(true)
+            .force(force)
+            .dry_run(dry_run)
+            .build();
+        let result = overlay.apply(&context).await;
+        if force && !dry_run {
+            result.unwrap();
+            assert!(td.path().join("home/blocked/checkout/.git").is_dir());
+            assert_eq!(
+                fs::read_to_string(td.path().join("home/blocked/checkout/config")).unwrap(),
+                "overlay"
+            );
+        } else {
+            assert_eq!(result.is_err(), !dry_run);
+            assert_eq!(
+                fs::read_to_string(td.path().join("home/blocked")).unwrap(),
+                "preserve"
+            );
+        }
     }
 
     #[rstest]
@@ -647,6 +931,8 @@ mod tests {
         };
         let plan = Plan {
             guards: Vec::new(),
+            blocked_by: vec![None],
+            desired: DesiredTree::default(),
             steps: vec![PlanStep {
                 entry,
                 operation: Operation::Migrate {

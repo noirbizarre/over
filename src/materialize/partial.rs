@@ -15,7 +15,7 @@ use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 
 use crate::actions::fs::SetPermissions;
-use crate::actions::partial::{BlockState, EnsurePartialBlock, find_block};
+use crate::actions::partial::{BlockState, EnsurePartialBlock, canonical_content, find_block};
 use crate::desired::{DesiredEntry, MaterializationIntent};
 use crate::exec::{Action, Ctx};
 use crate::overlays::FileMode;
@@ -88,7 +88,7 @@ impl Materializer for PartialFileMaterializer {
                     // Content already correct — but a declared permission
                     // (#65) might still be wrong, in which case only a
                     // `chmod` is needed, not a rewrite.
-                    BlockState::Found(existing) if existing == content => {
+                    BlockState::Found(existing) if existing == canonical_content(content) => {
                         match permission_drift(&entry.target, entry.permissions)? {
                             Some((current, desired)) => Operation::Repair { current, desired },
                             None => Operation::Noop,
@@ -171,6 +171,46 @@ mod tests {
         }));
         assert!(!m.handles(&MaterializationIntent::Directory));
         assert!(!m.handles(&MaterializationIntent::Checkout));
+    }
+
+    #[rstest::rstest]
+    #[case("")]
+    #[case("alias x=y")]
+    #[case("alias x=y\n")]
+    #[case("alias x=y\n\n")]
+    #[case("\n")]
+    #[tokio::test]
+    async fn partial_newlines_round_trip_without_drift(#[case] content: &str) {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("shellrc");
+        fs::write(&target, "before\n").unwrap();
+        let e = entry(target.clone(), content, "m");
+        let ctx = crate::exec::Context::builder().no_prompt(true).build();
+        let action = EnsurePartialBlock::new(target.clone(), "m".into(), content.into());
+        action.execute(ctx.clone()).await.unwrap();
+        let applied = fs::read_to_string(&target).unwrap();
+        assert!(matches!(
+            PartialFileMaterializer.classify(&e).unwrap(),
+            Operation::Noop
+        ));
+        let desired = crate::desired::DesiredTree::from_entries(vec![e]);
+        assert!(
+            !crate::diff::Report::build(&desired)
+                .unwrap()
+                .needs_attention()
+        );
+        action.execute(ctx.clone()).await.unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), applied);
+        assert_eq!(
+            crate::actions::partial::remove_block(&applied, "m"),
+            "before\n"
+        );
+        crate::unapply::Report::build(&desired)
+            .unwrap()
+            .execute(ctx)
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "before\n");
     }
 
     #[test]

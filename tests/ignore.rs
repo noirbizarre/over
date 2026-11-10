@@ -181,6 +181,87 @@ fn newly_ignored_symlinks_remain_unmanaged_and_host_exclusions_are_removed() {
     assert_eq!(fs::read_to_string(target).unwrap(), "preserve");
 }
 
+#[rstest]
+#[case("")]
+#[case("mode = 'checkout'\n")]
+fn independently_versioned_overlays_never_deploy_git_administration(#[case] config: &str) {
+    let fixture = Fixture::new(config);
+    write(&fixture.source, "ov/file", "managed content\n");
+    let repo = git2::Repository::init(fixture.source.join("ov")).unwrap();
+    commit_all(&repo);
+    // Git administration is not configuration input, even when it contains
+    // apparent Over declarations or broken ignore syntax.
+    write(&fixture.source, "ov/.git/.overignore", "[\n");
+    write(&fixture.source, "ov/.git/bad.link.toml", "invalid [");
+    write(&fixture.source, "ov/.git/bad.partial.toml", "invalid [");
+    fixture.apply("ov");
+    let target = fixture.home.join("target");
+    assert_eq!(
+        fs::read_to_string(target.join("file")).unwrap(),
+        "managed content\n"
+    );
+    assert!(target.join(".git").symlink_metadata().is_err());
+    assert!(repo.path().join("HEAD").is_file());
+}
+
+#[test]
+fn git_worktree_pointers_are_neither_deployed_nor_ingested() {
+    let fixture = Fixture::new("");
+    write(
+        &fixture.source,
+        "ov/nested/.git",
+        "gitdir: /external/admin\n",
+    );
+    write(&fixture.source, "ov/nested/file", "managed content");
+    fixture.apply("ov");
+    assert!(
+        fixture
+            .home
+            .join("target/nested/.git")
+            .symlink_metadata()
+            .is_err()
+    );
+    write(
+        &fixture.home,
+        "target/import/.git",
+        "gitdir: /other/admin\n",
+    );
+    write(&fixture.home, "target/import/file", "import content");
+    fixture
+        .add(&fixture.home.join("target/import/.git"))
+        .assert()
+        .failure()
+        .stderr(contains("ignored").or(contains("control metadata")));
+    fixture
+        .add(&fixture.home.join("target/import"))
+        .assert()
+        .success();
+    assert!(fixture.source.join("ov/import/file").is_file());
+    assert!(!fixture.source.join("ov/import/.git").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("target/import/.git")).unwrap(),
+        "gitdir: /other/admin\n"
+    );
+}
+
+#[test]
+fn directory_links_cannot_expose_nested_git_administration() {
+    let fixture = Fixture::new("[[rules]]\npath = 'app'\nmode = 'symlink-directory'\n");
+    write(
+        &fixture.source,
+        "ov/app/.git/config",
+        "live repository configuration",
+    );
+    fixture
+        .command("apply")
+        .args(["ov", "--no-prompt", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .failure()
+        .stderr(contains("directory symlink").and(contains(".git")));
+    assert!(fixture.home.join("target/app").symlink_metadata().is_err());
+}
+
 #[test]
 fn reverse_add_skips_ignored_children_and_rejects_an_explicit_ignored_selection() {
     let fixture = Fixture::new("");

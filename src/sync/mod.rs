@@ -548,6 +548,14 @@ fn handle_unresolved_state(
 ///   `over apply` materializes it).
 async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Result<SyncOutcome> {
     let path = entry.target.clone();
+    // Virtual reconciliation has no pending merge to undo. Dispatch before
+    // inspection so abort cannot refresh files or reach the commit prompt.
+    if opts.abort {
+        return Ok(SyncOutcome::Blocked {
+            path,
+            reason: "virtual checkout has no abortable operation".into(),
+        });
+    }
     let vc_status = status::virtual_checkout::inspect(entry)?;
 
     match vc_status {
@@ -731,7 +739,13 @@ async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Resu
             if base == head {
                 continue;
             }
-            let local = vc_git::target_entry(&target, relative)?;
+            let local = crate::materialize::virtual_checkout::snapshot::canonical_target_entry(
+                &repo,
+                &target,
+                relative,
+                &managed_path.join(relative),
+                &[base, head],
+            )?;
             let indexed = index
                 .get_path(&managed_path.join(relative), 0)
                 .map(|entry| (entry.id, entry.mode as i32));
@@ -769,10 +783,16 @@ async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Resu
                 }
             }
         }
+        let changes = vc_git::preflight_tree_changes(
+            &repo,
+            &target,
+            &managed_path,
+            &base_entries,
+            &updates_from,
+            &updates_to,
+        )?;
         if !dry_run {
-            let from = vc_git::build_content_tree(&repo, &updates_from)?;
-            let to = vc_git::build_content_tree(&repo, &updates_to)?;
-            vc_git::apply_tree_diff(&repo, &target, &from, &to)?;
+            changes.apply(&target)?;
         }
         anyhow::Ok(repo.head()?.peel_to_commit()?.id().to_string())
     })
@@ -1248,6 +1268,28 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn abort_does_not_inspect_or_prompt_for_a_virtual_checkout() {
+        let xdg = isolate_xdg_state();
+        let td = TempDir::new().unwrap();
+        let entry =
+            virtual_checkout_entry(td.path().join("target"), td.path().join("missing-source"));
+        let outcome = sync_virtual_checkout(
+            &entry,
+            &SyncOptions {
+                abort: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(outcome, SyncOutcome::Blocked { reason, .. } if reason.contains("no abortable operation"))
+        );
+        assert_eq!(fs::read_dir(xdg.path()).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(td.path()).unwrap().count(), 0);
+    }
+
     async fn materialize_virtual_checkout(source_root: &std::path::Path, target: &std::path::Path) {
         let repo = Repository::open(source_root).unwrap();
         fs::create_dir_all(target).unwrap();
@@ -1297,6 +1339,197 @@ mod tests {
                 path: target_td.path().to_path_buf()
             }
         );
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn abort_skips_virtual_refresh_in_a_composition_with_a_real_merge(#[case] dry_run: bool) {
+        let xdg = isolate_xdg_state();
+        let source_td = TempDir::new().unwrap();
+        let source = init_committed_repo_ret(source_td.path());
+        let target_td = TempDir::new().unwrap();
+        materialize_virtual_checkout(source_td.path(), target_td.path()).await;
+        let checkout_td = TempDir::new().unwrap();
+        let checkout = clone_with_tracking(source_td.path(), checkout_td.path());
+        fs::write(checkout_td.path().join("README.md"), "local").unwrap();
+        commit_all(&checkout, "local edit");
+        fs::write(source_td.path().join("README.md"), "upstream").unwrap();
+        commit_all(&source, "upstream edit");
+        assert_eq!(
+            git_sync::pull(&checkout).unwrap(),
+            git_sync::PullOutcome::Conflict
+        );
+        let desired = DesiredTree::from_entries(vec![
+            virtual_checkout_entry(target_td.path().into(), source_td.path().into()),
+            checkout_entry(checkout_td.path().into(), ROOT_PATH, git_config(false)),
+        ]);
+        let target_before = checkout_snapshot(target_td.path());
+        let source_before = checkout_snapshot(source_td.path());
+        let state_before = fs::read(xdg.path().join("over/virtual_checkout.toml")).unwrap();
+        let outcomes = sync(
+            &desired,
+            &SyncOptions {
+                abort: true,
+                dry_run,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(outcomes.iter().any(|outcome| matches!(outcome, SyncOutcome::Blocked { path, reason } if path == target_td.path() && reason.contains("no abortable operation"))));
+        assert!(outcomes.iter().any(|outcome| if dry_run {
+            matches!(outcome, SyncOutcome::Preview { .. })
+        } else {
+            matches!(outcome, SyncOutcome::Aborted { .. })
+        }));
+        assert_eq!(checkout_snapshot(target_td.path()), target_before);
+        assert_eq!(checkout_snapshot(source_td.path()), source_before);
+        assert_eq!(
+            fs::read(xdg.path().join("over/virtual_checkout.toml")).unwrap(),
+            state_before
+        );
+        assert_eq!(
+            checkout.state(),
+            if dry_run {
+                RepositoryState::Merge
+            } else {
+                RepositoryState::Clean
+            }
+        );
+    }
+
+    #[tokio::test]
+    #[rstest::rstest]
+    async fn virtual_sync_preflights_shape_transitions_before_any_target_mutation(
+        #[values(false, true)] directory_to_file: bool,
+        #[values(
+            "clean",
+            "edited",
+            "untracked",
+            "empty-untracked",
+            "readonly",
+            "hole",
+            "missing-old"
+        )]
+        obstruction: &str,
+        #[values(false, true)] dry_run: bool,
+    ) {
+        let xdg = isolate_xdg_state();
+        let source = TempDir::new().unwrap();
+        let repo = init_committed_repo_ret(source.path());
+        let old = if directory_to_file {
+            "shape/nested/leaf"
+        } else {
+            "shape"
+        };
+        let new = if directory_to_file {
+            "shape"
+        } else {
+            "shape/nested/leaf"
+        };
+        fs::create_dir_all(source.path().join(old).parent().unwrap()).unwrap();
+        fs::write(source.path().join(old), "old").unwrap();
+        fs::write(source.path().join("aaa"), "old unrelated").unwrap();
+        if directory_to_file && obstruction == "hole" {
+            fs::write(source.path().join("shape/foreign"), "independently owned").unwrap();
+        }
+        commit_all(&repo, "base shape");
+        let target = TempDir::new().unwrap();
+        materialize_virtual_checkout(source.path(), target.path()).await;
+        if directory_to_file {
+            fs::remove_dir_all(source.path().join("shape")).unwrap();
+        } else {
+            fs::remove_file(source.path().join(old)).unwrap();
+            fs::create_dir_all(source.path().join(new).parent().unwrap()).unwrap();
+        }
+        fs::write(source.path().join(new), "new").unwrap();
+        fs::write(source.path().join("aaa"), "new unrelated").unwrap();
+        commit_all(&repo, "new shape");
+        match obstruction {
+            "missing-old" => fs::remove_file(target.path().join(old)).unwrap(),
+            "edited" => fs::write(target.path().join(old), "local edit").unwrap(),
+            "untracked" if directory_to_file => {
+                fs::write(target.path().join("shape/foreign"), "private").unwrap()
+            }
+            "empty-untracked" if directory_to_file => {
+                fs::create_dir(target.path().join("shape/foreign")).unwrap()
+            }
+            "readonly" => {
+                let file = target.path().join(old);
+                let mut permissions = fs::metadata(&file).unwrap().permissions();
+                permissions.set_readonly(true);
+                fs::set_permissions(file, permissions).unwrap();
+            }
+            _ => {}
+        }
+        let mut entry = virtual_checkout_entry(target.path().into(), source.path().into());
+        if directory_to_file && obstruction == "hole" {
+            let scope = crate::desired::CheckoutScope {
+                source_excludes: vec![PathBuf::from("shape/foreign")],
+                target_excludes: vec![PathBuf::from("shape/foreign")],
+                ..Default::default()
+            };
+            entry.intent = MaterializationIntent::ScopedVirtualCheckout(scope.clone());
+            let mut record = vc_state::record_for(target.path()).await.unwrap().unwrap();
+            record.scope = scope;
+            vc_state::persist(target.path(), record).await.unwrap();
+        }
+        let before = checkout_snapshot(target.path());
+        let state_before = fs::read(xdg.path().join("over/virtual_checkout.toml")).unwrap();
+        let result = if obstruction == "clean" {
+            // Exercise public dispatch too: shape-only upstream changes must be
+            // classified as pullable rather than reaching a commit prompt.
+            sync(
+                &DesiredTree::from_entries(vec![entry.clone()]),
+                &SyncOptions {
+                    dry_run,
+                    no_prompt: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(|outcomes| {
+                assert!(matches!(
+                    outcomes[0],
+                    SyncOutcome::FastForwarded { .. } | SyncOutcome::Preview { .. }
+                ));
+            })
+        } else {
+            reconcile_virtual_checkout(&entry, dry_run).await
+        };
+        let blocked = obstruction == "edited"
+            || obstruction == "readonly"
+            || (directory_to_file
+                && matches!(obstruction, "untracked" | "empty-untracked" | "hole"));
+        assert_eq!(result.is_err(), blocked, "{result:?}");
+        if blocked || dry_run {
+            assert_eq!(checkout_snapshot(target.path()), before);
+            assert_eq!(
+                fs::read(xdg.path().join("over/virtual_checkout.toml")).unwrap(),
+                state_before
+            );
+        } else {
+            assert_eq!(fs::read(target.path().join(new)).unwrap(), b"new");
+            assert_eq!(
+                fs::read(target.path().join("aaa")).unwrap(),
+                b"new unrelated"
+            );
+            assert_eq!(
+                status::virtual_checkout::inspect(&entry).unwrap(),
+                Status::Applied
+            );
+        }
+        // Windows cannot clean up read-only fixture files.
+        if obstruction == "readonly" {
+            let file = target.path().join(old);
+            fs::set_permissions(
+                &file,
+                fs::metadata(source.path().join(new)).unwrap().permissions(),
+            )
+            .unwrap();
+        }
     }
 
     #[tokio::test]

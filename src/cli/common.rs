@@ -98,6 +98,10 @@ pub fn select_overlay(
     if let Some(overlay) = repo.default_overlay(ctx)? {
         return Ok(overlay);
     }
+    // No-prompt callers (including commit) must fail before dialoguer touches the terminal.
+    if ctx.no_prompt {
+        bail!("overlay selection requires an explicit name or default_overlay with --no-prompt");
+    }
     let overlays = repo.overlays()?;
     if overlays.is_empty() {
         bail!("no overlays found in repository");
@@ -117,6 +121,37 @@ mod tests {
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use rstest::rstest;
+
+    #[rstest]
+    #[case(None, None, false)]
+    #[case(Some("ov"), None, true)]
+    #[case(None, Some("ov"), true)]
+    #[case(None, Some("missing"), false)]
+    fn noninteractive_selection_requires_an_explicit_overlay_or_valid_default(
+        #[case] name: Option<&str>,
+        #[case] default: Option<&str>,
+        #[case] succeeds: bool,
+    ) {
+        let temp = TempDir::new().unwrap();
+        temp.child("ov/over.toml")
+            .write_str("target = '~'")
+            .unwrap();
+        if let Some(default) = default {
+            temp.child("over.toml")
+                .write_str(&format!("default_overlay = '{default}'"))
+                .unwrap();
+        }
+        let repo = Repository::new(temp.path().to_path_buf());
+        let ctx = exec::Context::builder()
+            .repository(repo.clone())
+            .no_prompt(true)
+            .build();
+        let result = select_overlay(&repo, &ctx, name, "Select");
+        assert_eq!(result.is_ok(), succeeds);
+        if name.is_none() && default.is_none() {
+            assert!(result.unwrap_err().to_string().contains("no-prompt"));
+        }
+    }
 
     #[rstest]
     #[case("*.txt", true)]

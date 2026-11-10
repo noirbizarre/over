@@ -116,6 +116,17 @@ Ignoring a sidecar suppresses its declaration; negation cannot deploy control
 metadata as ordinary files. Ignores do not unregister overlays or disable their
 configuration. There is no `ignore` descriptor field.
 
+Source-tree selection always excludes Git administration paths (`.git`
+directories, their contents, and worktree pointer files) from deployment and
+reverse add. Ignore negations cannot re-include them, and Over does not parse
+sidecars or ignore rules inside them. Whole-directory links to content inside
+the overlay source tree are rejected if they would expose Git administration
+data.
+
+This selection policy does not constrain explicit `.link.*` referents outside
+the overlay source tree. Such a declaration can link an external repository
+directory, including its `.git`, or an individual Git administration file.
+
 `exclude` applies independently and cannot be undone by `.overignore` negation.
 Over does not read `.gitignore`, `.ignore`, global Git excludes, ignore files
 above its repository root, or symlinked `.overignore` files.
@@ -239,6 +250,12 @@ root. `content` is literal. `marker` distinguishes blocks in the same file:
 alias ll='ls -la'
 # <<< over: aliases <<<
 ```
+
+One optional trailing newline in `content` is the separator before the end
+marker: `"alias x=y"` and `"alias x=y\n"` describe the same block. Additional
+trailing newlines preserve blank lines and are significant. Existing marker
+layouts remain readable; applying an unchanged block does not rewrite it.
+Empty `content` sidecars are skipped. Block operations also support empty blocks.
 
 Hand-edited managed content is a conflict, never silently overwritten. Unapply
 removes only the block, preserving unrelated content. Use

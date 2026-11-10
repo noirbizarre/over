@@ -8,7 +8,9 @@
 //! git conflict markers in the index/working directory exactly as `git
 //! merge` would, and the caller (`crate::sync`) never auto-resolves them —
 //! the user resolves with ordinary git tooling (`git add`, `git commit`, or
-//! `git merge --abort` — mirrored here by [`abort_merge`]).
+//! `git merge --abort`). The explicit [`abort_merge`] helper instead hard-resets
+//! to `HEAD`, discarding post-conflict tracked/index edits before clearing merge
+//! state; it does not provide Git's protective merge-abort semantics.
 
 use anyhow::{Context as _, Result};
 use git2::{FetchOptions, PushOptions, Repository, ResetType, Signature};

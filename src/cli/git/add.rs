@@ -10,7 +10,10 @@ use crate::ui;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
-use super::{CLI, discover_repo, main_repo_root, repo_relative_path, resolve_overlay};
+use super::{
+    CLI, discover_repo, get_overlay_config, main_repo_root, repo_relative_path, select_overlay,
+    set_overlay_config,
+};
 
 #[derive(Args, Debug)]
 pub struct Params {
@@ -48,7 +51,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let over_repo = Repository::new(home);
 
     // Resolve overlay
-    let overlay = resolve_overlay(&over_repo, &git_repo, args.overlay.as_deref())?;
+    let overlay = select_overlay(&over_repo, &git_repo, args.overlay.as_deref())?;
 
     if cli.debug {
         tracing::debug!(?overlay, "resolved overlay");
@@ -117,6 +120,11 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             ))
             .ok();
         }
+    }
+
+    // A failed ingestion or preview must not associate the host repository.
+    if !args.dry_run && args.overlay.is_none() && get_overlay_config(&git_repo)?.is_none() {
+        set_overlay_config(&git_repo, &overlay.name)?;
     }
 
     // Compute relative paths within the overlay for display

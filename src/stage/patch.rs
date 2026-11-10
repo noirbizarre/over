@@ -14,7 +14,7 @@ use crate::desired::{DesiredEntry, DesiredTree, Provenance};
 use crate::exec::Ctx;
 use crate::materialize::virtual_checkout::git;
 use crate::materialize::virtual_checkout::snapshot::{
-    canonical_source_entry, honors_filemode, target_content,
+    canonical_entry, canonical_source_entry, target_content,
 };
 use crate::materialize::virtual_checkout::state;
 use crate::overlays::Overlay;
@@ -376,7 +376,6 @@ fn prepare_entry(
             candidates.insert(relative.to_path_buf());
         }
     }
-    let filemode = honors_filemode(repo)?;
     for relative in candidates {
         let target = entry.target.join(&relative);
         if !scope.owns_source(&relative)
@@ -408,12 +407,10 @@ fn prepare_entry(
         if let Some(old) = old {
             prepared.before.insert(path.clone(), old);
         }
-        if let Some((content, mut mode)) = target_content(&entry.target, &relative)? {
-            if !filemode {
-                mode = old.map(|(_, mode)| mode).unwrap_or(0o100644);
-            }
-            let oid = prepared.scratch.target_blob(repo, &path, &content)?;
-            prepared.after.insert(path, (oid, mode));
+        if let Some((content, mode)) = target_content(&entry.target, &relative)? {
+            let canonical =
+                canonical_entry(repo, &prepared.scratch, &path, &content, mode, &[old])?;
+            prepared.after.insert(path, canonical);
         }
     }
     Ok(())
@@ -557,6 +554,60 @@ mod tests {
                 self.records.get_mut(&entry.target).unwrap().scope = entry.intent.checkout_scope();
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn full_staging_rejects_symlink_ancestors_without_recording_external_bytes(
+        #[case] dry_run: bool,
+    ) {
+        let mut fixture = Fixture::new();
+        let source = fixture.repo.workdir().unwrap().join("ov/nested");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("secret"), b"tracked content\n").unwrap();
+        let mut index = fixture.repo.index().unwrap();
+        index.add_path(Path::new("ov/nested/secret")).unwrap();
+        index.write().unwrap();
+        let tree = fixture.repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+        let head = fixture.repo.head().unwrap().peel_to_commit().unwrap();
+        let oid = fixture
+            .repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "nested file",
+                &tree,
+                &[&head],
+            )
+            .unwrap();
+        for record in fixture.records.values_mut() {
+            record.base_oid = oid.to_string();
+        }
+        let outside = fixture._directory.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let secret = b"external bytes must never enter the source object database\n";
+        fs::write(outside.join("secret"), secret).unwrap();
+        std::os::unix::fs::symlink(&outside, fixture.target.join("nested")).unwrap();
+        let original_index = fixture.index_bytes();
+        let secret_oid = git2::Oid::hash_object(git2::ObjectType::Blob, secret).unwrap();
+        assert!(!fixture.repo.odb().unwrap().exists(secret_oid));
+        let tree = DesiredTree::build_own(&fixture.ctx, &fixture.overlay).unwrap();
+        let result = super::super::stage_entries_with(
+            tree.entries(),
+            &[fixture.target.join("nested/secret")],
+            dry_run,
+            &fixture.overlay,
+            &|target| Ok(fixture.records.get(target).cloned()),
+            &git::source_entry,
+        );
+        assert!(result.unwrap_err().to_string().contains("symlink"));
+        assert_eq!(fixture.index_bytes(), original_index);
+        assert!(!fixture.repo.odb().unwrap().exists(secret_oid));
+        assert_eq!(fs::read(outside.join("secret")).unwrap(), secret);
     }
 
     #[test]

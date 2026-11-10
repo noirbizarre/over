@@ -135,7 +135,9 @@ only, git + optional tag/branch/rev + optional name, or path.
 
 Relative `path` values use the declaring descriptor's root, including in
 platform-specific sections. Inherited paths retain their original base and
-do not depend on the process working directory; see
+do not depend on the process working directory. Absolute paths remain
+absolute. `~` and `~/...` resolve against the execution root (including a
+custom `--root`) when the installer runs; see
 [Path Resolution](configuration.md#path-resolution).
 
 ## Python Packages
@@ -187,10 +189,7 @@ Note: `archlinux` is **not** a valid platform-section key — it's already
 the top-level Arch package manager field shown above, so
 `[install.archlinux]` sets that manager's config, not a platform override
 (the actual Arch platform key is `arch`, matching the real
-`/etc/os-release` `ID`). Package extraction across `uses` dependencies
-does accept `archlinux` as an alias for `arch` when looking up platform
-sections, but the other manager/`pre`/`post` resolution paths do not —
-use `arch` to be safe.
+`/etc/os-release` `ID`). Use `arch` for Arch platform overrides.
 
 ## Scripts
 
@@ -206,5 +205,14 @@ Platform-specific overrides use the `windows` key inside `install`.
 ## Composition via Uses
 
 Packages from overlays referenced in `uses` are merged (set union) to avoid
-duplicates across overlays. See
+duplicates across overlays. Managers are discovered across that dependency
+closure, so a composition-only overlay does not need its own `install`
+section. Linux manager precedence is evaluated for each participating
+descriptor; shared managers run once. Each descriptor contributes packages
+and taps only for its selected managers. For example, a Brew-only dependency
+does not enable a host's top-level Brew alternative when the host selects
+Apt. `--no-uses` installs only the selected overlay's packages.
+
+Only the selected overlay's scripts run, in the order above; dependency
+scripts are not inherited through `uses`. See
 [ADR-008](adr/008-uses-composition-is-a-flat-union.md).

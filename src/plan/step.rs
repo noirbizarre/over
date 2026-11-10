@@ -39,12 +39,10 @@ pub enum Operation {
         /// `Noop` would be.
         blocked: Option<String>,
     },
-    /// No registered [`crate::materialize::Materializer`] claims this
-    /// entry's intent. Unreachable in practice since #110 gave every intent
-    /// (including [`MaterializationIntent::Checkout`]) a real backend, but
-    /// kept as a defensive fallback so a plan preview still reports
-    /// something sensible instead of panicking; [`super::Plan::execute`]
-    /// never acts on it.
+    /// Classification is pending replacement of a known ancestor scaffold,
+    /// or no registered materializer claims the intent. The plan records the
+    /// structural dependency separately and reclassifies after replacement;
+    /// unresolved fallback entries are never executed.
     Deferred,
     /// Target already matches desired content/kind, but its permission mode
     /// differs from what's declared (#65) — auto-fixable, unlike a real

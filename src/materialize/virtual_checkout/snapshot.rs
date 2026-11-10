@@ -12,7 +12,10 @@ pub(crate) fn canonical_source_entry(
     repo: &git2::Repository,
     path: &Path,
 ) -> Result<Option<(git2::Oid, i32)>> {
-    let raw = git::source_entry(repo, path)?;
+    // Sources must reject directory obstructions, not treat them as deletions.
+    if git::source_entry(repo, path)?.is_none() {
+        return Ok(None);
+    }
     let head = git::base_tree(repo, None)?
         .get_path(path)
         .ok()
@@ -21,19 +24,60 @@ pub(crate) fn canonical_source_entry(
         .index()?
         .get_path(path, 0)
         .map(|entry| (entry.id, entry.mode as i32));
-    if git::entries_match(raw, head) || git::entries_match(raw, indexed) {
-        return Ok(raw);
-    }
     let root = repo.workdir().context("source has no working directory")?;
     let Some((content, mut mode)) = target_content(root, path)? else {
         return Ok(None);
     };
+    // Only targets contain materializer-written raw blobs. A real worktree must
+    // always be cleaned, or a non-idempotent filter can hide native Git edits.
     let scratch = crate::actions::git::diff::Scratch::new(repo)?;
     let oid = scratch.target_blob(repo, path, &content)?;
     if !honors_filemode(repo)? {
         mode = head.or(indexed).map(|entry| entry.1).unwrap_or(0o100644);
     }
     Ok(Some((oid, mode)))
+}
+
+/// Compare in Git's clean-filter domain, while accepting unchanged raw blobs
+/// written by our materializer. Re-cleaning those can corrupt non-idempotent
+/// filters; mode normalization must still happen even on that fast path.
+pub(crate) fn canonical_target_entry(
+    repo: &git2::Repository,
+    root: &Path,
+    relative: &Path,
+    logical: &Path,
+    expected: &[Option<(git2::Oid, i32)>],
+) -> Result<Option<(git2::Oid, i32)>> {
+    let Some((content, mode)) = target_content(root, relative)? else {
+        return Ok(None);
+    };
+    let scratch = crate::actions::git::diff::Scratch::new(repo)?;
+    canonical_entry(repo, &scratch, logical, &content, mode, expected).map(Some)
+}
+
+pub(crate) fn canonical_entry(
+    repo: &git2::Repository,
+    scratch: &crate::actions::git::diff::Scratch,
+    logical: &Path,
+    content: &[u8],
+    mut mode: i32,
+    expected: &[Option<(git2::Oid, i32)>],
+) -> Result<(git2::Oid, i32)> {
+    let raw = git2::Oid::hash_object(git2::ObjectType::Blob, content)?;
+    let oid = if expected.iter().flatten().any(|entry| entry.0 == raw) {
+        raw
+    } else {
+        scratch.target_blob(repo, logical, content)?
+    };
+    if !honors_filemode(repo)? {
+        mode = expected
+            .iter()
+            .flatten()
+            .next()
+            .map(|entry| entry.1)
+            .unwrap_or(0o100644);
+    }
+    Ok((oid, mode))
 }
 
 pub(crate) fn honors_filemode(repo: &git2::Repository) -> Result<bool> {
@@ -92,4 +136,61 @@ pub(crate) fn target_content(root: &Path, relative: &Path) -> Result<Option<(Vec
         }
     }
     Ok(None)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_canonical_blobs_skip_filters_but_still_ignore_executable_bits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(directory.path()).unwrap();
+        repo.config()
+            .unwrap()
+            .set_bool("core.filemode", false)
+            .unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("filter.broken.clean", "exit 1")
+            .unwrap();
+        repo.config()
+            .unwrap()
+            .set_bool("filter.broken.required", true)
+            .unwrap();
+        std::fs::write(
+            directory.path().join(".gitattributes"),
+            "file filter=broken\n",
+        )
+        .unwrap();
+        let target = directory.path().join("file");
+        std::fs::write(&target, b"canonical bytes").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let expected = (repo.blob(b"canonical bytes").unwrap(), 0o100644);
+        assert_eq!(
+            canonical_target_entry(
+                &repo,
+                directory.path(),
+                Path::new("file"),
+                Path::new("file"),
+                &[Some(expected)]
+            )
+            .unwrap(),
+            Some(expected)
+        );
+        // A real edit must run the required filter and fail, not silently hash raw bytes.
+        std::fs::write(&target, b"edited bytes").unwrap();
+        assert!(
+            canonical_target_entry(
+                &repo,
+                directory.path(),
+                Path::new("file"),
+                Path::new("file"),
+                &[Some(expected)]
+            )
+            .is_err()
+        );
+    }
 }

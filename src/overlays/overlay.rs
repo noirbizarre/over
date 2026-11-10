@@ -403,6 +403,8 @@ impl Overlay {
     }
 
     pub async fn apply(&self, ctx: &Ctx) -> Result<()> {
+        // A flat union has no winner: reject every claim before any participant writes.
+        DesiredTree::build(ctx, self)?.validate_ownership()?;
         let mut visited = HashSet::new();
         let mut stack = Vec::new();
         let mut participants = Vec::new();
@@ -457,6 +459,8 @@ impl Overlay {
 
     /// Validate before external installers can make irreversible changes.
     pub fn validate_apply(&self, ctx: &Ctx) -> Result<()> {
+        // Installers run before apply, so they need the same composed preflight.
+        DesiredTree::build(ctx, self)?.validate_ownership()?;
         let mut participants = Vec::new();
         self.collect_participants(ctx, &mut HashSet::new(), &mut Vec::new(), &mut participants)?;
         if !ctx.repository.hooks()?.is_empty()
@@ -542,8 +546,19 @@ impl Overlay {
             ui::info(format!("{plan}")).ok();
         }
         plan.validate_boundaries()?;
+        if self.git.is_some() && plan.has_blocked_children() {
+            // Parallel clone provisioning cannot run through an obstructed scaffold.
+            // The plan authorizes its replacement before provisioning inspects children.
+            plan.prepare_scaffolds(ctx_with_target.clone()).await?;
+            plan = Plan::build(&desired)?;
+            plan.validate_boundaries()?;
+        }
         // Classify every ownership scope before cloning can mutate a destination.
-        actions::git::clone_repositories(ctx.clone(), self, &target).await?;
+        if !ctx.dry_run || !plan.has_blocked_children() {
+            // A preview cannot inspect clone destinations through a scaffold it
+            // deliberately leaves intact; the plan reports those pending children.
+            actions::git::clone_repositories(ctx.clone(), self, &target).await?;
+        }
         if self.git.is_some() {
             // Cloning may already perform a legacy-checkout migration;
             // never execute the stale pre-clone destructive operation.
@@ -610,6 +625,62 @@ mod tests {
         let td = TempDir::new().unwrap();
         let repo = Repository::new(td.path().to_path_buf());
         (td, repo)
+    }
+
+    #[rstest]
+    #[case(false, false)]
+    #[case(true, false)]
+    #[case(false, true)]
+    #[case(true, true)]
+    #[tokio::test]
+    async fn composed_ownership_refusal_precedes_all_participant_side_effects(
+        #[case] reverse: bool,
+        #[case] force: bool,
+    ) {
+        let (td, repo) = repo_and_root();
+        for name in ["first", "second"] {
+            td.child(format!("{name}/over.yaml"))
+                .write_str("target: '~'")
+                .unwrap();
+            td.child(format!("{name}/same")).write_str(name).unwrap();
+        }
+        td.child("first/otherwise-valid")
+            .write_str("untouched")
+            .unwrap();
+        td.child("selected/over.yaml")
+            .write_str(&format!(
+                "uses: [{}]\ngit:\n  clone: /nonexistent/ownership-preflight.git",
+                if reverse {
+                    "second, first"
+                } else {
+                    "first, second"
+                }
+            ))
+            .unwrap();
+        let overlay = repo.get("selected").unwrap();
+        let root = td.path().join("target");
+        let context = Context::builder()
+            .root(root.clone())
+            .repository(repo)
+            .no_prompt(true)
+            .force(force)
+            .build();
+        let before_install = overlay.validate_apply(&context).unwrap_err();
+        assert!(
+            before_install
+                .to_string()
+                .contains("conflicting target ownership")
+        );
+        let error = overlay.apply(&context).await.unwrap_err();
+        assert!(error.to_string().contains("conflicting target ownership"));
+        assert!(
+            !root.exists(),
+            "no directory, child link, or clone may be created"
+        );
+        assert_eq!(
+            fs::read_to_string(td.path().join("first/same")).unwrap(),
+            "first"
+        );
     }
 
     fn ctx(root: PathBuf, repo: Repository, overlay: Option<Overlay>) -> Ctx {

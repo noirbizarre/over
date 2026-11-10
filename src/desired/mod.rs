@@ -53,6 +53,7 @@
 //!   it has no representation in `DesiredTree`.
 
 mod entry;
+pub(crate) mod ownership;
 mod tree;
 
 pub use entry::{CheckoutScope, DesiredEntry, EntryKind, MaterializationIntent, Provenance};

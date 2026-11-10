@@ -44,6 +44,11 @@ pub(super) fn resolve_install_paths(value: &mut Value, origin: &Path) {
             for (key, value) in table {
                 if key == "path" {
                     if let ValueKind::String(path) = &mut value.kind {
+                        // Tilde is execution-root-relative; resolving it here loses that distinction
+                        // before the caller supplies a custom root.
+                        if path == "~" || path.starts_with("~/") {
+                            continue;
+                        }
                         *path = super::mapping::lexical(&origin.join(&*path))
                             .to_string_lossy()
                             .into_owned();

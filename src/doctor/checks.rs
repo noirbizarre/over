@@ -1,14 +1,13 @@
 //! Doctor's own two checks — everything else in [`super::Report`] is
 //! aggregated from an existing pass ([`crate::lint`], [`crate::git_exclude`]).
 //!
-//! Both checks here are detection-only: neither ever writes anything (the
-//! state-dir-writable probe cleans up after itself, see
-//! [`probe_writable`]).
+//! State inspection is read-only. The environment check deliberately creates
+//! the state directory and writes/removes a probe; see [`probe_writable`].
 
 use std::fs;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 use crate::materialize::virtual_checkout::state::{self as vc_state, VirtualCheckoutState};
 use crate::overlays::Repository;
@@ -86,8 +85,9 @@ pub fn environment_findings() -> Vec<Finding> {
 fn probe_writable(dir: &Path) -> Result<()> {
     XdgDirs::ensure_dir(dir)?;
     let probe = dir.join(format!(".doctor-probe-{}", std::process::id()));
-    fs::write(&probe, b"")?;
-    fs::remove_file(&probe)?;
+    fs::write(&probe, b"").with_context(|| format!("failed to write probe {}", probe.display()))?;
+    fs::remove_file(&probe)
+        .with_context(|| format!("failed to remove probe {}", probe.display()))?;
     Ok(())
 }
 
@@ -116,7 +116,8 @@ async fn xdg_state_findings_in(
 ) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
 
-    match sync_file.load().await {
+    // Atomic snapshot reads avoid creating lock files during diagnostics.
+    match sync_file.inspect().await {
         Ok(state) => {
             for (target, record) in &state.checkouts {
                 findings.extend(stale_record_findings("sync", repo, target, &record.overlay));
@@ -125,7 +126,7 @@ async fn xdg_state_findings_in(
         Err(e) => findings.push(Finding::error(format!("failed to read sync state: {e}"))),
     }
 
-    match vc_file.load().await {
+    match vc_file.inspect().await {
         Ok(state) => {
             for (target, record) in &state.checkouts {
                 findings.extend(stale_record_findings(
@@ -193,6 +194,19 @@ mod tests {
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
     }
 
+    #[test]
+    fn an_obstructed_probe_reports_the_failing_path() {
+        let tmp = TempDir::new().unwrap();
+        let probe = tmp
+            .path()
+            .join(format!(".doctor-probe-{}", std::process::id()));
+        fs::create_dir(&probe).unwrap();
+        let error = probe_writable(tmp.path()).unwrap_err().to_string();
+        assert!(error.contains("failed to write probe"));
+        assert!(error.contains(&probe.display().to_string()));
+        assert!(probe.is_dir());
+    }
+
     #[cfg(unix)]
     #[test]
     fn probe_writable_fails_on_a_read_only_directory() {
@@ -223,6 +237,22 @@ mod tests {
             StateFile::new(tmp.path().join("sync.toml")),
             StateFile::new(tmp.path().join("virtual_checkout.toml")),
         )
+    }
+
+    #[tokio::test]
+    async fn diagnosing_missing_state_leaves_no_directories_or_locks() {
+        let tmp = TempDir::new().unwrap();
+        let repo = repo_with_overlay(&tmp, "dotfiles");
+        let state_dir = tmp.path().join("missing/state");
+        let sync_file = StateFile::new(state_dir.join("sync.toml"));
+        let vc_file = StateFile::new(state_dir.join("virtual_checkout.toml"));
+        assert!(
+            xdg_state_findings_in(&repo, &sync_file, &vc_file)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!state_dir.exists());
     }
 
     #[tokio::test]
