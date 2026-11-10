@@ -106,8 +106,8 @@ run = "cargo fmt --all -- --check"
 [tasks.lint]
 description = "Lint the code"
 # `-Dclippy::all` rather than the template's `-D warnings`: this predates the
-# template attachment and AGENTS.md documents it as the convention. Keep the
-# two in sync with the `clippy` prek hook below.
+# template attachment and AGENTS.md documents it as the convention. Keep this
+# task aligned with that guidance; Clippy runs explicitly and in CI, not hooks.
 run = "cargo clippy --all-targets --all-features -- -Dclippy::all"
 
 [tasks.spell]
