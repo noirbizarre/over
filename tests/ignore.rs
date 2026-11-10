@@ -43,7 +43,7 @@ impl Fixture {
 
     fn apply(&self, name: &str) {
         self.command("apply")
-            .args([name, "--no-prompt", "--root"])
+            .args([name, "--no-prompt", "--target"])
             .arg(&self.home)
             .assert()
             .success();
@@ -51,7 +51,7 @@ impl Fixture {
 
     fn add(&self, path: &Path) -> Command {
         let mut cmd = self.command("add");
-        cmd.args(["--overlay", "ov", "--root"])
+        cmd.args(["--overlay", "ov", "--target"])
             .arg(&self.home)
             .arg(path);
         cmd
@@ -166,14 +166,14 @@ fn newly_ignored_symlinks_remain_unmanaged_and_host_exclusions_are_removed() {
     assert!(!exclude.contains("/target/secret"));
     fixture
         .command("status")
-        .args(["ov", "--verbose", "--root"])
+        .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
         .stdout(contains("secret").not());
     fixture
         .command("unapply")
-        .args(["ov", "--root"])
+        .args(["ov", "--target"])
         .arg(&fixture.home)
         .assert()
         .success();
@@ -254,7 +254,7 @@ fn directory_links_cannot_expose_nested_git_administration() {
     );
     fixture
         .command("apply")
-        .args(["ov", "--no-prompt", "--root"])
+        .args(["ov", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .failure()
@@ -290,7 +290,7 @@ fn atomic_directory_links_reject_ignored_descendants_before_apply_or_reverse_add
     write(&fixture.home, "target/app/secret.pem", "target secret");
     fixture
         .command("apply")
-        .args(["ov", "--no-prompt", "--root"])
+        .args(["ov", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .failure()
@@ -349,7 +349,7 @@ fn checkout_workflows_preserve_newly_ignored_files_and_staged_changes(
     fixture.apply("ov");
     fixture
         .command("status")
-        .args(["ov", "--verbose", "--root"])
+        .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -357,7 +357,7 @@ fn checkout_workflows_preserve_newly_ignored_files_and_staged_changes(
         .stdout(contains("applied"));
     fixture
         .command("diff")
-        .args(["ov", "--root"])
+        .args(["ov", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -366,7 +366,7 @@ fn checkout_workflows_preserve_newly_ignored_files_and_staged_changes(
     fixture.add(&fixture.home.join("target")).assert().success();
     fixture
         .command("commit")
-        .args(["ov", "--no-prompt", "--message", "selected", "--root"])
+        .args(["ov", "--no-prompt", "--message", "selected", "--target"])
         .arg(&fixture.home)
         .assert()
         .success();
@@ -394,13 +394,13 @@ fn checkout_workflows_preserve_newly_ignored_files_and_staged_changes(
     assert!(head.get_path(Path::new("ov/app/extra.secret")).is_err());
     fixture
         .command("sync")
-        .args(["ov", "--no-prompt", "--root"])
+        .args(["ov", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .success();
     fixture
         .command("unapply")
-        .args(["ov", "--root"])
+        .args(["ov", "--target"])
         .arg(&fixture.home)
         .assert()
         .success();
@@ -455,7 +455,7 @@ fn changing_to_an_atomic_symlink_cannot_discard_ignored_target_only_content() {
     );
     fixture
         .command("apply")
-        .args(["ov", "--no-prompt", "--root"])
+        .args(["ov", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .failure()
@@ -483,7 +483,7 @@ fn migrating_a_legacy_symlink_directory_to_checkout_preserves_newly_ignored_link
     );
     let mut command = fixture.command("apply");
     command
-        .args(["ov", "--verbose", "--no-prompt", "--root"])
+        .args(["ov", "--verbose", "--no-prompt", "--target"])
         .arg(&fixture.home);
     let output = command.output().unwrap();
     let text = format!(
@@ -514,14 +514,14 @@ fn removing_an_ignore_rule_resumes_conflict_checks_for_preserved_content() {
     write(&fixture.source, ".overignore", "");
     fixture
         .command("status")
-        .args(["ov", "--verbose", "--root"])
+        .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
         .code(1)
         .stdout(contains("secret"));
     fixture
         .command("sync")
-        .args(["ov", "--no-prompt", "--root"])
+        .args(["ov", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .failure()
@@ -621,7 +621,7 @@ fn source_only_commits_to_ignored_paths_do_not_make_a_checkout_behind() {
     commit_all(&repo);
     fixture
         .command("status")
-        .args(["ov", "--verbose", "--root"])
+        .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -629,7 +629,7 @@ fn source_only_commits_to_ignored_paths_do_not_make_a_checkout_behind() {
         .stdout(contains("0 behind"));
     fixture
         .command("sync")
-        .args(["ov", "--no-prompt", "--root"])
+        .args(["ov", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .success();
@@ -649,7 +649,7 @@ fn unapply_clears_old_host_exclusions_when_every_file_is_newly_ignored() {
     // Unapply must work directly after a rule edit, without an intervening apply.
     fixture
         .command("unapply")
-        .args(["ov", "--root"])
+        .args(["ov", "--target"])
         .arg(&fixture.home)
         .assert()
         .success();
@@ -682,7 +682,7 @@ fn newly_ignored_files_at_the_host_repository_root_lose_their_exclusions(
     assert!(host.status_should_ignore(Path::new("secret")).unwrap());
     write(&fixture.source, ".overignore", ".git/\nsecret\n");
     let mut command = fixture.command(operation);
-    command.args(["ov", "--root"]).arg(&fixture.home);
+    command.args(["ov", "--target"]).arg(&fixture.home);
     if operation == "apply" {
         command.arg("--no-prompt");
     }

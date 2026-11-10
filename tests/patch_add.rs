@@ -52,7 +52,7 @@ impl Fixture {
         let mut apply = fixture.command();
         checked(
             apply
-                .args(["apply", "ov", "--no-prompt", "--root"])
+                .args(["apply", "ov", "--no-prompt", "--target"])
                 .arg(&fixture.target)
                 .output()
                 .unwrap(),
@@ -147,7 +147,7 @@ sys.exit(os.waitstatus_to_exitcode(status))
                 .arg(assert_cmd::cargo::cargo_bin!("over"))
                 .arg("--home")
                 .arg(&self.source)
-                .args(["add", "--patch", "--overlay", "ov", "--root"])
+                .args(["add", "--patch", "--overlay", "ov", "--target"])
                 .arg(&self.target)
                 .arg(self.target.join("file"))
                 .output()
@@ -174,7 +174,7 @@ fn dry_run_displays_hunks_without_a_terminal_or_index_writes() {
     let output = checked(
         fixture
             .command()
-            .args(["add", "-p", "--dry-run", "--overlay", "ov", "--root"])
+            .args(["add", "-p", "--dry-run", "--overlay", "ov", "--target"])
             .arg(&fixture.target)
             .arg(fixture.target.join("file"))
             .output()
@@ -200,7 +200,7 @@ fn patch_mode_requires_a_terminal_instead_of_accepting_piped_choices() {
     fixture.changed();
     let output = fixture
         .command()
-        .args(["add", "-p", "--overlay", "ov", "--root"])
+        .args(["add", "-p", "--overlay", "ov", "--target"])
         .arg(&fixture.target)
         .arg(fixture.target.join("file"))
         .output()
@@ -227,7 +227,7 @@ fn terminal_choices_stage_one_hunk_and_keep_the_other_unstaged() {
     let diff = checked(
         fixture
             .command()
-            .args(["diff", "ov", "--root"])
+            .args(["diff", "ov", "--target"])
             .arg(&fixture.target)
             .output()
             .unwrap(),

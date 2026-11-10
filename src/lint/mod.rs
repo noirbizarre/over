@@ -825,7 +825,7 @@ fn lint_dirs(
                 Err(error) => {
                     let message = format!("{error:#}");
                     diagnostics.push(Diagnostic::error(&root, format!("cannot resolve desired ownership: {message}"))
-                            .with_hint("fix the named declaration or provide missing template data/defaults; destinations use the current machine and --root"));
+                            .with_hint("fix the named declaration or provide missing template data/defaults; destinations use the current machine and --target"));
                 }
             }
         }
@@ -835,7 +835,7 @@ fn lint_dirs(
                 ".",
                 "cannot resolve ownership: could not determine home directory",
             )
-            .with_hint("supply an explicit target root with --root"),
+            .with_hint("supply an explicit target root with --target"),
         );
     }
 

@@ -30,7 +30,7 @@ placement/local remotes. Nested `.link.*`
 referents and `.partial.*` destinations use their owning overlay root, not the
 sidecar's containing directory. Absolute paths remain absolute. Destination
 templates render before relative-path resolution. `~` means the execution root
-(`--root`, otherwise the home directory).
+(`--target`, then `OVER_TARGET`, otherwise the home directory).
 
 For example, root rule `apps/editor/config` and overlay-local rule `config` in
 `apps/editor/over.yaml` select the same source tree. Root rule `config` does not
@@ -40,7 +40,7 @@ working directory does not change configured paths.
 Overlay names in `uses` and `default_overlay` are repository-relative
 identifiers. Git refs, worktree names, transport URLs, arbitrary Git config,
 metadata, and shell commands retain their own semantics. CLI-relative `--home`
-and `--root` refer to the invocation directory. `.overignore` patterns are
+and `--target` refer to the invocation directory. `.overignore` patterns are
 relative to their ignore file.
 
 Shared template `paths` are anchored to captured invocation inputs, so later

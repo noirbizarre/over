@@ -19,7 +19,13 @@ pub struct Params {
     )]
     name: Option<String>,
 
-    #[clap(short, long, help = "The target root directory (~)")]
+    #[clap(
+        short = 'r',
+        long = "target",
+        value_name = "TARGET",
+        env = "OVER_TARGET",
+        help = "Set the target directory (defaults to ~)"
+    )]
     root: Option<PathBuf>,
 
     #[clap(long, help = "Skip dependency operations, retaining dependency data")]

@@ -11,13 +11,13 @@ Arguments:
   [OVERLAY]  Check only this overlay and its uses dependencies
 
 Options:
-  -r, --root <ROOT>  Set the target root directory (~)
-  -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
-      --no-uses      Skip linting the selected overlay's uses dependencies
-      --json         Output diagnostics as JSON
-  -d, --debug        Toggle debug traces
-  -v, --verbose      Toggle verbose output
-  -h, --help         Print help
+  -H, --home <HOME>      Configuration and overlays root [env: OVER_HOME=]
+  -r, --target <TARGET>  Set the target directory (defaults to ~) [env: OVER_TARGET=]
+  -d, --debug            Toggle debug traces
+      --no-uses          Skip linting the selected overlay's uses dependencies
+      --json             Output diagnostics as JSON
+  -v, --verbose          Toggle verbose output
+  -h, --help             Print help
 ```
 
 Without an overlay name, lint checks the whole repository. Supply a name to
@@ -29,7 +29,7 @@ Relevant inherited and repository-root configuration is still validated when
 linting a named overlay, including with `--no-uses`.
 
 Destinations resolve using the current machine, consumer metadata, and your home
-directory as `~`. Use `--root` to inspect a different deployment root; `--home`
+directory as `~`. Use `--target` or `OVER_TARGET` to inspect a different deployment root; `--home`
 selects the source repository. Unavailable template variables are errors unless
 the template handles them with a default or guard. Dependency metadata still
 participates with `--no-uses`, so broken metadata dependencies can prevent
@@ -39,7 +39,7 @@ destination resolution even when their files are skipped.
 over lint
 over lint hosts/laptop
 over lint hosts/laptop --no-uses
-over lint hosts/laptop --root /tmp/over-preview
+over lint hosts/laptop --target /tmp/over-preview
 ```
 
 Both `lint` and `apply` inspect descriptor keys before deserialization. Unknown

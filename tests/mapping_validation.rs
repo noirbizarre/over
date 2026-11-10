@@ -49,7 +49,7 @@ impl Fixture {
 
     fn apply(&self) {
         self.command("apply")
-            .args(["ov", "--no-prompt", "--root", "home"])
+            .args(["ov", "--no-prompt", "--target", "home"])
             .assert()
             .success();
     }
@@ -67,7 +67,7 @@ fn relative_roots_stage_checkout_files_without_ingesting_source_edits() {
         .args([
             "--overlay",
             "ov",
-            "--root",
+            "--target",
             "home",
             "--force",
             "home/base/file",
@@ -99,7 +99,7 @@ fn relative_roots_stage_checkout_files_without_ingesting_source_edits() {
         .args([
             "--overlay",
             "ov",
-            "--root",
+            "--target",
             "home",
             "--force",
             "home/base/file",
@@ -133,7 +133,7 @@ fn moving_a_live_external_mapping_is_rejected_before_any_writes() {
     let index = fs::read(fixture.source.join(".git/index")).unwrap();
     fixture
         .command("apply")
-        .args(["ov", "--no-prompt", "--root", "home"])
+        .args(["ov", "--no-prompt", "--target", "home"])
         .assert()
         .failure()
         .stderr(contains("unapply with the old configuration"));

@@ -13,13 +13,13 @@ Arguments:
   [NAME_OR_REVISION]  Select an overlay or Git revision/range (overlay names take precedence)
 
 Options:
-  -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
+  -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME=]
       --overlay <OVERLAY>  Select an overlay explicitly, interpreting the positional argument as a revision
-  -r, --root <ROOT>  The target root directory (~)
-  -n, --limit <LIMIT>  Maximum number of commits to show [default: 20]
-  -d, --debug        Toggle debug traces
-  -v, --verbose      Toggle verbose output
-  -h, --help         Print help
+  -d, --debug              Toggle debug traces
+  -r, --target <TARGET>    Set the target directory (defaults to ~) [env: OVER_TARGET=]
+  -n, --limit <LIMIT>      Maximum number of commits to show [default: 20]
+  -v, --verbose            Toggle verbose output
+  -h, --help               Print help
 ```
 
 ## Scope

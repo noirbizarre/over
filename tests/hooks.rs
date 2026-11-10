@@ -75,7 +75,7 @@ impl Fixture {
         command
             .arg("apply")
             .arg(overlay)
-            .arg("--root")
+            .arg("--target")
             .arg(&self.target)
             .arg("--no-prompt");
         command
@@ -558,7 +558,7 @@ fn dry_run_and_read_only_commands_never_execute_hooks() {
             .command()
             .arg(operation)
             .arg("selected")
-            .arg("--root")
+            .arg("--target")
             .arg(&fixture.target)
             .assert()
             .success();
@@ -582,7 +582,7 @@ fn status_and_show_report_sections_without_exposing_or_executing_secret_values()
     for verb in ["status", "show"] {
         let output = fixture
             .command()
-            .args(["--debug", verb, "selected", "--verbose", "--root"])
+            .args(["--debug", verb, "selected", "--verbose", "--target"])
             .arg(&fixture.target)
             .assert()
             .code(1)
@@ -613,7 +613,7 @@ fn status_and_show_report_sections_without_exposing_or_executing_secret_values()
     );
     let output = fixture
         .command()
-        .args(["--debug", "status", "selected", "--root"])
+        .args(["--debug", "status", "selected", "--target"])
         .arg(&fixture.target)
         .assert()
         .code(1)
@@ -627,7 +627,7 @@ fn status_and_show_report_sections_without_exposing_or_executing_secret_values()
 fn nested_over_operations_do_not_recursively_trigger_hooks() {
     let fixture = Fixture::new();
     fixture.config("over.yaml", json!({"target": "~", "hooks": {"install": ["echo install >> \"$HOOK_TRACE\""], "post-apply": [
-        "echo root >> \"$HOOK_TRACE\"; \"$OVER_TEST_BINARY\" --home \"$OVER_REPOSITORY_ROOT\" apply selected --install --root \"$OVER_TARGET_ROOT\" --no-prompt"
+        "echo root >> \"$HOOK_TRACE\"; \"$OVER_TEST_BINARY\" --home \"$OVER_REPOSITORY_ROOT\" apply selected --install --target \"$OVER_TARGET_ROOT\" --no-prompt"
     ]}}));
     fixture.config(
         "selected/over.yaml",
@@ -733,7 +733,7 @@ fn clone_then_init_hooks_see_canonical_origin_without_reading_encrypted_child_de
         .arg(&destination)
         .arg("apply")
         .arg("selected")
-        .arg("--root")
+        .arg("--target")
         .arg(&fixture.target)
         .arg("--no-prompt")
         .assert()

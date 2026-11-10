@@ -38,7 +38,7 @@ impl Fixture {
             .arg(&self.source)
             .arg(command)
             .arg("ov")
-            .arg("--root")
+            .arg("--target")
             .arg(&self.home);
         cmd
     }

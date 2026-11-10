@@ -11,13 +11,13 @@ Arguments:
   [NAME]  Name of the overlay to check (every overlay otherwise)
 
 Options:
-  -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
-  -r, --root <ROOT>  The target root directory (~)
-  -d, --debug        Toggle debug traces
-      --no-uses      Skip dependency operations, retaining dependency data
-      --fix          Repair malformed git-exclude blocks (over's own corrupted markers only)
-  -v, --verbose      Toggle verbose output
-  -h, --help         Print help
+  -H, --home <HOME>      Configuration and overlays root [env: OVER_HOME=]
+  -r, --target <TARGET>  Set the target directory (defaults to ~) [env: OVER_TARGET=]
+  -d, --debug            Toggle debug traces
+      --no-uses          Skip dependency operations, retaining dependency data
+      --fix              Repair malformed git-exclude blocks (over's own corrupted markers only)
+  -v, --verbose          Toggle verbose output
+  -h, --help             Print help
 ```
 
 The report is split into four sections:

@@ -12,16 +12,21 @@ Arguments:
   <FILES>...  Explicit file paths to restore (destructive)
 
 Options:
-  -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME]
+  -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME=]
   -o, --overlay <OVERLAY>  Select an overlay (otherwise use default or infer ownership)
-  -r, --root <ROOT>        Set the target root directory (defaults to ~)
-      --source <REV>      Restore from a Git revision instead of the default source
-      --staged            Restore the source repository index (default source: HEAD)
-      --worktree          Restore materialized working-tree files
-  -n, --dry-run           Show destructive effects without applying changes
-  -d, --debug             Toggle debug traces
-  -v, --verbose           Toggle verbose output
-  -h, --help              Print help
+  -d, --debug              Toggle debug traces
+  -r, --target <TARGET>    Set the target directory (defaults to ~) [env: OVER_TARGET=]
+      --source <REV>       Restore from a Git revision instead of the default source
+  -v, --verbose            Toggle verbose output
+      --staged             Restore the source repository index (default source: HEAD)
+      --worktree           Restore materialized working-tree files
+  -n, --dry-run            Show destructive effects without applying changes
+  -h, --help               Print help
+
+Discard selected changes permanently. By default, restore the worktree from the index.
+With --staged, default to HEAD. With --source REV, default to worktree only;
+historical recovery remains unstaged unless --staged is requested.
+Paths are literal files, including deleted tracked files; directories and globs are not expanded.
 ```
 
 ## Sources and destinations
@@ -60,7 +65,7 @@ are not expanded; quote names containing shell metacharacters.
 `--overlay NAME` takes priority, followed by the configured `default_overlay`.
 Otherwise, Over infers ownership from all selected paths, including mapped
 destinations outside the base target. Ambiguous or missing ownership requires an
-explicit `--overlay`. `--root` sets the destination meaning of `~`; it does not
+explicit `--overlay`. `--target` sets the destination meaning of `~`; it does not
 change how relative file arguments are resolved.
 
 Only the selected overlay's own virtual-checkout files are eligible. Ignored and

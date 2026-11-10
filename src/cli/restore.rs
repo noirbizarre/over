@@ -22,7 +22,13 @@ pub struct Params {
         help = "Select an overlay (otherwise use default or infer ownership)"
     )]
     overlay: Option<String>,
-    #[clap(short, long, help = "Set the target root directory (defaults to ~)")]
+    #[clap(
+        short = 'r',
+        long = "target",
+        value_name = "TARGET",
+        env = "OVER_TARGET",
+        help = "Set the target directory (defaults to ~)"
+    )]
     root: Option<PathBuf>,
     #[clap(
         long,

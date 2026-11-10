@@ -52,9 +52,9 @@ The **root descriptor**, `$OVER_HOME/over.toml`, configures the repository. The
 ### Preview, apply, inspect
 
 ```sh
-over apply apps/hello --root "$OVER_TARGET" --dry-run
-over apply apps/hello --root "$OVER_TARGET"
-over status apps/hello --root "$OVER_TARGET"
+over apply apps/hello --dry-run
+over apply apps/hello
+over status apps/hello
 cat "$OVER_TARGET/greeting.txt"
 ```
 
@@ -62,16 +62,16 @@ The preview reports a link to create. Apply creates
 `$OVER_TARGET/greeting.txt` pointing to `$OVER_HOME/apps/hello/greeting.txt`. Status should
 report it as applied, and reading the target prints `Hello from Over!`.
 
-`OVER_HOME` selects the **source** repository, just like `--home`; `--root` changes
-what `~` means in destinations. Without these overrides, the defaults are
-`~/.dotfiles` and your home directory.
-For now, pass `OVER_TARGET` explicitly with `--root`.
+`OVER_HOME` selects the **source** repository, just like `--home`; `OVER_TARGET`
+selects the **target** directory, just like `--target`, changing what `~` means
+in destinations. Explicit flags take precedence over these environment variables.
+Without these overrides, the defaults are `~/.dotfiles` and your home directory.
 Explicit `apps/hello` selection avoids an interactive overlay prompt.
 
 To reverse this example, run:
 
 ```sh
-over unapply apps/hello --root "$OVER_TARGET"
+over unapply apps/hello
 unset OVER_HOME OVER_TARGET
 ```
 

@@ -31,7 +31,7 @@ fn patch_preview_reverse_routes_mapped_paths_without_changing_either_worktree() 
             "--dry-run",
             "--overlay",
             "workspace/client",
-            "--root",
+            "--target",
         ])
         .arg(&fixture.home)
         .arg(&fixture.etc)
@@ -63,7 +63,7 @@ fn patch_mode_never_falls_back_to_ingesting_non_checkout_files() {
             "--dry-run",
             "--overlay",
             "workspace/client",
-            "--root",
+            "--target",
         ])
         .arg(&fixture.home)
         .arg(&fresh)
@@ -85,7 +85,7 @@ fn restore_reverse_routes_missing_mapped_files_and_preserves_sibling_changes() {
     // Omitted overlay exercises inference outside the overlay's base target.
     fixture
         .command("restore")
-        .arg("--root")
+        .arg("--target")
         .arg(&fixture.home)
         .arg(fixture.etc.join("file"))
         .assert()
@@ -101,7 +101,7 @@ fn restore_reverse_routes_missing_mapped_files_and_preserves_sibling_changes() {
     );
     fixture
         .command("restore")
-        .args(["--overlay", "workspace/client", "--root"])
+        .args(["--overlay", "workspace/client", "--target"])
         .arg(&fixture.home)
         .arg(fixture.base.join("etc/file"))
         .assert()
@@ -120,7 +120,7 @@ fn restore_routes_mapped_ancestor_aliases_without_following_the_selected_leaf() 
     fs::write(fixture.etc.join("file"), "edited").unwrap();
     fixture
         .command("restore")
-        .args(["--overlay", "workspace/client", "--root"])
+        .args(["--overlay", "workspace/client", "--target"])
         .arg(&fixture.home)
         .arg(alias.join("client/file"))
         .assert()
@@ -184,7 +184,7 @@ impl Fixture {
 
     fn apply(&self) {
         self.command("apply")
-            .args(["workspace/client", "--no-prompt", "--root"])
+            .args(["workspace/client", "--no-prompt", "--target"])
             .arg(&self.home)
             .assert()
             .success();
@@ -192,7 +192,7 @@ impl Fixture {
 
     fn add(&self, paths: &[&Path], dry_run: bool) {
         let mut cmd = self.command("add");
-        cmd.args(["--overlay", "workspace/client", "--root"])
+        cmd.args(["--overlay", "workspace/client", "--target"])
             .arg(&self.home);
         if dry_run {
             cmd.arg("--dry-run");
@@ -207,7 +207,7 @@ impl Fixture {
                 "--no-prompt",
                 "--message",
                 "selected",
-                "--root",
+                "--target",
             ])
             .arg(&self.home)
             .assert()
@@ -308,7 +308,7 @@ fn ownership_lint_never_writes_sources_git_objects_targets_or_state(
     let before = filesystem_snapshot(fixture.temp.path());
     let mut command = fixture.command("lint");
     command
-        .args(["workspace/client", "--root"])
+        .args(["workspace/client", "--target"])
         .arg(&fixture.home);
     if conflicting {
         command
@@ -357,7 +357,7 @@ fn status_and_show_do_not_write_filtered_git_objects_targets_or_state(#[case] ap
     for command in ["status", "show"] {
         fixture
             .command(command)
-            .args(["workspace/client", "--verbose", "--root"])
+            .args(["workspace/client", "--verbose", "--target"])
             .arg(&fixture.home)
             .assert()
             .code(1)
@@ -383,7 +383,7 @@ fn a_source_executable_bit_change_remains_behind_in_read_only_checkout_status() 
     let before = filesystem_snapshot(fixture.temp.path());
     fixture
         .command("status")
-        .args(["workspace/client", "--root"])
+        .args(["workspace/client", "--target"])
         .arg(&fixture.home)
         .assert()
         .code(1)
@@ -412,7 +412,7 @@ fn mapped_symlinks_apply_and_reverse_add_without_base_prefix_copies() {
     );
     fixture
         .command("lint")
-        .arg("--root")
+        .arg("--target")
         .arg(&fixture.home)
         .assert()
         .success();
@@ -432,7 +432,7 @@ fn mapped_checkout_defaults_preserve_index_and_exclude_both_routing_namespaces()
     assert!(!fixture.base.join("config").exists());
     fixture
         .command("status")
-        .args(["workspace/client", "--root"])
+        .args(["workspace/client", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -463,7 +463,7 @@ fn mapped_checkout_add_stages_snapshots_and_commit_preserves_unstaged_edits() {
     fs::write(&file, "unstaged\n").unwrap();
     fixture
         .command("status")
-        .args(["workspace/client", "--verbose", "--root"])
+        .args(["workspace/client", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
         .code(1)
@@ -471,7 +471,7 @@ fn mapped_checkout_add_stages_snapshots_and_commit_preserves_unstaged_edits() {
         .stdout(contains("file (unstaged)"));
     fixture
         .command("diff")
-        .args(["workspace/client", "--root"])
+        .args(["workspace/client", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -510,7 +510,7 @@ fn mapped_diff_projects_each_target_back_to_its_owned_source_namespace(#[case] c
     let before = fs::read(fixture.source.join(".git/index")).unwrap();
     let output = fixture
         .command("diff")
-        .args(["workspace/client", "--all-changes", "--root"])
+        .args(["workspace/client", "--all-changes", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -566,7 +566,7 @@ fn clean_residual_unapply_preserves_a_dirty_nested_mapped_checkout() {
     fs::write(fixture.config.join("file"), "keep local").unwrap();
     fixture
         .command("unapply")
-        .args(["workspace/client", "--root"])
+        .args(["workspace/client", "--target"])
         .arg(&fixture.home)
         .assert()
         .failure();
@@ -590,7 +590,7 @@ fn mapped_source_drift_syncs_only_its_own_checkout() {
     commit_all(&fixture.repo(), "advance etc");
     fixture
         .command("status")
-        .args(["workspace/client", "--root"])
+        .args(["workspace/client", "--target"])
         .arg(&fixture.home)
         .assert()
         .code(1)
@@ -598,7 +598,7 @@ fn mapped_source_drift_syncs_only_its_own_checkout() {
         .stdout(contains("1 behind"));
     fixture
         .command("sync")
-        .args(["workspace/client", "--no-prompt", "--root"])
+        .args(["workspace/client", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .success();
@@ -618,7 +618,7 @@ fn overlapping_mappings_fail_before_creating_targets() {
     fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/Workspace/Client\nmap:\n  config:\n    target: ~/.config/client\n  config/editor:\n    target: ~/.config/editor\n").unwrap();
     fixture
         .command("apply")
-        .args(["workspace/client", "--no-prompt", "--root"])
+        .args(["workspace/client", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .failure()
@@ -649,7 +649,7 @@ fn mappings_inside_whole_directory_symlinks_are_rejected() {
     fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/workspace\nrules:\n  - path: config\n    mode: symlink-directory\nmap:\n  config/editor:\n    target: ~/editor\n").unwrap();
     fixture
         .command("apply")
-        .args(["workspace/client", "--no-prompt", "--root"])
+        .args(["workspace/client", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .failure()
@@ -703,7 +703,7 @@ fn mappings_partition_an_enclosing_subtree_checkout() {
     assert!(!fixture.base.join("main/external").exists());
     fixture
         .command("status")
-        .args(["workspace/client", "--root"])
+        .args(["workspace/client", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -724,7 +724,7 @@ fn source_collisions_with_protected_checkout_destinations_fail_before_writes() {
     commit_all(&fixture.repo(), "collision");
     fixture
         .command("apply")
-        .args(["workspace/client", "--root"])
+        .args(["workspace/client", "--target"])
         .arg(&fixture.home)
         .assert()
         .failure()
@@ -746,7 +746,7 @@ fn deployed_checkout_scopes_cannot_be_silently_changed() {
     fs::write(descriptor, config).unwrap();
     fixture
         .command("apply")
-        .args(["workspace/client", "--root"])
+        .args(["workspace/client", "--target"])
         .arg(&fixture.home)
         .assert()
         .failure()
@@ -806,7 +806,7 @@ fn directory_staging_records_tracked_deletions_and_refuses_unknown_missing_paths
     );
     fixture
         .command("add")
-        .args(["--overlay", "workspace/client", "--root"])
+        .args(["--overlay", "workspace/client", "--target"])
         .arg(&fixture.home)
         .arg(fixture.config.join("unknown"))
         .assert()
@@ -827,7 +827,7 @@ fn staging_refuses_to_overwrite_unstaged_source_edits() {
     let before = fs::read(fixture.source.join(".git/index")).unwrap();
     fixture
         .command("add")
-        .args(["--overlay", "workspace/client", "--root"])
+        .args(["--overlay", "workspace/client", "--target"])
         .arg(&fixture.home)
         .arg(fixture.config.join("file"))
         .assert()
@@ -859,7 +859,7 @@ fn log_infers_a_mapped_checkout_outside_the_base_target() {
     commit_all(&fixture.repo(), "main history");
     fixture
         .command("log")
-        .arg("--root")
+        .arg("--target")
         .arg(&fixture.home)
         .current_dir(&fixture.etc)
         .assert()
@@ -870,7 +870,7 @@ fn log_infers_a_mapped_checkout_outside_the_base_target() {
         )));
     fixture
         .command("log")
-        .args(["workspace/client", "--root"])
+        .args(["workspace/client", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -880,7 +880,7 @@ fn log_infers_a_mapped_checkout_outside_the_base_target() {
     let range = format!("{base}..HEAD");
     fixture
         .command("log")
-        .args([range.as_str(), "--root"])
+        .args([range.as_str(), "--target"])
         .arg(&fixture.home)
         .current_dir(&fixture.etc)
         .assert()
@@ -891,7 +891,7 @@ fn log_infers_a_mapped_checkout_outside_the_base_target() {
         )));
     let output = fixture
         .command("log")
-        .args(["--overlay", "workspace/client", &range, "--root"])
+        .args(["--overlay", "workspace/client", &range, "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -939,7 +939,7 @@ fn mapped_sidecars_are_independent_of_their_enclosing_checkout() {
     assert!(fixture.config.join("link").is_symlink());
     fixture
         .command("status")
-        .args(["workspace/client", "--root"])
+        .args(["workspace/client", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -987,7 +987,7 @@ fn staging_never_follows_source_symlinks_into_unrelated_files() {
     fs::write(fixture.config.join("new"), "target edit").unwrap();
     fixture
         .command("add")
-        .args(["--overlay", "workspace/client", "--root"])
+        .args(["--overlay", "workspace/client", "--target"])
         .arg(&fixture.home)
         .arg(fixture.config.join("new"))
         .assert()
@@ -1039,7 +1039,7 @@ fn sync_advances_source_only_changes_without_losing_staged_snapshots_or_local_ed
     .unwrap();
     fixture
         .command("sync")
-        .args(["workspace/client", "--no-prompt", "--root"])
+        .args(["workspace/client", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .success();
@@ -1089,13 +1089,13 @@ fn sync_recovers_the_checkpoint_after_a_plain_git_commit_of_staged_target_conten
     .unwrap();
     fixture
         .command("sync")
-        .args(["workspace/client", "--no-prompt", "--root"])
+        .args(["workspace/client", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .success();
     fixture
         .command("status")
-        .args(["workspace/client", "--root"])
+        .args(["workspace/client", "--target"])
         .arg(&fixture.home)
         .assert()
         .success()
@@ -1121,7 +1121,7 @@ fn source_deletions_conflict_with_local_edits_instead_of_erasing_them() {
     commit_all(&repo, "source deletion");
     fixture
         .command("sync")
-        .args(["workspace/client", "--no-prompt", "--root"])
+        .args(["workspace/client", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .failure();
@@ -1160,7 +1160,7 @@ fn ancestor_aliases_preserve_mapped_checkout_staging_and_history_inference() {
     );
     fixture
         .command("log")
-        .arg("--root")
+        .arg("--target")
         .arg(&fixture.home)
         .current_dir(&fixture.etc)
         .assert()

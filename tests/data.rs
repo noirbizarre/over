@@ -60,7 +60,7 @@ fn explicit_apply_renders_all_path_surfaces_with_host_data_without_applying_host
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["lint", "--root"])
+        .args(["lint", "--target"])
         .arg(target.path())
         .assert()
         .success();
@@ -68,7 +68,7 @@ fn explicit_apply_renders_all_path_surfaces_with_host_data_without_applying_host
     command
         .arg("--home")
         .arg(repo.path())
-        .args(["apply", "selected", "--no-prompt", "--root"])
+        .args(["apply", "selected", "--no-prompt", "--target"])
         .arg(target.path());
     if no_uses {
         command.arg("--no-uses");
@@ -101,7 +101,7 @@ fn explicit_apply_renders_all_path_surfaces_with_host_data_without_applying_host
         Command::cargo_bin("over")?
             .arg("--home")
             .arg(repo.path())
-            .args([verb, "selected", "--no-uses", "--root"])
+            .args([verb, "selected", "--no-uses", "--target"])
             .arg(target.path())
             .assert()
             .success();
@@ -109,7 +109,7 @@ fn explicit_apply_renders_all_path_surfaces_with_host_data_without_applying_host
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["unapply", "selected", "--root"])
+        .args(["unapply", "selected", "--target"])
         .arg(target.path())
         .assert()
         .success();
@@ -143,7 +143,7 @@ fn all_targets_keep_host_data_without_leaking_other_targets_metadata() -> TestRe
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["status", "--all", "--root"])
+        .args(["status", "--all", "--target"])
         .arg(target.path())
         .assert()
         .code(1)
@@ -153,7 +153,7 @@ fn all_targets_keep_host_data_without_leaking_other_targets_metadata() -> TestRe
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["apply", "--no-prompt", "--root"])
+        .args(["apply", "--no-prompt", "--target"])
         .arg(target.path())
         .assert()
         .success();
@@ -181,7 +181,7 @@ fn broken_host_configuration_fails_data_resolution_with_explicit_targets(
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args([verb, selection, "--root"])
+        .args([verb, selection, "--target"])
         .arg(target.path())
         .assert()
         .failure()
