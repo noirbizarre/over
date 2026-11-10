@@ -75,6 +75,59 @@ fn patch_mode_never_falls_back_to_ingesting_non_checkout_files() {
     assert!(!fixture.source.join("workspace/client/fresh").exists());
 }
 
+#[test]
+fn restore_reverse_routes_missing_mapped_files_and_preserves_sibling_changes() {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    fs::remove_file(fixture.etc.join("file")).unwrap();
+    fs::write(fixture.config.join("file"), "sibling edits").unwrap();
+    let index = fs::read(fixture.repo().index().unwrap().path().unwrap()).unwrap();
+    // Omitted overlay exercises inference outside the overlay's base target.
+    fixture
+        .command("restore")
+        .arg("--root")
+        .arg(&fixture.home)
+        .arg(fixture.etc.join("file"))
+        .assert()
+        .success();
+    assert_eq!(fs::read(fixture.etc.join("file")).unwrap(), b"etc\n");
+    assert_eq!(
+        fs::read(fixture.config.join("file")).unwrap(),
+        b"sibling edits"
+    );
+    assert_eq!(
+        fs::read(fixture.repo().index().unwrap().path().unwrap()).unwrap(),
+        index
+    );
+    fixture
+        .command("restore")
+        .args(["--overlay", "workspace/client", "--root"])
+        .arg(&fixture.home)
+        .arg(fixture.base.join("etc/file"))
+        .assert()
+        .failure();
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_routes_mapped_ancestor_aliases_without_following_the_selected_leaf() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    let alias = fixture.temp.path().join("alias");
+    symlink(fixture.etc.parent().unwrap(), &alias).unwrap();
+    fs::write(fixture.etc.join("file"), "edited").unwrap();
+    fixture
+        .command("restore")
+        .args(["--overlay", "workspace/client", "--root"])
+        .arg(&fixture.home)
+        .arg(alias.join("client/file"))
+        .assert()
+        .success();
+    assert_eq!(fs::read(fixture.etc.join("file")).unwrap(), b"etc\n");
+}
+
 impl Fixture {
     fn new(checkout: bool) -> Self {
         let temp = TempDir::new().unwrap();

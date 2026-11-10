@@ -19,6 +19,7 @@ mod lint;
 mod list;
 mod log;
 mod new;
+mod restore;
 mod status;
 mod sync;
 mod unapply;
@@ -100,6 +101,12 @@ pub enum Commands {
     Diff(diff::Params),
 
     #[clap(
+        name = "restore",
+        about = "Discard or recover selected virtual-checkout file changes"
+    )]
+    Restore(restore::Params),
+
+    #[clap(
         name = "sync",
         about = "Reconcile a checkout-materialized overlay with its git source"
     )]
@@ -174,6 +181,9 @@ pub async fn main() -> Result<()> {
         }
         Some(Commands::Diff(ref opt)) => {
             diff::execute(&args, opt).await?;
+        }
+        Some(Commands::Restore(ref opt)) => {
+            restore::execute(&args, opt).await?;
         }
         Some(Commands::Sync(ref opt)) => {
             sync::execute(&args, opt).await?;

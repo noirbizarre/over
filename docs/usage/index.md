@@ -33,6 +33,7 @@ workflows.
 | --- | --- |
 | [`over sync`](sync.md) | Reconcile a checkout-materialized overlay with its git source |
 | [`over commit`](commit.md) | Record staged checkout changes in the source repository |
+| [`over restore`](restore.md) | Discard selected changes, unstage files, or recover historical content |
 | [`over log`](log.md) | Show the git history behind a checkout-materialized overlay |
 
 ## `over git`
@@ -63,6 +64,7 @@ not select the source repository. Consult each page's syntax for supported flags
 An explicit overlay name selects that overlay. Omitted-name behavior differs:
 apply/unapply/commit use the configured default or prompt; status/diff/sync use
 the default or all overlays (`--all` forces all). Data requires a name or default;
+restore uses an explicit `--overlay`, the default, or inferred path ownership;
 lint and doctor have broader diagnostic scopes. See
 [default selection](../configuration/root.md#default-overlay-selection).
 

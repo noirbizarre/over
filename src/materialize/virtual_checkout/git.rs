@@ -780,7 +780,9 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
 }
 
 #[derive(Default)]
-struct SourceTransaction {
+// Commit and restore share replacement/rollback semantics. Callers must validate
+// ownership and regular-file ancestors before preparing any filesystem changes.
+pub(crate) struct SourceTransaction {
     updates: Vec<PreparedSourceUpdate>,
     created_directories: Vec<PathBuf>,
 }
@@ -794,7 +796,7 @@ struct PreparedSourceUpdate {
 }
 
 impl SourceTransaction {
-    fn prepare(&mut self, file: PathBuf, update: Option<(Vec<u8>, u32)>) -> Result<()> {
+    pub(crate) fn prepare(&mut self, file: PathBuf, update: Option<(Vec<u8>, u32)>) -> Result<()> {
         let parent = file.parent().context("source file has no parent")?;
         let mut missing = Vec::new();
         let mut ancestor = parent;
@@ -866,7 +868,7 @@ impl SourceTransaction {
         Ok(())
     }
 
-    fn apply(&mut self) -> Result<()> {
+    pub(crate) fn apply(&mut self) -> Result<()> {
         for update in &mut self.updates {
             match fs::rename(&update.file, update.directory.join("old")) {
                 Ok(()) => update.backed_up = true,
@@ -885,7 +887,7 @@ impl SourceTransaction {
         Ok(())
     }
 
-    fn rollback(&mut self) -> Result<()> {
+    pub(crate) fn rollback(&mut self) -> Result<()> {
         let mut errors = Vec::new();
         for update in self.updates.iter_mut().rev() {
             let result = (|| -> Result<()> {
@@ -919,7 +921,7 @@ impl SourceTransaction {
         Ok(())
     }
 
-    fn cleanup(&self) -> Result<()> {
+    pub(crate) fn cleanup(&self) -> Result<()> {
         for update in &self.updates {
             fs::remove_dir_all(&update.directory)
                 .with_context(|| format!("failed to remove '{}'", update.directory.display()))?;

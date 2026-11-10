@@ -1,7 +1,9 @@
 pub mod config;
 pub(crate) mod diff;
+pub(crate) mod index;
 pub mod init;
 pub(crate) mod patch;
+pub(crate) mod restore;
 pub(crate) mod sync;
 
 use std::collections::HashMap;

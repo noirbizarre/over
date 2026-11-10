@@ -4,6 +4,9 @@ Show Git changes for an overlay's managed paths. The default view shows
 **unstaged changes**. Over leaves source files, target files, the source index,
 and the virtual checkout's recorded base unchanged.
 
+For virtual checkouts, use [`over restore`](restore.md) after inspection to discard
+selected unstaged changes, unstage files, or recover a historical version.
+
 ```text
 Usage: over diff [OPTIONS] [NAME]
 

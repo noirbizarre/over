@@ -16,6 +16,7 @@ pub mod lint;
 pub mod materialize;
 pub mod overlays;
 pub mod plan;
+pub mod restore;
 pub mod stage;
 pub mod status;
 pub mod sync;
