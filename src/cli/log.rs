@@ -1030,8 +1030,10 @@ mod tests {
 
         // Only this subprocess changes cwd, and make_cli must preserve the inference input.
         std::env::set_current_dir(root.path()).unwrap();
+        // macOS resolves /var to /private/var; compare the observed cwd, not its input spelling.
+        let invocation_dir = std::env::current_dir().unwrap();
         let cli = make_cli(tmp.path().to_path_buf());
-        assert_eq!(std::env::current_dir().unwrap(), root.path());
+        assert_eq!(std::env::current_dir().unwrap(), invocation_dir);
         let repo = Repository::new(tmp.path().to_path_buf());
         let (resolved, scopes, label) = resolve_scope(&repo, root.path(), None).unwrap();
         assert_eq!(resolved.path(), git_repo.path());
