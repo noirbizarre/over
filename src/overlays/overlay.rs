@@ -177,45 +177,16 @@ impl Overlay {
                 anyhow::anyhow!("descriptor syntax error (source contents omitted)")
             })?;
             let directory = directories[directories.len() - 1 - index];
-            let descriptor = super::EXTENSIONS
-                .iter()
-                .map(|extension| directory.join(format!("over.{extension}")))
-                .find(|path| path.is_file())
-                .unwrap_or_else(|| directory.join("over"));
-            anyhow::ensure!(
-                !values.contains_key("install"),
-                "{}: top-level `install` is no longer supported; migrate to `hooks.install` and run `over apply --install`",
-                descriptor.display()
-            );
-            for key in ["default", "defaults", "materialization", "link_dirs"] {
-                anyhow::ensure!(
-                    !values.contains_key(key),
-                    "{}: `{key}` is no longer supported; use `mode`, scalar `permissions`, and `rules` (directory links use `mode: symlink-directory`)",
-                    descriptor.display()
-                );
-            }
+            let descriptor = super::schema::descriptor_path(&values, directory)?;
+            repository
+                .warnings
+                .report(super::schema::normalize(&mut values, &descriptor));
             if let Some(value) = values.get("permissions") {
                 anyhow::ensure!(
                     !matches!(value.kind, config::ValueKind::Array(_)),
                     "{}: `permissions` must now be an octal string; move permission overrides into `rules` with a `permissions` property",
                     descriptor.display()
                 );
-            }
-            if let Some(config::Value {
-                kind: config::ValueKind::Array(rules),
-                ..
-            }) = values.get("rules")
-            {
-                for (index, rule) in rules.iter().enumerate() {
-                    if let config::ValueKind::Table(fields) = &rule.kind {
-                        anyhow::ensure!(
-                            !fields.contains_key("materialization"),
-                            "{}: rule {} uses removed `materialization`; replace it with `mode`",
-                            descriptor.display(),
-                            index + 1
-                        );
-                    }
-                }
             }
             let mode = values
                 .get("mode")

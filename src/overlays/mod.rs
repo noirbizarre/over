@@ -22,6 +22,7 @@ mod paths;
 pub mod permissions;
 pub mod repository;
 pub mod rules;
+pub(crate) mod schema;
 
 pub use data::{DataMap, DataValue};
 pub use discovery::OverlayDeclaration;

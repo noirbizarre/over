@@ -148,7 +148,7 @@ See [Safety and recovery](../usage/safety.md) for the full contract.
 
 ## Migrating older descriptors
 
-Removed `default`, `defaults`, and `materialization` settings are rejected; use
+Removed `default`, `defaults`, and `materialization` settings warn and are ignored; use
 `mode`, scalar `permissions`, and `rules`. Replace `link_dirs` with rules using
 `mode: symlink-directory`. Move old permission-rule arrays into the shared
 `rules` list. Relative mapping destinations follow declaration-relative path

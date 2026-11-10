@@ -11,7 +11,6 @@ use crate::exec;
 use super::{MaterializationKind, Overlay};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct DirectoryMapping {
     pub target: String,
 }

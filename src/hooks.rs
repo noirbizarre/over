@@ -95,9 +95,7 @@ impl Hook {
                 env.insert(key, value);
             }
         }
-        if !fields.is_empty() {
-            bail!("unknown hook field; expected command, env, cwd or when");
-        }
+        // Descriptor inspection reports extras with source context before deserialization.
         Ok(Self::Structured(HookDefinition {
             command,
             env,
@@ -148,10 +146,8 @@ impl Hooks {
                 "post-clone" => &mut hooks.post_clone,
                 "post-init" => &mut hooks.post_init,
                 "post-apply" => &mut hooks.post_apply,
-                // Even an unknown key may contain a secret, so do not quote it.
-                _ => bail!(
-                    "unknown hook event; expected install, post-clone, post-init or post-apply"
-                ),
+                // Unknown events are ignored wholesale, including unrecognized payload shapes.
+                _ => continue,
             };
             let serde_json::Value::Array(commands) = commands else {
                 bail!("hook commands must be a list of strings or objects");
@@ -540,16 +536,27 @@ mod tests {
     #[case(json!({"post-apply": [{"secret-sentinel": true}]}))]
     #[case(json!({"post-apply": [""]}))]
     #[case(json!({"post-apply": ["\0secret-sentinel"]}))]
-    #[case(json!({"secret-sentinel": []}))]
     #[case(json!({"post-apply": [{"command": "ok", "env": {"OVER_HOOK_ACTIVE": "secret-sentinel"}}]}))]
     #[case(json!({"post-apply": [{"command": "ok", "env": {"secret-sentinel=": "value"}}]}))]
     #[case(json!({"post-apply": [{"command": "ok", "env": {"TOKEN": 42}}]}))]
     #[case(json!({"post-apply": [{"command": "ok", "cwd": 42}]}))]
     #[case(json!({"post-apply": [{"command": "ok", "when": true}]}))]
-    #[case(json!({"post-apply": [{"command": "ok", "secret-sentinel": "value"}]}))]
     fn invalid_hooks_fail_without_disclosing_values(#[case] value: serde_json::Value) {
         let error = serde_json::from_value::<Hooks>(value).unwrap_err();
         assert!(!error.to_string().contains("secret-sentinel"));
+    }
+
+    #[test]
+    fn unknown_events_are_empty_and_extra_hook_fields_preserve_known_commands() {
+        let hooks: Hooks = serde_json::from_value(json!({"unknown": {"arbitrary": 42}})).unwrap();
+        assert!(hooks.is_empty());
+        let hooks: Hooks =
+            serde_json::from_value(json!({"post-apply": [{"command": "ok", "extra": true}]}))
+                .unwrap();
+        assert_eq!(hooks.post_apply.len(), 1);
+        assert!(
+            matches!(&hooks.post_apply[0], Hook::Structured(definition) if definition.command == "ok")
+        );
     }
 
     #[test]

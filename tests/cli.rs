@@ -123,6 +123,93 @@ fn apply_overlay_dry_run() -> TestResult {
     Ok(())
 }
 
+#[rstest]
+#[case("toml")]
+#[case("yaml")]
+#[case("yml")]
+fn unknown_keys_warn_once_and_allow_application_and_lint(#[case] extension: &str) -> TestResult {
+    let temp = TempDir::new()?;
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(source.join("selected/config"))?;
+    let config = serde_json::json!({
+        "target": "~", "mode": "symlink", "extra": {"secret_value_sentinel": 42},
+        "install": {"old": "ignored"},
+        "rules": [{"path": "config", "mode": "symlink", "extra_rule": true}],
+        "map": {"config": {"target": "~/mapped", "extra_mapping": 1}},
+        "hooks": {"secret_hook_sentinel": {"invalid_payload": true}}
+    });
+    let descriptor = if extension == "toml" {
+        toml::to_string(&config)?
+    } else {
+        serde_json::to_string(&config)?
+    };
+    fs::write(
+        source.join("selected").join(format!("over.{extension}")),
+        descriptor,
+    )?;
+    fs::write(source.join("selected/config/file"), "deployed")?;
+    let output = Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&source)
+        .args(["apply", "selected", "--root"])
+        .arg(&target)
+        .arg("--no-prompt")
+        .env("XDG_STATE_HOME", temp.path().join("state"))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    assert_eq!(fs::read_to_string(target.join("mapped/file"))?, "deployed");
+    let stderr = String::from_utf8(output.stderr)?;
+    for key in ["extra", "install", "extra_rule", "extra_mapping"] {
+        assert_eq!(
+            stderr.matches(&format!("unknown key `{key}`")).count(),
+            1,
+            "{stderr}"
+        );
+    }
+    assert!(!stderr.contains("secret_value_sentinel"));
+    assert!(!stderr.contains("secret_hook_sentinel"));
+    assert!(stderr.contains(&format!("over.{extension}")), "{stderr}");
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&source)
+        .args(["lint", "selected", "--root"])
+        .arg(&target)
+        .assert()
+        .success()
+        .stdout(contains("5 warnings found"))
+        .stderr(contains("unknown key").not());
+    Ok(())
+}
+
+#[test]
+fn unknown_keys_do_not_hide_invalid_recognized_settings() -> TestResult {
+    let temp = TempDir::new()?;
+    fs::create_dir_all(temp.path().join("selected"))?;
+    fs::write(
+        temp.path().join("selected/over.toml"),
+        "extra = true\nmode = 'invalid'",
+    )?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(temp.path())
+        .args(["apply", "selected", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(contains("unknown key `extra`"))
+        .stderr(contains("invalid"));
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(temp.path())
+        .args(["lint", "selected"])
+        .assert()
+        .failure()
+        .stdout(contains("1 error, 1 warning"));
+    Ok(())
+}
+
 #[test]
 fn apply_without_name_empty_repo_fails() -> TestResult {
     let tmp = TempDir::new()?;
@@ -399,8 +486,8 @@ fn named_lint_follows_uses_unless_disabled() -> TestResult {
     let tmp = TempDir::new()?;
     for (name, config) in [
         ("selected", "uses = ['dependency']"),
-        ("dependency", "targt = '~'"),
-        ("unrelated", "targt = '~'"),
+        ("dependency", "exclude = ['[']"),
+        ("unrelated", "exclude = ['[']"),
     ] {
         fs::create_dir_all(tmp.path().join(name))?;
         fs::write(tmp.path().join(name).join("over.toml"), config)?;
@@ -443,7 +530,7 @@ fn lint_groups_transitive_dependency_warnings_under_alphabetical_headings() -> T
     for (name, config) in [
         ("alpha", "uses = ['middle']"),
         ("middle", "uses = ['zulu']"),
-        ("zulu", "targt = '~'"),
+        ("zulu", "exclude = ['[']"),
     ] {
         fs::create_dir_all(tmp.path().join(name))?;
         fs::write(tmp.path().join(name).join("over.toml"), config)?;
@@ -476,7 +563,6 @@ fn lint_groups_transitive_dependency_warnings_under_alphabetical_headings() -> T
         );
     }
     assert!(stdout.contains("Overlay zulu\n  error:"), "{stdout}");
-    assert!(stdout.contains("    --> zulu/over.toml"), "{stdout}");
     assert!(
         stdout.contains("    = fix the errors in \"zulu\" first"),
         "{stdout}"

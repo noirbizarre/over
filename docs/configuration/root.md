@@ -129,8 +129,12 @@ hooks:
 
 The TOML equivalent uses a `[hooks]` table with event names mapped to arrays
 of strings or inline tables. Missing hooks and empty lists do nothing. Unknown
-events or object fields, invalid field types, empty commands, and NUL bytes are
-errors. Environment names must be nonempty and contain neither `=` nor NUL.
+events and object fields warn and are ignored; unknown events never execute.
+Warnings omit unknown hook names and values to avoid exposing secrets. Ignoring
+a misspelled optional field leaves the default behavior in effect: for example,
+a misspelling of `when` does not set a condition, so the hook runs unconditionally.
+Invalid recognized field types, missing commands, empty commands, and NUL bytes
+remain errors. Environment names must be nonempty and contain neither `=` nor NUL.
 
 ### Templates and conditions
 

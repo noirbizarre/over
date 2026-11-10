@@ -32,7 +32,6 @@ impl fmt::Display for MaterializationKind {
 
 /// Both properties share selectors and ordering, but assignments are independent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Rule {
     pub path: String,
     pub mode: Option<MaterializationKind>,

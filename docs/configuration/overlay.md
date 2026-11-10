@@ -40,6 +40,14 @@ other's files; overlapping ownership is a conflict.
 Root-only preferences are documented in [Root configuration](root.md). Runtime
 fields such as the overlay's name and source root are not descriptor settings.
 
+Unknown keys are ignored with a warning identifying the declaring descriptor.
+This includes extra fields in rules, mappings, Git repository/worktree objects,
+and hooks. Removed settings such as `install`, `default`, `defaults`,
+`materialization`, and `link_dirs` also warn and are ignored, with migration hints.
+Warnings do not prevent application. Invalid values for recognized settings,
+missing required fields, and malformed descriptors remain errors. Arbitrary
+consumer keys inside `data` and supported Git configuration namespaces are allowed.
+
 ## Targets and templates
 
 `target` is the base destination for ordinary entries. An overlay with
@@ -341,7 +349,7 @@ ordinary Git. See [`over sync`](../usage/sync.md).
 
 Declare installation commands under `hooks.install`, executed only with
 `over apply --install`, after reconciliation and before post-apply hooks.
-The former top-level `install` field is rejected; see
+The former top-level `install` field is ignored with a migration warning; see
 [Install hooks](../install-config.md) for examples and migration guidance.
 
 ## Overlay hooks
