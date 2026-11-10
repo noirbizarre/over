@@ -1,22 +1,36 @@
-<svg width="128" height="128" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- Base circle -->
-  <circle cx="32" cy="32" r="20"
-          stroke="currentColor"
-          stroke-width="3.5"/>
-
-  <!-- Purple arc (r=20) -->
-  <path d="
-    M 52 32
-    A 20 20 0 0 0 32 12"
-    stroke="#6C5CE7"
-    stroke-width="4.5"
-    stroke-linecap="round"/>
-
-  <!-- Orange arc (r=20, corrected points) -->
-  <path d="
-    M 13.2 38.8
-    A 20 20 0 0 0 25.2 50.8"
-    stroke="#FF7A18"
-    stroke-width="4.5"
-    stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" role="img" aria-labelledby="title desc">
+  <title id="title">Over symbol</title>
+  <desc id="desc">Three layered translucent purple and blue tiles with a white terminal prompt.</desc>
+  <defs>
+    <linearGradient id="top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#D946EF"/>
+      <stop offset=".48" stop-color="#762BFA"/>
+      <stop offset="1" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="middle" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#A855F7" stop-opacity=".82"/>
+      <stop offset="1" stop-color="#2563EB" stop-opacity=".76"/>
+    </linearGradient>
+    <linearGradient id="bottom" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7C3AED" stop-opacity=".58"/>
+      <stop offset="1" stop-color="#1D4ED8" stop-opacity=".55"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F0ABFC"/>
+      <stop offset=".5" stop-color="#A855F7"/>
+      <stop offset="1" stop-color="#60A5FA"/>
+    </linearGradient>
+    <filter id="softGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="9" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- Same slightly narrower stack proportions as the final wordmark SVG. -->
+  <g transform="translate(0 35) scale(.973)">
+    <path d="M35 215 190 126Q205 117 220 126L375 215Q390 224 375 233L220 322Q205 331 190 322L35 233Q20 224 35 215Z" fill="url(#bottom)"/>
+    <path d="M35 160 190 71Q205 62 220 71L375 160Q390 169 375 178L220 267Q205 276 190 267L35 178Q20 169 35 160Z" fill="url(#middle)" stroke="#6550E8" stroke-opacity=".65" stroke-width="2"/>
+    <path d="M35 105 190 16Q205 7 220 16L375 105Q390 114 375 123L220 212Q205 221 190 212L35 123Q20 114 35 105Z" fill="url(#top)" stroke="url(#edge)" stroke-width="5" filter="url(#softGlow)"/>
+    <path d="M133 80 183 109 133 138" fill="none" stroke="#FFFFFF" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M205 139H258" fill="none" stroke="#FFFFFF" stroke-width="15" stroke-linecap="round"/>
+  </g>
 </svg>
