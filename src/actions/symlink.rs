@@ -240,24 +240,8 @@ pub fn discover_symlinks_selected(
     Ok(results)
 }
 
-/// Ephemeral render context for `.link.toml` symlink targets: environment
-/// variables, resolved overlay paths, and machine facts — mirroring what's
-/// available when rendering an overlay's own `target =` template.
-#[derive(Serialize)]
-struct SymlinkTemplateContext<'a> {
-    // Flatten the existing fields without resolving overlays again: resolution renders paths itself.
-    #[serde(flatten)]
-    ctx: &'a Context,
-    env: HashMap<String, String>,
-    overlays: &'a HashMap<String, String>,
-}
-
 pub fn render_symlink_target(template: &str, ctx: &Context) -> Result<String> {
-    let state = SymlinkTemplateContext {
-        ctx,
-        env: std::env::vars().collect(),
-        overlays: ctx.resolved_overlays.as_ref(),
-    };
+    let state = crate::exec::templates::TemplateContext::new(ctx)?;
 
     crate::exec::templates::render_path(template, &state, ctx.strict_paths)
         .with_context(|| format!("failed to render symlink target template '{}'", template))

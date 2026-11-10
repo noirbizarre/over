@@ -1,7 +1,44 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 use minijinja::Environment;
 use minijinja::value::Serde;
 use serde::Serialize;
+
+/// Shared namespaces without rediscovering overlays during path rendering or bootstrap.
+#[derive(Serialize)]
+pub(crate) struct TemplateContext<'a> {
+    #[serde(flatten)]
+    ctx: &'a crate::exec::Context,
+    env: HashMap<String, String>,
+    overlays: &'a HashMap<String, String>,
+    paths: TemplatePaths,
+}
+
+#[derive(Serialize)]
+struct TemplatePaths {
+    over: PathBuf,
+}
+
+impl<'a> TemplateContext<'a> {
+    pub(crate) fn new(ctx: &'a crate::exec::Context) -> Result<Self> {
+        // Context-free library renderers may use a default repository (an empty path).
+        let root = if ctx.repository.root.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            &ctx.repository.root
+        };
+        Ok(Self {
+            ctx,
+            env: std::env::vars().collect(),
+            overlays: ctx.resolved_overlays.as_ref(),
+            paths: TemplatePaths {
+                over: std::path::absolute(root)?,
+            },
+        })
+    }
+}
 
 /// Create a shared MiniJinja `Environment` with all registered filters and functions.
 ///

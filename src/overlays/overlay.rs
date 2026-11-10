@@ -432,6 +432,7 @@ impl Overlay {
             &root_hooks,
             crate::hooks::Event::PostApply,
             crate::hooks::HookContext {
+                templates: ctx,
                 repository: &ctx.repository.root,
                 cwd: &ctx.repository.root,
                 scope: "repository root",
@@ -441,10 +442,12 @@ impl Overlay {
         )
         .await?;
         for (overlay, target) in applied {
+            let overlay_ctx = ctx.with_overlay(overlay.clone());
             crate::hooks::run(
                 &overlay.hooks,
                 crate::hooks::Event::PostApply,
                 crate::hooks::HookContext {
+                    templates: &overlay_ctx,
                     repository: &ctx.repository.root,
                     cwd: &overlay.root,
                     scope: &format!("overlay '{}'", overlay.name),

@@ -18,6 +18,13 @@ scaffolding for it.
 ## Decision
 
 For now, templating stays scoped to those two path fields.
+
+**Extension (#212):** lifecycle hook commands, environment values, working
+directories, and conditions also use the shared MiniJinja environment at their
+configured lifecycle point. This extends execution configuration, not file
+content rendering. See [Lifecycle hooks](../configuration/root.md#lifecycle-hooks)
+for context availability and failure semantics.
+
 `exec::templates::create_env()` documents itself as "the single extension
 point for custom template capabilities such as encryption and secret
 manager integration" and deliberately registers nothing beyond a bare

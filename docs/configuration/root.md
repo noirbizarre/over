@@ -109,9 +109,48 @@ hooks:
     - ./scripts/render-secrets
 ```
 
-The TOML equivalent uses a `[hooks]` table with event names mapped to string
-arrays. Missing hooks and empty lists do nothing. Unknown events, non-lists,
-non-string or empty commands, and NUL bytes are errors.
+Each entry can also be an object with a required `command` string and optional
+`env` mapping, `cwd` string, and `when` expression:
+
+```yaml
+hooks:
+  post-apply:
+    - ./scripts/setup --host {{ machine.hostname }}
+    - command: ./deploy
+      cwd: "{{ paths.over }}/scripts"
+      when: machine.os == "linux"
+      env:
+        DEPLOYMENT_HOST: "{{ machine.hostname }}"
+        DEPLOYMENT_LABEL: "{{ data.deployment.label }}"
+```
+
+The TOML equivalent uses a `[hooks]` table with event names mapped to arrays
+of strings or inline tables. Missing hooks and empty lists do nothing. Unknown
+events or object fields, invalid field types, empty commands, and NUL bytes are
+errors. Environment names must be nonempty and contain neither `=` nor NUL.
+
+### Templates and conditions
+
+Commands (including shorthand), every `env` value, and `cwd` use the shared
+MiniJinja environment immediately before execution. They expose machine facts,
+the inherited process `env`, resolved `overlays`, and `paths.over` (the absolute
+source repository root), alongside the execution context. Post-apply hooks can
+read the selected overlay's resolved `data`, including inherited and host data.
+Each participant sees its own `overlay`, retaining the selected data snapshot;
+root post-apply hooks see the selected overlay.
+
+Init hooks have machine/environment/repository context but no selected overlay
+or composed data: bootstrap never discovers children before unlock hooks run.
+Missing template variables and template/function failures fail the operation.
+Native `secret()` resolution requires the pending secret resolver (#63); hooks
+will use it through the shared environment once available.
+
+`when` is a bare MiniJinja expression, without `{{ }}` delimiters. Boolean true
+or a nonempty string runs the hook; false, none, and an empty string skip it.
+The string `'false'` is nonempty and therefore runs. Numbers, collections,
+undefined results, and expression errors fail with a diagnostic. Conditions
+are evaluated first: skipped hooks do not render commands, environment values,
+or cwd, resolve execution-only secrets, or spawn a process.
 
 ### Events and order
 
@@ -127,7 +166,10 @@ non-string or empty commands, and NUL bytes are errors.
 
 Commands within an event run in declaration order, each in a separate `sh -c`
 shell. A POSIX-compatible `sh` must be on `PATH`, including on Windows. Commands
-are literal, not templates; quote environment variables used as paths.
+are rendered before shell parsing; template substitution is not shell escaping.
+Quote environment variables used as paths. Prefer passing sensitive values via
+`env` and referencing quoted shell variables rather than substituting them into
+command text.
 
 Hooks do not inherit. An intermediate descriptor's hooks run only when that
 overlay itself participates. Overlay-local post-clone/post-init declarations
@@ -138,8 +180,17 @@ hook dispatch.
 
 ### Working directory and environment
 
-Root hooks run in the source repository root; overlay hooks run in their own
-source directory. They inherit the caller's environment and standard streams.
+By default, root hooks run in the source repository root; overlay hooks run in
+their own source directory. Explicit `cwd` accepts an absolute path or a path
+relative to the source repository root, even for overlay-local hooks. It must
+resolve to an existing directory that can be entered. No shell or tilde
+expansion is performed on cwd.
+
+Hooks inherit the caller's environment and standard streams. Hook-specific
+`env` values override inherited values, are passed directly to the process,
+and do not affect later hooks. Templates see the inherited environment, not
+other entries in the hook's `env` mapping. The lifecycle variables below are
+reserved: attempting to override one is a configuration error.
 
 | Variable | Availability and meaning |
 | --- | --- |
@@ -159,8 +210,10 @@ apply-only variables even if inherited from the caller.
 
 The first failure stops subsequent hooks and fails the operation. Diagnostics
 identify event, scope, and one-based command index without logging command text
-or environment values, even in debug/verbose mode. Commands control their own
-output. Numeric exit codes are preserved when representable as an 8-bit code;
+or rendered cwd/environment values, even in debug/verbose mode. Preparation
+errors identify the affected field without reproducing template source or
+provider error details. Commands control their own output, which Over does not
+redact. Numeric exit codes are preserved when representable as an 8-bit code;
 spawn errors, signal termination, and unrepresentable codes return `1`.
 
 Failed materialization runs no post-apply hooks. A hook failure leaves completed

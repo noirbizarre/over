@@ -573,9 +573,7 @@ fn a_missing_shell_reports_the_hook_scope_without_exposing_commands() {
         .env("PATH", "")
         .assert()
         .code(1)
-        .stderr(contains(
-            "could not start post-apply hook #1 in repository root",
-        ))
+        .stderr(contains("post-apply hook #1 in repository root"))
         .stderr(contains("ensure sh is available on PATH"))
         .get_output()
         .clone();
@@ -595,4 +593,150 @@ fn signal_termination_of_a_hook_returns_a_nonzero_fallback() {
         .assert()
         .code(1)
         .stderr(contains("post-apply hook #1"));
+}
+
+#[test]
+fn structured_hooks_share_data_and_machine_context_and_isolate_environment_overrides() {
+    let fixture = Fixture::new();
+    fixture.config("over.yaml", json!({"data": {"inherited": "parent"}}));
+    fixture.config("selected/over.yaml", json!({
+        "data": {"value": "consumer"},
+        "hooks": {"post-apply": [
+            {"command": "printf '%s\\n' '{{ data.inherited }}' '{{ machine.os }}' \"$VALUE\" \"$EMPTY\" >> \"$HOOK_TRACE\"; test \"$PWD\" -ef \"$OVER_REPOSITORY_ROOT\"",
+             "env": {"VALUE": "{{ data.value }}", "EMPTY": ""}, "cwd": ".", "when": "machine.os != 'windows'"},
+            "printf '%s\\n' \"$VALUE\" '{{ overlay.name }}' >> \"$HOOK_TRACE\"",
+            {"command": "test \"$PWD\" -ef \"$OVER_REPOSITORY_ROOT\"", "cwd": "{{ paths.over }}"}
+        ]}
+    }));
+    fixture
+        .apply("selected")
+        .env("VALUE", "inherited")
+        .assert()
+        .success();
+    assert_eq!(
+        fixture.trace(),
+        format!(
+            "parent\n{}\nconsumer\n\ninherited\nselected\n",
+            std::env::consts::OS
+        )
+    );
+}
+
+#[rstest]
+#[case("true", true)]
+#[case("false", false)]
+#[case("none", false)]
+#[case("''", false)]
+#[case("'false'", true)]
+#[case("'nonempty'", true)]
+fn hook_conditions_accept_only_the_documented_boolean_none_and_string_semantics(
+    #[case] condition: &str,
+    #[case] runs: bool,
+) {
+    let fixture = Fixture::new();
+    fixture.config(
+        "over.yaml",
+        json!({"hooks": {"post-apply": [{
+            "command": "echo ran >> \"$HOOK_TRACE\"", "when": condition
+        }]}}),
+    );
+    fixture.config("selected/over.yaml", json!({}));
+    fixture.apply("selected").assert().success();
+    assert_eq!(fixture.trace(), if runs { "ran\n" } else { "" });
+}
+
+#[test]
+fn skipped_hooks_never_render_execution_fields_or_spawn_commands() {
+    let fixture = Fixture::new();
+    fixture.config("over.yaml", json!({"hooks": {"post-apply": [
+        {"command": "{{ secret('unavailable') }}", "env": {"TOKEN": "{{ broken"}, "cwd": "missing", "when": "false"},
+        {"command": "echo never >> \"$HOOK_TRACE\"", "cwd": "{{ secret('unavailable') }}", "when": "none"},
+        {"command": "echo never >> \"$HOOK_TRACE\"", "env": {"TOKEN": "{{ secret('unavailable') }}"}, "when": "''"}
+    ]}}));
+    fixture.config("selected/over.yaml", json!({}));
+    fixture.apply("selected").assert().success();
+    assert!(!fixture.trace.exists());
+}
+
+#[rstest]
+#[case(json!({"when": "42"}), "when")]
+#[case(json!({"when": "[]"}), "when")]
+#[case(json!({"when": "{}"}), "when")]
+#[case(json!({"when": "undefined_secret_sentinel"}), "when")]
+#[case(json!({"when": "secret_sentinel("}), "when")]
+#[case(json!({"command": "{{ secret('secret_sentinel') }}"}), "command")]
+#[case(json!({"command": "{{ 'secret_sentinel' | unknown_filter }}"}), "command")]
+#[case(json!({"env": {"TOKEN": "{{ secret('secret_sentinel') }}"}}), "env")]
+#[case(json!({"cwd": "{{ env.SENSITIVE }}"}), "cwd")]
+#[case(json!({"cwd": ""}), "cwd")]
+#[case(json!({"cwd": "over.yaml"}), "cwd")]
+#[case(json!({"command": "{{ '' }}"}), "command")]
+fn hook_preparation_failures_propagate_without_disclosing_sensitive_values(
+    #[case] fields: serde_json::Value,
+    #[case] field: &str,
+) {
+    let fixture = Fixture::new();
+    let mut hook = json!({"command": "echo secret_sentinel >> \"$HOOK_TRACE\""});
+    hook.as_object_mut()
+        .unwrap()
+        .extend(fields.as_object().unwrap().clone());
+    fixture.config(
+        "over.yaml",
+        json!({"hooks": {"post-apply": [hook, "echo later >> \"$HOOK_TRACE\""]}}),
+    );
+    fixture.config("selected/over.yaml", json!({}));
+    let output = fixture
+        .apply("selected")
+        .env("SENSITIVE", "secret_sentinel")
+        .arg("--debug")
+        .arg("--verbose")
+        .assert()
+        .code(1)
+        .stderr(contains(format!("{field}:")))
+        .get_output()
+        .clone();
+    for bytes in [&output.stdout, &output.stderr] {
+        assert!(!String::from_utf8_lossy(bytes).contains("secret_sentinel"));
+    }
+    assert!(!fixture.trace.exists());
+}
+
+#[test]
+fn rendered_values_stay_out_of_failure_diagnostics_and_environment_is_not_shell_interpolated() {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.source.join("secret_sentinel")).unwrap();
+    fixture.config("over.yaml", json!({"hooks": {"post-apply": [{
+        "command": "test \"$TOKEN\" = '$(exit 99); secret_sentinel' && : '{{ env.SENSITIVE }}' && exit 19",
+        "env": {"TOKEN": "$(exit 99); {{ env.SENSITIVE }}"},
+        "cwd": "{{ paths.over }}/{{ env.SENSITIVE }}"
+    }]}}));
+    fixture.config("selected/over.yaml", json!({}));
+    let output = fixture
+        .apply("selected")
+        .env("SENSITIVE", "secret_sentinel")
+        .arg("--debug")
+        .arg("--verbose")
+        .assert()
+        .code(19)
+        .get_output()
+        .clone();
+    for bytes in [&output.stdout, &output.stderr] {
+        assert!(!String::from_utf8_lossy(bytes).contains("secret_sentinel"));
+    }
+}
+
+#[test]
+fn init_hooks_template_machine_and_repository_paths_without_child_discovery() {
+    let fixture = Fixture::new();
+    fixture.config(
+        "over.yaml",
+        json!({"hooks": {"post-init": [{
+            "command": "printf '%s' '{{ machine.os }}' >> \"$HOOK_TRACE\"",
+            "cwd": "{{ paths.over }}", "env": {"BOOTSTRAP": "{{ machine.hostname }}"}
+        }]}}),
+    );
+    fixture.write("locked/over.yaml", "unreadable: [");
+    fixture.commit();
+    fixture.command().arg("init").assert().success();
+    assert_eq!(fixture.trace(), std::env::consts::OS);
 }
