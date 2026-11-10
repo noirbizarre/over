@@ -44,10 +44,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         return Ok(());
     }
 
-    for diag in &result.diagnostics {
-        ui::info(format!("{diag}")).ok();
-        ui::info("").ok();
-    }
+    ui::info(format!("{}", result.grouped())).ok();
 
     // Summary — matches `cli::doctor`'s `print_summary` (both render the
     // same `lint::Diagnostic`-derived counts; kept identical so the two

@@ -79,28 +79,33 @@ impl Diagnostic {
     }
 }
 
-impl fmt::Display for Diagnostic {
-    /// Renders exactly what `over lint` prints for one diagnostic — shared
-    /// with `over doctor`'s "Overlay configuration" section so the two
-    /// commands never drift into two different formats for the same
-    /// underlying finding. Uses `crate::ui::style`, like every other
-    /// `Display` impl in the codebase (`status`/`diff`/`plan::step`), not
-    /// raw `console::style`, so this and `cli::doctor`'s summary can never
-    /// visually drift again.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Diagnostic {
+    // Share severity, file and hint formatting between grouped lint output and
+    // doctor's standalone findings, which still need their overlay identity.
+    fn fmt_finding(&self, f: &mut fmt::Formatter<'_>, standalone: bool) -> fmt::Result {
         let severity_label = match self.severity {
             Severity::Error => style::red("error"),
             Severity::Warning => style::yellow("warning"),
         };
-        let overlay_label = style::cyan(format!("[{}]", self.overlay));
-        write!(f, "{severity_label}{overlay_label}: {}", self.message)?;
+        write!(f, "{severity_label}")?;
+        if standalone {
+            write!(f, "{}", style::cyan(format!("[{}]", self.overlay)))?;
+        }
+        write!(f, ": {}", self.message)?;
 
         if let Some(file) = &self.file {
+            // The repository-root overlay has an empty graph identity, not an
+            // absolute filesystem path beginning with `/`.
+            let overlay = if self.overlay.is_empty() {
+                "."
+            } else {
+                &self.overlay
+            };
             write!(
                 f,
                 "\n  {} {}",
                 console::style("-->").dim(),
-                console::style(format!("{}/{file}", self.overlay)).dim()
+                console::style(format!("{overlay}/{file}")).dim()
             )?;
         }
 
@@ -112,6 +117,49 @@ impl fmt::Display for Diagnostic {
     }
 }
 
+impl fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt_finding(f, true)
+    }
+}
+
+struct GroupedFinding<'a>(&'a Diagnostic);
+
+impl fmt::Display for GroupedFinding<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt_finding(f, false)
+    }
+}
+
+/// Overlay sections for the already sorted lint findings.
+pub struct GroupedDiagnostics<'a>(&'a LintResult);
+
+impl fmt::Display for GroupedDiagnostics<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut previous = None;
+        for diagnostic in &self.0.diagnostics {
+            if previous != Some(diagnostic.overlay.as_str()) {
+                if previous.is_some() {
+                    writeln!(f)?;
+                }
+                let name = if diagnostic.overlay.is_empty() {
+                    "."
+                } else {
+                    &diagnostic.overlay
+                };
+                writeln!(f, "{}", style::cyan(format!("Overlay {name}")))?;
+                previous = Some(diagnostic.overlay.as_str());
+            }
+            // Indent continuation lines too, so file references and hints stay
+            // visually attached to their finding inside the overlay section.
+            for line in GroupedFinding(diagnostic).to_string().lines() {
+                writeln!(f, "  {line}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Aggregated lint results.
 #[derive(Debug)]
 pub struct LintResult {
@@ -119,6 +167,10 @@ pub struct LintResult {
 }
 
 impl LintResult {
+    pub fn grouped(&self) -> GroupedDiagnostics<'_> {
+        GroupedDiagnostics(self)
+    }
+
     pub fn error_count(&self) -> usize {
         self.diagnostics
             .iter()
@@ -764,14 +816,7 @@ fn lint_dirs(
                 if parsed_overlays.contains_key(dep) {
                     // Exists and parsed fine — no issue
                 } else if failed_overlays.contains(dep) {
-                    // Exists but failed to parse — already reported on the target overlay
-                    diagnostics.push(
-                        Diagnostic::error(
-                            name,
-                            format!("uses overlay \"{dep}\" which failed to parse"),
-                        )
-                        .with_hint(format!("fix the configuration errors in \"{dep}\" first")),
-                    );
+                    // Its own errors seed transitive dependency warnings below.
                 } else if scoped && !include_uses && repo.root.join(dep).is_dir() {
                     // Existence is enough when the dependency was intentionally
                     // excluded; parsing it here would defeat `--no-uses`.
@@ -798,13 +843,19 @@ fn lint_dirs(
         .collect();
     diagnostics.extend(check_cycles(&overlay_refs));
 
+    // Only configuration and graph errors are universal dependency failures;
+    // later resolution errors can depend on the selected consumer's metadata.
+    let invalid: HashSet<_> = diagnostics
+        .iter()
+        .filter(|diag| diag.severity == Severity::Error)
+        .map(|diag| diag.overlay.clone())
+        .collect();
+    if include_uses {
+        diagnostics.extend(dependency_warnings(&parsed_overlays, &invalid));
+    }
+
     if let Some(ctx) = ctx {
         // Existing precise errors already prevent a complete ownership analysis.
-        let invalid: HashSet<_> = diagnostics
-            .iter()
-            .filter(|diag| diag.severity == Severity::Error)
-            .map(|diag| diag.overlay.clone())
-            .collect();
         let mut seen = HashSet::new();
         for root in roots {
             // Known graph failures already have precise tolerant diagnostics.
@@ -857,15 +908,55 @@ fn lint_dirs(
         );
     }
 
-    // Sort: errors first, then warnings; within same severity, by overlay name
+    // Keep each overlay together even if another overlay has more severe findings.
     diagnostics.sort_by(|a, b| {
-        a.severity
-            .cmp(&b.severity)
-            .then_with(|| a.overlay.cmp(&b.overlay))
+        a.overlay
+            .cmp(&b.overlay)
+            .then_with(|| a.severity.cmp(&b.severity))
             .then_with(|| a.message.cmp(&b.message))
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.hint.cmp(&b.hint))
     });
 
     LintResult { diagnostics }
+}
+
+fn dependency_warnings(
+    overlays: &HashMap<String, Overlay>,
+    invalid: &HashSet<String>,
+) -> Vec<Diagnostic> {
+    let mut consumers: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (name, overlay) in overlays {
+        for dependency in overlay.uses.iter().flatten() {
+            consumers.entry(dependency).or_default().push(name);
+        }
+    }
+
+    let mut diagnostics = Vec::new();
+    for cause in invalid {
+        let mut pending = vec![cause.as_str()];
+        // Seed with the cause to prevent self-warnings when traversing cycles.
+        let mut visited = HashSet::from([cause.as_str()]);
+        while let Some(dependency) = pending.pop() {
+            for &consumer in consumers.get(dependency).into_iter().flatten() {
+                // Original causes, not intermediate warnings, are propagated;
+                // diamonds and multiple errors therefore produce one finding.
+                if visited.insert(consumer) {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            consumer,
+                            format!(
+                                "depends on overlay \"{cause}\" which has configuration errors"
+                            ),
+                        )
+                        .with_hint(format!("fix the errors in \"{cause}\" first")),
+                    );
+                    pending.push(consumer);
+                }
+            }
+        }
+    }
+    diagnostics
 }
 
 fn valid_closure(
@@ -970,12 +1061,18 @@ mod tests {
                 .count(),
             1
         );
-        assert!(
-            result
+        assert_eq!(result.error_count(), 1);
+        assert_eq!(result.warning_count(), 3);
+        for consumer in ["selected", "left", "right"] {
+            let warnings: Vec<_> = result
                 .diagnostics
                 .iter()
-                .any(|d| d.message.contains("failed to parse"))
-        );
+                .filter(|d| d.overlay == consumer)
+                .collect();
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].severity, Severity::Warning);
+            assert!(warnings[0].message.contains("overlay \"shared\""));
+        }
         assert!(
             lint_overlay(&repo, "selected", false)
                 .unwrap()
@@ -1275,7 +1372,7 @@ mod tests {
     }
 
     #[rstest]
-    fn using_a_broken_overlay_reports_parse_failure_not_nonexistent() {
+    fn using_a_broken_overlay_warns_without_claiming_it_does_not_exist() {
         let (td, repo) = setup_repo();
 
         // Overlay "good" references "broken" via uses
@@ -1310,7 +1407,8 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        // "good" should NOT say "non-existent" — it should say "failed to parse"
+        // The consumer must point to the existing broken overlay, not suggest
+        // creating a replacement for a supposedly missing dependency.
         assert!(
             !result
                 .diagnostics
@@ -1322,26 +1420,32 @@ mod tests {
             result
                 .diagnostics
                 .iter()
-                .any(|d| d.overlay == "good" && d.message.contains("which failed to parse")),
-            "should report that the used overlay failed to parse"
+                .any(|d| d.overlay == "good" && d.message.contains("configuration errors")),
+            "should report that the used overlay has errors"
         );
 
         // The hint should point to fixing the broken overlay first
         let diag = result
             .diagnostics
             .iter()
-            .find(|d| d.overlay == "good" && d.message.contains("which failed to parse"))
+            .find(|d| d.overlay == "good")
             .unwrap();
+        assert_eq!(diag.severity, Severity::Warning);
         assert!(diag.hint.as_ref().is_some_and(|h| h.contains("broken")));
+        assert_eq!(result.error_count(), 1);
+        assert_eq!(result.warning_count(), 1);
     }
 
     #[rstest]
-    fn diagnostics_sort_errors_before_warnings() {
+    fn diagnostics_group_overlays_alphabetically_then_errors_before_warnings() {
         let (td, repo) = setup_repo();
         let ov = td.child("zz_overlay");
         ov.create_dir_all().unwrap();
         ov.child("over.toml")
             .write_str("target = \"~\"\nuses = [\"nonexistent\"]\nexclude = []")
+            .unwrap();
+        td.child("aa_overlay/over.toml")
+            .write_str("exclude = []")
             .unwrap();
 
         let result = lint_repository(&repo);
@@ -1349,18 +1453,163 @@ mod tests {
         assert!(result.error_count() >= 1);
         assert!(result.warning_count() >= 1);
 
-        // Errors come before warnings
-        let first_warning_idx = result
+        assert_eq!(result.diagnostics[0].overlay, "aa_overlay");
+        assert_eq!(result.diagnostics[0].severity, Severity::Warning);
+        let findings: Vec<_> = result
             .diagnostics
             .iter()
-            .position(|d| d.severity == Severity::Warning);
-        let last_error_idx = result
-            .diagnostics
-            .iter()
-            .rposition(|d| d.severity == Severity::Error);
-        if let (Some(warn_idx), Some(err_idx)) = (first_warning_idx, last_error_idx) {
-            assert!(err_idx < warn_idx);
+            .filter(|d| d.overlay == "zz_overlay")
+            .collect();
+        assert_eq!(findings[0].severity, Severity::Error);
+        assert_eq!(findings.last().unwrap().severity, Severity::Warning);
+    }
+
+    #[rstest]
+    #[case("targt = '~'", 1)]
+    #[case("targt = '~'\nexclud = []", 2)]
+    #[case("exclude = ['[']", 1)]
+    #[case("uses = ['missing']", 1)]
+    fn dependency_errors_warn_every_transitive_consumer_once(
+        #[case] config: &str,
+        #[case] errors: usize,
+    ) {
+        let (td, repo) = setup_repo();
+        for (name, config) in [("a", "uses = ['b']"), ("b", "uses = ['c']"), ("c", config)] {
+            td.child(format!("{name}/over.toml"))
+                .write_str(config)
+                .unwrap();
         }
+        let result = lint_overlay(&repo, "a", true).unwrap();
+        assert_eq!(result.error_count(), errors, "{:?}", result.diagnostics);
+        assert_eq!(result.warning_count(), 2);
+        for consumer in ["a", "b"] {
+            let findings: Vec<_> = result
+                .diagnostics
+                .iter()
+                .filter(|d| d.overlay == consumer)
+                .collect();
+            assert_eq!(findings.len(), 1);
+            assert_eq!(findings[0].severity, Severity::Warning);
+            assert!(findings[0].message.contains("overlay \"c\""));
+        }
+    }
+
+    #[rstest]
+    fn consumer_owned_errors_remain_errors_when_a_dependency_is_invalid() {
+        let (td, repo) = setup_repo();
+        td.child("consumer/over.toml")
+            .write_str("uses = ['broken', 'missing']")
+            .unwrap();
+        td.child("broken/over.toml")
+            .write_str("targt = '~'")
+            .unwrap();
+        let result = lint_overlay(&repo, "consumer", true).unwrap();
+        assert_eq!(result.error_count(), 2);
+        assert_eq!(result.warning_count(), 1);
+        assert!(result.diagnostics.iter().any(|d| d.overlay == "consumer"
+            && d.severity == Severity::Error
+            && d.message.contains("missing")));
+    }
+
+    #[rstest]
+    fn warnings_alone_do_not_make_dependencies_invalid() {
+        let (td, repo) = setup_repo();
+        td.child("consumer/over.toml")
+            .write_str("uses = ['dependency']")
+            .unwrap();
+        td.child("dependency/over.toml")
+            .write_str("exclude = []")
+            .unwrap();
+        let result = lint_overlay(&repo, "consumer", true).unwrap();
+        assert!(!result.has_errors());
+        assert_eq!(result.warning_count(), 1);
+        assert_eq!(result.diagnostics[0].overlay, "dependency");
+    }
+
+    #[rstest]
+    #[case("a_consumer", "z_dependency")]
+    #[case("z_consumer", "a_dependency")]
+    fn standalone_resolution_errors_do_not_make_valid_consumers_invalid(
+        #[case] consumer: &str,
+        #[case] dependency: &str,
+    ) {
+        let (td, repo) = setup_repo();
+        td.child(format!("{consumer}/over.toml"))
+            .write_str(&format!(
+                "uses = ['{dependency}']\n[data]\ndestination = 'resolved'"
+            ))
+            .unwrap();
+        td.child(format!("{dependency}/over.toml"))
+            .write_str("target = '~/{{ data.destination }}'")
+            .unwrap();
+
+        // The dependency cannot resolve by itself, but the consumer supplies
+        // its missing metadata regardless of alphabetical processing order.
+        let result = lint_repository(&repo);
+        assert_eq!(result.error_count(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.warning_count(), 0);
+        assert_eq!(result.diagnostics[0].overlay, dependency);
+        assert!(
+            result.diagnostics[0]
+                .message
+                .contains("cannot resolve desired ownership")
+        );
+    }
+
+    #[rstest]
+    fn cycles_propagate_original_errors_without_self_warnings_or_duplicates() {
+        let (td, repo) = setup_repo();
+        for (name, config) in [("a", "uses = ['b', 'b']"), ("b", "uses = ['a', 'missing']")] {
+            td.child(format!("{name}/over.toml"))
+                .write_str(config)
+                .unwrap();
+        }
+        let result = lint_overlay(&repo, "a", true).unwrap();
+        let impacts: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.starts_with("depends on overlay"))
+            .collect();
+        assert!(!impacts.is_empty());
+        let mut pairs = HashSet::new();
+        for diagnostic in impacts {
+            assert_eq!(diagnostic.severity, Severity::Warning);
+            assert!(
+                !diagnostic
+                    .message
+                    .contains(&format!("overlay \"{}\"", diagnostic.overlay))
+            );
+            assert!(pairs.insert((&diagnostic.overlay, &diagnostic.message)));
+        }
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("cannot resolve desired ownership"))
+        );
+    }
+
+    #[rstest]
+    fn grouped_output_keeps_file_references_and_hints_with_their_overlay() {
+        let result = LintResult {
+            diagnostics: vec![
+                Diagnostic::error("", "root error")
+                    .with_file("over.toml")
+                    .with_hint("repair root"),
+                Diagnostic::warning("a", "first warning"),
+                Diagnostic::warning("a", "second warning"),
+                Diagnostic::error("z", "last error"),
+            ],
+        };
+        let rendered = console::strip_ansi_codes(&result.grouped().to_string()).into_owned();
+        assert_eq!(
+            rendered,
+            "Overlay .\n  error: root error\n    --> ./over.toml\n    = repair root\n\nOverlay a\n  warning: first warning\n  warning: second warning\n\nOverlay z\n  error: last error\n"
+        );
+        assert!(
+            console::strip_ansi_codes(&result.diagnostics[1].to_string())
+                .contains("warning[a]: first warning")
+        );
     }
 
     #[rstest]
