@@ -49,12 +49,40 @@ fields such as the overlay's name and source root are not descriptor settings.
 user's home directory; `--home` selects the source repository instead.
 
 Destination templates can use `machine` facts (`os`, `arch`, `hostname`,
-`username`, `distro`, `distro_id`), the current `overlay`, and resolved `data`:
+`username`, `distro`, `distro_id`), shared `paths`, the current `overlay`, and
+resolved `data`:
 
 ```toml
 # ~/.dotfiles/workspaces/over.toml — inherited by workspaces/*
 target = "~/Workspaces/{{ overlay.name | split('/') | last }}"
 ```
+
+The same context is available to path templates and every lifecycle hook field
+(`when`, `command`, `env` values, and `cwd`):
+
+| Field | Meaning |
+| --- | --- |
+| `paths.home` | The current user's detected home directory, independent of `--root` and `--home` |
+| `paths.over` | The active Over source repository root |
+| `paths.target` | The current overlay's resolved base destination, independent of directory mappings |
+
+These values are filesystem paths serialized as absolute native path strings.
+They retain symlink spelling and do not require the destination to exist. Paths
+that cannot be represented as UTF-8 produce an error rather than a lossy string.
+Each dependency and its hooks see its own target; repository post-apply hooks
+see the selected overlay's target.
+
+Unavailable fields are undefined, not null. `paths.target` is unavailable during
+init, default-overlay selection, and evaluation of the target definition itself.
+`paths.home` is unavailable if home detection fails; `paths.over` is unavailable
+for library contexts with no repository. No unrelated directory is substituted.
+Guard optional inputs with `paths.target is defined`, or provide an explicit
+fallback with `default`. Unguarded undefined values fail template evaluation,
+including in ordinary destination templates.
+
+For example, a sidecar can refer to `{{ paths.target }}/shared`, while a target
+definition can use `{{ paths.home }}/Workspaces`. Unlike `~`, `paths.home` does
+not follow an execution-root override.
 
 Templates apply to supported path fields and lifecycle hook execution fields,
 not arbitrary strings. File bodies, partial content, and metadata strings

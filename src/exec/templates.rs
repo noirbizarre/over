@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use minijinja::Environment;
@@ -18,24 +18,41 @@ pub(crate) struct TemplateContext<'a> {
 
 #[derive(Serialize)]
 struct TemplatePaths {
-    over: PathBuf,
+    // Null is defined in MiniJinja; omitted fields let availability guards work.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    home: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    over: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<PathBuf>,
 }
 
 impl<'a> TemplateContext<'a> {
     pub(crate) fn new(ctx: &'a crate::exec::Context) -> Result<Self> {
-        // Context-free library renderers may use a default repository (an empty path).
-        let root = if ctx.repository.root.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            &ctx.repository.root
+        let paths = TemplatePaths {
+            home: ctx
+                .path_inputs
+                .home
+                .as_deref()
+                .map(|path| ctx.absolute_path(path))
+                .transpose()?,
+            over: (!ctx.repository.root.as_os_str().is_empty())
+                .then(|| ctx.absolute_path(&ctx.repository.root))
+                .transpose()?,
+            target: ctx.current_target.clone(),
         };
+        // Lossy strings could name a different destination than the actual filesystem path.
+        for path in [&paths.home, &paths.over, &paths.target]
+            .into_iter()
+            .flatten()
+        {
+            anyhow::ensure!(path.to_str().is_some(), "template path is not valid UTF-8");
+        }
         Ok(Self {
             ctx,
             env: std::env::vars().collect(),
             overlays: ctx.resolved_overlays.as_ref(),
-            paths: TemplatePaths {
-                over: std::path::absolute(root)?,
-            },
+            paths,
         })
     }
 }
@@ -46,7 +63,10 @@ impl<'a> TemplateContext<'a> {
 /// such as encryption (2.3) and secret manager integration (2.4).
 pub fn create_env<'a>() -> Environment<'a> {
     // Register custom filters/functions here when needed
-    Environment::new()
+    let mut env = Environment::new();
+    // An unavailable input must never become an unrelated empty destination.
+    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    env
 }
 
 /// Render a template string against the given serializable context.
@@ -57,13 +77,8 @@ pub fn render_string(template: &str, ctx: &impl Serialize) -> Result<String> {
     Ok(env.render_str(template, Serde(ctx))?)
 }
 
-pub(crate) fn render_path(template: &str, state: &impl Serialize, strict: bool) -> Result<String> {
-    let mut env = create_env();
-    if strict {
-        // Only lint opts in: ordinary execution keeps its existing template semantics.
-        env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
-    }
-    Ok(env.render_str(template, Serde(state))?)
+pub(crate) fn render_path(template: &str, state: &impl Serialize) -> Result<String> {
+    render_string(template, state)
 }
 
 #[cfg(test)]

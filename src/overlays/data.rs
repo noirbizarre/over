@@ -352,6 +352,7 @@ mod tests {
         let ctx = Context::builder()
             .repository(repo.clone())
             .overlay(selected)
+            .root(temp.path().join("deployment"))
             .build()
             .resolve_data()
             .unwrap();

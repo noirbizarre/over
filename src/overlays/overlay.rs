@@ -325,7 +325,9 @@ impl Overlay {
     }
 
     pub fn resolve_target(&self, ctx: &exec::Context) -> Result<PathBuf> {
-        super::mapping::resolve_path(&self.target, &self.target_origin, ctx)
+        // Its own target cannot exist until this definition has finished rendering.
+        let base = ctx.with_overlay(self.clone());
+        super::mapping::resolve_path(&self.target, &self.target_origin, &base)
     }
 
     pub fn resolve_mappings(
@@ -430,11 +432,14 @@ impl Overlay {
         }
         // Defer all hooks until every participant succeeds, including later siblings.
         let selected_target = self.resolve_target(ctx)?;
+        let selected_ctx = ctx
+            .with_overlay(self.clone())
+            .with_target(selected_target.clone());
         crate::hooks::run(
             &root_hooks,
             crate::hooks::Event::PostApply,
             crate::hooks::HookContext {
-                templates: ctx,
+                templates: &selected_ctx,
                 repository: &ctx.repository.root,
                 cwd: &ctx.repository.root,
                 scope: "repository root",
@@ -444,7 +449,9 @@ impl Overlay {
         )
         .await?;
         for (overlay, target) in applied {
-            let overlay_ctx = ctx.with_overlay(overlay.clone());
+            let overlay_ctx = ctx
+                .with_overlay(overlay.clone())
+                .with_target(target.clone());
             crate::hooks::run(
                 &overlay.hooks,
                 crate::hooks::Event::PostApply,

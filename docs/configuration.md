@@ -43,6 +43,12 @@ metadata, and shell commands retain their own semantics. CLI-relative `--home`
 and `--root` refer to the invocation directory. `.overignore` patterns are
 relative to their ignore file.
 
+Shared template `paths` are anchored to captured invocation inputs, so later
+evaluations and hook working-directory changes cannot reinterpret them against
+another process directory. They are normalized without following symlinks.
+See [Targets and templates](configuration/overlay.md#targets-and-templates) for
+the meanings and availability of `paths.home`, `paths.over`, and `paths.target`.
+
 ## Root configuration
 
 See [Root configuration](configuration/root.md) for root-only fields and shared

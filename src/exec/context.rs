@@ -53,13 +53,31 @@ fn detect_username() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Clone)]
+pub(crate) struct PathInputs {
+    // Keep capture errors so a later render cannot silently adopt a different cwd.
+    cwd: Result<PathBuf, String>,
+    pub home: Option<PathBuf>,
+}
+
+impl Default for PathInputs {
+    fn default() -> Self {
+        Self {
+            cwd: std::env::current_dir().map_err(|error| error.to_string()),
+            home: dirs::home_dir(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Context {
     #[serde(skip)]
     pub crypto: Arc<crate::secrets::CryptoService>,
-    /// Lint must not mistake an unavailable destination variable for an empty path.
     #[serde(skip)]
-    pub strict_paths: bool,
+    pub(crate) path_inputs: PathInputs,
+
+    #[serde(skip)]
+    pub(crate) current_target: Option<PathBuf>,
 
     /// Run without applying changes
     pub dry_run: bool,
@@ -132,6 +150,7 @@ impl Progress {
 /// to get an `Arc<Context>`.
 #[derive(Default)]
 pub struct ContextBuilder {
+    path_inputs: PathInputs,
     dry_run: bool,
     debug: bool,
     verbose: bool,
@@ -222,7 +241,8 @@ impl ContextBuilder {
     pub fn build(self) -> Arc<Context> {
         Arc::new(Context {
             crypto: Arc::new(crate::secrets::CryptoService::default()),
-            strict_paths: false,
+            path_inputs: self.path_inputs,
+            current_target: None,
             dry_run: self.dry_run,
             debug: self.debug,
             verbose: self.verbose,
@@ -242,10 +262,46 @@ impl ContextBuilder {
 }
 
 impl Context {
-    pub(crate) fn with_strict_paths(&self) -> Arc<Self> {
+    /// Anchor once to invocation cwd, never the cwd of a later template or hook.
+    pub(crate) fn absolute_path(&self, path: &std::path::Path) -> anyhow::Result<PathBuf> {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.path_inputs
+                .cwd
+                .as_ref()
+                .map_err(|error| {
+                    anyhow::anyhow!("could not capture invocation directory: {error}")
+                })?
+                .join(path)
+        };
+        crate::overlays::mapping::absolute(&absolute)
+    }
+
+    pub(crate) fn without_target(&self) -> Arc<Self> {
         Arc::new(Self {
-            strict_paths: true,
-            ..self.clone_for_overlay_update()
+            current_target: None,
+            ..self.clone()
+        })
+    }
+
+    pub(crate) fn with_target(&self, target: PathBuf) -> Arc<Self> {
+        Arc::new(Self {
+            current_target: Some(target),
+            ..self.clone()
+        })
+    }
+
+    pub(crate) fn prepare_overlay(&self, overlay: &Overlay) -> anyhow::Result<Ctx> {
+        let ctx = self.with_overlay(overlay.clone());
+        let target = overlay.resolve_target(&ctx)?;
+        Ok(ctx.with_target(target))
+    }
+
+    pub(crate) fn with_path_inputs(&self, original: &Self) -> Arc<Self> {
+        Arc::new(Self {
+            path_inputs: original.path_inputs.clone(),
+            ..self.clone()
         })
     }
 
@@ -253,8 +309,10 @@ impl Context {
     /// this snapshot so they cannot discard the command target's overrides.
     pub fn resolve_data(&self) -> anyhow::Result<Ctx> {
         Ok(Arc::new(Self {
+            // Metadata may change the rendered target, invalidating an earlier binding.
+            current_target: None,
             data: self.repository.resolve_data(self, self.overlay.as_ref())?,
-            ..self.clone_for_overlay_update()
+            ..self.clone()
         }))
     }
 
@@ -265,64 +323,24 @@ impl Context {
 
     pub fn with_overlay(&self, overlay: Overlay) -> Arc<Self> {
         Arc::new(Self {
-            crypto: self.crypto.clone(),
-            strict_paths: self.strict_paths,
-            dry_run: self.dry_run,
-            debug: self.debug,
-            verbose: self.verbose,
-            force: self.force,
-            discard_checkout: self.discard_checkout,
-            no_prompt: self.no_prompt,
-            no_uses: self.no_uses,
-            root: self.root.clone(),
-            repository: self.repository.clone(),
+            // Dependencies must not inherit their consumer's destination.
+            current_target: None,
             overlay: Some(overlay),
-            machine: self.machine.clone(),
-            data: self.data.clone(),
-            progress: self.progress.clone(),
-            resolved_overlays: self.resolved_overlays.clone(),
+            ..self.clone()
         })
     }
 
     pub fn with_progress(&self, progress: ProgressBar) -> Arc<Self> {
         Arc::new(Self {
-            crypto: self.crypto.clone(),
-            strict_paths: self.strict_paths,
-            dry_run: self.dry_run,
-            debug: self.debug,
-            verbose: self.verbose,
-            force: self.force,
-            discard_checkout: self.discard_checkout,
-            no_prompt: self.no_prompt,
-            no_uses: self.no_uses,
-            root: self.root.clone(),
-            repository: self.repository.clone(),
-            overlay: self.overlay.clone(),
-            machine: self.machine.clone(),
             progress: Some(Progress::Progress(progress)),
-            data: self.data.clone(),
-            resolved_overlays: self.resolved_overlays.clone(),
+            ..self.clone()
         })
     }
 
     pub fn with_multiprogress(&self, progress: MultiProgress) -> Arc<Self> {
         Arc::new(Self {
-            crypto: self.crypto.clone(),
-            strict_paths: self.strict_paths,
-            dry_run: self.dry_run,
-            debug: self.debug,
-            verbose: self.verbose,
-            force: self.force,
-            discard_checkout: self.discard_checkout,
-            no_prompt: self.no_prompt,
-            no_uses: self.no_uses,
-            root: self.root.clone(),
-            repository: self.repository.clone(),
-            overlay: self.overlay.clone(),
-            machine: self.machine.clone(),
             progress: Some(Progress::MultiProgress(progress)),
-            data: self.data.clone(),
-            resolved_overlays: self.resolved_overlays.clone(),
+            ..self.clone()
         })
     }
 
@@ -339,29 +357,8 @@ impl Context {
         map.insert(name, target);
         Arc::new(Self {
             resolved_overlays: Arc::new(map),
-            ..self.clone_for_overlay_update()
+            ..self.clone()
         })
-    }
-
-    fn clone_for_overlay_update(&self) -> Self {
-        Self {
-            crypto: self.crypto.clone(),
-            strict_paths: self.strict_paths,
-            dry_run: self.dry_run,
-            debug: self.debug,
-            verbose: self.verbose,
-            force: self.force,
-            discard_checkout: self.discard_checkout,
-            no_prompt: self.no_prompt,
-            no_uses: self.no_uses,
-            root: self.root.clone(),
-            repository: self.repository.clone(),
-            overlay: self.overlay.clone(),
-            machine: self.machine.clone(),
-            data: self.data.clone(),
-            progress: self.progress.clone(),
-            resolved_overlays: self.resolved_overlays.clone(),
-        }
     }
 }
 
@@ -384,6 +381,209 @@ pub type Ctx = Arc<Context>;
 
 #[cfg(test)]
 mod tests {
+    use assert_fs::TempDir;
+    use assert_fs::prelude::*;
+    use indicatif::{MultiProgress, ProgressBar};
+    use rstest::rstest;
+
+    use super::*;
+    use crate::exec::templates::{TemplateContext, render_string};
+
+    #[test]
+    fn shared_paths_serialize_as_strings_and_home_is_independent_of_the_execution_root() {
+        let td = assert_fs::TempDir::new().unwrap();
+        let mut ctx = Context::builder()
+            .repository(Repository::new(td.path().join("repository")))
+            .root(td.path().join("deployment"))
+            .build()
+            .as_ref()
+            .clone();
+        ctx.path_inputs.home = Some(td.path().join("actual home ü"));
+        let ctx = ctx.with_target(td.path().join("effective target"));
+        let state = TemplateContext::new(&ctx).unwrap();
+        let json = serde_json::to_value(&state).unwrap();
+        for (field, expected) in [
+            ("home", td.path().join("actual home ü")),
+            ("over", td.path().join("repository")),
+            ("target", td.path().join("effective target")),
+        ] {
+            assert_eq!(json["paths"][field], expected.to_str().unwrap());
+            assert_eq!(
+                render_string(&format!("{{{{ paths.{field} }}}}"), &state).unwrap(),
+                expected.to_str().unwrap()
+            );
+        }
+        for alias in ["home", "over_home", "target"] {
+            assert!(json.get(alias).is_none());
+        }
+        assert_eq!(json["machine"]["os"], ctx.machine.os);
+        assert_eq!(json["machine"]["arch"], ctx.machine.arch);
+        assert_eq!(json["machine"]["hostname"], ctx.machine.hostname);
+    }
+
+    #[rstest]
+    #[case("home")]
+    #[case("over")]
+    #[case("target")]
+    fn unavailable_paths_are_undefined_and_unguarded_rendering_fails(#[case] field: &str) {
+        let mut ctx = Context::default();
+        ctx.path_inputs.home = None;
+        let state = TemplateContext::new(&ctx).unwrap();
+        assert_eq!(
+            render_string(&format!("{{{{ paths.{field} is defined }}}}"), &state).unwrap(),
+            "False"
+        );
+        assert!(render_string(&format!("{{{{ paths.{field} }}}}"), &state).is_err());
+        assert_eq!(
+            render_string(
+                &format!("{{{{ paths.{field} | default('unavailable') }}}}"),
+                &state
+            )
+            .unwrap(),
+            "unavailable"
+        );
+    }
+
+    #[test]
+    fn bound_targets_survive_progress_copies_but_never_follow_an_overlay_switch() {
+        let (td, overlay) = make_overlay();
+        let ctx = Context::builder()
+            .root(td.path().join("deployment"))
+            .overlay(overlay.clone())
+            .build();
+        let prepared = ctx.prepare_overlay(&overlay).unwrap();
+        let target = prepared.current_target.clone();
+        assert_eq!(
+            prepared.with_progress(ProgressBar::hidden()).current_target,
+            target
+        );
+        assert_eq!(
+            prepared
+                .with_multiprogress(MultiProgress::new())
+                .current_target,
+            target
+        );
+        assert_eq!(
+            prepared
+                .with_resolved_overlay("other".into(), "/other".into())
+                .current_target,
+            target
+        );
+        assert!(prepared.with_overlay(overlay).current_target.is_none());
+        assert!(prepared.without_target().current_target.is_none());
+    }
+
+    #[test]
+    fn a_target_cannot_reference_itself_or_inherit_another_overlays_target() {
+        let (td, mut overlay) = make_overlay();
+        let ctx = Context::builder()
+            .root(td.path().join("deployment"))
+            .build()
+            .with_target(td.path().join("stale"));
+        overlay.target = "{{ paths.target }}".into();
+        assert!(overlay.resolve_target(&ctx).is_err());
+        overlay.target =
+            "{{ paths.target if paths.target is defined else paths.over }}/destination".into();
+        let ctx = Context {
+            repository: Repository::new(td.path().to_path_buf()),
+            ..ctx.as_ref().clone()
+        };
+        assert_eq!(
+            overlay.resolve_target(&ctx).unwrap(),
+            td.path().join("destination")
+        );
+    }
+
+    #[test]
+    fn captured_directory_failures_are_reported_instead_of_retried() {
+        let mut ctx = Context::default();
+        ctx.path_inputs.cwd = Err("injected capture failure".into());
+        ctx.repository = Repository::new(PathBuf::from("relative"));
+        assert!(
+            TemplateContext::new(&ctx)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("injected capture failure")
+        );
+    }
+
+    #[test]
+    fn default_selection_shares_base_paths_without_resolving_a_target_or_recursing_into_data() {
+        let (td, overlay) = make_overlay();
+        td.child("over.toml").write_str(
+            "default_overlay = \"{{ 'test-overlay' if paths.over is defined and paths.home is defined and paths.target is not defined else 'missing' }}\"\n"
+        ).unwrap();
+        let repo = Repository::new(td.path().to_path_buf());
+        let ctx = Context::builder()
+            .repository(repo.clone())
+            .root(td.path().join("deployment"))
+            .build()
+            .with_target(td.path().join("stale"));
+        assert_eq!(
+            repo.default_overlay(&ctx).unwrap().unwrap().name,
+            overlay.name
+        );
+        assert!(ctx.resolve_data().is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_paths_fail_instead_of_identifying_a_different_destination() {
+        use std::os::unix::ffi::OsStringExt;
+        let mut ctx = Context::default();
+        ctx.path_inputs.home = Some(PathBuf::from(std::ffi::OsString::from_vec(
+            b"/home/\xff".to_vec(),
+        )));
+        assert!(TemplateContext::new(&ctx).is_err());
+    }
+
+    #[test]
+    fn prepared_paths_remain_stable_after_the_process_changes_directory() {
+        const CHILD: &str = "OVER_PATH_CONTEXT_CWD_TEST";
+        if std::env::var_os(CHILD).is_some() {
+            let invocation = std::env::current_dir().unwrap();
+            std::fs::create_dir_all("repository/overlay").unwrap();
+            std::fs::create_dir("elsewhere").unwrap();
+            std::fs::write("repository/overlay/over.toml", "target = '~/dest'").unwrap();
+            let repo = Repository::new(PathBuf::from("repository"));
+            let overlay = Overlay::new(&repo, std::path::Path::new("repository/overlay")).unwrap();
+            let ctx = Context::builder()
+                .repository(repo)
+                .root(PathBuf::from("deployment"))
+                .overlay(overlay.clone())
+                .build();
+            // This branch runs alone in a child process, avoiding parallel-test cwd races.
+            std::env::set_current_dir("elsewhere").unwrap();
+            let rendered = crate::actions::symlink::render_symlink_target(
+                "{{ paths.over }}|{{ paths.target }}",
+                &ctx,
+            )
+            .unwrap();
+            assert_eq!(
+                rendered,
+                format!(
+                    "{}|{}",
+                    invocation.join("repository").display(),
+                    invocation.join("deployment/dest").display()
+                )
+            );
+            let routing = overlay.resolve_mappings(&ctx).unwrap();
+            assert_eq!(routing.base, invocation.join("deployment/dest"));
+            return;
+        }
+        let td = assert_fs::TempDir::new().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "exec::context::tests::prepared_paths_remain_stable_after_the_process_changes_directory", "--nocapture"])
+            .env(CHILD, "1").current_dir(td.path()).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn checkout_disposal_authorization_survives_context_copies() {
         let ctx = super::Context::builder().discard_checkout(true).build();
@@ -399,14 +599,7 @@ mod tests {
             ctx.with_resolved_overlay("ov".into(), "/target".into())
                 .discard_checkout
         );
-        assert!(ctx.with_strict_paths().discard_checkout);
     }
-    use super::*;
-    use assert_fs::TempDir;
-    use assert_fs::prelude::*;
-    use indicatif::{MultiProgress, ProgressBar};
-    use rstest::rstest;
-
     fn dummy_repo() -> Repository {
         #[cfg(unix)]
         let repo_path = PathBuf::from("/tmp/over-test-repo");
@@ -660,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn context_clone_for_overlay_update() {
+    fn cloning_a_context_preserves_its_execution_root() {
         #[cfg(unix)]
         let root_path = PathBuf::from("/tmp");
         #[cfg(windows)]
@@ -672,7 +865,7 @@ mod tests {
             .repository(dummy_repo())
             .build();
 
-        let cloned = ctx.clone_for_overlay_update();
+        let cloned = ctx.as_ref().clone();
         assert!(cloned.dry_run);
         assert_eq!(cloned.root, root_path);
     }

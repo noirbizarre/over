@@ -2,10 +2,10 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitStatus;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Deserializer, Serialize};
 use tokio::process::Command;
 
@@ -232,14 +232,12 @@ pub fn nested() -> bool {
     std::env::var_os("OVER_HOOK_ACTIVE").is_some()
 }
 
-fn absolute(path: &Path) -> Result<PathBuf> {
-    std::path::absolute(path).context("failed to resolve hook context path")
-}
-
 pub async fn run(hooks: &Hooks, event: Event, context: HookContext<'_>) -> Result<()> {
     if nested() || hooks.commands(event).is_empty() {
         return Ok(());
     }
+    // Subprocess locations and template paths share the same invocation anchor.
+    let absolute = |path: &Path| context.templates.absolute_path(path);
     for (index, hook) in hooks.commands(event).iter().enumerate() {
         // Drop underlying errors: the UI prints entire chains, including template source.
         let failure = |field: &str, reason: &str| {
@@ -256,10 +254,8 @@ pub async fn run(hooks: &Hooks, event: Event, context: HookContext<'_>) -> Resul
             )
         };
         let state = crate::exec::templates::TemplateContext::new(context.templates)
-            .map_err(|_| failure("context", "could not resolve repository root"))?;
-        let mut environment = crate::exec::templates::create_env();
-        // Missing inputs must not silently turn an executable command into another command.
-        environment.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+            .map_err(|_| failure("context", "could not resolve shared filesystem paths"))?;
+        let environment = crate::exec::templates::create_env();
         let definition = match hook {
             Hook::Command(_) => None,
             Hook::Structured(definition) => Some(definition),

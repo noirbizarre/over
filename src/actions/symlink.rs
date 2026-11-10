@@ -241,9 +241,19 @@ pub fn discover_symlinks_selected(
 }
 
 pub fn render_symlink_target(template: &str, ctx: &Context) -> Result<String> {
+    // Target definitions use the base renderer directly, preventing recursive preparation.
+    let prepared;
+    let ctx = if ctx.current_target.is_none()
+        && let Some(overlay) = &ctx.overlay
+    {
+        prepared = ctx.prepare_overlay(overlay)?;
+        &prepared
+    } else {
+        ctx
+    };
     let state = crate::exec::templates::TemplateContext::new(ctx)?;
 
-    crate::exec::templates::render_path(template, &state, ctx.strict_paths)
+    crate::exec::templates::render_path(template, &state)
         .with_context(|| format!("failed to render symlink target template '{}'", template))
 }
 

@@ -118,12 +118,20 @@ pub(crate) fn physical_destination(target: &Path, source: &Path) -> Result<PathB
 }
 
 pub(crate) fn render_target(raw: &str, ctx: &exec::Context) -> Result<PathBuf> {
-    let rendered = crate::actions::symlink::render_symlink_target(raw, ctx)
+    let state = exec::templates::TemplateContext::new(ctx)?;
+    let rendered = exec::templates::render_path(raw, &state)
         .with_context(|| format!("failed to render target template '{raw}'"))?;
+    if rendered == "~" || rendered.starts_with("~/") {
+        // An unspecified execution root is not permission to deploy into invocation cwd.
+        ensure!(
+            !ctx.root.as_os_str().is_empty(),
+            "cannot expand '~' without an execution root"
+        );
+    }
     Ok(if rendered == "~" {
-        absolute(&ctx.root)?
+        ctx.absolute_path(&ctx.root)?
     } else if let Some(tail) = rendered.strip_prefix("~/") {
-        absolute(&ctx.root)?.join(tail)
+        ctx.absolute_path(&ctx.root)?.join(tail)
     } else {
         PathBuf::from(rendered)
     })
@@ -131,7 +139,9 @@ pub(crate) fn render_target(raw: &str, ctx: &exec::Context) -> Result<PathBuf> {
 
 /// Render before anchoring so a template producing a relative path keeps its declaration base.
 pub(crate) fn resolve_path(raw: &str, origin: &Path, ctx: &exec::Context) -> Result<PathBuf> {
-    Ok(lexical(&origin.join(render_target(raw, ctx)?)))
+    Ok(lexical(
+        &ctx.absolute_path(origin)?.join(render_target(raw, ctx)?),
+    ))
 }
 
 /// Context-free checks also used by lint, which must not render machine-specific
@@ -191,21 +201,26 @@ pub(crate) fn validate_sources(overlay: &Overlay) -> Result<()> {
 impl ResolvedMappings {
     pub fn new(overlay: &Overlay, ctx: &exec::Context) -> Result<Self> {
         validate_sources(overlay)?;
-        let base = absolute(&overlay.resolve_target(ctx)?)?;
+        let prepared = ctx.prepare_overlay(overlay)?;
+        let ctx = prepared.as_ref();
+        let base = ctx
+            .current_target
+            .clone()
+            .context("prepared overlay has no target")?;
         let mut directories: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
         let mut physical_targets: Vec<PathBuf> = Vec::new();
         for (key, config) in &overlay.map {
             let source = PathBuf::from(key);
             let origin = overlay.mapping_origins.get(key).unwrap_or(&overlay.root);
             let target = absolute(&resolve_path(&config.target, origin, ctx)?)?;
-            let physical_target = physical_destination(&target, &overlay.root.join(&source))?;
+            let root = ctx.absolute_path(&overlay.root)?;
+            let physical_target = physical_destination(&target, &root.join(&source))?;
             let physical_base = physical(&base)?;
             ensure!(
                 !base.starts_with(&target) && !physical_base.starts_with(&physical_target),
                 "mapping '{key}' target '{}' contains or equals the overlay target",
                 target.display()
             );
-            let root = absolute(&overlay.root)?;
             let physical_root = physical(&root)?;
             ensure!(
                 !target.starts_with(&root)
@@ -295,6 +310,44 @@ mod tests {
     use assert_fs::prelude::*;
     use rstest::rstest;
 
+    #[test]
+    fn standalone_mappings_bind_the_supplied_overlays_base_target() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        for name in ["first", "second"] {
+            temp.child(format!("repo/{name}/over.toml")).write_str(
+                "target = '~/{{ overlay.name }}'\n[map.config]\ntarget = '{{ paths.target }}-config'\n"
+            ).unwrap();
+            temp.child(format!("repo/{name}/config/file"))
+                .write_str("content")
+                .unwrap();
+        }
+        let repo = Repository::new(temp.path().join("repo"));
+        let first = repo.get("first").unwrap();
+        let second = repo.get("second").unwrap();
+        let ctx = Context::builder()
+            .repository(repo)
+            .root(temp.path().join("home"))
+            .build()
+            .prepare_overlay(&first)
+            .unwrap();
+        for overlay in [first, second] {
+            let routing = overlay.resolve_mappings(&ctx).unwrap();
+            assert_eq!(routing.base, temp.path().join("home").join(&overlay.name));
+            assert_eq!(
+                routing.target_for(Path::new("config/file")),
+                temp.path()
+                    .join("home")
+                    .join(format!("{}-config/file", overlay.name))
+            );
+        }
+    }
+
+    #[test]
+    fn an_unspecified_tilde_root_never_becomes_the_invocation_directory() {
+        assert!(render_target("~", &Context::default()).is_err());
+        assert!(render_target("~/file", &Context::default()).is_err());
+    }
+
     #[rstest]
     #[case("over.toml", "target = '{{ env.OVER_MISSING_PATH_VALUE }}'")]
     #[case("over.toml", "[map.config]\ntarget = '{{ overlays.missing }}'")]
@@ -315,8 +368,7 @@ mod tests {
             .repository(repo)
             .root(temp.path().join("home"))
             .build();
-        let error =
-            crate::desired::DesiredTree::build_own(&ctx.with_strict_paths(), &overlay).unwrap_err();
+        let error = crate::desired::DesiredTree::build_own(&ctx, &overlay).unwrap_err();
         assert!(format!("{error:#}").contains("undefined"));
     }
 
