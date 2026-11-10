@@ -198,7 +198,11 @@ pub async fn check(repo: &Repository, opts: &Options) -> Result<Report> {
 
     // Overlay configuration — delegates entirely to `lint`'s own tolerant,
     // pre-deserialization pass (ADR-009); doctor never re-derives it.
-    let lint_result = lint::lint_repository(repo);
+    let lint_context = Context::builder()
+        .repository(repo.clone())
+        .root(opts.root.clone())
+        .build();
+    let lint_result = lint::lint_repository_with_context(&lint_context);
     report.config = lint_result.diagnostics.iter().map(Finding::from).collect();
 
     // Per-overlay `.git/info/exclude` diagnostics (#148), optionally

@@ -140,12 +140,8 @@ fn build_inner(
         }
     }
 
-    // This overlay's own entries are collected after its `uses` so that,
-    // should any target path collide (e.g. both default to the same root),
-    // the overlay's own entry is the one a stable sort keeps last — the
-    // final sort by target is what actually gives us determinism, but
-    // keeping this order matches the intent that a dependent's own files
-    // are what's being layered on top of what it `uses`.
+    // Preserve every claim: uses is a flat union, so traversal order must
+    // never silently choose a winner for conflicting target ownership.
     entries.extend(collect_own_entries(ctx, overlay, &target, sources)?);
 
     stack.pop();

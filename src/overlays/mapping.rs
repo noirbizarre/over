@@ -118,7 +118,7 @@ pub(crate) fn physical_destination(target: &Path, source: &Path) -> Result<PathB
 }
 
 pub(crate) fn render_target(raw: &str, ctx: &exec::Context) -> Result<PathBuf> {
-    let rendered = exec::templates::render_string(raw, ctx)
+    let rendered = exec::templates::render_path(raw, ctx, ctx.strict_paths)
         .with_context(|| format!("failed to render target template '{raw}'"))?;
     Ok(if rendered == "~" {
         absolute(&ctx.root)?

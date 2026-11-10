@@ -60,7 +60,8 @@ fn explicit_apply_renders_all_path_surfaces_with_host_data_without_applying_host
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .arg("lint")
+        .args(["lint", "--root"])
+        .arg(target.path())
         .assert()
         .success();
     let mut command = Command::cargo_bin("over")?;

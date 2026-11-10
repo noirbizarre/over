@@ -551,6 +551,10 @@ preserves inherited decisions. Child rule lists append to the cascade; even
 `rules: []` does not erase ancestor rules. `uses` composes independently
 configured overlays rather than adding configuration scopes.
 
+[`over lint`](usage/lint.md) explains overlapping same-scope rules with the final
+winner for each property. It also checks composed overlays for conflicting target
+ownership: rule ordering does not give one `uses` participant priority over another.
+
 Literal `path` values are component-aware prefixes: `foo` selects `foo` and
 `foo/bar`, never `foobar`. `.` selects the declaring root and descendants.
 Globs are unsupported for `symlink`, `checkout`, and permissions-only rules.

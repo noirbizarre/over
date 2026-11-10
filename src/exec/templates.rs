@@ -20,6 +20,15 @@ pub fn render_string(template: &str, ctx: &impl Serialize) -> Result<String> {
     Ok(env.render_str(template, Serde(ctx))?)
 }
 
+pub(crate) fn render_path(template: &str, state: &impl Serialize, strict: bool) -> Result<String> {
+    let mut env = create_env();
+    if strict {
+        // Only lint opts in: ordinary execution keeps its existing template semantics.
+        env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    }
+    Ok(env.render_str(template, Serde(state))?)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

@@ -260,7 +260,7 @@ pub fn render_symlink_target(template: &str, ctx: &Context) -> Result<String> {
         machine: &ctx.machine,
     };
 
-    crate::exec::templates::render_string(template, &state)
+    crate::exec::templates::render_path(template, &state, ctx.strict_paths)
         .with_context(|| format!("failed to render symlink target template '{}'", template))
 }
 

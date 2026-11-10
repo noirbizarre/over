@@ -14,7 +14,7 @@ actionable.
 
 ## Decision
 
-`lint_repository` never touches a target directory and never calls `Overlay
+`lint_repository` never modifies a target directory and never calls `Overlay
 ::apply`. It re-implements overlay discovery so it can continue past a
 parse failure — reporting, for instance, "overlay X `uses` overlay Y, which
 failed to parse" instead of silently treating Y as nonexistent. Before
@@ -36,3 +36,13 @@ a new field added without updating the constant makes `lint` misreport it
 as an unknown-key typo. `discover_overlay_dirs` also duplicates `Repository
 ::overlays()`'s glob-walk logic rather than sharing it, which can drift if
 one changes without the other.
+
+## Amendment: resolved ownership (#194)
+
+After tolerant static checks, lint resolves each selected composition through the
+shared desired-state builder. It reads relevant destination metadata to preserve
+runtime path-routing and materialization semantics, but never applies, repairs,
+executes hooks, writes Git objects, or persists state. The current machine and home
+directory provide the default context; `--root` selects another target root.
+Resolution failures become diagnostics and do not stop unrelated compositions.
+Ownership errors follow ADR-008's flat union rather than traversal-order precedence.

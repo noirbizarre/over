@@ -55,6 +55,10 @@ fn detect_username() -> String {
 
 #[derive(Debug, Default, Serialize)]
 pub struct Context {
+    /// Lint must not mistake an unavailable destination variable for an empty path.
+    #[serde(skip)]
+    pub strict_paths: bool,
+
     /// Run without applying changes
     pub dry_run: bool,
 
@@ -206,6 +210,7 @@ impl ContextBuilder {
 
     pub fn build(self) -> Arc<Context> {
         Arc::new(Context {
+            strict_paths: false,
             dry_run: self.dry_run,
             debug: self.debug,
             verbose: self.verbose,
@@ -224,6 +229,13 @@ impl ContextBuilder {
 }
 
 impl Context {
+    pub(crate) fn with_strict_paths(&self) -> Arc<Self> {
+        Arc::new(Self {
+            strict_paths: true,
+            ..self.clone_for_overlay_update()
+        })
+    }
+
     /// Prepare metadata before rendering paths; dependency context copies keep
     /// this snapshot so they cannot discard the command target's overrides.
     pub fn resolve_data(&self) -> anyhow::Result<Ctx> {
@@ -240,6 +252,7 @@ impl Context {
 
     pub fn with_overlay(&self, overlay: Overlay) -> Arc<Self> {
         Arc::new(Self {
+            strict_paths: self.strict_paths,
             dry_run: self.dry_run,
             debug: self.debug,
             verbose: self.verbose,
@@ -258,6 +271,7 @@ impl Context {
 
     pub fn with_progress(&self, progress: ProgressBar) -> Arc<Self> {
         Arc::new(Self {
+            strict_paths: self.strict_paths,
             dry_run: self.dry_run,
             debug: self.debug,
             verbose: self.verbose,
@@ -276,6 +290,7 @@ impl Context {
 
     pub fn with_multiprogress(&self, progress: MultiProgress) -> Arc<Self> {
         Arc::new(Self {
+            strict_paths: self.strict_paths,
             dry_run: self.dry_run,
             debug: self.debug,
             verbose: self.verbose,
@@ -311,6 +326,7 @@ impl Context {
 
     fn clone_for_overlay_update(&self) -> Self {
         Self {
+            strict_paths: self.strict_paths,
             dry_run: self.dry_run,
             debug: self.debug,
             verbose: self.verbose,

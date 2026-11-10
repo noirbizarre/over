@@ -156,6 +156,62 @@ fn filesystem_snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u
 }
 
 #[rstest::rstest]
+#[case(false, false)]
+#[case(false, true)]
+#[case(true, false)]
+#[case(true, true)]
+fn ownership_lint_never_writes_sources_git_objects_targets_or_state(
+    #[case] applied: bool,
+    #[case] conflicting: bool,
+) {
+    let fixture = Fixture::new(true);
+    if applied {
+        fixture.apply();
+        // Removing existing locks detects accidental state-reader lock creation.
+        for entry in walkdir::WalkDir::new(fixture.temp.path().join("state")) {
+            let entry = entry.unwrap();
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "lock")
+            {
+                fs::remove_file(entry.path()).unwrap();
+            }
+        }
+    }
+    if conflicting {
+        fs::create_dir_all(fixture.source.join("dependency")).unwrap();
+        fs::write(
+            fixture.source.join("dependency/over.yaml"),
+            "target: ~/Workspace/Client",
+        )
+        .unwrap();
+        fs::write(fixture.source.join("dependency/foreign"), "competing owner").unwrap();
+        let descriptor = fixture.source.join("workspace/client/over.yaml");
+        let configuration = fs::read_to_string(&descriptor).unwrap();
+        fs::write(descriptor, format!("uses: [dependency]\n{configuration}")).unwrap();
+    }
+    let before = filesystem_snapshot(fixture.temp.path());
+    let mut command = fixture.command("lint");
+    command
+        .args(["workspace/client", "--root"])
+        .arg(&fixture.home);
+    if conflicting {
+        command
+            .assert()
+            .code(1)
+            .stdout(contains("conflicting target ownership"))
+            .stdout(contains("dependency"));
+    } else {
+        command
+            .assert()
+            .success()
+            .stdout(contains("No issues found"));
+    }
+    assert_eq!(filesystem_snapshot(fixture.temp.path()), before);
+}
+
+#[rstest::rstest]
 #[case(false)]
 #[case(true)]
 fn status_and_show_do_not_write_filtered_git_objects_targets_or_state(#[case] applied: bool) {
@@ -240,7 +296,12 @@ fn mapped_symlinks_apply_and_reverse_add_without_base_prefix_copies() {
         fs::read_to_string(fixture.source.join("workspace/client/etc/other.yaml")).unwrap(),
         "key: value\n"
     );
-    fixture.command("lint").assert().success();
+    fixture
+        .command("lint")
+        .arg("--root")
+        .arg(&fixture.home)
+        .assert()
+        .success();
 }
 
 #[test]
