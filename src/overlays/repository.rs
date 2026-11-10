@@ -207,7 +207,9 @@ impl Repository {
         let Some(raw) = self.root_config()?.default_overlay else {
             return Ok(None);
         };
-        let name = exec::templates::render_path(&raw, ctx, ctx.strict_paths)
+        let base = ctx.without_target();
+        let state = exec::templates::TemplateContext::new(&base)?;
+        let name = exec::templates::render_path(&raw, &state)
             .context("failed to render default_overlay template")?;
         let overlay = self
             .get(&name)

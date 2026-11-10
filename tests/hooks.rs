@@ -732,6 +732,7 @@ fn init_hooks_template_machine_and_repository_paths_without_child_discovery() {
         "over.yaml",
         json!({"hooks": {"post-init": [{
             "command": "printf '%s' '{{ machine.os }}' >> \"$HOOK_TRACE\"",
+            "when": "paths.target is not defined and paths.home is defined",
             "cwd": "{{ paths.over }}", "env": {"BOOTSTRAP": "{{ machine.hostname }}"}
         }]}}),
     );
@@ -739,4 +740,82 @@ fn init_hooks_template_machine_and_repository_paths_without_child_discovery() {
     fixture.commit();
     fixture.command().arg("init").assert().success();
     assert_eq!(fixture.trace(), std::env::consts::OS);
+}
+
+#[test]
+fn every_hook_field_and_sidecar_uses_the_current_overlays_shared_paths() {
+    let fixture = Fixture::new();
+    let home = fixture._temp.path().join("actual home ü");
+    fs::create_dir(&home).unwrap();
+    // Shell cwd may use /private/var on macOS while template paths retain /var.
+    fixture.config("over.yaml", json!({
+        "target": "~/{{ overlay.name }}",
+        "hooks": {"post-apply": [{
+            "command": "test '{{ paths.target }}' = \"$OVER_OVERLAY_TARGET\" && test \"$PWD\" -ef \"$DEST\" && test \"$USER_HOME\" = \"$HOME\" && test '{{ paths.over }}' = \"$OVER_REPOSITORY_ROOT\" && echo root >> \"$HOOK_TRACE\"",
+            "when": "paths.target == env.TEST_TARGET + '/selected' and paths.home == env.HOME",
+            "env": {"DEST": "{{ paths.target }}", "USER_HOME": "{{ paths.home }}"},
+            "cwd": "{{ paths.target }}"
+        }]}
+    }));
+    let hook = json!({
+        "command": "test '{{ paths.target }}' = \"$OVER_OVERLAY_TARGET\" && test \"$PWD\" -ef \"$DEST\" && test \"$USER_HOME\" = \"$HOME\" && test '{{ paths.over }}' = \"$OVER_REPOSITORY_ROOT\" && printf '%s\\n' '{{ overlay.name }}' >> \"$HOOK_TRACE\"",
+        "when": "paths.target == env.TEST_TARGET + '/' + overlay.name and paths.home == env.HOME",
+        "env": {"DEST": "{{ paths.target }}", "USER_HOME": "{{ paths.home }}"},
+        "cwd": "{{ paths.target }}"
+    });
+    fixture.config(
+        "selected/over.yaml",
+        json!({"uses": ["dependency"], "hooks": {"post-apply": [hook.clone()]}}),
+    );
+    fixture.config(
+        "dependency/over.yaml",
+        json!({"hooks": {"post-apply": [hook]}}),
+    );
+    for name in ["selected", "dependency"] {
+        fixture.write(&format!("{name}/file"), name);
+        fixture.config(
+            &format!("{name}/link.link.yaml"),
+            json!({"target": "{{ paths.target }}/file"}),
+        );
+        fixture.config(
+            &format!("{name}/block.partial.yaml"),
+            json!({"target": "{{ paths.target }}/partial", "content": "shared context"}),
+        );
+    }
+    // Absolute inputs must produce identical paths from an unrelated caller cwd.
+    fixture
+        .apply("selected")
+        .env("HOME", &home)
+        .current_dir(&home)
+        .assert()
+        .success();
+    assert_eq!(fixture.trace(), "root\ndependency\nselected\n");
+    for name in ["selected", "dependency"] {
+        assert_eq!(
+            fs::read_link(fixture.target.join(name).join("link")).unwrap(),
+            fixture.target.join(name).join("file")
+        );
+        assert!(
+            fs::read_to_string(fixture.target.join(name).join("partial"))
+                .unwrap()
+                .contains("shared context")
+        );
+    }
+}
+
+#[test]
+fn init_rejects_unguarded_target_access_without_running_the_hook() {
+    let fixture = Fixture::new();
+    fixture.config(
+        "over.yaml",
+        json!({"hooks": {"post-init": ["echo '{{ paths.target }}' >> \"$HOOK_TRACE\""]}}),
+    );
+    fixture.commit();
+    fixture
+        .command()
+        .arg("init")
+        .assert()
+        .code(1)
+        .stderr(contains("command:"));
+    assert!(!fixture.trace.exists());
 }

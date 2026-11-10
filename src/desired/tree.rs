@@ -195,6 +195,11 @@ fn collect_own_entries(
     target: &Path,
     sources: &mut Vec<SourceSelection>,
 ) -> Result<Vec<DesiredEntry>> {
+    // Explicit ownership wins over any overlay selected by the caller.
+    let prepared = ctx
+        .with_overlay(overlay.clone())
+        .with_target(target.to_path_buf());
+    let ctx = prepared.as_ref();
     let mut entries = Vec::new();
     let routing = overlay.resolve_mappings(ctx)?;
     let policy = Arc::new(SourcePolicy::new(&ctx.repository.root, overlay)?);

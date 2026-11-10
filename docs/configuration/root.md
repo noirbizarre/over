@@ -133,14 +133,20 @@ errors. Environment names must be nonempty and contain neither `=` nor NUL.
 
 Commands (including shorthand), every `env` value, and `cwd` use the shared
 MiniJinja environment immediately before execution. They expose machine facts,
-the inherited process `env`, resolved `overlays`, and `paths.over` (the absolute
-source repository root), alongside the execution context. Post-apply hooks can
+the inherited process `env`, resolved `overlays`, and the shared `paths` object
+(`home`, `over`, and `target`), alongside the execution context. The paths mean
+the actual user's home, the source repository root, and the current overlay's
+effective base destination, respectively. Post-apply hooks can
 read the selected overlay's resolved `data`, including inherited and host data.
 Each participant sees its own `overlay`, retaining the selected data snapshot;
 root post-apply hooks see the selected overlay.
 
 Init hooks have machine/environment/repository context but no selected overlay
 or composed data: bootstrap never discovers children before unlock hooks run.
+Their `paths.target` is undefined; use `paths.target is defined` to guard access.
+Default-overlay selection also uses shared context with target unavailable.
+See [Targets and templates](overlay.md#targets-and-templates) for path availability
+and serialization semantics.
 Missing template variables and template/function failures fail the operation.
 Native `secret()` resolution requires the pending secret resolver (#63); hooks
 will use it through the shared environment once available.

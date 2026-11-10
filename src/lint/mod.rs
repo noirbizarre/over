@@ -829,7 +829,7 @@ fn lint_dirs(
                 .overlay(overlay.clone())
                 .no_uses(!include_uses)
                 .build()
-                .with_strict_paths();
+                .with_path_inputs(ctx);
             let desired = (|| -> anyhow::Result<_> {
                 context = context.resolve_data()?;
                 let target = overlay.resolve_target(&context)?;
