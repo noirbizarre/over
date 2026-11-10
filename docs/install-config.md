@@ -135,7 +135,9 @@ only, git + optional tag/branch/rev + optional name, or path.
 
 Relative `path` values use the declaring descriptor's root, including in
 platform-specific sections. Inherited paths retain their original base and
-do not depend on the process working directory; see
+do not depend on the process working directory. Absolute paths remain
+absolute. `~` and `~/...` resolve against the execution root (including a
+custom `--root`) when the installer runs; see
 [Path Resolution](configuration.md#path-resolution).
 
 ## Python Packages

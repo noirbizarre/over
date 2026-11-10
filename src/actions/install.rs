@@ -324,7 +324,16 @@ async fn install_cargo_crates(ctx: &Ctx, crates: BTreeSet<CargoPackage>) -> Resu
             }
         } else if let Some(path) = &krate.path {
             args.push("--path".into());
-            args.push(path.clone());
+            // Descriptor-relative paths are already anchored during loading; only home-relative
+            // paths must wait for the execution root, which may differ from the process home.
+            let path = if path == "~" {
+                ctx.root.clone()
+            } else if let Some(tail) = path.strip_prefix("~/") {
+                ctx.root.join(tail)
+            } else {
+                std::path::PathBuf::from(path)
+            };
+            args.push(path.to_string_lossy().into_owned());
         } else if let Some(name) = &krate.name {
             args.push(name.clone());
             if let Some(version) = &krate.version {
@@ -1970,6 +1979,76 @@ post = 'echo "after apt"'
                 } else {
                     vec![]
                 }
+            );
+        }
+    }
+
+    #[rstest]
+    #[case("crates/tool", false)]
+    #[case("crates/tool", true)]
+    #[case("~", false)]
+    #[case("~/crates/tool", false)]
+    #[case("~/crates/tool", true)]
+    #[case("absolute", false)]
+    #[tokio::test]
+    async fn inherited_cargo_paths_keep_descriptor_origins_and_expand_tilde_at_execution(
+        #[case] path: &str,
+        #[case] platform: bool,
+    ) {
+        let (td, repo) = repo_and_root();
+        let absolute = td.path().join("absolute-crate");
+        let raw = if path == "absolute" {
+            absolute.to_str().unwrap()
+        } else {
+            path
+        };
+        let platform_key = if OS == "linux" {
+            detect_linux_distro_id().unwrap()
+        } else {
+            OS.to_string()
+        };
+        let section = if platform {
+            format!("install.{platform_key}.cargo")
+        } else {
+            "install.cargo".to_string()
+        };
+        td.child("over.toml")
+            .write_str(&format!(
+                "[{section}]\npackages = [{{path = '{}' }}]",
+                raw.replace('\\', "/")
+            ))
+            .unwrap();
+        td.child("host").create_dir_all().unwrap();
+        td.child("host/over.toml").write_str("").unwrap();
+        let overlay = repo.get("host").unwrap();
+        for root in [td.path().join("first-home"), td.path().join("second-home")] {
+            let ctx = Context::builder()
+                .root(root.clone())
+                .repository(repo.clone())
+                .dry_run(true)
+                .build();
+            let expected = match path {
+                "~" => root,
+                "~/crates/tool" => root.join("crates/tool"),
+                "absolute" => absolute.clone(),
+                _ => td.path().join(path),
+            };
+            COMMANDS.with_borrow_mut(|commands| *commands = Some(Vec::new()));
+            let packages = get_cargo_packages(&ctx, &overlay, &mut HashSet::new())
+                .await
+                .unwrap();
+            install_cargo_crates(&ctx, packages).await.unwrap();
+            let commands = COMMANDS.with_borrow_mut(|commands| commands.take().unwrap());
+            assert_eq!(
+                commands,
+                vec![(
+                    "cargo".to_string(),
+                    vec![
+                        "install".to_string(),
+                        "--path".to_string(),
+                        expected.to_string_lossy().into_owned()
+                    ]
+                )]
             );
         }
     }
