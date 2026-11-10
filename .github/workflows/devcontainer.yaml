@@ -1,0 +1,91 @@
+name: 📦 Dev Container
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+    inputs:
+      publish:
+        description: Test the matching release image and publish the Feature
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: 🚀 Publish Feature
+    needs: test
+    if: inputs.publish == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install Dev Container CLI
+        uses: jdx/mise-action@v5
+        with:
+          install_args: devcontainer-cli prek
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish Over Feature
+        # Collection metadata stays separate from the Over binary image's latest tag.
+        run: devcontainer features publish --registry ghcr.io --namespace noirbizarre/features ./devcontainer
+
+  test:
+    name: 🧪 Test Feature (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install Dev Container CLI
+        uses: jdx/mise-action@v5
+        with:
+          # prek is needed by the repository's mise postinstall hook.
+          install_args: devcontainer-cli prek
+
+      - name: Check release identity
+        if: inputs.publish == true
+        run: |
+          # Only the prepared release tag may publish immutable Feature contents.
+          test "$GITHUB_REF" = "refs/tags/$(jq -r .version devcontainer/devcontainer-feature.json)"
+
+      - name: Package Feature
+        run: devcontainer features package ./devcontainer --output-folder "$RUNNER_TEMP/over-feature"
+
+      - name: Exercise installation and lifecycle
+        env:
+          # Release PR metadata may name an image that has not been published yet.
+          # A release call instead tests its real default after Docker merges manifests.
+          OVER_FEATURE_TEST_VERSION: ${{ !inputs.publish && 'latest' || '' }}
+        run: python3 tests/features/run.py

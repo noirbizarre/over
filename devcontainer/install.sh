@@ -4,9 +4,10 @@ set -euo pipefail
 OVERLAY="${OVERLAY:-}"
 REPOSITORY="${REPOSITORY:-}"
 OVERHOME="${OVERHOME:-~/.dotfiles}"
-VERSION="${VERSION:-latest}"
+# The CLI supplies the release-specific default; silently using latest breaks pins.
+: "${VERSION:?Missing Feature version option}"
 
-SETUP_DIR=/usr/local/share/over-dotfiles
+SETUP_DIR=/usr/local/share/over
 TEMP_DIR=""
 
 cleanup() {
@@ -82,4 +83,4 @@ mkdir -p "${SETUP_DIR}"
 } > "${SETUP_DIR}/options.sh"
 chmod 0644 "${SETUP_DIR}/options.sh"
 install -m 0755 "$(dirname "${BASH_SOURCE[0]}")/setup.sh" "${SETUP_DIR}/setup.sh"
-echo "Over dotfiles Feature installed successfully."
+echo "Over Feature installed successfully."

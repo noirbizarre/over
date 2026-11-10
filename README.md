@@ -75,9 +75,21 @@ Download a binary for your platform from the
 
 ### Dev Containers
 
-Use the [Over Dotfiles Feature](features/dotfiles/README.md) to install Over and
-apply an overlay during container creation, with clone and mounted-repository
-examples.
+Use the **Over** Feature to install Over and apply an overlay during container creation:
+
+```json
+{
+    "features": {
+        "ghcr.io/noirbizarre/features/over:0": {
+            "repository": "https://github.com/user/dotfiles.git",
+            "overlay": "hosts/container"
+        }
+    }
+}
+```
+
+See the [Dev Containers guide](docs/devcontainer.md) for clone/mount examples,
+options and release pinning. The Feature installs its matching Over release by default.
 
 ## Quickstart
 

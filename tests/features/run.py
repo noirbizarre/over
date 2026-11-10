@@ -6,11 +6,16 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI = os.environ.get("DEVCONTAINER", "devcontainer")
-SETUP = "/usr/local/share/over-dotfiles/setup.sh"
+FEATURE = ROOT / "devcontainer"
+SETUP_DIR = "/usr/local/share/over"
+SETUP = f"{SETUP_DIR}/setup.sh"
+# Unreleased metadata can be exercised against an available image before tagging.
+TEST_VERSION = os.environ.get("OVER_FEATURE_TEST_VERSION", "")
 # Shell metacharacters must survive both build-time serialization and runtime use.
 CUSTOM_HOME = "/home/vscode/dot files ' $(touch /tmp/over-option-executed)"
 
@@ -38,7 +43,7 @@ def scenario(name, options, assertion=None, error=None, prepare="", mounts=None)
         workspace.chmod(0o755)
         config_dir = workspace / ".devcontainer"
         config_dir.mkdir()
-        shutil.copytree(ROOT / "features/dotfiles", config_dir / "dotfiles")
+        shutil.copytree(FEATURE, config_dir / "over")
         shutil.copytree(Path(__file__).parent / "source", config_dir / "source")
         source = config_dir / "source"
         command("git", "-C", str(source), "init", "--quiet")
@@ -56,16 +61,17 @@ def scenario(name, options, assertion=None, error=None, prepare="", mounts=None)
         # CLI 0.88.0 interpolates options into double-quoted shell assignments.
         # Escape that upstream boundary so the Feature receives the literal test
         # values; otherwise command substitutions execute before install.sh runs.
+        effective_options = {"version": TEST_VERSION, **options} if TEST_VERSION else options
         injected_options = {
             key: value.replace("\\", "\\\\").replace('"', '\\"')
             .replace("$", "\\$").replace("`", "\\`")
-            for key, value in options.items()
+            for key, value in effective_options.items()
         }
         config = {
             "build": {"dockerfile": "Dockerfile"},
             "remoteUser": "vscode",
             "updateRemoteUserUID": False,
-            "features": {"./dotfiles": injected_options},
+            "features": {"./over": injected_options},
         }
         # Feature hooks precede user hooks at the same stage; onCreate prepares
         # conflicts before the Feature's postCreateCommand can apply anything.
@@ -100,17 +106,26 @@ def scenario(name, options, assertion=None, error=None, prepare="", mounts=None)
 
 def main():
     metadata = json.loads(
-        (ROOT / "features/dotfiles/devcontainer-feature.json").read_text()
+        (FEATURE / "devcontainer-feature.json").read_text()
     )
-    assert metadata["id"] == "dotfiles"
+    package = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]
+    assert metadata["id"] == "over"
+    assert metadata["name"] == "Over"
+    assert metadata["version"] == package["version"]
+    assert metadata["options"]["version"]["default"] == package["version"]
     assert metadata["options"]["overHome"]["default"] == "~/.dotfiles"
-    assert os.access(ROOT / "features/dotfiles/install.sh", os.X_OK)
+    assert os.access(FEATURE / "install.sh", os.X_OK)
+    # Only the real default is pinned; the pre-release test override may float.
+    version_assertion = "true" if TEST_VERSION else (
+        'test "$(over --version)" = ' + shlex.quote(f"over {metadata['version']}")
+    )
     scenario(
-        "default installation is a non-root no-op", {}, """
+        "default installation is a non-root no-op", {}, f"""
         test "$(id -un)" = vscode
         over --version
-        bash -n /usr/local/share/over-dotfiles/options.sh
-        source /usr/local/share/over-dotfiles/options.sh
+        {version_assertion}
+        bash -n {SETUP_DIR}/options.sh
+        source {SETUP_DIR}/options.sh
         test "$OVERHOME" = '~/.dotfiles'
         test ! -e "$HOME/.dotfiles"
         ! command -v crane
@@ -143,15 +158,15 @@ def main():
     scenario(
         "a mounted repository and shell-sensitive home remain literal",
         {"overHome": CUSTOM_HOME, "overlay": "smoke"}, f"""
-        source /usr/local/share/over-dotfiles/options.sh
+        source {SETUP_DIR}/options.sh
         test "$OVERHOME" = {shlex.quote(CUSTOM_HOME)}
         test "$(cat "$HOME/feature-target/file")" = 'feature content'
         test "$(readlink "$HOME/feature-target/file")" = "$OVERHOME/smoke/file"
         test ! -e /tmp/over-option-executed
         {SETUP}
     """,
-        prepare="""
-        source /usr/local/share/over-dotfiles/options.sh
+        prepare=f"""
+        source {SETUP_DIR}/options.sh
         mkdir -p "$(dirname "$OVERHOME")"
         cp -R /opt/dotfiles "$OVERHOME"
     """,

@@ -114,13 +114,22 @@ Releases are run by [gh-ship](https://github.com/noirbizarre/gh-ship).
 
 1. A push to `main` triggers 🚢 Ship, which runs `gh ship run` and selects preparation.
 2. `prepare` dispatches 🚀 Prepare Release, which asks git-cliff for the next
-   version, writes `CHANGELOG.md`, bumps `Cargo.toml`, commits, and uploads a
+   version, writes `CHANGELOG.md`, updates Cargo and the Dev Container Feature's
+   version and default binary version together, commits, and uploads a
    `ship.release.json` artifact describing what would ship.
 3. gh-ship opens (or updates) the Release PR from `release/next`. Review it.
 4. Merging it triggers 🚢 Ship again, where `gh ship run` selects publication: it tags the
    merge commit, creates a draft release, dispatches 📦 Publish Release to
    attach the binaries, then makes the
    release public.
+
+The Docker workflow publishes the release's multi-architecture binary image
+before calling the Dev Container Feature workflow. That workflow tests the
+matching binary on amd64 and arm64 before publishing
+`ghcr.io/noirbizarre/features/over`. PR/main Feature tests use an available image
+override so release-preparation metadata can be tested before its image exists.
+See [feature contributor instructions](devcontainer/README.md) for local testing
+and the new GHCR packages' visibility/access requirements.
 
 Nothing to release is the normal case for step 1, and costs one workflow run
 reporting `changed: false`.
@@ -174,6 +183,7 @@ cargo-binstall available, mise downloads its release archive rather than
 compiling the libgit2 dependency from source.
 
 Files carrying template-owned content — `mise.toml`, `prek.toml`, `Cargo.toml` —
-end with a `# --- project-specific ---` marker. Add below it; Git's 3-way merge
+end with a `# --- project-specific ---` marker. Add below it, or put global mise
+tools between the begin/end project-specific tools markers. Git's 3-way merge
 then preserves your additions across updates. A fix that belongs to every
 project belongs in the template, not here.

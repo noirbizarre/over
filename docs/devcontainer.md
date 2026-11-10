@@ -1,4 +1,4 @@
-# Over Dotfiles Dev Container Feature
+# Dev Containers
 
 Install Over and apply a selected dotfiles overlay as the Dev Container lifecycle
 user. Supported platforms are Linux amd64 and arm64 on Debian 12+ and Ubuntu
@@ -13,7 +13,7 @@ Add this to `.devcontainer/devcontainer.json`, replacing the source and overlay:
     "image": "mcr.microsoft.com/devcontainers/base:bookworm",
     "remoteUser": "vscode",
     "features": {
-        "ghcr.io/noirbizarre/over/features/dotfiles:1": {
+        "ghcr.io/noirbizarre/features/over:0": {
             "repository": "https://github.com/user/dotfiles.git",
             "overlay": "hosts/container"
         }
@@ -45,7 +45,7 @@ dotfiles at an explicit container path:
         "source=${localEnv:HOME}/.dotfiles,target=/home/vscode/.dotfiles,type=bind"
     ],
     "features": {
-        "ghcr.io/noirbizarre/over/features/dotfiles:1": {
+        "ghcr.io/noirbizarre/features/over:0": {
             "overlay": "hosts/container"
         }
     }
@@ -63,11 +63,16 @@ selects the **source**, not the target.
 | `overlay` | `""` | Overlay to apply; empty skips application, including repository-default overlays. |
 | `repository` | `""` | Git source passed to `over init`; empty uses an existing/mounted repository. |
 | `overHome` | `"~/.dotfiles"` | Source checkout; `~` and `~/` resolve against the lifecycle user's home. |
-| `version` | `"latest"` | Tag of the Over image at `ghcr.io/noirbizarre/over`. |
+| `version` | Matching feature release | Override the tag of the Over image at `ghcr.io/noirbizarre/over`. |
 
-The `:1` in the Feature reference selects the **Feature version**. The `version`
-option independently selects the **Over binary image version**. Pin both to
-published versions when you need reproducible builds.
+The Feature version matches the Over release and installs that binary version
+by default. The `:0` reference tracks Over's current major version; pin the full
+version of a published Feature release for reproducibility. Use `:1` once Over reaches
+1.x. Floating major/minor references advance with releases.
+
+Set `"version": "latest"` to explicitly follow the latest binary image, or choose
+another published image tag. An override intentionally decouples the binary from
+the Feature release.
 
 The Feature treats received option values literally except the documented
 leading-tilde expansion. The current Dev Container CLI writes options into
@@ -86,12 +91,12 @@ foreign symlink fails setup and is not forcibly replaced. Inspect the CLI
 diagnostic, reconcile or move the conflicting content, then retry:
 
 ```sh
-/usr/local/share/over-dotfiles/setup.sh
+/usr/local/share/over/setup.sh
 ```
 
 For an intentional replacement, run the CLI yourself after reviewing its
 effects, for example `over apply hosts/container --dry-run`, followed by an
-explicitly authorized application. See [destructive operations and recovery](../../docs/usage/safety.md)
+explicitly authorized application. See [destructive operations and recovery](usage/safety.md)
 for the meaning of `--force` and the limits of recovery. Apply is not a
 transaction: successful earlier steps may remain after a later conflict.
 
@@ -99,7 +104,7 @@ Repeating setup reuses the existing checkout and already-applied files. It does
 not implicitly pull updates, reset local changes or replace an existing origin.
 Use normal Git/Over commands to update a checkout deliberately. Initialization
 and application retain the CLI's repository hook behavior; hooks must themselves
-be safe to repeat. See [`over init`](../../docs/usage/init.md).
+be safe to repeat. See [`over init`](usage/init.md).
 
 Missing repositories, unknown overlays, failed initialization and unavailable
 binary image versions fail with diagnostic context. Installation failures occur
@@ -107,34 +112,14 @@ during the image build; setup failures occur during `postCreateCommand`. The
 Feature does not automatically reapply on every start or attach; rerun the
 setup script when needed. Rebuilding reruns the post-create lifecycle.
 
-## Test and publish
+## Migrate an existing configuration
 
-With mise, Docker, Git, Python 3, Node.js and network access available:
+Replace `ghcr.io/noirbizarre/over/features/dotfiles:1` (or the older
+`ghcr.io/noirbizarre/over/dotfiles:1`) with `ghcr.io/noirbizarre/features/over:0`.
+The old Feature's `:1` was an independent version; the new tags follow Over's
+release numbering. Existing registry references are not redirected. Rebuild the
+container after changing the reference; the retry script now lives at
+`/usr/local/share/over/setup.sh`.
 
-```sh
-mise install devcontainer-cli
-mise run test:features
-```
-
-Run these commands from the repository root. The CLI follows `latest` in
-`mise.toml`, with its exact version recorded in `mise.lock`. Set `DEVCONTAINER` to an
-absolute CLI executable path if needed. The suite stages specification-compliant
-local Features and runs real `devcontainer up`/`exec` commands against minimal
-Debian images, with a non-root lifecycle user and deterministic Git fixtures.
-It tests actual published binary downloads, clone/mount behavior, repeat setup,
-literal options, conflict preservation and expected failures. Test containers,
-anonymous volumes and temporary workspaces are removed; Docker's image/build
-cache remains. CI runs the suite natively on amd64 and arm64 and gates publishing
-on both architectures passing.
-
-The standard Dev Container publisher packages only this Feature directory,
-creates collection metadata and publishes OCI Feature artifacts. Feature
-versions are independent of Over releases, and already-published exact Feature
-versions are immutable: changed contents require a new Feature version through
-the project's release process.
-
-Feature artifacts now live under `ghcr.io/noirbizarre/over/features`: update
-older references from `ghcr.io/noirbizarre/over/dotfiles:1` to
-`ghcr.io/noirbizarre/over/features/dotfiles:1`. The collection's `:latest` tag
-must be separate from the Over binary image's `ghcr.io/noirbizarre/over:latest`
-tag so publishing a Feature cannot replace the binary image with metadata.
+For contributor testing and publication details, see the
+[feature source README](https://github.com/noirbizarre/over/tree/main/devcontainer).
