@@ -949,7 +949,10 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
             // Already-converged sources need no filesystem writes, preserving
             // their metadata and avoiding failures on read-only directories.
             if !entries_match(current, new) {
-                updates.push((file, Some((read_blob(repo, entry.id)?, entry.mode))));
+                updates.push((
+                    file,
+                    Some((source_worktree_blob(repo, path, entry.id)?, entry.mode)),
+                ));
             }
         } else {
             builder.remove(path.clone());
@@ -997,6 +1000,43 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
             Err(error)
         }
     }
+}
+
+/// Native Git applies external/process smudge filters as well as EOL conversion;
+/// raw blobs belong at virtual targets, never in the source's real worktree.
+fn source_worktree_blob(repo: &Repository, path: &Path, oid: Oid) -> Result<Vec<u8>> {
+    let mut command = std::process::Command::new("git");
+    command.current_dir(repo.workdir().context("source has no working directory")?);
+    // Hooks and parent Git commands may export routing for another repository.
+    for name in [
+        "GIT_DIR",
+        "GIT_COMMON_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+    ] {
+        command.env_remove(name);
+    }
+    let output = command
+        .args(["cat-file", "--filters"])
+        .arg({
+            let mut argument = std::ffi::OsString::from("--path=");
+            argument.push(path);
+            argument
+        })
+        .arg(oid.to_string())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .context("failed to run Git smudge filters")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Git smudge filters failed for '{}' ({})",
+        path.display(),
+        output.status
+    );
+    Ok(output.stdout)
 }
 
 #[derive(Default)]

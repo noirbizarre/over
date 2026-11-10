@@ -242,6 +242,86 @@ fn full_staging_status_diff_commit_and_sync_share_clean_filters_and_ignored_mode
 }
 
 #[test]
+fn committing_filtered_targets_publishes_smudged_source_bytes() {
+    let fixture = Fixture::new();
+    let repo = configure_prefix_filter(&fixture);
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "selected\n").unwrap();
+    fixture.add();
+    fixture.commit_command().assert().success();
+    assert_native_source_is_clean(&fixture);
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"selected\n"
+    );
+    let tree = repo.head().unwrap().peel_to_tree().unwrap();
+    assert_eq!(
+        repo.find_blob(tree.get_path(Path::new("ov/file")).unwrap().id())
+            .unwrap()
+            .content(),
+        b"clean:selected\n"
+    );
+}
+
+#[test]
+fn raw_canonical_source_bytes_are_rejected_as_native_git_unstaged_edits() {
+    let fixture = Fixture::new();
+    configure_prefix_filter(&fixture);
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "selected\n").unwrap();
+    fixture.add();
+    // Raw blobs are valid at the target, but re-clean differently in a real worktree.
+    fs::write(fixture.source.join("ov/file"), "clean:original").unwrap();
+    fixture
+        .commit_command()
+        .assert()
+        .failure()
+        .stderr(contains("unstaged edits"));
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"clean:original"
+    );
+}
+
+fn configure_prefix_filter(fixture: &Fixture) -> git2::Repository {
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let mut config = repo.config().unwrap();
+    config
+        .set_str("filter.prefix.clean", "sed 's/^/clean:/'")
+        .unwrap();
+    config
+        .set_str("filter.prefix.smudge", "sed 's/^clean://'")
+        .unwrap();
+    config.set_bool("filter.prefix.required", true).unwrap();
+    fs::write(
+        fixture.source.join(".gitattributes"),
+        "ov/file filter=prefix\n",
+    )
+    .unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new(".gitattributes")).unwrap();
+    let entry = index.get_path(Path::new("ov/file"), 0).unwrap();
+    index.add_frombuffer(&entry, b"clean:original").unwrap();
+    index.write().unwrap();
+    commit_index(&repo);
+    assert_native_source_is_clean(fixture);
+    repo
+}
+
+fn assert_native_source_is_clean(fixture: &Fixture) {
+    let output = std::process::Command::new("git")
+        .current_dir(&fixture.source)
+        .args(["diff", "--exit-code", "HEAD", "--", "ov/file"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
 fn full_staging_applies_non_idempotent_clean_filters_exactly_once() {
     let fixture = Fixture::new();
     let repo = git2::Repository::open(&fixture.source).unwrap();

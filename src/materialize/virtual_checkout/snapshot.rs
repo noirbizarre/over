@@ -13,7 +13,9 @@ pub(crate) fn canonical_source_entry(
     path: &Path,
 ) -> Result<Option<(git2::Oid, i32)>> {
     // Sources must reject directory obstructions, not treat them as deletions.
-    let raw = git::source_entry(repo, path)?;
+    if git::source_entry(repo, path)?.is_none() {
+        return Ok(None);
+    }
     let head = git::base_tree(repo, None)?
         .get_path(path)
         .ok()
@@ -22,19 +24,18 @@ pub(crate) fn canonical_source_entry(
         .index()?
         .get_path(path, 0)
         .map(|entry| (entry.id, entry.mode as i32));
-    if let Some((oid, mut mode)) = raw
-        && [head, indexed]
-            .into_iter()
-            .flatten()
-            .any(|entry| entry.0 == oid)
-    {
-        if !honors_filemode(repo)? {
-            mode = head.or(indexed).map(|entry| entry.1).unwrap_or(0o100644);
-        }
-        return Ok(Some((oid, mode)));
-    }
     let root = repo.workdir().context("source has no working directory")?;
-    canonical_target_entry(repo, root, path, path, &[head, indexed])
+    let Some((content, mut mode)) = target_content(root, path)? else {
+        return Ok(None);
+    };
+    // Only targets contain materializer-written raw blobs. A real worktree must
+    // always be cleaned, or a non-idempotent filter can hide native Git edits.
+    let scratch = crate::actions::git::diff::Scratch::new(repo)?;
+    let oid = scratch.target_blob(repo, path, &content)?;
+    if !honors_filemode(repo)? {
+        mode = head.or(indexed).map(|entry| entry.1).unwrap_or(0o100644);
+    }
+    Ok(Some((oid, mode)))
 }
 
 /// Compare in Git's clean-filter domain, while accepting unchanged raw blobs
