@@ -148,8 +148,32 @@ Default-overlay selection also uses shared context with target unavailable.
 See [Targets and templates](overlay.md#targets-and-templates) for path availability
 and serialization semantics.
 Missing template variables and template/function failures fail the operation.
-Native `secret()` resolution requires the pending secret resolver (#63); hooks
-will use it through the shared environment once available.
+Hooks can resolve repository-local native secrets with `secret("github-token")`.
+An ordered fallback expression such as
+`secret("op://dev/github/token | github-token")` tries each candidate until one
+succeeds. Provider references use `scheme://payload`; external providers are not
+implemented yet, so those candidates are unavailable and allow fallback. Empty
+or malformed candidates reject the entire expression before any lookup. Missing
+secrets and unavailable providers allow fallback; native unlock, decryption,
+corruption and store errors stop it. The pipe is inside the argument string,
+not a MiniJinja filter.
+
+Native resolution uses the active source repository and shares the invocation's
+lazy Age unlock. Set `OVER_SECRET` or allow interactive prompting; apply's
+`--no-prompt` disables prompts. Hook secrets must be valid UTF-8. Secret access
+is not available in overlay destination or sidecar path templates. Prefer
+injecting secrets through `env`, for example:
+
+```yaml
+hooks:
+  post-apply:
+    - command: ./deploy --token "$TOKEN"
+      env:
+        TOKEN: "{{ secret('github-token') }}"
+```
+
+Over does not include resolved values in its own diagnostics or persist them in
+caches. Hook programs inherit stdout/stderr and are responsible for their output.
 
 `when` is a bare MiniJinja expression, without `{{ }}` delimiters. Boolean true
 or a nonempty string runs the hook; false, none, and an empty string skip it.

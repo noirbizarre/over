@@ -71,7 +71,7 @@ pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
             &hooks,
             *event,
             crate::hooks::HookContext {
-                templates: &templates,
+                templates: templates.clone(),
                 repository: &repository.root,
                 cwd: &repository.root,
                 scope: "repository root",

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
 use anyhow::{Result, bail};
@@ -193,7 +193,7 @@ impl fmt::Display for Event {
 
 /// Child context is explicit so init never needs to discover an overlay.
 pub struct HookContext<'a> {
-    pub templates: &'a crate::exec::Context,
+    pub templates: crate::exec::Ctx,
     pub repository: &'a Path,
     pub cwd: &'a Path,
     pub scope: &'a str,
@@ -232,106 +232,178 @@ pub fn nested() -> bool {
     std::env::var_os("OVER_HOOK_ACTIVE").is_some()
 }
 
+// Rendered fields may contain secrets and must never acquire a value-bearing Debug.
+struct PreparedHook {
+    script: String,
+    cwd: PathBuf,
+    overrides: BTreeMap<String, String>,
+}
+
+fn template_failure_reason(error: &minijinja::Error) -> String {
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        // Only our closed, value-free taxonomy is safe to preserve from this chain.
+        if let Some(reason) = cause.downcast_ref::<crate::secrets::ResolutionError>() {
+            return reason.to_string();
+        }
+        source = cause.source();
+    }
+    format!(
+        "template failed ({:?}); check syntax, variables, functions and secret UTF-8 encoding",
+        error.kind()
+    )
+}
+
+fn hook_failure(
+    event: Event,
+    index: usize,
+    scope: &str,
+    field: &str,
+    reason: &str,
+) -> anyhow::Error {
+    let recovery = match event {
+        Event::PostClone => {
+            "recover this hook manually in the preserved repository, then rerun init (post-init only)"
+        }
+        _ => "fix the hook and retry the operation",
+    };
+    anyhow::anyhow!(
+        "{event} hook #{} in {scope}: {field}: {reason}; completed filesystem changes are preserved; {recovery}",
+        index + 1
+    )
+}
+
+fn prepare(
+    hook: &Hook,
+    event: Event,
+    index: usize,
+    context: &HookContext<'_>,
+) -> Result<Option<PreparedHook>> {
+    // Subprocess locations and template paths share the same invocation anchor.
+    let absolute = |path: &Path| context.templates.absolute_path(path);
+    // Drop underlying errors: the UI prints entire chains, including template source.
+    let failure =
+        |field: &str, reason: &str| hook_failure(event, index, context.scope, field, reason);
+    let state = crate::exec::templates::TemplateContext::new(&context.templates)
+        .map_err(|_| failure("context", "could not resolve shared filesystem paths"))?;
+    let mut environment = crate::exec::templates::create_env();
+    use crate::secrets::{NativeProvider, SecretResolver};
+    // Construction must not inspect the store or unlock a skipped hook's secrets.
+    let repository = if context.templates.repository.root.as_os_str().is_empty() {
+        PathBuf::new()
+    } else {
+        absolute(&context.templates.repository.root)
+            .map_err(|_| failure("context", "could not resolve secret repository"))?
+    };
+    let resolver = SecretResolver::new(std::sync::Arc::new(NativeProvider::new(
+        repository,
+        context.templates.crypto.clone(),
+        !context.templates.no_prompt,
+    )));
+    crate::exec::templates::register_secrets(&mut environment, resolver);
+    let definition = match hook {
+        Hook::Command(_) => None,
+        Hook::Structured(definition) => Some(definition),
+    };
+    if let Some(expression) = definition.and_then(|value| value.when.as_deref()) {
+        let value = environment
+            .compile_expression(expression)
+            .and_then(|expression| expression.eval(minijinja::value::Serde(&state)))
+            .map_err(|error| failure("when", &template_failure_reason(&error)))?;
+        let run = match value.kind() {
+            minijinja::value::ValueKind::Bool => value.is_true(),
+            minijinja::value::ValueKind::None => false,
+            minijinja::value::ValueKind::String => !value.as_str().unwrap_or_default().is_empty(),
+            _ => return Err(failure("when", "expected a boolean, none or string result")),
+        };
+        if !run {
+            return Ok(None);
+        }
+    }
+    let render = |source: &str, field: &str| -> Result<String> {
+        let value = environment
+            .render_str(source, minijinja::value::Serde(&state))
+            .map_err(|error| failure(field, &template_failure_reason(&error)))?;
+        if value.contains('\0') {
+            return Err(failure(field, "rendered value contains a NUL byte"));
+        }
+        Ok(value)
+    };
+    let source = match hook {
+        Hook::Command(command) => command,
+        Hook::Structured(definition) => &definition.command,
+    };
+    let script = render(source, "command")?;
+    valid_command(&script).map_err(|_| failure("command", "rendered command must be nonempty"))?;
+    let mut cwd = absolute(context.cwd)?;
+    let mut overrides = BTreeMap::new();
+    if let Some(definition) = definition {
+        for (key, value) in &definition.env {
+            overrides.insert(key.clone(), render(value, "env")?);
+        }
+        if let Some(source) = &definition.cwd {
+            let rendered = render(source, "cwd")?;
+            if rendered.is_empty() {
+                return Err(failure("cwd", "rendered directory must be nonempty"));
+            }
+            cwd = absolute(context.repository)?.join(rendered);
+            let metadata = std::fs::metadata(&cwd).map_err(|error| {
+                failure(
+                    "cwd",
+                    &format!("cannot inspect directory ({:?})", error.kind()),
+                )
+            })?;
+            if !metadata.is_dir() {
+                return Err(failure("cwd", "resolved path is not a directory"));
+            }
+        }
+    }
+    Ok(Some(PreparedHook {
+        script,
+        cwd,
+        overrides,
+    }))
+}
+
 pub async fn run(hooks: &Hooks, event: Event, context: HookContext<'_>) -> Result<()> {
     if nested() || hooks.commands(event).is_empty() {
         return Ok(());
     }
-    // Subprocess locations and template paths share the same invocation anchor.
     let absolute = |path: &Path| context.templates.absolute_path(path);
     for (index, hook) in hooks.commands(event).iter().enumerate() {
-        // Drop underlying errors: the UI prints entire chains, including template source.
-        let failure = |field: &str, reason: &str| {
-            let recovery = match event {
-                Event::PostClone => {
-                    "recover this hook manually in the preserved repository, then rerun init (post-init only)"
-                }
-                _ => "fix the hook and retry the operation",
-            };
-            anyhow::anyhow!(
-                "{event} hook #{} in {}: {field}: {reason}; completed filesystem changes are preserved; {recovery}",
-                index + 1,
-                context.scope
+        let hook = hook.clone();
+        let templates = context.templates.clone();
+        let repository = context.repository.to_owned();
+        let cwd = context.cwd.to_owned();
+        let scope = context.scope.to_owned();
+        // One task per hook preserves visibility of changes made by earlier children.
+        let prepared = tokio::task::spawn_blocking(move || {
+            prepare(
+                &hook,
+                event,
+                index,
+                &HookContext {
+                    templates,
+                    repository: &repository,
+                    cwd: &cwd,
+                    scope: &scope,
+                    overlay: None,
+                    target_root: None,
+                },
             )
+        })
+        .await
+        .map_err(|_| hook_failure(event, index, context.scope, "preparation", "task failed"))??;
+        let Some(PreparedHook {
+            script,
+            cwd,
+            overrides,
+        }) = prepared
+        else {
+            continue;
         };
-        let state = crate::exec::templates::TemplateContext::new(context.templates)
-            .map_err(|_| failure("context", "could not resolve shared filesystem paths"))?;
-        let environment = crate::exec::templates::create_env();
-        let definition = match hook {
-            Hook::Command(_) => None,
-            Hook::Structured(definition) => Some(definition),
-        };
-        if let Some(expression) = definition.and_then(|value| value.when.as_deref()) {
-            let value = environment
-                .compile_expression(expression)
-                .and_then(|expression| expression.eval(minijinja::value::Serde(&state)))
-                .map_err(|error| {
-                    failure(
-                        "when",
-                        &format!(
-                            "expression failed ({:?}); check syntax, variables and functions",
-                            error.kind()
-                        ),
-                    )
-                })?;
-            let run = match value.kind() {
-                minijinja::value::ValueKind::Bool => value.is_true(),
-                minijinja::value::ValueKind::None => false,
-                minijinja::value::ValueKind::String => {
-                    !value.as_str().unwrap_or_default().is_empty()
-                }
-                _ => return Err(failure("when", "expected a boolean, none or string result")),
-            };
-            if !run {
-                continue;
-            }
-        }
-        let render = |source: &str, field: &str| -> Result<String> {
-            let value = environment
-                .render_str(source, minijinja::value::Serde(&state))
-                .map_err(|error| {
-                    failure(
-                        field,
-                        &format!(
-                            "template failed ({:?}); check syntax, variables and functions",
-                            error.kind()
-                        ),
-                    )
-                })?;
-            if value.contains('\0') {
-                return Err(failure(field, "rendered value contains a NUL byte"));
-            }
-            Ok(value)
-        };
-        let source = match hook {
-            Hook::Command(command) => command,
-            Hook::Structured(definition) => &definition.command,
-        };
-        let script = render(source, "command")?;
-        valid_command(&script)
-            .map_err(|_| failure("command", "rendered command must be nonempty"))?;
-        let mut cwd = absolute(context.cwd)?;
-        let mut overrides = BTreeMap::new();
-        if let Some(definition) = definition {
-            for (key, value) in &definition.env {
-                overrides.insert(key, render(value, "env")?);
-            }
-            if let Some(source) = &definition.cwd {
-                let rendered = render(source, "cwd")?;
-                if rendered.is_empty() {
-                    return Err(failure("cwd", "rendered directory must be nonempty"));
-                }
-                cwd = absolute(context.repository)?.join(rendered);
-                let metadata = tokio::fs::metadata(&cwd).await.map_err(|error| {
-                    failure(
-                        "cwd",
-                        &format!("cannot inspect directory ({:?})", error.kind()),
-                    )
-                })?;
-                if !metadata.is_dir() {
-                    return Err(failure("cwd", "resolved path is not a directory"));
-                }
-            }
-        }
+        let failure =
+            |field: &str, reason: &str| hook_failure(event, index, context.scope, field, reason);
         let mut command = Command::new("sh");
         command
             .arg("-c")
@@ -381,6 +453,74 @@ mod tests {
     use super::*;
     use rstest::rstest;
     use serde_json::json;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn secret_conditions_leave_the_runtime_responsive_and_share_one_unlock() {
+        use crate::secrets::{CryptoService, SecretBytes, SecretName, SecretStore};
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let directory = tempfile::TempDir::new().unwrap();
+        let writer = Arc::new(CryptoService::for_test(|_| Ok(Some("passphrase".into()))));
+        let store = SecretStore::new(directory.path(), writer).unwrap();
+        for name in ["first", "second"] {
+            store
+                .add(
+                    &SecretName::parse(name).unwrap(),
+                    &SecretBytes::new(Vec::new()),
+                    false,
+                    false,
+                )
+                .unwrap();
+        }
+        let (started, observed) = tokio::sync::oneshot::channel();
+        let started = Mutex::new(Some(started));
+        let (release, wait) = std::sync::mpsc::channel();
+        let wait = Mutex::new(wait);
+        let count = Arc::new(AtomicUsize::new(0));
+        let acquired = count.clone();
+        let crypto = Arc::new(CryptoService::for_test(move |_| {
+            acquired.fetch_add(1, Ordering::SeqCst);
+            started.lock().unwrap().take().unwrap().send(()).unwrap();
+            // A blocked executor cannot release this credential acquisition in time.
+            wait.lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(5))?;
+            Ok(Some("passphrase".into()))
+        }));
+        let observer = tokio::spawn(async move {
+            observed.await.unwrap();
+            release.send(()).unwrap();
+        });
+        let mut templates = crate::exec::Context::builder()
+            .repository(crate::overlays::Repository::new(
+                directory.path().to_owned(),
+            ))
+            .no_prompt(true)
+            .build();
+        Arc::get_mut(&mut templates).unwrap().crypto = crypto;
+        let hooks = serde_json::from_value(json!({"post-apply": [{
+            "command": "must never execute", "when": "secret('first') == '' and secret('second') == '' and false"
+        }]})).unwrap();
+        run(
+            &hooks,
+            Event::PostApply,
+            HookContext {
+                templates,
+                repository: directory.path(),
+                cwd: directory.path(),
+                scope: "test",
+                overlay: None,
+                target_root: None,
+            },
+        )
+        .await
+        .unwrap();
+        observer.await.unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
 
     #[rstest]
     #[case(json!(null))]

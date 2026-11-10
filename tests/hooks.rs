@@ -19,6 +19,15 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn add_secret(&self, name: &str, value: &[u8]) {
+        self.command()
+            .env("OVER_SECRET", "hook-passphrase-sentinel")
+            .args(["secret", "add", name])
+            .write_stdin(value)
+            .assert()
+            .success();
+    }
+
     fn new() -> Self {
         let temp = TempDir::new().unwrap();
         let source = temp.path().join("repository with spaces");
@@ -91,6 +100,169 @@ impl Fixture {
         drop(tree);
         repository
     }
+}
+
+#[test]
+fn hooks_resolve_native_secrets_in_every_field_from_the_source_repository() {
+    let fixture = Fixture::new();
+    fixture.add_secret("token", b"secret-directory");
+    fs::create_dir(fixture.source.join("secret-directory")).unwrap();
+    let hook = json!({
+        "command": "test '{{ secret('token') }}' = \"$TOKEN\" && test \"$PWD\" -ef \"$OVER_REPOSITORY_ROOT/$TOKEN\" && echo resolved >> \"$HOOK_TRACE\"",
+        "env": {"TOKEN": "{{ secret('op://vault/item/token | missing | token') }}"},
+        "cwd": "{{ paths.over }}/{{ secret('token') }}",
+        "when": "secret('token') == 'secret-directory' and paths.target is defined"
+    });
+    fixture.config(
+        "over.yaml",
+        json!({"hooks": {"post-apply": [hook.clone()]}}),
+    );
+    fixture.config(
+        "selected/over.yaml",
+        json!({"hooks": {"post-apply": [hook]}}),
+    );
+    fixture
+        .apply("selected")
+        .env("OVER_SECRET", "hook-passphrase-sentinel")
+        .current_dir(&fixture.target)
+        .assert()
+        .success();
+    assert_eq!(fixture.trace(), "resolved\nresolved\n");
+}
+
+#[test]
+fn a_secret_created_by_an_earlier_hook_is_resolved_only_when_needed() {
+    let fixture = Fixture::new();
+    fixture.config("over.yaml", json!({"hooks": {"post-apply": [
+        {"command": "exit 99", "when": "false and secret('missing')"},
+        "mkdir -p .over/secrets && cp prepared.age .over/secrets/later.age",
+        {"command": "test \"$TOKEN\" = secret-value && echo later >> \"$HOOK_TRACE\"", "env": {"TOKEN": "{{ secret('later') }}"}}
+    ]}}));
+    fixture.config("selected/over.yaml", json!({}));
+    fixture.add_secret("prepared", b"secret-value");
+    fs::rename(
+        fixture.source.join(".over/secrets/prepared.age"),
+        fixture.source.join("prepared.age"),
+    )
+    .unwrap();
+    fixture
+        .apply("selected")
+        .env("OVER_SECRET", "hook-passphrase-sentinel")
+        .assert()
+        .success();
+    assert_eq!(fixture.trace(), "later\n");
+}
+
+#[rstest]
+#[case("locked")]
+#[case("wrong-passphrase")]
+#[case("corrupt")]
+#[case("invalid-utf8")]
+#[case("malformed-chain")]
+#[case("resolved-template-error")]
+fn secret_preparation_failures_never_disclose_values_or_fall_back_after_fatal_errors(
+    #[case] failure: &str,
+) {
+    let fixture = Fixture::new();
+    fixture.add_secret(
+        "token",
+        if failure == "invalid-utf8" {
+            b"secret-value-sentinel\xff"
+        } else {
+            b"secret-value-sentinel"
+        },
+    );
+    // A valid fallback makes accidental recovery from corruption observable as success.
+    fs::copy(
+        fixture.source.join(".over/secrets/token.age"),
+        fixture.source.join(".over/secrets/fallback.age"),
+    )
+    .unwrap();
+    if failure == "corrupt" {
+        fs::write(
+            fixture.source.join(".over/secrets/token.age"),
+            b"secret-value-sentinel corrupt",
+        )
+        .unwrap();
+    }
+    let expression = if failure == "malformed-chain" {
+        "token | invalid://"
+    } else {
+        "token | fallback"
+    };
+    let template = if failure == "resolved-template-error" {
+        // Exercise CLI error handling after native plaintext enters template locals.
+        "{% set token = secret('token') %}{{ missing }}".to_owned()
+    } else {
+        format!("{{{{ secret('{expression}') }}}}")
+    };
+    fixture.config(
+        "over.yaml",
+        json!({"hooks": {"post-apply": [{
+            "command": "echo never >> \"$HOOK_TRACE\"",
+            "env": {"TOKEN": template}
+        }]}}),
+    );
+    fixture.config("selected/over.yaml", json!({}));
+    let mut command = fixture.apply("selected");
+    if failure == "locked" {
+        command.env_remove("OVER_SECRET");
+    } else {
+        command.env(
+            "OVER_SECRET",
+            if failure == "wrong-passphrase" {
+                "wrong-passphrase-sentinel"
+            } else {
+                "hook-passphrase-sentinel"
+            },
+        );
+    }
+    let output = command
+        .args(["--debug", "--verbose"])
+        .assert()
+        .failure()
+        .stderr(contains("env:"))
+        .get_output()
+        .clone();
+    if matches!(failure, "locked" | "wrong-passphrase" | "corrupt") {
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("secret candidate 1: could not decrypt native secret")
+        );
+    }
+    for bytes in [&output.stdout, &output.stderr] {
+        let text = String::from_utf8_lossy(bytes);
+        for sentinel in [
+            "secret-value-sentinel",
+            "hook-passphrase-sentinel",
+            "wrong-passphrase-sentinel",
+        ] {
+            assert!(!text.contains(sentinel), "{text}");
+        }
+    }
+    assert!(!fixture.trace.exists());
+}
+
+#[test]
+fn bootstrap_hooks_resolve_secrets_without_discovering_children() {
+    let fixture = Fixture::new();
+    fixture.add_secret("token", b"bootstrap-value");
+    fixture.config(
+        "over.yaml",
+        json!({"hooks": {"post-init": [{
+            "command": "test \"$TOKEN\" = bootstrap-value && echo bootstrap >> \"$HOOK_TRACE\"",
+            "env": {"TOKEN": "{{ secret('token') }}"}, "when": "paths.target is not defined"
+        }]}}),
+    );
+    fixture.write("locked/over.yaml", "unreadable: [");
+    fixture.commit();
+    fixture
+        .command()
+        .env("OVER_SECRET", "hook-passphrase-sentinel")
+        .arg("init")
+        .assert()
+        .success();
+    assert_eq!(fixture.trace(), "bootstrap\n");
 }
 
 #[test]

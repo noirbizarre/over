@@ -69,6 +69,31 @@ pub fn create_env<'a>() -> Environment<'a> {
     env
 }
 
+/// Secret capabilities are opt-in so destination templates cannot expose values in paths.
+pub(crate) fn register_secrets(
+    env: &mut Environment<'_>,
+    resolver: crate::secrets::SecretResolver,
+) {
+    // Debug snapshots can retain plaintext locals even when the final error is sanitized.
+    env.set_debug(false);
+    env.add_function(
+        "secret",
+        move |expression: String| -> Result<String, minijinja::Error> {
+            let value = resolver.resolve(&expression).map_err(|error| {
+                minijinja::Error::new(minijinja::ErrorKind::InvalidOperation, error.to_string())
+                    .with_source(error)
+            })?;
+            let text = std::str::from_utf8(value.expose()).map_err(|_| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    "secret is not valid UTF-8",
+                )
+            })?;
+            Ok(text.to_owned())
+        },
+    );
+}
+
 /// Render a template string against the given serializable context.
 pub fn render_string(template: &str, ctx: &impl Serialize) -> Result<String> {
     let env = create_env();
@@ -86,6 +111,36 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+
+    #[test]
+    fn ordinary_template_environments_cannot_resolve_secrets() {
+        assert!(render_path("{{ secret('token') }}", &HashMap::<String, String>::new()).is_err());
+    }
+
+    #[test]
+    fn secret_text_is_preserved_and_template_errors_do_not_capture_plaintext() {
+        use crate::secrets::{
+            ProviderError, SecretBytes, SecretProvider, SecretReference, SecretResolver,
+        };
+        use std::sync::Arc;
+
+        struct Text;
+        impl SecretProvider for Text {
+            fn resolve(&self, _: &SecretReference) -> Result<SecretBytes, ProviderError> {
+                Ok(SecretBytes::new(b"  secret-value-sentinel\n".to_vec()))
+            }
+        }
+        let mut env = create_env();
+        register_secrets(&mut env, SecretResolver::new(Arc::new(Text)));
+        assert_eq!(
+            env.render_str("{{ secret('token') }}", ()).unwrap(),
+            "  secret-value-sentinel\n"
+        );
+        let error = env
+            .render_str("{% set token = secret('token') %}{{ missing }}", ())
+            .unwrap_err();
+        assert!(!format!("{error:#?}").contains("secret-value-sentinel"));
+    }
 
     #[test]
     fn render_string_basic() {
