@@ -42,6 +42,7 @@ nav = [
     { "over completion" = "usage/completion.md" },
     { "over status" = "usage/status.md" },
     { "over diff" = "usage/diff.md" },
+    { "over restore" = "usage/restore.md" },
     { "over sync" = "usage/sync.md" },
     { "over unapply" = "usage/unapply.md" },
     { "over commit" = "usage/commit.md" },

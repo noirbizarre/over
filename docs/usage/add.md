@@ -57,6 +57,9 @@ content. Unrelated index entries are preserved. Sync a checkout that is
 behind its source before staging, and resolve conflicting source edits
 first. `--dry-run` leaves both the index and target files unchanged.
 
+Use [`over restore --staged PATH`](restore.md) to unstage a file while preserving
+target edits, or `over restore PATH` to discard its unstaged target changes.
+
 ### Interactive partial staging
 
 Use `--patch` (`-p`) to stage selected changes instead of entire files:

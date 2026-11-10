@@ -248,6 +248,18 @@ Add stages a target snapshot; commit records **only staged changes** in the sour
 repository. Further unstaged target edits stay outside that commit. Sync reconciles
 source and target locally, without fetching or pushing a remote.
 
+To discard or recover a selected file instead of committing it:
+
+```sh
+over restore --overlay workspace/client --dry-run ~/.config/client/settings.json
+over restore --overlay workspace/client ~/.config/client/settings.json
+over restore --overlay workspace/client --source HEAD~1 ~/.config/client/settings.json
+```
+
+The default discards unstaged edits using the index. Historical recovery changes
+only target content until explicitly staged. See [`over restore`](usage/restore.md)
+for unstaging, combined destinations, and destructive behavior.
+
 For whole-directory links instead, use `mode: symlink-directory` on directories
 that contain no control metadata or ignored content. See
 [Materialization](configuration/materialization.md) for all mechanisms, ordered

@@ -126,6 +126,11 @@ the source and target are separate snapshots:
    reconciles source advancement and target changes locally. Applying an existing
    checkout does not replace this workflow.
 
+Use [`over restore PATH`](../usage/restore.md) to discard selected unstaged target
+changes, `over restore --staged PATH` to unstage without changing target content,
+or `over restore --source REV PATH` to recover historical content as an unstaged
+change. Restore overwrites selected content; preview with `--dry-run` first.
+
 Virtual checkout sync performs no network I/O. Syncing a root declared Git
 repository can fetch, merge, and push; nested declared repositories are provisioned
 but not synchronized by Over. Use [`status`](../usage/status.md) and
