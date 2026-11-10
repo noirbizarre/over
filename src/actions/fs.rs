@@ -383,7 +383,9 @@ fn absorb_dir(source: &Path, target: &Path) -> Result<()> {
 
 fn validate_absorb(source: &Path, target: &Path) -> Result<()> {
     let source = crate::overlays::mapping::physical(source)?;
-    let target = target.canonicalize()?;
+    // Both paths need the same Windows prefix namespace: raw canonicalization
+    // adds a verbatim prefix that would otherwise hide an overlapping tree.
+    let target = crate::overlays::mapping::physical(target)?;
     anyhow::ensure!(
         !source.starts_with(&target) && !target.starts_with(&source),
         "cannot absorb overlapping source and target paths"
@@ -1391,6 +1393,26 @@ mod tests {
         fs::write(source.join("keep"), "private").unwrap();
         assert!(absorb_dir(&source, &target).is_err());
         assert_eq!(fs::read_to_string(source.join("keep")).unwrap(), "private");
+    }
+
+    #[cfg(windows)]
+    #[rstest::rstest]
+    fn absorb_rejects_mixed_windows_prefixes_before_modifying_the_source(
+        #[values(false, true)] verbatim_source: bool,
+    ) {
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("source");
+        let target = source.join("child");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("keep"), "private").unwrap();
+        let (source_alias, target_alias) = if verbatim_source {
+            (source.canonicalize().unwrap(), target.clone())
+        } else {
+            (source.clone(), target.canonicalize().unwrap())
+        };
+        assert!(absorb_dir(&source_alias, &target_alias).is_err());
+        assert_eq!(fs::read_to_string(source.join("keep")).unwrap(), "private");
+        assert!(target.is_dir());
     }
 
     #[test]
