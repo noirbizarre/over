@@ -60,8 +60,8 @@ materialize there right now:
   untouched and reported.
 - A directory is removed only if it's already empty (a non-recursive
   removal) — never `rm -rf`. A directory that still holds anything else
-  (unrelated user files, another overlay's content) is silently left in
-  place.
+  (unrelated user files, another overlay's content) is retained and reported
+  as such.
 - A real Git checkout (root or nested `git` entry) requires explicit disposal
   confirmation, default No, or `--discard-checkout`. This can discard local
   edits, ignored files, branches, stashes and Git metadata/history. Even clean
