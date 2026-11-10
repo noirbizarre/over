@@ -73,6 +73,12 @@ Download a binary for your platform from the
 | macOS | amd64/arm64 (Intel and Apple Silicon) | native |
 | Windows | amd64 | MSVC |
 
+### Dev Containers
+
+Use the [Over Dotfiles Feature](features/dotfiles/README.md) to install Over and
+apply an overlay during container creation, with clone and mounted-repository
+examples.
+
 ## Quickstart
 
 Follow [Getting started](https://noirbizarre.github.io/over/#getting-started)

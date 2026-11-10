@@ -241,6 +241,14 @@ git tpl diff --exit-code --stat
 # Artwork tasks belong here rather than in `default` or `check`: they rewrite
 # committed binaries, so a routine run would dirty the working tree every time.
 
+# Keep project-only tooling below the template boundary while extending [tools].
+[tools.devcontainer-cli]
+version = "latest"
+
+[tasks."test:features"]
+description = "Test Dev Container Feature installation and lifecycle (requires Docker)"
+run = "python3 tests/features/run.py"
+
 [tasks.demo]
 description = "Regenerate the README demo GIF"
 # vhs (and ttyd, which it drives to capture the terminal) are declared here
