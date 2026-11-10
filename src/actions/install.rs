@@ -101,6 +101,15 @@ where
 
 async fn run_cmd(ctx: &Ctx, program: &str, args: &[&str]) -> Result<()> {
     use tokio::process::Command;
+    #[cfg(test)]
+    tests::COMMANDS.with_borrow_mut(|commands| {
+        if let Some(commands) = commands {
+            commands.push((
+                program.to_string(),
+                args.iter().map(|arg| arg.to_string()).collect(),
+            ));
+        }
+    });
     if ctx.verbose || ctx.dry_run {
         ui::info(format!("$ {} {}", program, args.join(" "))).ok();
     }
@@ -131,53 +140,47 @@ async fn install_language_managers(
     install_cfg: &InstallConfig,
     platform_cfg: Option<&PlatformInstallConfig>,
 ) -> Result<()> {
-    // cargo
-    if let Some(cfg) = platform_cfg
+    // Manager scripts belong to the selected overlay, but packages may exist only in dependencies.
+    let cfg = platform_cfg
         .and_then(|p| p.cargo.as_ref())
-        .or(install_cfg.cargo.as_ref())
-    {
-        if let Some(pre) = &cfg.pre {
-            run_scripts(ctx, pre).await?;
-        }
-        let crates = get_cargo_packages(ctx, overlay, &mut HashSet::new()).await?;
-        if !crates.is_empty() {
-            install_cargo_crates(ctx, crates).await?;
-        }
-        if let Some(post) = &cfg.post {
-            run_scripts(ctx, post).await?;
-        }
+        .or(install_cfg.cargo.as_ref());
+    if let Some(pre) = cfg.and_then(|cfg| cfg.pre.as_ref()) {
+        run_scripts(ctx, pre).await?;
+    }
+    let crates = get_cargo_packages(ctx, overlay, &mut HashSet::new()).await?;
+    if !crates.is_empty() {
+        install_cargo_crates(ctx, crates).await?;
+    }
+    if let Some(post) = cfg.and_then(|cfg| cfg.post.as_ref()) {
+        run_scripts(ctx, post).await?;
     }
     // python
-    if let Some(cfg) = platform_cfg
+    let cfg = platform_cfg
         .and_then(|p| p.python.as_ref())
-        .or(install_cfg.python.as_ref())
-    {
-        if let Some(pre) = &cfg.pre {
-            run_scripts(ctx, pre).await?;
-        }
-        let packages = get_python_packages(ctx, overlay, &mut HashSet::new()).await?;
-        if !packages.is_empty() {
-            install_python_packages(ctx, packages).await?;
-        }
-        if let Some(post) = &cfg.post {
-            run_scripts(ctx, post).await?;
-        }
+        .or(install_cfg.python.as_ref());
+    if let Some(pre) = cfg.and_then(|cfg| cfg.pre.as_ref()) {
+        run_scripts(ctx, pre).await?;
+    }
+    let packages = get_python_packages(ctx, overlay, &mut HashSet::new()).await?;
+    if !packages.is_empty() {
+        install_python_packages(ctx, packages).await?;
+    }
+    if let Some(post) = cfg.and_then(|cfg| cfg.post.as_ref()) {
+        run_scripts(ctx, post).await?;
     }
     // node
-    if let Some(cfg) = platform_cfg
+    let cfg = platform_cfg
         .and_then(|p| p.node.as_ref())
-        .or(install_cfg.node.as_ref())
-    {
-        if let Some(pre) = &cfg.pre {
-            run_scripts(ctx, pre).await?;
-        }
-        let packages = get_node_packages(ctx, overlay, &mut HashSet::new()).await?;
-        if !packages.is_empty() {
-            install_node_packages(ctx, packages).await?;
-        }
-        if let Some(post) = &cfg.post {
-            run_scripts(ctx, post).await?;
-        }
+        .or(install_cfg.node.as_ref());
+    if let Some(pre) = cfg.and_then(|cfg| cfg.pre.as_ref()) {
+        run_scripts(ctx, pre).await?;
+    }
+    let packages = get_node_packages(ctx, overlay, &mut HashSet::new()).await?;
+    if !packages.is_empty() {
+        install_node_packages(ctx, packages).await?;
+    }
+    if let Some(post) = cfg.and_then(|cfg| cfg.post.as_ref()) {
+        run_scripts(ctx, post).await?;
     }
     Ok(())
 }
@@ -444,9 +447,8 @@ pub async fn install(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
 }
 
 async fn install_windows(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
-    let Some(install_cfg) = overlay.install.as_ref() else {
-        return Ok(());
-    };
+    let empty = InstallConfig::default();
+    let install_cfg = overlay.install.as_ref().unwrap_or(&empty);
     let platform_cfg = install_cfg.platforms.get("windows");
 
     if let Some(pre) = &install_cfg.pre {
@@ -533,9 +535,8 @@ fn decide_linux_managers(distro: &str, install_cfg: &InstallConfig) -> Vec<Syste
 
 async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     let distro = detect_linux_distro_id().unwrap_or_else(|| "linux".to_string());
-    let Some(install_cfg) = overlay.install.as_ref() else {
-        return Ok(());
-    };
+    let empty = InstallConfig::default();
+    let install_cfg = overlay.install.as_ref().unwrap_or(&empty);
     let platform_cfg = install_cfg.platforms.get(&distro);
 
     if let Some(pre) = &install_cfg.pre {
@@ -546,7 +547,7 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     }
 
     // System managers first
-    for mgr in decide_linux_managers(distro.as_str(), install_cfg) {
+    for mgr in collect_linux_managers(ctx, overlay, &distro, &mut HashSet::new())? {
         match mgr {
             SystemManager::Archlinux => {
                 if let Some(cfg) = platform_cfg
@@ -625,10 +626,42 @@ async fn install_linux(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
     Ok(())
 }
 
+fn collect_linux_managers(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    distro: &str,
+    visited: &mut HashSet<String>,
+) -> Result<Vec<SystemManager>> {
+    if !visited.insert(overlay.name.clone()) {
+        return Ok(Vec::new());
+    }
+    let mut managers = overlay
+        .install
+        .as_ref()
+        .map(|config| decide_linux_managers(distro, config))
+        .unwrap_or_default();
+    if !ctx.no_uses
+        && let Some(uses) = &overlay.uses
+    {
+        for name in uses {
+            let used = ctx
+                .repository
+                .get(name)
+                .with_context(|| format!("used overlay '{name}' not found"))?;
+            for manager in collect_linux_managers(ctx, &used, distro, visited)? {
+                // Keep each descriptor's precedence decision, but execute shared managers only once.
+                if !managers.contains(&manager) {
+                    managers.push(manager);
+                }
+            }
+        }
+    }
+    Ok(managers)
+}
+
 async fn install_macos(ctx: &Ctx, overlay: &Overlay) -> Result<()> {
-    let Some(install_cfg) = overlay.install.as_ref() else {
-        return Ok(());
-    };
+    let empty = InstallConfig::default();
+    let install_cfg = overlay.install.as_ref().unwrap_or(&empty);
     let platform_cfg = install_cfg.platforms.get("macos");
 
     if let Some(pre) = &install_cfg.pre {
@@ -1415,7 +1448,7 @@ pub struct PlatformInstallConfig {
     pub post: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct InstallConfig {
     #[serde(default, deserialize_with = "option_string_or_vec")]
     pub pre: Option<Vec<String>>,
@@ -1439,6 +1472,14 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    type RecordedCommand = (String, Vec<String>);
+
+    // Current-thread Tokio tests can inspect the actual dry-run dispatch without changing PATH
+    // or invoking package managers, and other parallel tests keep independent recordings.
+    thread_local! {
+        pub(super) static COMMANDS: std::cell::RefCell<Option<Vec<RecordedCommand>>> = const { std::cell::RefCell::new(None) };
+    }
 
     #[derive(Debug, Deserialize)]
     pub struct Data {
@@ -1857,6 +1898,80 @@ post = 'echo "after apt"'
             builder = builder.overlay(o);
         }
         builder.build()
+    }
+
+    #[rstest]
+    #[case(false, false)]
+    #[case(true, false)]
+    #[case(false, true)]
+    #[tokio::test]
+    async fn a_composition_only_host_dispatches_dependency_installers_once(
+        #[case] no_uses: bool,
+        #[case] host_scripts: bool,
+    ) {
+        let (td, repo) = repo_and_root();
+        for (name, descriptor) in [
+            ("host", "uses = ['left', 'right']"),
+            ("left", "uses = ['shared']"),
+            ("right", "uses = ['shared']"),
+            (
+                "shared",
+                "[install]\napt = ['dependency-package']\ncargo = ['dependency-crate']\npre = 'dependency-script-must-not-run'",
+            ),
+        ] {
+            let directory = td.child(name);
+            directory.create_dir_all().unwrap();
+            directory.child("over.toml").write_str(descriptor).unwrap();
+        }
+        if host_scripts {
+            td.child("host/over.toml").write_str("uses = ['left', 'right']\n[install]\npre = 'host-pre'\npost = 'host-post'\n[install.cargo]\npackages = []\npre = 'cargo-pre'\npost = 'cargo-post'").unwrap();
+        }
+        let overlay = repo.get("host").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().to_path_buf())
+            .repository(repo)
+            .dry_run(true)
+            .no_uses(no_uses)
+            .build();
+        assert_eq!(
+            collect_linux_managers(&ctx, &overlay, "debian", &mut HashSet::new()).unwrap(),
+            if no_uses {
+                vec![]
+            } else {
+                vec![SystemManager::Apt]
+            }
+        );
+        COMMANDS.with_borrow_mut(|commands| *commands = Some(Vec::new()));
+        install(&ctx, &overlay).await.unwrap();
+        let commands = COMMANDS.with_borrow_mut(|commands| commands.take().unwrap());
+        if no_uses {
+            assert!(commands.is_empty());
+        } else {
+            // Cargo is available wherever this Rust test runs; no optional manager is required.
+            assert_eq!(
+                commands
+                    .iter()
+                    .filter(|(program, _)| program == "cargo")
+                    .collect::<Vec<_>>(),
+                vec![&(
+                    "cargo".to_string(),
+                    vec!["install".to_string(), "dependency-crate".to_string()]
+                )]
+            );
+            let scripts: Vec<_> = commands
+                .iter()
+                .filter(|(program, _)| program == "sh")
+                .map(|(_, args)| args[1].as_str())
+                .collect();
+            assert_eq!(
+                scripts,
+                if host_scripts {
+                    vec!["host-pre", "cargo-pre", "cargo-post", "host-post"]
+                } else {
+                    vec![]
+                }
+            );
+        }
     }
 
     #[rstest]

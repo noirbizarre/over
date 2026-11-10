@@ -206,5 +206,12 @@ Platform-specific overrides use the `windows` key inside `install`.
 ## Composition via Uses
 
 Packages from overlays referenced in `uses` are merged (set union) to avoid
-duplicates across overlays. See
+duplicates across overlays. Managers are discovered across that dependency
+closure, so a composition-only overlay does not need its own `install`
+section. Linux manager precedence is evaluated for each participating
+descriptor; shared managers run once. `--no-uses` installs only the selected
+overlay's packages.
+
+Only the selected overlay's scripts run, in the order above; dependency
+scripts are not inherited through `uses`. See
 [ADR-008](adr/008-uses-composition-is-a-flat-union.md).
