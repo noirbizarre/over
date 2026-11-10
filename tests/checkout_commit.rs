@@ -115,6 +115,110 @@ fn commit_index(repo: &git2::Repository) {
 }
 
 #[test]
+fn full_staging_status_diff_commit_and_sync_share_clean_filters_and_ignored_modes() {
+    let fixture = Fixture::new();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    repo.config()
+        .unwrap()
+        .set_bool("core.filemode", false)
+        .unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("filter.upper.clean", "tr a-z A-Z")
+        .unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("filter.upper.smudge", "tr A-Z a-z")
+        .unwrap();
+    fs::write(
+        fixture.source.join(".gitattributes"),
+        "ov/file text eol=crlf filter=upper\n",
+    )
+    .unwrap();
+    fs::write(fixture.source.join("ov/file"), "original\r\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new(".gitattributes")).unwrap();
+    let entry = index.get_path(Path::new("ov/file"), 0).unwrap();
+    index.add_frombuffer(&entry, b"ORIGINAL\n").unwrap();
+    index.write().unwrap();
+    commit_index(&repo);
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "original\r\n").unwrap();
+    fs::set_permissions(
+        fixture.source.join("ov/file"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fs::set_permissions(
+        fixture.target.join("file"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fixture
+        .command("status")
+        .args(["ov", "--verbose", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("applied"));
+    fixture
+        .command("diff")
+        .args(["ov", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("diff --git").not());
+    fs::write(fixture.target.join("file"), "selected\r\n").unwrap();
+    fixture.add();
+    let indexed = repo
+        .index()
+        .unwrap()
+        .get_path(Path::new("ov/file"), 0)
+        .unwrap();
+    assert_eq!(repo.find_blob(indexed.id).unwrap().content(), b"SELECTED\n");
+    assert_eq!(indexed.mode, 0o100644);
+    fixture
+        .command("diff")
+        .args(["ov", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("diff --git").not());
+    fixture.commit_command().assert().success();
+    fixture
+        .command("status")
+        .args(["ov", "--verbose", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("applied"));
+    let entry = repo
+        .index()
+        .unwrap()
+        .get_path(Path::new("ov/file"), 0)
+        .unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_frombuffer(&entry, b"UPSTREAM\n").unwrap();
+    index.write().unwrap();
+    fs::write(fixture.source.join("ov/file"), "upstream\r\n").unwrap();
+    commit_index(&repo);
+    fixture
+        .command("sync")
+        .args(["ov", "--no-prompt", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("fast-forwarded"));
+    fixture
+        .command("status")
+        .args(["ov", "--verbose", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("applied"));
+}
+
+#[test]
 fn clean_symlinks_and_gitlinks_do_not_enter_checkout_views_or_regular_file_commits() {
     let fixture = Fixture::new();
     fixture.apply();

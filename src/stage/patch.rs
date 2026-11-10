@@ -14,7 +14,7 @@ use crate::desired::{DesiredEntry, DesiredTree, Provenance};
 use crate::exec::Ctx;
 use crate::materialize::virtual_checkout::git;
 use crate::materialize::virtual_checkout::snapshot::{
-    canonical_source_entry, honors_filemode, target_content,
+    canonical_entry, canonical_source_entry, target_content,
 };
 use crate::materialize::virtual_checkout::state;
 use crate::overlays::Overlay;
@@ -376,7 +376,6 @@ fn prepare_entry(
             candidates.insert(relative.to_path_buf());
         }
     }
-    let filemode = honors_filemode(repo)?;
     for relative in candidates {
         let target = entry.target.join(&relative);
         if !scope.owns_source(&relative)
@@ -408,12 +407,10 @@ fn prepare_entry(
         if let Some(old) = old {
             prepared.before.insert(path.clone(), old);
         }
-        if let Some((content, mut mode)) = target_content(&entry.target, &relative)? {
-            if !filemode {
-                mode = old.map(|(_, mode)| mode).unwrap_or(0o100644);
-            }
-            let oid = prepared.scratch.target_blob(repo, &path, &content)?;
-            prepared.after.insert(path, (oid, mode));
+        if let Some((content, mode)) = target_content(&entry.target, &relative)? {
+            let canonical =
+                canonical_entry(repo, &prepared.scratch, &path, &content, mode, &[old])?;
+            prepared.after.insert(path, canonical);
         }
     }
     Ok(())

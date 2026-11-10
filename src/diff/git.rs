@@ -9,7 +9,7 @@ use git2::{IndexEntryExtendedFlag, Oid, Repository};
 use crate::actions::git::diff::{Comparison, Scratch, View};
 use crate::actions::symlink::{LinkType, hard_link_matches};
 use crate::desired::{CheckoutScope, DesiredEntry, DesiredTree, MaterializationIntent, Provenance};
-use crate::materialize::virtual_checkout::snapshot::{honors_filemode, target_content};
+use crate::materialize::virtual_checkout::snapshot::{canonical_entry, target_content};
 use crate::materialize::virtual_checkout::{git as vc, state};
 use crate::materialize::{Materializer, PartialFileMaterializer, SymlinkMaterializer};
 use crate::overlays::MaterializationKind;
@@ -321,7 +321,6 @@ fn virtual_comparisons(
     let (repo, managed) = vc::discover_source(source)?;
     let scope = entry.intent.checkout_scope();
     let base = vc::base_tree(&repo, Some(&record.base_oid))?;
-    let filemode = honors_filemode(&repo)?;
     let mut base_entries = vc::tracked_entries(&base)?;
     let owns = |path: &Path| -> bool {
         path.strip_prefix(&managed)
@@ -401,19 +400,18 @@ fn virtual_comparisons(
                 if !owns(&path) || !scope.owns_target(relative) {
                     continue;
                 }
-                if let Some((content, mut mode)) = target_content(&entry.target, relative)? {
+                if let Some((content, mode)) = target_content(&entry.target, relative)? {
                     vc::ensure_supported_path(&base, &index, &path)
                         .context("cannot compare unsupported virtual checkout content")?;
-                    let oid = scratch.target_blob(&repo, &path, &content)?;
-                    if !filemode {
-                        // A platform/configuration ignoring executable bits must
-                        // not invent a mode change against a tracked executable.
-                        mode = index_entries
-                            .get(&path)
-                            .map(|(_, mode)| *mode)
-                            .unwrap_or(0o100644);
-                    }
-                    right_entries.insert(path, (oid, mode));
+                    let canonical = canonical_entry(
+                        &repo,
+                        &scratch,
+                        &path,
+                        &content,
+                        mode,
+                        &[index_entries.get(&path).copied()],
+                    )?;
+                    right_entries.insert(path, canonical);
                 }
             }
         }

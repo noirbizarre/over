@@ -739,7 +739,13 @@ async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Resu
             if base == head {
                 continue;
             }
-            let local = vc_git::target_entry(&target, relative)?;
+            let local = crate::materialize::virtual_checkout::snapshot::canonical_target_entry(
+                &repo,
+                &target,
+                relative,
+                &managed_path.join(relative),
+                &[base, head],
+            )?;
             let indexed = index
                 .get_path(&managed_path.join(relative), 0)
                 .map(|entry| (entry.id, entry.mode as i32));

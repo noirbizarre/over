@@ -55,15 +55,8 @@ pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
     let base_entries = git::scoped_entries(&repo, &base_tree, &managed_path, &scope)?;
     let base_blobs = blob_ids(&base_entries);
 
-    let local_changes = git::diff_scoped_target(&entry.target, &base_blobs, &scope)?;
-    // Hash equality alone would let unapply discard a chmod-only target edit.
-    let mut local_modes_match = true;
-    for (path, expected) in &base_entries {
-        if !git::entries_match(git::target_entry(&entry.target, path)?, Some(*expected)) {
-            local_modes_match = false;
-            break;
-        }
-    }
+    let local_changes =
+        git::diff_canonical_target(&repo, &managed_path, &entry.target, &base_entries, &scope)?;
 
     let head_tree = git::base_tree(&repo, None)?;
     let head_entries = git::scoped_entries(&repo, &head_tree, &managed_path, &scope)?;
@@ -75,7 +68,7 @@ pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
     let staged = git::staged_changes(&repo, &managed_path, &scope)?;
     Ok(
         match (
-            local_changes.is_empty() && staged.is_empty() && local_modes_match,
+            local_changes.is_empty() && staged.is_empty(),
             source_drifted,
         ) {
             (true, false) => Status::Applied,
@@ -126,13 +119,10 @@ pub(crate) fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
     let (repo, managed_path) = git::discover_source(source)?;
 
     let base_tree = git::base_tree(&repo, Some(&record.base_oid))?;
-    let base_blobs = blob_ids(&git::scoped_entries(
-        &repo,
-        &base_tree,
-        &managed_path,
-        &scope,
-    )?);
-    let local_changes = git::diff_scoped_target(&entry.target, &base_blobs, &scope)?;
+    let base_entries = git::scoped_entries(&repo, &base_tree, &managed_path, &scope)?;
+    let base_blobs = blob_ids(&base_entries);
+    let local_changes =
+        git::diff_canonical_target(&repo, &managed_path, &entry.target, &base_entries, &scope)?;
 
     let head_tree = git::base_tree(&repo, None)?;
     let head_blobs = blob_ids(&git::scoped_entries(
@@ -166,13 +156,8 @@ pub(crate) fn file_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
     let scope = entry.intent.checkout_scope();
     let (repo, managed_path) = git::discover_source(source)?;
     let base_tree = git::base_tree(&repo, Some(&record.base_oid))?;
-    let base_blobs = blob_ids(&git::scoped_entries(
-        &repo,
-        &base_tree,
-        &managed_path,
-        &scope,
-    )?);
-    git::diff_scoped_target(&entry.target, &base_blobs, &scope)
+    let base_entries = git::scoped_entries(&repo, &base_tree, &managed_path, &scope)?;
+    git::diff_canonical_target(&repo, &managed_path, &entry.target, &base_entries, &scope)
 }
 
 pub(crate) fn staged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
@@ -205,10 +190,10 @@ pub(crate) fn unstaged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> 
             && !git::is_overlay_metadata(relative)
             && git::is_supported_mode(indexed.mode)
         {
-            blobs.insert(relative.to_path_buf(), indexed.id);
+            blobs.insert(relative.to_path_buf(), (indexed.id, indexed.mode as i32));
         }
     }
-    git::diff_scoped_target(&entry.target, &blobs, &scope)
+    git::diff_canonical_target(&repo, &managed, &entry.target, &blobs, &scope)
 }
 
 /// Paths that changed both locally (since `base`) and in the source

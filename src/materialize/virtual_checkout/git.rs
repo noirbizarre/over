@@ -416,6 +416,50 @@ pub(crate) fn diff_scoped_target(
     Ok(changes)
 }
 
+/// Shared status/commit/sync view: both content and executable changes use the
+/// source repository's attributes and configuration, never the host repository's.
+pub(crate) fn diff_canonical_target(
+    repo: &Repository,
+    managed: &Path,
+    target: &Path,
+    tracked: &BTreeMap<PathBuf, (Oid, i32)>,
+    scope: &CheckoutScope,
+) -> Result<Vec<FileChange>> {
+    let mut paths: std::collections::BTreeSet<_> = tracked.keys().cloned().collect();
+    paths.extend(walk_owned_files(target, scope)?);
+    let scratch = crate::actions::git::diff::Scratch::new(repo)?;
+    let mut changes = Vec::new();
+    for path in paths {
+        if is_overlay_metadata(&path) {
+            continue;
+        }
+        let expected = tracked.get(&path).copied();
+        let local = match super::snapshot::target_content(target, &path)? {
+            Some((content, mode)) => Some(super::snapshot::canonical_entry(
+                repo,
+                &scratch,
+                &managed.join(&path),
+                &content,
+                mode,
+                &[expected],
+            )?),
+            None => None,
+        };
+        if !entries_match(local, expected) {
+            changes.push(FileChange {
+                path,
+                kind: match (expected, local) {
+                    (_, None) => FileChangeKind::Deleted,
+                    (None, _) => FileChangeKind::Added,
+                    _ => FileChangeKind::Modified,
+                },
+                local_oid: local.map(|entry| entry.0),
+            });
+        }
+    }
+    Ok(changes)
+}
+
 /// Number of commits reachable from `to` but not from `from` — used to
 /// report how far behind a virtual checkout's recorded `base_oid` is from
 /// the source repository's current `HEAD` (mirrors `status::git::ahead_behind`'s
@@ -736,7 +780,7 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
         let staged = index.get_path(path, 0);
         let new = staged.as_ref().map(|entry| (entry.id, entry.mode as i32));
         let file = workdir.join(path);
-        let current = source_entry(repo, path)?;
+        let current = super::snapshot::canonical_source_entry(repo, path)?;
         anyhow::ensure!(
             entries_match(current, old) || entries_match(current, new),
             "source file '{}' has unstaged edits",
