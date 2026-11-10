@@ -26,7 +26,7 @@
         "overHome": {
             "type": "string",
             "description": "Path for OVER_HOME in the container",
-            "default": "~/.over"
+            "default": "~/.dotfiles"
         },
         "version": {
             "type": "string",
