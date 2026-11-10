@@ -264,6 +264,60 @@ fn committing_filtered_targets_publishes_smudged_source_bytes() {
 }
 
 #[test]
+fn stale_checkpoints_recognize_raw_head_targets_and_sync_converges() {
+    let fixture = Fixture::new();
+    let repo = configure_prefix_filter(&fixture);
+    fixture.apply();
+    let checkpoint = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let baseline = fs::read(&checkpoint).unwrap();
+    let mut index = repo.index().unwrap();
+    let entry = index.get_path(Path::new("ov/file"), 0).unwrap();
+    index.add_frombuffer(&entry, b"clean:upstream\n").unwrap();
+    index.write().unwrap();
+    fs::write(fixture.source.join("ov/file"), "upstream\n").unwrap();
+    commit_index(&repo);
+    fixture
+        .command("sync")
+        .args(["ov", "--no-prompt", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("fast-forwarded"));
+    assert_eq!(
+        fs::read(fixture.target.join("file")).unwrap(),
+        b"clean:upstream\n"
+    );
+    // Recreate a checkpoint-write failure after target publication succeeded.
+    fs::write(&checkpoint, baseline).unwrap();
+    fixture
+        .command("status")
+        .args(["ov", "--verbose", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .failure()
+        .stdout(contains("1 diverged"))
+        .stdout(contains("⚠️ conflict:").not());
+    fixture
+        .command("sync")
+        .args(["ov", "--no-prompt", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success();
+    fixture
+        .command("status")
+        .args(["ov", "--verbose", "--root"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("applied"));
+    assert_eq!(
+        fs::read(fixture.target.join("file")).unwrap(),
+        b"clean:upstream\n"
+    );
+    assert_native_source_is_clean(&fixture);
+}
+
+#[test]
 fn raw_canonical_source_bytes_are_rejected_as_native_git_unstaged_edits() {
     let fixture = Fixture::new();
     configure_prefix_filter(&fixture);

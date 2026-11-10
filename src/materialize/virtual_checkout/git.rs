@@ -579,6 +579,10 @@ pub(crate) fn diff_canonical_target(
     let mut paths: std::collections::BTreeSet<_> = tracked.keys().cloned().collect();
     paths.extend(walk_owned_files(target, scope)?);
     let scratch = crate::actions::git::diff::Scratch::new(repo)?;
+    // Target publication can succeed before its checkpoint is persisted. Accept
+    // raw HEAD blobs too, or retrying would clean them twice and invent conflicts.
+    let head = base_tree(repo, None)?;
+    let head_entries = scoped_entries(repo, &head, managed, scope)?;
     let mut changes = Vec::new();
     for path in paths {
         if is_overlay_metadata(&path) {
@@ -592,7 +596,7 @@ pub(crate) fn diff_canonical_target(
                 &managed.join(&path),
                 &content,
                 mode,
-                &[expected],
+                &[expected, head_entries.get(&path).copied()],
             )?),
             None => None,
         };
