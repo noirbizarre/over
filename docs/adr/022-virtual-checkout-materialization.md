@@ -24,7 +24,9 @@ there — backed by the overlay's own source repository (the repository
 `over` already reads the overlay from, not a separately declared/cloned
 one). Git bookkeeping needed to track the materialized view (an
 overlay-specific base revision and managed-path association) must live
-under `$XDG_STATE_HOME/over`, reconstructible and non-authoritative.
+under `$XDG_STATE_HOME/over`, separately from target content. It is operational
+metadata, not a content backup; losing it prevents automatic re-adoption of a
+populated ordinary-file checkout.
 
 This is easy to conflate with existing concepts, so the boundary matters:
 
@@ -95,9 +97,12 @@ against a small git2 spike before implementation:
   created_at, last_commit_at}` per target path, under
   `$XDG_STATE_HOME/over/virtual_checkout.toml`. No persisted git index —
   the "index" the issue mentions is entirely ephemeral, recomputed from
-  `base_oid` + a fresh tree walk whenever needed. Losing this file only
-  loses the checkpoint (a subsequent classify would need to re-adopt from
-  the current `HEAD`); it decides nothing about safety on its own.
+  `base_oid` + a fresh tree walk whenever needed. Losing this file leaves
+  target content intact but loses the recorded base and ownership association.
+  Classification refuses populated ordinary-file targets without that
+  association; reapply alone cannot reconstruct it. See
+  [lost association metadata](../usage/status.md#lost-association-metadata)
+  for preservation and recovery limitations.
 
 **`Materializer::classify` is sync; XDG reads inside it are too.**
 Existing `classify()` implementations already do blocking I/O

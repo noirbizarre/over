@@ -1,15 +1,13 @@
-//! Persisted association for virtual checkouts (#141), mirroring
-//! `crate::sync::state`'s own contract exactly: reconstructible,
-//! non-authoritative operational metadata under `$XDG_STATE_HOME/over`.
+//! Persisted association for virtual checkouts (#141): operational metadata
+//! under `$XDG_STATE_HOME/over`, not a backup of target content.
 //!
-//! Nothing here ever decides whether a materialize/commit/sync operation
-//! is *safe* — that's always re-derived from the source repository's own
-//! git objects and the target's on-disk content (`super::git`,
-//! `crate::status::virtual_checkout`). Losing this file only loses the
-//! `base_oid` bookkeeping (an existing virtual checkout would then be
-//! re-adopted against the source repo's current `HEAD` the next time it's
-//! classified — see `VirtualCheckoutMaterializer::classify`), never
-//! corrupts or discards target content.
+//! Safety checks combine this association with source git objects and target
+//! content (`super::git`, `crate::status::virtual_checkout`). Losing it leaves
+//! target files intact but loses their recorded base and ownership scope.
+//! `VirtualCheckoutMaterializer::classify` refuses populated ordinary-file
+//! directories without an association; reapplying alone cannot recover it.
+//! Restore matching state from backup when available, preserving target files
+//! and source history before attempting recovery.
 
 use std::collections::HashMap;
 use std::path::Path;

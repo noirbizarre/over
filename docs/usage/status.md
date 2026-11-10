@@ -144,7 +144,7 @@ target:
 | `Behind` | The source repository has new commits touching the managed path; nothing local to lose — `over sync` fast-forwards it automatically. |
 | `Diverged` | Local edits and source-side changes coexist. `over sync` advances non-conflicting source paths and preserves independent local/index edits; then stage and commit the remaining edits. |
 | `Conflict` | The *same* file changed both locally and in the source repository, to different content — resolve manually, then re-run. |
-| `Missing` / `Broken` | Not materialized yet, or its recorded association is gone — run `over apply`. |
+| `Missing` / `Broken` | Target or recorded association is missing. Apply can create a missing target; see lost-association guidance below for existing files. |
 
 Actionable modified, diverged, or conflicting virtual checkouts also list specific
 added/modified/deleted files underneath their aggregate status line.
@@ -152,6 +152,22 @@ Files are labeled `(staged)` or `(unstaged)`; a file edited again after
 staging can appear in both lists. Mapped checkout units are inspected
 independently, so changes confined to a mapped sibling do not make the
 residual checkout behind.
+
+### Lost association metadata
+
+The association is stored in `$XDG_STATE_HOME/over/virtual_checkout.toml`.
+Losing it leaves target files intact, but loses the recorded base revision and
+ownership scope needed to interpret those files. A populated ordinary-file
+directory without an association is reported as a conflict during classification;
+`over apply` does not silently re-adopt it, even if its content matches source
+`HEAD`. Reapplying alone cannot reconstruct the association or its old base.
+
+Preserve the target files, source repository history, and any remaining state
+before recovery. If available, restore a matching association from a state backup
+for the same target, source and mapping scope. Without that backup, there is no
+automatic in-place recovery: recreating a projection from current source content
+does not recover its previous base or local edits. Keep an independent copy of
+existing target content for manual comparison and recovery.
 
 ## `.git/info/exclude` diagnostics
 
