@@ -57,8 +57,8 @@ separate overlay, source, scope and mode lines.
 
 The headings are 📦 **Overlay**, 🛠️ **Configuration** and ♻️ **Reconciliation**.
 Overlay names and spinners are cyan; paths and Git repository identities are blue.
-Other text uses the default foreground, with bold headings and keys and dimmed
-scope annotations. Green, yellow and red are reserved for success, warning and
+Headings and keys are bold white. Other text uses the default foreground, with
+dimmed scope annotations. Green, yellow and red are reserved for success, warning and
 error semantics. Nonzero reconciliation counts and entry
 labels share severity colors: applied is green, changes and missing entries
 yellow, and broken entries or conflicts red. Zero counts stay neutral.

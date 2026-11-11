@@ -52,10 +52,10 @@ pub fn red<D>(value: D) -> StyledObject<D> {
 
 // Semantic roles reserve foreground colors for identities and diagnostic severity.
 pub fn heading<D>(value: D) -> StyledObject<D> {
-    white_b(value)
+    style(value).white().bold()
 }
 pub fn key<D>(value: D) -> StyledObject<D> {
-    white_b(value)
+    style(value).white().bold()
 }
 pub fn path<D>(value: D) -> StyledObject<D> {
     style(value).blue()
@@ -401,7 +401,11 @@ mod tests {
         assert_eq!(white("label").force_styling(true).to_string(), "label");
         assert_eq!(
             heading("Heading").force_styling(true).to_string(),
-            "\x1b[1mHeading\x1b[0m"
+            "\x1b[37m\x1b[1mHeading\x1b[0m"
+        );
+        assert_eq!(
+            key("Key").force_styling(true).to_string(),
+            "\x1b[37m\x1b[1mKey\x1b[0m"
         );
     }
 
