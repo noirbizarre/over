@@ -1028,6 +1028,8 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
 /// Native Git applies external/process smudge filters as well as EOL conversion;
 /// raw blobs belong at virtual targets, never in the source's real worktree.
 fn source_worktree_blob(repo: &Repository, path: &Path, oid: Oid) -> Result<Vec<u8>> {
+    // Smudge filters own inherited stderr until their subprocess exits.
+    let _pause = crate::ui::progress::pause()?;
     let mut command = std::process::Command::new("git");
     command.current_dir(repo.workdir().context("source has no working directory")?);
     // Hooks and parent Git commands may export routing for another repository.

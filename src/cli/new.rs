@@ -45,6 +45,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .or_else(|| repo.preferred_format())
         .unwrap_or_default();
 
+    let pause = ui::progress::pause()?;
     // Resolve overlay path (prompt if not provided)
     let path = match &args.path {
         Some(p) => p.clone(),
@@ -64,6 +65,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             .map_err(|e| anyhow!("prompt cancelled: {}", e))?,
     };
 
+    drop(pause);
     let overlay_root = home.join(&path);
 
     // Check the overlay does not already exist
@@ -241,11 +243,13 @@ fn discover_and_prompt_absorb(
 
     let labels: Vec<&str> = items.iter().map(|(l, _, _)| l.as_str()).collect();
 
+    let pause = ui::progress::pause()?;
     let selections = MultiSelect::with_theme(theme)
         .with_prompt("Target exists — select entries to absorb")
         .items(&labels)
         .interact()
         .map_err(|e| anyhow!("prompt cancelled: {}", e))?;
+    drop(pause);
 
     for idx in selections {
         let (_, ref path, is_git) = items[idx];

@@ -32,6 +32,7 @@ pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
             params.set_origin,
             io::stdin().is_terminal() && io::stderr().is_terminal(),
             || {
+                let _pause = crate::ui::progress::pause()?;
                 let prompt = format!(
                     "Set origin from {} to {}?",
                     result.origin.as_deref().unwrap_or("<missing>"),

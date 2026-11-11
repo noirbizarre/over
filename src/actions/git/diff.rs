@@ -63,6 +63,8 @@ impl Scratch {
     }
 
     pub fn target_blob(&self, source: &Repository, path: &Path, content: &[u8]) -> Result<Oid> {
+        // Clean filters inherit stderr and can acquire credentials interactively.
+        let _pause = crate::ui::progress::pause()?;
         let mut command = std::process::Command::new("git");
         command.current_dir(source.workdir().context("source has no worktree")?);
         for (name, value) in self.environment() {

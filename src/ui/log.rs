@@ -3,8 +3,9 @@ use console::{Term, style};
 use anyhow::Result;
 
 pub fn info(msg: impl AsRef<str>) -> Result<()> {
+    let msg = msg.as_ref();
     let term = Term::stdout();
-    term.write_line(msg.as_ref())?;
+    super::progress::with_output(|| term.write_line(msg))?;
     Ok(())
 }
 
@@ -12,8 +13,9 @@ pub fn info(msg: impl AsRef<str>) -> Result<()> {
 /// [`info`], for user-facing warnings that aren't a full error chain (see
 /// [`display_error`] for that).
 pub fn warn(msg: impl AsRef<str>) -> Result<()> {
+    let msg = msg.as_ref();
     let term = Term::stderr();
-    term.write_line(msg.as_ref())?;
+    super::progress::with_output(|| term.write_line(msg))?;
     Ok(())
 }
 
@@ -37,7 +39,7 @@ pub fn init_tracing(verbose: bool, debug: bool) {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
 
     tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
+        .with_writer(super::progress::TraceWriter::default)
         .with_env_filter(filter)
         .with_target(false)
         .without_time()
@@ -52,6 +54,8 @@ pub fn init_tracing(verbose: bool, debug: bool) {
 ///   caused by: no descriptor file at path
 /// ```
 pub fn display_error(err: &anyhow::Error) {
+    // Error display is best-effort, including clearing a failed terminal's progress.
+    let _pause = super::progress::pause().ok();
     let term = Term::stderr();
     let mut chain = err.chain();
 

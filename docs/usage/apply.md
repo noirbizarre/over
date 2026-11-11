@@ -55,6 +55,12 @@ Options:
 
 ## Example
 
+On a terminal, `Applying overlay …` appears in the live progress display alongside
+provisioning and reconciliation details. Each completed overlay leaves an
+`Applied overlay …` line above progress, in dependency-first order. These lines
+remain in redirected stdout too. They describe that overlay's file application;
+later overlays or install/post-apply hooks can still fail.
+
 ```sh
 over apply hosts/laptop --dry-run
 over apply hosts/laptop

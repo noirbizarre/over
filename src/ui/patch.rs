@@ -10,6 +10,7 @@ use crate::stage::patch::Decision;
 use crate::ui::style::DialogTheme;
 
 pub(crate) fn select(unit: &Unit, dry_run: bool) -> Result<Decision> {
+    let _pause = super::progress::pause()?;
     ensure!(
         dry_run || std::io::stdin().is_terminal(),
         "over add --patch requires a terminal (use --dry-run to preview)"

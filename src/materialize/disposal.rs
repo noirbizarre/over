@@ -238,6 +238,7 @@ pub(crate) fn authorize(ctx: &Context, target: &Path, assessment: &Assessment) -
         );
     }
     authorize_with(ctx, target, assessment, |prompt| {
+        let _pause = crate::ui::progress::pause()?;
         Confirm::new()
             .with_prompt(prompt)
             .default(false)

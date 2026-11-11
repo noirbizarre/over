@@ -2202,6 +2202,68 @@ fn add_symlink_to_overlay_dry_run() -> TestResult {
 
 // ── apply integration tests (install flag, no_prompt, no_uses) ────────────
 
+#[rstest]
+#[case::apply(false)]
+#[case::preview(true)]
+fn captured_apply_keeps_dependency_completions_without_ephemeral_progress(
+    #[case] dry_run: bool,
+) -> TestResult {
+    let temp = TempDir::new()?;
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&target)?;
+    for (name, config) in [
+        ("base", ""),
+        ("left", "uses = ['base']"),
+        ("right", "uses = ['base']"),
+        ("selected", "uses = ['left', 'right']"),
+    ] {
+        fs::create_dir_all(source.join(name))?;
+        fs::write(source.join(name).join("over.toml"), config)?;
+        fs::write(source.join(name).join(format!("{name}.txt")), name)?;
+    }
+    let mut command = Command::cargo_bin("over")?;
+    command
+        .env("NO_COLOR", "1")
+        .env("XDG_STATE_HOME", temp.path().join("state"))
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
+        .arg("--home")
+        .arg(&source)
+        .args(["apply", "selected", "--no-prompt", "--target"])
+        .arg(&target);
+    if dry_run {
+        command.arg("--dry-run");
+    }
+    let output = command.assert().success().get_output().clone();
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    let completions: Vec<_> = stdout
+        .lines()
+        .filter(|line| line.contains("Applied overlay"))
+        .collect();
+    assert_eq!(completions.len(), 4);
+    for (line, name) in completions
+        .iter()
+        .zip(["base", "left", "right", "selected"])
+    {
+        assert!(
+            line.contains(&format!("Applied overlay {name} to")),
+            "{line}"
+        );
+    }
+    assert!(!stdout.contains("Applying overlay"));
+    assert!(!stderr.contains("Applying overlay"));
+    assert!(!stdout.contains('\x1b'));
+    assert!(!stderr.contains('\x1b'));
+    if dry_run {
+        assert!(stdout.contains("create"));
+        assert!(!target.join("base.txt").exists());
+    } else {
+        assert_eq!(fs::read_to_string(target.join("base.txt"))?, "base");
+    }
+    Ok(())
+}
+
 #[test]
 fn apply_overlay_no_uses_dry_run() -> TestResult {
     let repo = setup_overlay_repo();

@@ -493,11 +493,17 @@ fn a_later_materialization_failure_suppresses_all_hooks() {
     fixture.config("selected/over.yaml", json!({"uses": ["dependency"]}));
     fixture.write("selected/conflict", "desired");
     fs::write(fixture.target.join("conflict"), "existing").unwrap();
-    fixture
+    let output = fixture
         .apply("selected")
         .arg("--install")
         .assert()
-        .failure();
+        .failure()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Applied overlay dependency"));
+    assert!(!stdout.contains("Applied overlay selected"));
+    assert!(!stdout.contains("Applying overlay"));
     assert_eq!(
         fs::read_to_string(fixture.target.join("first")).unwrap(),
         "applied"

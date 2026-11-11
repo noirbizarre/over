@@ -53,6 +53,7 @@ impl fmt::Display for ConflictChoice {
 
 /// Prompt the user to resolve a conflict between `source` (overlay) and `target` (existing).
 fn prompt_conflict(source: &Path, target: &Path) -> Result<ConflictChoice> {
+    let _pause = ui::progress::pause()?;
     let prompt = format!(
         "Conflict: {} already exists (overlay source: {})",
         style::yellow(short_path(&target.to_string_lossy())),
@@ -69,6 +70,7 @@ fn prompt_conflict(source: &Path, target: &Path) -> Result<ConflictChoice> {
 
 /// Show a diff between the overlay source and the existing target using `git diff --no-index`.
 fn show_diff(source: &Path, target: &Path) -> Result<()> {
+    let _pause = ui::progress::pause()?;
     let status = Command::new("git")
         .arg("diff")
         .arg("--no-index")
@@ -850,6 +852,7 @@ impl Action for EnsureDir {
                             "directory conflict at '{}' (use --force to replace)",
                             path.display()
                         );
+                        let _pause = ui::progress::pause()?;
                         let overwrite = dialoguer::Confirm::new()
                             .with_prompt(format!(
                                 "Replace directory scaffold conflict at '{}' ?",

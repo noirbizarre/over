@@ -100,6 +100,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let mut linked_paths = std::collections::BTreeMap::<_, std::collections::BTreeSet<_>>::new();
     for overlay in &overlays {
         let report = build_overlay_diff(&repo, &root, overlay, args.no_uses, views.clone()).await?;
+        let _pause = ui::progress::pause()?;
         for diagnostic in &report.diagnostics {
             eprintln!("{diagnostic}");
         }

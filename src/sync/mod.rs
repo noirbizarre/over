@@ -653,6 +653,7 @@ async fn commit_virtual_checkout_interactively(
         });
     }
 
+    let pause = crate::ui::progress::pause()?;
     let confirmed = Confirm::with_theme(&DialogTheme::default())
         .with_prompt(format!(
             "{} staged file{} changed at {} — commit {} now?",
@@ -677,6 +678,7 @@ async fn commit_virtual_checkout_interactively(
         .allow_empty(true)
         .interact_text()
         .map_err(|e| anyhow!("commit message prompt failed: {}", e))?;
+    drop(pause);
     let message = if message.trim().is_empty() {
         None
     } else {

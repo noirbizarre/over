@@ -4,6 +4,9 @@ Check overlays for configuration issues without applying or repairing anything.
 Lint reads source files and relevant destination metadata to resolve ownership;
 it never changes target directories, Git data, or state, and never runs hooks.
 
+A spinner on terminal stderr shows that checks are running. Diagnostics and
+`--json` output remain on stdout, with no animation in redirected stderr.
+
 ```text
 Usage: over lint [OPTIONS] [OVERLAY]
 

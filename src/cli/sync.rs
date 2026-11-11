@@ -157,6 +157,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         None
     };
     if remote.pull {
+        let _progress = ui::progress::current().phase("Pulling source repository");
         let source = source
             .as_ref()
             .expect("upstream validation requires a source");
@@ -213,6 +214,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         bail!("one or more checkouts need attention — see `conflict`/`blocked` entries above");
     }
     if remote.push {
+        let _progress = ui::progress::current().phase("Pushing source repository");
         if args.dry_run {
             ui::info(
                 "Would push existing Over source commits after successful local reconciliation.",
@@ -237,6 +239,7 @@ async fn sync_overlay(
     no_uses: bool,
     opts: &SyncOptions,
 ) -> Result<bool> {
+    let _progress = ui::progress::current().phase(format!("Synchronizing {}", overlay.name));
     let ctx = Context::builder()
         .root(root.to_path_buf())
         .repository(repo.clone())

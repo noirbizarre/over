@@ -49,6 +49,10 @@ See the [Git group overview](git.md) for host-repository discovery and associati
 
 ## Shared options and selection
 
+Long-running commands show a spinner on terminal stderr. Progress pauses for
+prompts, hooks, and external tools; reports and warnings remain above it.
+Redirected stderr contains no progress animation, and JSON reports stay on stdout.
+
 Every `over` subcommand, including the `git` group, accepts `-H`/`--home`
 (or the `OVER_HOME` environment variable) to point at the overlays root, and
 `-d`/`--debug`, `-v`/`--verbose` for diagnostics.

@@ -1,8 +1,6 @@
 use std::fmt;
-use std::sync::LazyLock;
 
 use anyhow::{Context as _, Result};
-use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent};
 use crate::exec::Ctx;
@@ -24,12 +22,6 @@ fn is_actionable(operation: &Operation) -> bool {
         Operation::Noop | Operation::Deferred => false,
     }
 }
-
-static SPINNER_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
-    ProgressStyle::with_template("{spinner:.cyan} {wide_msg}")
-        .expect("static progress template must be valid")
-        .tick_chars(style::TICK_CHARS_BRAILLE_4_6_DOWN.as_str())
-});
 
 fn classify(
     desired: &DesiredTree,
@@ -222,19 +214,17 @@ impl Plan {
         for guard in guards.iter().flatten() {
             guard.verify()?;
         }
-        let progress = ProgressBar::new_spinner()
-            .with_style(SPINNER_STYLE.clone())
-            .with_message("");
+        let progress = ctx.ui_progress.phase("Reconciling files");
 
         for (index, step) in self.steps.iter().enumerate() {
             let refreshed;
             let step = if let Some(parent) = &self.blocked_by[index] {
                 if ctx.dry_run {
-                    progress.println(format!(
+                    crate::ui::info(format!(
                         "inspect '{}' after replacing scaffold '{}'",
                         step.entry.target.display(),
                         parent.display()
-                    ));
+                    ))?;
                     continue;
                 }
                 anyhow::ensure!(
@@ -269,12 +259,24 @@ impl Plan {
             }
 
             if ctx.verbose || ctx.dry_run {
-                progress.println(format!("{step}"));
+                crate::ui::info(format!("{step}"))?;
                 if matches!(step.operation, Operation::Conflict { .. }) {
-                    progress.println(format!("  {} '{}': {}", if ctx.dry_run { "would reconcile" } else { "reconcile" }, step.entry.target.display(),
-                        if ctx.force { "overwrite authorized by --force; directories may be recursively removed" }
-                        else if ctx.no_prompt { "unresolved conflict will fail without changes" }
-                        else { "requires interactive skip/overwrite/absorb choice before destructive action" }));
+                    crate::ui::info(format!(
+                        "  {} '{}': {}",
+                        if ctx.dry_run {
+                            "would reconcile"
+                        } else {
+                            "reconcile"
+                        },
+                        step.entry.target.display(),
+                        if ctx.force {
+                            "overwrite authorized by --force; directories may be recursively removed"
+                        } else if ctx.no_prompt {
+                            "unresolved conflict will fail without changes"
+                        } else {
+                            "requires interactive skip/overwrite/absorb choice before destructive action"
+                        }
+                    ))?;
                 }
             }
             progress.set_message(format!("{step}"));
@@ -316,7 +318,6 @@ impl Plan {
             }
         }
 
-        progress.finish_and_clear();
         Ok(())
     }
 
