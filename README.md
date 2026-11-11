@@ -27,7 +27,7 @@ through descriptors, and choose file symlinks, directory symlinks, editable
 checkouts, or managed blocks to fit your workflow.
 
 <p align="center">
-  <img src="docs/images/demo.gif" alt="over creating, composing (uses:), and applying overlays">
+  <img src="docs/images/demo.gif" alt="Over composing, previewing, and applying dotfile overlays">
 </p>
 
 ## Installation

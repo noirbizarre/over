@@ -1,47 +1,57 @@
-# Regenerates docs/images/demo.gif — run `mise run demo` rather than `vhs`
-# directly, so `target/debug/over` is rebuilt first and always reflects the
-# current source rather than a stale or globally-installed binary.
-
+# Run `mise run demo` so the recording uses the freshly built local binary.
 Output docs/images/demo.gif
 
 Set Shell "bash"
-# "Noto Color Emoji" as a fallback for `over`'s 📦/✨/📁 status glyphs —
-# JetBrains Mono alone has no emoji coverage, and overriding FontFamily drops
-# VHS's own default fallback chain that would normally provide one. Chromium's
-# canvas text rendering may still draw them as placeholder boxes rather than
-# full color glyphs; either way the text around them stays legible.
+# Keep emoji coverage when overriding VHS's default font fallback chain.
 Set FontFamily "JetBrains Mono, Noto Color Emoji"
-Set FontSize 16
-Set Width 1200
-Set Height 680
+Set FontSize 22
+Set Width 1000
+Set Height 620
 Set Padding 20
-Set Theme "Dracula"
-Set TypingSpeed 35ms
+# VHS 0.11 names this theme with a lowercase identifier.
+Set Theme "lovelace"
+Set TypingSpeed 45ms
 Set PlaybackSpeed 1.0
 
-# Everything in this block builds a throw-away sandbox ($HOME and OVER_HOME
-# both point inside a mktemp dir) and pre-seeds two overlays that would be
-# tedious to hand-type on camera (a `uses:` composition and a templated
-# `target:`). None of it is shown — Hide/Show only toggles what's recorded,
-# the commands still run for real against the sandbox.
+# Literal paths avoid depending on shell expansion in VHS's environment values.
+Env HOME "/tmp/over-demo-home"
+Env OVER_HOME "/tmp/over-demo-home/.dotfiles"
+Env OVER_TARGET "/tmp/over-demo-home"
+Env XDG_CONFIG_HOME "/tmp/over-demo-home/.config"
+Env XDG_DATA_HOME "/tmp/over-demo-home/.local/share"
+Env XDG_CACHE_HOME "/tmp/over-demo-home/.cache"
+Env XDG_STATE_HOME "/tmp/over-demo-home/.local/state"
+Env PROMPT "demo@over:~$ "
+Env LC_ALL "C.UTF-8"
+Env GIT_CONFIG_GLOBAL "/dev/null"
+Env GIT_CONFIG_NOSYSTEM "1"
+
 Hide
-
-# A short PS1 keeps the recording readable — the real prompt would be a
-# `mktemp -d` path, not something worth putting on screen. LC_ALL=C keeps
-# `ls -la`'s date column in a fixed, locale-independent format rather than
-# whatever locale happens to be configured on the machine regenerating this.
-Type "export PS1='$ ' LC_ALL=C DEMO=$(mktemp -d)"
+# Bash uses PS1 rather than PROMPT; ignore inherited prompt hooks as well.
+Type `unset PROMPT_COMMAND; export PS1="$PROMPT"; export PATH="$PWD/target/debug:$PATH"`
 Enter
-Type "export HOME=$DEMO/home OVER_HOME=$DEMO/dotfiles"
+# Reset only this dedicated home, so repeat recordings start from the same state.
+Type `rm -rf -- "$HOME" && mkdir -p "$OVER_HOME/apps/git" "$OVER_HOME/hosts/demo" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"`
 Enter
-Type "mkdir -p $HOME $OVER_HOME"
+Type `git -c init.defaultBranch=main init --template= "$OVER_HOME"`
 Enter
 
-# A pre-existing dotfile for `over add` to absorb, exactly like adopting a
-# config file you already have rather than starting from nothing. A heredoc
-# rather than `printf '...\n...'`: VHS processes `\n`/`\t` escapes in
-# double-quoted Type strings, which would send a real newline mid-command.
-Type "cat > $HOME/.gitconfig <<'CFG'"
+# Heredocs avoid VHS interpreting printf's escape sequences as keystrokes.
+Type `cat > "$OVER_HOME/over.toml" <<'CFG'`
+Enter
+Type 'format = "toml"'
+Enter
+Type 'target = "~"'
+Enter
+Type "CFG"
+Enter
+Type `cat > "$OVER_HOME/apps/git/over.toml" <<'CFG'`
+Enter
+Type 'target = "~"'
+Enter
+Type "CFG"
+Enter
+Type `cat > "$OVER_HOME/apps/git/.gitconfig" <<'CFG'`
 Enter
 Type "[user]"
 Enter
@@ -51,14 +61,7 @@ Type "    email = ada@example.com"
 Enter
 Type "CFG"
 Enter
-
-# `hosts/demo` composes `apps/git` via `uses:` — the pattern behind a real
-# per-machine root overlay. `workspaces/demo`'s `target:` is rendered from
-# `overlay.name` itself, showing the templating available to every field
-# that goes through `exec::templates::render_string`.
-Type "mkdir -p $OVER_HOME/hosts/demo $OVER_HOME/workspaces/demo"
-Enter
-Type "cat > $OVER_HOME/hosts/demo/over.toml <<'CFG'"
+Type `cat > "$OVER_HOME/hosts/demo/over.toml" <<'CFG'`
 Enter
 Type 'target = "~"'
 Enter
@@ -66,53 +69,46 @@ Type 'uses = ["apps/git"]'
 Enter
 Type "CFG"
 Enter
-Type "cat > $OVER_HOME/workspaces/demo/over.toml <<'CFG'"
-Enter
-# Backticks, not quotes: this line mixes both a TOML double-quoted string and
-# a MiniJinja single-quoted filter argument — VHS's own quoting docs say to
-# escape both kinds of quotes with backticks rather than nesting them.
-Type `target = "~/Workspaces/{{ overlay.name | split('/') | last }}"`
-Enter
-Type "CFG"
-Enter
 
-Type "export PATH=$PWD/target/debug:$PATH"
+# Leave ~/.gitconfig absent so preview and apply show a genuine state change.
+Type `cd "$HOME" && clear`
 Enter
-Type "cd $DEMO && clear"
-Enter
+# VHS trims terminal-line whitespace before matching the prompt.
+Wait /demo@over:~\$$/
 Show
-
-Type "over new apps/git ~ --force"
-Enter
-Sleep 800ms
-
-Type "over add ~/.gitconfig --overlay apps/git --force"
-Enter
-Sleep 600ms
-Type "ls -la --color=always ~/.gitconfig"
-Enter
 Sleep 1s
 
 Type "over list --tree"
 Enter
-Sleep 1500ms
+Wait /demo@over:~\$$/
+Sleep 3s
 
-Type "over status hosts/demo"
+Type "cat ~/.dotfiles/hosts/demo/over.toml"
 Enter
-Sleep 1500ms
+Wait /demo@over:~\$$/
+Sleep 3s
 
-Type "over apply hosts/demo --dry-run --no-prompt"
+# Start a fresh scene so the preview and application both fit at readable size.
+Ctrl+l
+Type "over apply hosts/demo --dry-run"
 Enter
-Sleep 1500ms
+Wait /demo@over:~\$$/
+Sleep 4s
 
-Type "over apply hosts/demo --no-prompt"
+# Keep the final result visible without scrolling away the applied summary.
+Ctrl+l
+Type "over apply hosts/demo"
 Enter
-Sleep 1500ms
+Wait /demo@over:~\$$/
+Sleep 4s
 
-Type "over apply workspaces/demo --dry-run --no-prompt"
+Type "cat ~/.gitconfig"
 Enter
-Sleep 1500ms
+Wait /demo@over:~\$$/
+Sleep 5s
 
-Type "over status"
+Hide
+# Leave the sandbox before removing it; teardown must never appear on camera.
+Type `cd /tmp && rm -rf -- "$HOME"`
 Enter
-Sleep 2500ms
+Wait /demo@over:~\$$/
