@@ -110,6 +110,9 @@ cargo test --features schema --example generate_schemas
 
 Commit the generated JSON files alongside the Rust changes. Schema CI checks
 that they stay in sync and validates supported and rejected descriptor shapes.
+The documentation workflow also regenerates the schemas before building the
+site and runs when Rust schema inputs change, so published assets reflect the
+current configuration definitions.
 The normal CLI build does not enable schema generation.
 
 ## Commits
