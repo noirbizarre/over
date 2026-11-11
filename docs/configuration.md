@@ -23,8 +23,8 @@ in schema-aware TOML and YAML editors:
 
 | Descriptor scope | Schema |
 | --- | --- |
-| Repository root | [root.json](schemas/root.json) |
-| Intermediate or overlay directory | [overlay.json](schemas/overlay.json) |
+| Repository root | [root.json](https://noirbizarre.github.io/over/schemas/root.json) |
+| Intermediate or overlay directory | [overlay.json](https://noirbizarre.github.io/over/schemas/overlay.json) |
 
 Each schema supports `over.toml`, `over.yaml`, and `over.yml`. Select the schema
 by descriptor scope, not its filename: root and child files have the same name

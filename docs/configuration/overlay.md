@@ -18,7 +18,7 @@ data:
 
 ## Editor support
 
-Use the [overlay schema](../schemas/overlay.json) for intermediate and local
+Use the [overlay schema](https://noirbizarre.github.io/over/schemas/overlay.json) for intermediate and local
 descriptors. For YAML (`over.yaml` or `over.yml`), add this comment at the top:
 
 ```yaml

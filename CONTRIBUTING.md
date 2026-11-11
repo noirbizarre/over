@@ -96,24 +96,26 @@ handoff or PR description. CI provides full validation.
 
 ### Configuration schemas
 
-The documentation site publishes `docs/schemas/root.json` and
-`docs/schemas/overlay.json`, generated from Rust configuration definitions with
-the optional `schema` feature. When changing configuration fields or accepted
-input shapes, update their schema derives/adapters and regenerate the assets:
+The documentation site publishes `schemas/root.json` and `schemas/overlay.json`,
+generated from Rust configuration definitions with the optional `schema`
+feature. The documentation generator lives in `docs/generate_schemas.rs`; its
+Cargo example target makes it runnable without adding an installed CLI command.
+When changing configuration fields or accepted input shapes, update their
+schema derives/adapters and validate them:
 
 ```sh
-mise run schemas:generate
-mise run schemas:check
-cargo nextest run --features schema -E 'test(overlays::json_schema::tests)'
-cargo test --features schema --example generate_schemas
+mise run schemas:validate
+mise run docs:build
 ```
 
-Commit the generated JSON files alongside the Rust changes. Schema CI checks
-that they stay in sync and validates supported and rejected descriptor shapes.
-The documentation workflow also regenerates the schemas before building the
-site and runs when Rust schema inputs change, so published assets reflect the
-current configuration definitions.
-The normal CLI build does not enable schema generation.
+The documentation workflow validates the schemas and supported/rejected
+descriptor shapes before generating and publishing the site. It runs when Rust
+schema inputs change, so published assets reflect the current definitions.
+Both `mise run docs` and `mise run docs:build` generate the JSON files under
+`docs/schemas/`; those files are ignored and must not be committed. To generate
+only the schemas, run `mise run schemas:generate`. Validation uses temporary
+files and does not require previously generated assets. The normal CLI build
+does not enable schema generation.
 
 ## Commits
 

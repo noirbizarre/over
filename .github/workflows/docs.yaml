@@ -6,7 +6,6 @@ on:
     paths:
       - docs/**
       - src/**
-      - examples/generate_schemas.rs
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
@@ -20,7 +19,6 @@ on:
     paths:
       - docs/**
       - src/**
-      - examples/generate_schemas.rs
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
@@ -56,10 +54,10 @@ jobs:
         with:
           cache: true
 
-      - name: Generate configuration schemas
-        run: cargo run --locked --features schema --example generate_schemas
+      - name: Validate configuration schemas
+        run: mise run schemas:validate
 
-      - name: Build the site
+      - name: Generate schemas and build the site
         run: mise run docs:build
 
       - uses: actions/upload-pages-artifact@v5

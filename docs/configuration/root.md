@@ -21,7 +21,7 @@ inherited policy; they are not additional repository preferences.
 
 ## Editor support
 
-Use the [repository-root schema](../schemas/root.json) for this descriptor.
+Use the [repository-root schema](https://noirbizarre.github.io/over/schemas/root.json) for this descriptor.
 For YAML (`over.yaml` or `over.yml`), add this comment at the top:
 
 ```yaml
