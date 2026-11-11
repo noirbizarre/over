@@ -15,6 +15,11 @@ fn git(path: &Path, args: &[&str]) -> String {
             "user.email=test@example.com",
             "-c",
             "commit.gpgsign=false",
+            // Detached maintenance can create/remove lockfiles during preservation snapshots.
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "gc.auto=0",
         ])
         .args(args)
         .current_dir(path)
