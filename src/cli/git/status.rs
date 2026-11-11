@@ -42,7 +42,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
         "{} {} {}",
         emojis::PACKAGE,
         style::heading("Repository:"),
-        style::path(short_path(&repo_root.to_string_lossy())),
+        style::repository(short_path(&repo_root.to_string_lossy())),
     ))
     .ok();
     if is_worktree {
@@ -64,7 +64,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
         "  {} {} {}",
         style::key("Overlay:"),
         style::overlay(&overlay.name),
-        style::annotation(format!("({})", short_path(&overlay.root.to_string_lossy()))),
+        style::path(format!("({})", short_path(&overlay.root.to_string_lossy()))),
     ))
     .ok();
     ui::info(format!(
@@ -178,7 +178,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
         ))
         .ok();
         for file in &managed_files {
-            ui::info(format!("  {} {}", emojis::GREEN_CIRCLE, style::path(file))).ok();
+            ui::info(format!("  {} {}", emojis::checkmark(), style::path(file))).ok();
         }
     }
 
@@ -194,7 +194,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
         ))
         .ok();
         for file in &unapplied_files {
-            ui::info(format!("  {} {}", style::yellow("?"), style::yellow(file))).ok();
+            ui::info(format!("  {} {}", style::yellow("?"), style::path(file))).ok();
         }
     }
 

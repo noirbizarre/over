@@ -217,9 +217,10 @@ fn render_field(field: &Field, indent: usize, lines: &mut Vec<String>) {
         .values
         .iter()
         .map(|value| match value {
-            Value::Text(value) => style::cyan(value).to_string(),
+            Value::Text(value) => value.clone(),
             Value::Path(value) => style::path(value).to_string(),
             Value::Overlay(value) => style::overlay(value).to_string(),
+            Value::Repository(value) => style::repository(value).to_string(),
             Value::Mode(value) => style::mode(value).to_string(),
             Value::Change {
                 symbol,
@@ -270,11 +271,12 @@ fn render_field(field: &Field, indent: usize, lines: &mut Vec<String>) {
 fn render_overlay(snapshot: &OverlayReport, verbose: bool) -> String {
     let mut lines = vec![
         format!(
-            "{} {}",
+            "{} {} {}",
+            emojis::PACKAGE,
             style::heading("Overlay"),
             style::overlay(&snapshot.configuration.name)
         ),
-        format!("{} {}", emojis::DIRECTORY, style::heading("Configuration:")),
+        format!("{} {}", emojis::TOOLS, style::heading("Configuration:")),
     ];
     render_configuration(&snapshot.configuration, verbose, &mut lines);
     if verbose {
@@ -289,7 +291,7 @@ fn render_overlay(snapshot: &OverlayReport, verbose: bool) -> String {
     }
     lines.push(format!(
         "{} {}",
-        emojis::PACKAGE,
+        emojis::RECYCLE,
         style::heading("Reconciliation:")
     ));
     match &snapshot.health {
@@ -366,6 +368,10 @@ mod tests {
         let overlay = repo.get("ov").unwrap();
         let snapshot = inspect_overlay(&repo, &tmp.path().join("home"), &overlay, false).unwrap();
         let before = render_overlay(&snapshot, true);
+        let plain = console::strip_ansi_codes(&before);
+        assert!(plain.starts_with(&format!("{} Overlay ov\n", emojis::PACKAGE)));
+        assert!(plain.contains(&format!("{} Configuration:", emojis::TOOLS)));
+        assert!(plain.contains(&format!("{} Reconciliation:", emojis::RECYCLE)));
         tmp.close().unwrap();
         assert_eq!(render_overlay(&snapshot, true), before);
     }
@@ -381,7 +387,7 @@ mod tests {
         };
         let mut lines = Vec::new();
         render_field(&field, 2, &mut lines);
-        let mut git = Field::new("git", Value::Text("project".into()));
+        let mut git = Field::new("git", Value::Repository("project".into()));
         git.values
             .extend([Value::Text(" → ".into()), Value::Path("/target:a;b".into())]);
         git.children

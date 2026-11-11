@@ -14,13 +14,8 @@ pub static THIN_DUAL_PROGRESS: LazyLock<String> = LazyLock::new(|| String::from(
 
 pub static DOTS_4: LazyLock<String> = LazyLock::new(|| String::from("::"));
 
-// pub static ref SPINNER: ProgressStyle = ProgressStyle::default_spinner()
-//     .template("{prefix:.bold.dim} {spinner.green} {wide_msg}")
-//     .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
-// }
-
 pub fn white<D>(value: D) -> StyledObject<D> {
-    style(value).white()
+    style(value)
 }
 
 pub fn white_b<D>(value: D) -> StyledObject<D> {
@@ -55,21 +50,24 @@ pub fn red<D>(value: D) -> StyledObject<D> {
     style(value).red()
 }
 
-// Semantic roles keep command output consistent without changing patch colors.
+// Semantic roles reserve foreground colors for identities and diagnostic severity.
 pub fn heading<D>(value: D) -> StyledObject<D> {
-    white_b(value)
+    style(value).white().bold()
 }
 pub fn key<D>(value: D) -> StyledObject<D> {
-    white_b(value)
+    style(value).white().bold()
 }
 pub fn path<D>(value: D) -> StyledObject<D> {
-    green(value)
+    style(value).blue()
 }
 pub fn overlay<D>(value: D) -> StyledObject<D> {
+    cyan(value)
+}
+pub fn repository<D>(value: D) -> StyledObject<D> {
     style(value).blue()
 }
 pub fn mode<D>(value: D) -> StyledObject<D> {
-    yellow(value)
+    style(value)
 }
 pub fn annotation<D>(value: D) -> StyledObject<D> {
     dim(value)
@@ -124,19 +122,19 @@ pub struct DialogTheme {
 impl Default for DialogTheme {
     fn default() -> DialogTheme {
         DialogTheme {
-            defaults_style: Style::new().for_stderr().cyan(),
+            defaults_style: Style::new().for_stderr(),
             prompt_style: Style::new().for_stderr().bold(),
-            prompt_prefix: style("?".to_string()).for_stderr().yellow(),
-            prompt_suffix: style("›".to_string()).for_stderr().black().bright(),
+            prompt_prefix: style("?".to_string()).for_stderr(),
+            prompt_suffix: style("›".to_string()).for_stderr().dim(),
             success_prefix: style("✔".to_string()).for_stderr().green(),
-            success_suffix: style("·".to_string()).for_stderr().black().bright(),
+            success_suffix: style("·".to_string()).for_stderr().dim(),
             error_prefix: style("✘".to_string()).for_stderr().red(),
             error_style: Style::new().for_stderr().red(),
-            hint_style: Style::new().for_stderr().black().bright(),
-            values_style: Style::new().for_stderr().green(),
-            active_item_style: Style::new().for_stderr().cyan(),
+            hint_style: Style::new().for_stderr().dim(),
+            values_style: Style::new().for_stderr(),
+            active_item_style: Style::new().for_stderr().bold(),
             inactive_item_style: Style::new().for_stderr(),
-            active_item_prefix: style("❯".to_string()).for_stderr().green(),
+            active_item_prefix: style("❯".to_string()).for_stderr(),
             inactive_item_prefix: style(" ".to_string()).for_stderr(),
         }
     }
@@ -191,14 +189,9 @@ impl Theme for DialogTheme {
         selection: Option<bool>,
     ) -> fmt::Result {
         let selection = selection.map(|b| if b { "yes" } else { "no" });
-        let prefix = match selection {
-            Some("yes") => &self.success_prefix,
-            _ => &self.error_prefix,
-        };
-        let style = match selection {
-            Some("yes") => &self.values_style,
-            _ => &self.error_style,
-        };
+        // Declining a confirmation is a valid answer, not a failed operation.
+        let prefix = &self.success_prefix;
+        let style = &self.values_style;
 
         if !prompt.is_empty() {
             write!(f, "{} {} ", prefix, self.prompt_style.apply_to(prompt))?;
@@ -365,17 +358,56 @@ impl Theme for DialogTheme {
 }
 
 pub fn clap_styles() -> styling::Styles {
-    styling::Styles::styled()
-        .header(styling::AnsiColor::Green.on_default() | styling::Effects::BOLD)
-        .usage(styling::AnsiColor::Green.on_default() | styling::Effects::BOLD)
-        .literal(styling::AnsiColor::Blue.on_default() | styling::Effects::BOLD)
-        .placeholder(styling::AnsiColor::Cyan.on_default())
+    styling::Styles::plain()
+        .header(styling::Style::new().bold())
+        .usage(styling::Style::new().bold())
+        .literal(styling::Style::new().bold())
+        .error(styling::AnsiColor::Red.on_default().bold())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fmt::Write;
+
+    #[test]
+    fn identities_and_severities_use_their_semantic_foreground_colors() {
+        for (actual, code) in [
+            (overlay("value").force_styling(true).to_string(), 36),
+            (path("value").force_styling(true).to_string(), 34),
+            (repository("value").force_styling(true).to_string(), 34),
+            (
+                severity("value", Severity::Success)
+                    .force_styling(true)
+                    .to_string(),
+                32,
+            ),
+            (
+                severity("value", Severity::Warning)
+                    .force_styling(true)
+                    .to_string(),
+                33,
+            ),
+            (
+                severity("value", Severity::Error)
+                    .force_styling(true)
+                    .to_string(),
+                31,
+            ),
+        ] {
+            assert_eq!(actual, format!("\x1b[{code}mvalue\x1b[0m"));
+        }
+        assert_eq!(mode("checkout").force_styling(true).to_string(), "checkout");
+        assert_eq!(white("label").force_styling(true).to_string(), "label");
+        assert_eq!(
+            heading("Heading").force_styling(true).to_string(),
+            "\x1b[37m\x1b[1mHeading\x1b[0m"
+        );
+        assert_eq!(
+            key("Key").force_styling(true).to_string(),
+            "\x1b[37m\x1b[1mKey\x1b[0m"
+        );
+    }
 
     #[test]
     fn white_preserves_original_text() {

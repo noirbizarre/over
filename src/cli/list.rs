@@ -32,7 +32,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         ui::info(tree.to_string().trim_end()).ok();
     } else {
         for overlay in &overlays {
-            ui::info(&overlay.name).ok();
+            ui::info(ui::style::overlay(&overlay.name).to_string()).ok();
         }
     }
 
@@ -50,23 +50,28 @@ fn root_label(home: &Path) -> String {
 #[derive(Default)]
 struct TreeNode {
     children: BTreeMap<String, TreeNode>,
+    is_overlay: bool,
 }
 
 impl TreeNode {
     /// Insert path segments into the tree, creating intermediate nodes as needed.
     fn insert(&mut self, segments: &[&str]) {
         if segments.is_empty() {
+            self.is_overlay = true;
             return;
         }
         let child = self.children.entry(segments[0].to_owned()).or_default();
-        if segments.len() > 1 {
-            child.insert(&segments[1..]);
-        }
+        child.insert(&segments[1..]);
     }
 
     /// Convert this node into a `termtree::Tree` with the given label.
     fn into_tree(self, label: String) -> Tree<String> {
-        let mut tree = Tree::new(label);
+        // Group-only nodes are not overlay identities and must stay neutral.
+        let mut tree = Tree::new(if self.is_overlay {
+            ui::style::overlay(label).to_string()
+        } else {
+            label
+        });
         for (name, child) in self.children {
             tree.push(child.into_tree(name));
         }
@@ -83,7 +88,7 @@ fn build_tree<'a>(root_label: &str, names: impl Iterator<Item = &'a str>) -> Tre
     for name in names {
         root.insert(&name.split('/').collect::<Vec<_>>());
     }
-    root.into_tree(root_label.to_owned())
+    root.into_tree(ui::style::path(root_label).to_string())
 }
 
 #[cfg(test)]

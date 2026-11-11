@@ -19,7 +19,7 @@ pub(crate) fn select(unit: &Unit, dry_run: bool) -> Result<Decision> {
     writeln!(
         output,
         "\n{}: {}{}",
-        unit.path.display(),
+        super::style::path(unit.path.display()).for_stderr(),
         unit.description,
         if dry_run { " (candidate)" } else { "" }
     )?;

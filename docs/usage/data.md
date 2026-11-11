@@ -40,9 +40,8 @@ values replace earlier values, including explicit nulls.
 ## Output and Scripting
 
 Successful stdout contains only the resolved data mapping as JSON, followed by a
-newline. Terminals receive pretty-printed JSON, colored when terminal color
-support is available; a nonempty `NO_COLOR` disables colors. Piped or redirected
-stdout receives compact, uncolored JSON. There is no wrapper object or
+newline. Terminals receive pretty-printed JSON using the default foreground.
+Piped or redirected stdout receives compact, uncolored JSON. There is no wrapper object or
 execution-context metadata.
 Booleans, numbers, strings, arrays, objects, and explicit null values retain their
 JSON types. A selected overlay with no data outputs `{}` successfully.

@@ -81,7 +81,8 @@ commits report an error.
 
 ## Presentation
 
-Each compact commit line includes a colored short SHA, emphasized subject,
+The history heading uses cyan for an overlay or blue for a Git repository.
+Each compact commit line includes a neutral short SHA, emphasized subject,
 branch/tag decorations when present, and quieter author and absolute date
 metadata. `HEAD -> branch`, detached `HEAD`, and `tag: NAME` labels remain readable
 without color. Dates use the commit's recorded timestamp and UTC offset.

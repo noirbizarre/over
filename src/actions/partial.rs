@@ -380,7 +380,7 @@ fn resolve_structural_conflict(ctx: &Ctx, target: &Path) -> Result<bool> {
     let _pause = ui::progress::pause()?;
     let prompt = format!(
         "Conflict: {} exists and isn't a plain file",
-        style::yellow(short_path(&target.to_string_lossy())),
+        style::path(short_path(&target.to_string_lossy())),
     );
     let selection = Select::with_theme(&DialogTheme::default())
         .with_prompt(prompt)
@@ -444,7 +444,7 @@ fn resolve_block_conflict(
         let prompt = format!(
             "Conflict: managed block '{}' in {} doesn't match",
             marker,
-            style::yellow(short_path(&target.to_string_lossy())),
+            style::path(short_path(&target.to_string_lossy())),
         );
         let selection = Select::with_theme(&DialogTheme::default())
             .with_prompt(prompt)
