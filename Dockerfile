@@ -15,6 +15,8 @@ FROM chef AS planner
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# Discover declared examples so the dependency recipe includes their placeholder targets.
+COPY examples ./examples
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ── Stage 3: Builder ────────────────────────────────────────────────────────
