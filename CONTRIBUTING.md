@@ -96,7 +96,7 @@ handoff or PR description. CI provides full validation.
 
 ### Configuration schemas
 
-The documentation site publishes `schemas/root.json` and `schemas/overlay.json`,
+The documentation site publishes `schemas/config.json` and `schemas/overlay.json`,
 generated from Rust configuration definitions with the optional `schema`
 feature. The documentation generator lives in `docs/generate_schemas.rs`; its
 Cargo example target makes it runnable without adding an installed CLI command.

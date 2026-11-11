@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use config::{Map, Value, ValueKind};
 
 pub(crate) const OVERLAY_KEYS: &[&str] = &[
+    "$schema",
     "data",
     "default_overlay",
     "description",
@@ -107,6 +108,8 @@ pub(crate) fn descriptor_path(
 }
 
 pub(crate) fn normalize(values: &mut Map<String, Value>, file: &Path) -> Vec<Warning> {
+    // Editor associations belong to this document and must not enter the inheritance cascade.
+    values.remove("$schema");
     let mut warnings = Vec::new();
     fields(values, OVERLAY_KEYS, "", false, file, &mut warnings);
     for (key, value) in values {
@@ -302,6 +305,19 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    #[test]
+    fn inline_schema_metadata_is_removed_without_unknown_key_warnings() {
+        let mut values = File::from_str(
+            "$schema: https://noirbizarre.github.io/over/schemas/config.json\ntarget: '~'\n",
+            FileFormat::Yaml,
+        )
+        .collect()
+        .unwrap();
+        assert!(normalize(&mut values, Path::new("over.yaml")).is_empty());
+        assert!(!values.contains_key("$schema"));
+        assert_eq!(values["target"].clone().into_string().unwrap(), "~");
+    }
 
     #[rstest]
     #[case("extra: {arbitrary: [1, 2]}", "`extra`")]

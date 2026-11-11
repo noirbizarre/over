@@ -23,16 +23,18 @@ in schema-aware TOML and YAML editors:
 
 | Descriptor scope | Schema |
 | --- | --- |
-| Repository root | [root.json](https://noirbizarre.github.io/over/schemas/root.json) |
+| Repository root | [config.json](https://noirbizarre.github.io/over/schemas/config.json) |
 | Intermediate or overlay directory | [overlay.json](https://noirbizarre.github.io/over/schemas/overlay.json) |
 
 Each schema supports `over.toml`, `over.yaml`, and `over.yml`. Select the schema
 by descriptor scope, not its filename: root and child files have the same name
-but accept different settings. Add the comment shown in the
+but accept different settings. Use the YAML `$schema` property or TOML schema
+directive shown in the
 [root](configuration/root.md#editor-support) or
 [overlay](configuration/overlay.md#editor-support) reference to associate it
-with the correct schema. YAML comments work with YAML Language Server; TOML
-directives work with Taplo-compatible editors.
+with the correct schema. The YAML property is document-local editor metadata,
+ignored by Over and never inherited. TOML directives work with Taplo-compatible
+editors.
 
 Schemas describe authored settings, so inherited fields may be omitted.
 Unknown keys in documented objects are editor errors; Over still warns and

@@ -32,7 +32,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path().join("schemas");
         generate(&directory).unwrap();
-        let originals: Vec<_> = ["root.json", "overlay.json"]
+        let originals: Vec<_> = ["config.json", "overlay.json"]
             .into_iter()
             .map(|name| {
                 let content = std::fs::read_to_string(directory.join(name)).unwrap();
@@ -59,12 +59,12 @@ mod tests {
     fn a_write_failure_identifies_the_schema_file() {
         let temp = tempfile::tempdir().unwrap();
         // A directory at the output filename forces a portable write error, even as root.
-        std::fs::create_dir(temp.path().join("root.json")).unwrap();
+        std::fs::create_dir(temp.path().join("config.json")).unwrap();
         assert!(
             generate(temp.path())
                 .unwrap_err()
                 .to_string()
-                .contains("root.json")
+                .contains("config.json")
         );
     }
 }

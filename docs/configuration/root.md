@@ -21,22 +21,23 @@ inherited policy; they are not additional repository preferences.
 
 ## Editor support
 
-Use the [repository-root schema](https://noirbizarre.github.io/over/schemas/root.json) for this descriptor.
-For YAML (`over.yaml` or `over.yml`), add this comment at the top:
+Use the [repository-root schema](https://noirbizarre.github.io/over/schemas/config.json) for this descriptor.
+For YAML (`over.yaml` or `over.yml`), set `$schema` at the top:
 
 ```yaml
-# yaml-language-server: $schema=https://noirbizarre.github.io/over/schemas/root.json
+$schema: https://noirbizarre.github.io/over/schemas/config.json
 format: yaml
 ```
 
 For TOML, use a schema directive at the top of `over.toml`:
 
 ```toml
-#:schema https://noirbizarre.github.io/over/schemas/root.json
+#:schema https://noirbizarre.github.io/over/schemas/config.json
 format = "toml"
 ```
 
-These comments associate the schema without adding a configuration key.
+The YAML `$schema` key is editor metadata, ignored by Over and never inherited.
+The TOML directive is a comment.
 See [Editor support](../configuration.md#editor-support) for validation scope.
 
 ## Format preference

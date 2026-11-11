@@ -12,7 +12,7 @@ use super::mapping::DirectoryMapping;
 use super::repository::RootConfig;
 use super::{FileMode, MaterializationKind, Rule};
 
-pub const ROOT_SCHEMA_URL: &str = "https://noirbizarre.github.io/over/schemas/root.json";
+pub const CONFIG_SCHEMA_URL: &str = "https://noirbizarre.github.io/over/schemas/config.json";
 pub const OVERLAY_SCHEMA_URL: &str = "https://noirbizarre.github.io/over/schemas/overlay.json";
 
 // Resolved Overlay requires injected paths and defaults; those are not authored requirements.
@@ -23,6 +23,14 @@ pub const OVERLAY_SCHEMA_URL: &str = "https://noirbizarre.github.io/over/schemas
 #[derive(JsonSchema)]
 #[schemars(deny_unknown_fields)]
 struct OverlayDescriptor {
+    /// Document-local editor schema association; ignored by Over and never inherited.
+    #[schemars(
+        rename = "$schema",
+        default,
+        with = "String",
+        skip_serializing_if = "Option::is_none"
+    )]
+    schema: Option<String>,
     /// Human-readable description of this overlay.
     description: Option<String>,
     /// Consumer-owned metadata; nested values are not interpreted by Over.
@@ -101,8 +109,8 @@ enum StringOrList {
 pub fn schemas() -> [(&'static str, Schema); 2] {
     [
         (
-            "root.json",
-            document::<RootDescriptor>(ROOT_SCHEMA_URL, "Over repository configuration"),
+            "config.json",
+            document::<RootDescriptor>(CONFIG_SCHEMA_URL, "Over repository configuration"),
         ),
         (
             "overlay.json",
@@ -212,7 +220,7 @@ mod tests {
 
     #[test]
     fn documented_properties_match_runtime_recognized_keys_at_every_closed_location() {
-        let root = &DOCUMENTS["root.json"];
+        let root = &DOCUMENTS["config.json"];
         let child = &DOCUMENTS["overlay.json"];
         let root_only = [
             "format",
@@ -263,6 +271,8 @@ mod tests {
 
     #[rstest]
     #[case(json!({}))]
+    #[case(json!({"$schema": CONFIG_SCHEMA_URL}))]
+    #[case(json!({"$schema": OVERLAY_SCHEMA_URL}))]
     #[case(json!({"target":"~", "description":"Editor", "uses":["base"]}))]
     #[case(json!({"exclude":"*.tmp"}))]
     #[case(json!({"exclude":["*.tmp", "cache"]}))]
@@ -294,7 +304,7 @@ mod tests {
     #[case(json!({"default_overlay":"hosts/laptop"}))]
     #[case(json!({"overlays":[{"path":"apps/*"}]}))]
     fn repository_preferences_are_valid_only_at_the_root(#[case] value: Value) {
-        assert!(VALIDATORS["root.json"].is_valid(&value));
+        assert!(VALIDATORS["config.json"].is_valid(&value));
         assert!(!VALIDATORS["overlay.json"].is_valid(&value));
     }
 
@@ -303,6 +313,8 @@ mod tests {
     #[case(json!({"root":"/injected"}))]
     #[case(json!({"scopes":[]}))]
     #[case(json!({"unknown":"~"}))]
+    #[case(json!({"$schema":null}))]
+    #[case(json!({"$schema":true}))]
     #[case(json!({"target":null}))]
     #[case(json!({"data":null}))]
     #[case(json!({"data":[]}))]
@@ -357,7 +369,7 @@ mod tests {
     #[case(json!({"overlays":[{}]}))]
     #[case(json!({"overlays":[{"path":"apps/*", "extra":true}]}))]
     fn malformed_root_preferences_are_rejected(#[case] value: Value) {
-        assert!(!VALIDATORS["root.json"].is_valid(&value));
+        assert!(!VALIDATORS["config.json"].is_valid(&value));
     }
 
     #[rstest]
@@ -394,21 +406,29 @@ mod tests {
                 "exclude: ['*.tmp']\ngit: {vendor: {url: ../source}}\nhooks: {post-apply: ['echo ready']}\n",
             )
         };
+        let (root, child) = if extension == "toml" {
+            (root.to_string(), child.to_string())
+        } else {
+            (
+                format!("$schema: {CONFIG_SCHEMA_URL}\n{root}"),
+                format!("$schema: {OVERLAY_SCHEMA_URL}\n{child}"),
+            )
+        };
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir(temp.path().join("app")).unwrap();
         for (source, scope, directory) in [
-            (root, "root.json", temp.path().to_path_buf()),
+            (root, "config.json", temp.path().to_path_buf()),
             (child, "overlay.json", temp.path().join("app")),
         ] {
             let value = if extension == "toml" {
-                serde_json::to_value(toml::from_str::<toml::Value>(source).unwrap()).unwrap()
+                serde_json::to_value(toml::from_str::<toml::Value>(&source).unwrap()).unwrap()
             } else {
-                serde_yaml::from_str::<Value>(source).unwrap()
+                serde_yaml::from_str::<Value>(&source).unwrap()
             };
             assert!(VALIDATORS[scope].is_valid(&value));
             std::fs::write(directory.join(format!("over.{extension}")), source).unwrap();
         }
-        let repo = Repository::new(temp.path().to_path_buf());
+        let repo = Repository::new(temp.path().to_path_buf()).collecting_warnings();
         assert!(!repo.sync_config().unwrap().pull);
         let overlay = repo.get("app").unwrap();
         assert_eq!(overlay.target, "~/shared");
@@ -419,5 +439,6 @@ mod tests {
             temp.path().join("source")
         );
         assert_eq!(overlay.hooks.post_apply.len(), 1);
+        assert!(repo.warnings.warnings().is_empty());
     }
 }

@@ -19,10 +19,10 @@ data:
 ## Editor support
 
 Use the [overlay schema](https://noirbizarre.github.io/over/schemas/overlay.json) for intermediate and local
-descriptors. For YAML (`over.yaml` or `over.yml`), add this comment at the top:
+descriptors. For YAML (`over.yaml` or `over.yml`), set `$schema` at the top:
 
 ```yaml
-# yaml-language-server: $schema=https://noirbizarre.github.io/over/schemas/overlay.json
+$schema: https://noirbizarre.github.io/over/schemas/overlay.json
 description: Laptop configuration
 ```
 
