@@ -302,12 +302,14 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             })
             .collect();
 
+        let pause = ui::progress::pause()?;
         let selections = MultiSelect::with_theme(&DialogTheme::default())
             .with_prompt("Select properties to export to overlay config")
             .items(&labels)
             .defaults(&defaults)
             .interact()
             .map_err(|e| anyhow!("selection cancelled: {}", e))?;
+        drop(pause);
 
         if selections.is_empty() {
             ui::info(format!(

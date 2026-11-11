@@ -143,6 +143,7 @@ fn locked() -> anyhow::Error {
 }
 
 pub(crate) fn hidden_input(label: &str) -> Result<String> {
+    let _pause = crate::ui::progress::pause()?;
     // Stdin belongs to piped secret values, never to passphrase acquisition.
     if !std::io::stderr().is_terminal() {
         bail!(

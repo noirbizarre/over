@@ -3,7 +3,7 @@ Output docs/images/demo.gif
 
 Set Shell "bash"
 # Keep emoji coverage when overriding VHS's default font fallback chain.
-Set FontFamily "JetBrains Mono, Noto Color Emoji"
+Set FontFamily "JetBrains Mono, Symbols Nerd Font"
 Set FontSize 22
 Set Width 1000
 Set Height 620
@@ -21,7 +21,7 @@ Env XDG_CONFIG_HOME "/tmp/over-demo-home/.config"
 Env XDG_DATA_HOME "/tmp/over-demo-home/.local/share"
 Env XDG_CACHE_HOME "/tmp/over-demo-home/.cache"
 Env XDG_STATE_HOME "/tmp/over-demo-home/.local/state"
-Env PROMPT "demo@over:~$ "
+Env PROMPT "\e[34;2m~$\e[0m "
 Env LC_ALL "C.UTF-8"
 Env GIT_CONFIG_GLOBAL "/dev/null"
 Env GIT_CONFIG_NOSYSTEM "1"
@@ -74,41 +74,41 @@ Enter
 Type `cd "$HOME" && clear`
 Enter
 # VHS trims terminal-line whitespace before matching the prompt.
-Wait /demo@over:~\$$/
+Wait /\~\$$/
 Show
 Sleep 1s
 
 Type "over list --tree"
 Enter
-Wait /demo@over:~\$$/
+Wait /\~\$$/
 Sleep 3s
 
 Type "cat ~/.dotfiles/hosts/demo/over.toml"
 Enter
-Wait /demo@over:~\$$/
+Wait /\~\$$/
 Sleep 3s
 
 # Start a fresh scene so the preview and application both fit at readable size.
 Ctrl+l
 Type "over apply hosts/demo --dry-run"
 Enter
-Wait /demo@over:~\$$/
+Wait /\~\$$/
 Sleep 4s
 
 # Keep the final result visible without scrolling away the applied summary.
 Ctrl+l
 Type "over apply hosts/demo"
 Enter
-Wait /demo@over:~\$$/
+Wait /\~\$$/
 Sleep 4s
 
 Type "cat ~/.gitconfig"
 Enter
-Wait /demo@over:~\$$/
+Wait /\~\$$/
 Sleep 5s
 
 Hide
 # Leave the sandbox before removing it; teardown must never appear on camera.
 Type `cd /tmp && rm -rf -- "$HOME"`
 Enter
-Wait /demo@over:~\$$/
+Wait /\~\$$/

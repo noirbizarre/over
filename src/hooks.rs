@@ -395,6 +395,8 @@ pub async fn run(hooks: &Hooks, event: Event, context: HookContext<'_>) -> Resul
     if nested() || hooks.commands(event).is_empty() {
         return Ok(());
     }
+    // Preparation can unlock secrets, and children intentionally inherit the terminal.
+    let _pause = crate::ui::progress::pause()?;
     let absolute = |path: &Path| context.templates.absolute_path(path);
     for (index, hook) in hooks.commands(event).iter().enumerate() {
         let hook = hook.clone();

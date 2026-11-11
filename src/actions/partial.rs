@@ -377,6 +377,7 @@ fn resolve_structural_conflict(ctx: &Ctx, target: &Path) -> Result<bool> {
     }
     // No "loop back and ask again" choice exists here (unlike the block-
     // level conflict below, which has "Diff") — a single prompt suffices.
+    let _pause = ui::progress::pause()?;
     let prompt = format!(
         "Conflict: {} exists and isn't a plain file",
         style::yellow(short_path(&target.to_string_lossy())),
@@ -438,6 +439,7 @@ fn resolve_block_conflict(
             target.display()
         );
     }
+    let _pause = ui::progress::pause()?;
     loop {
         let prompt = format!(
             "Conflict: managed block '{}' in {} doesn't match",

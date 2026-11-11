@@ -494,15 +494,14 @@ impl Overlay {
         let target = self.resolve_target(ctx)?;
         // Match plan output's home-relative paths instead of leaking sandbox paths.
         let display_target = short_path(&target.to_string_lossy());
-        ui::info(format!(
+        let _progress = ctx.ui_progress.phase(format!(
             "{} {} {} {} {}",
             emojis::PACKAGE,
             style::white_b("Applying overlay"),
             style::cyan(&self.name),
             style::white_b("to"),
             style::cyan(&display_target),
-        ))
-        .ok();
+        ));
 
         // Preflight before clone-time reconciliation, then rebuild after
         // provisioning so no stale migration deletes a newly cloned repository.
@@ -553,13 +552,12 @@ impl Overlay {
         }
 
         ui::info(format!(
-            "{} {} {} {} {} {}",
-            emojis::SPARKLE,
+            "{} {} {} {} {}",
+            style::green("✔"),
             style::white_b("Applied overlay"),
             style::cyan(&self.name),
             style::white_b("to"),
             style::cyan(&display_target),
-            style::white_b("with success"),
         ))
         .ok();
 

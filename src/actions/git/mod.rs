@@ -18,7 +18,9 @@ use async_trait::async_trait;
 use futures::future::join_all;
 use git2::{Progress, Repository};
 use git2_credentials::CredentialHandler;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+#[cfg(test)]
+use indicatif::MultiProgress;
+use indicatif::{ProgressBar, ProgressStyle};
 use tokio::{
     spawn,
     sync::mpsc::{self, Sender},
@@ -35,13 +37,7 @@ use crate::ui::{self, emojis, style};
 pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Result<()> {
     let routing = overlay.resolve_mappings(&ctx)?;
     if let Some(git_repos) = &overlay.git {
-        ui::info(format!(
-            "{} {}",
-            emojis::THREAD,
-            style::white("Cloning repositories"),
-        ))
-        .ok();
-        let subctx = ctx.with_multiprogress(MultiProgress::new());
+        let _progress = ctx.ui_progress.phase("Cloning repositories");
         let results = join_all(git_repos.iter().map(|(path, repo_config)| {
             let target = if path == ROOT_PATH {
                 to.to_path_buf()
@@ -50,7 +46,7 @@ pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Resul
             };
             let repo_config = repo_config.clone();
             let overlay_name = overlay.name.clone();
-            let ctx = subctx.clone();
+            let ctx = ctx.clone();
             spawn(async move {
                 let action = EnsureGitRepository::new(target, repo_config, overlay_name);
                 action.execute(ctx).await
@@ -177,12 +173,11 @@ pub(crate) fn remove_legacy_materialization(path: &Path, source: Option<&Path>) 
 #[async_trait]
 impl Action for EnsureGitRepository {
     async fn execute(&self, ctx: Ctx) -> Result<()> {
-        let pb = ctx
-            .try_multiprogress()
-            .ok_or_else(|| anyhow!("MultiProgress not available for git clone"))?
-            .add(ProgressBar::new(100));
-        pb.set_style(CLONE_PROGRESS_STYLE.clone());
-        pb.set_prefix(self.short_name());
+        let progress = ctx.ui_progress.bar(100);
+        progress.update(|pb| {
+            pb.set_style(CLONE_PROGRESS_STYLE.clone());
+            pb.set_prefix(self.short_name());
+        });
 
         // For bare repos (worktree mode), repo_path is `path/.git` which is
         // specific enough. For normal repos, check for `.git` inside the
@@ -244,26 +239,19 @@ impl Action for EnsureGitRepository {
                     CloneMessage::Progress(pr) => state.progress = pr,
                     CloneMessage::Stats(s) => state.stats = s,
                 }
-                state.update_bar(&pb)?;
+                progress.update(|pb| state.update_bar(pb))?;
             }
 
             if let Err(e) = task.await? {
-                pb.println(format!("{} {}", emojis::CROSSMARK, e));
-                pb.abandon_with_message(format!("{} Failed", emojis::CROSSMARK));
+                ui::warn(format!("{} {}", emojis::CROSSMARK, e))?;
                 bail!(e);
             }
         }
 
-        if exists && !ctx.dry_run {
-            if ctx.verbose {
-                pb.set_style(DONE_PROGRESS_STYLE.clone());
-                pb.finish_with_message("Repository exists");
-            } else {
-                pb.finish_and_clear();
-            }
-        } else {
-            pb.finish_and_clear();
+        if exists && !ctx.dry_run && ctx.verbose {
+            ui::info(format!("{} Repository exists", self.short_name()))?;
         }
+        progress.update(ProgressBar::finish_and_clear);
 
         // Apply idempotent operations (remotes, worktrees, config) on both new and existing repos
         if !ctx.dry_run && repo_path.exists() {
@@ -674,11 +662,6 @@ static CLONE_PROGRESS_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
         .progress_chars(style::THIN_PROGRESS.as_str())
 });
 
-static DONE_PROGRESS_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
-    ProgressStyle::with_template("✅ {prefix}: {msg}")
-        .expect("static progress template must be valid")
-});
-
 /// Credential-enabled `RemoteCallbacks` shared by every git2 network
 /// operation (clone, and — via `sync.rs` — fetch/push): a fresh
 /// `git2::Config::open_default()` per call so the system/global credential
@@ -687,7 +670,12 @@ pub(crate) fn remote_callbacks<'cb>() -> Result<git2::RemoteCallbacks<'cb>> {
     let mut cb = git2::RemoteCallbacks::new();
     let git_config = git2::Config::open_default()?;
     let mut ch = CredentialHandler::new(git_config);
-    cb.credentials(move |url, username, allowed| ch.try_next_credential(url, username, allowed));
+    cb.credentials(move |url, username, allowed| {
+        // Credential helpers may fall back to terminal username/password prompts.
+        let _pause =
+            ui::progress::pause().map_err(|error| git2::Error::from_str(&error.to_string()))?;
+        ch.try_next_credential(url, username, allowed)
+    });
     Ok(cb)
 }
 
@@ -1791,7 +1779,6 @@ mod tests {
     fn progress_style_templates_initialize_without_panic() {
         // Dereference lazy statics to ensure they initialize without panic
         let _ = &*CLONE_PROGRESS_STYLE;
-        let _ = &*DONE_PROGRESS_STYLE;
     }
 
     // ── checkout_ref: lightweight tag ────────────────────────────────────

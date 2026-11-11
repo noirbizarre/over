@@ -119,6 +119,10 @@ pub struct Context {
     #[serde(skip)]
     pub progress: Option<Progress>,
 
+    /// Shared terminal UI survives context copies alongside legacy bar handles.
+    #[serde(skip)]
+    pub ui_progress: crate::ui::progress::Progress,
+
     #[serde(skip)]
     pub resolved_overlays: Arc<HashMap<String, String>>,
 }
@@ -168,6 +172,7 @@ pub struct ContextBuilder {
     machine: MachineInfo,
     data: DataMap,
     progress: Option<Progress>,
+    ui_progress: Option<crate::ui::progress::Progress>,
     resolved_overlays: Arc<HashMap<String, String>>,
 }
 
@@ -242,6 +247,12 @@ impl ContextBuilder {
         self
     }
 
+    /// Explicit sharing also works outside the CLI's process-scoped registration.
+    pub fn ui_progress(mut self, progress: crate::ui::progress::Progress) -> Self {
+        self.ui_progress = Some(progress);
+        self
+    }
+
     pub fn resolved_overlays(mut self, v: Arc<HashMap<String, String>>) -> Self {
         self.resolved_overlays = v;
         self
@@ -266,6 +277,9 @@ impl ContextBuilder {
             machine: self.machine,
             data: self.data,
             progress: self.progress,
+            ui_progress: self
+                .ui_progress
+                .unwrap_or_else(crate::ui::progress::current),
             resolved_overlays: self.resolved_overlays,
         })
     }

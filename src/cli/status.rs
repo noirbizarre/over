@@ -234,6 +234,7 @@ fn render_overlay(snapshot: &OverlayReport, verbose: bool) -> String {
 }
 
 fn write_output(output: &str) -> Result<()> {
+    let _pause = ui::progress::pause()?;
     // Even forced console color must not leak ANSI escapes into captured status.
     if !std::io::stdout().is_terminal() || std::env::var_os("NO_COLOR").is_some() {
         ui::info(console::strip_ansi_codes(output))

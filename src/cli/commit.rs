@@ -151,6 +151,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 /// the same "use the default" (never forces the user to type something
 /// just to accept the default).
 fn resolve_message(args: &Params, target: &std::path::Path) -> Result<Option<String>> {
+    let _pause = crate::ui::progress::pause()?;
     if let Some(message) = &args.message {
         return Ok(Some(message.clone()));
     }

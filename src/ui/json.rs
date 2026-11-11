@@ -30,6 +30,7 @@ pub(crate) fn print_json_with_context<T: Serialize>(
     value: &T,
     context: JsonErrorContext,
 ) -> Result<()> {
+    let _pause = super::progress::pause()?;
     let terminal = io::stdout().is_terminal();
     let colors = colors_allowed(
         terminal,

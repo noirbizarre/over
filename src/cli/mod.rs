@@ -149,6 +149,25 @@ pub async fn main() -> Result<()> {
 
     crate::ui::init_tracing(args.verbose, args.debug);
 
+    let progress_message = match &args.cmd {
+        Some(Commands::Apply(_)) => Some("Preparing overlays"),
+        Some(Commands::Lint(_)) => Some("Checking overlays"),
+        Some(Commands::Doctor(_)) => Some("Checking overlay health"),
+        Some(Commands::Status(_)) => Some("Inspecting overlays"),
+        Some(Commands::Sync(_)) => Some("Synchronizing overlays"),
+        Some(Commands::Unapply(_)) => Some("Unapplying overlay"),
+        Some(Commands::Restore(_)) => Some("Restoring overlay files"),
+        Some(Commands::Commit(_)) => Some("Recording overlay changes"),
+        Some(Commands::Init(_)) => Some("Initializing repository"),
+        Some(Commands::Add(_)) => Some("Adding overlay files"),
+        Some(Commands::New(_)) => Some("Creating overlay"),
+        Some(Commands::Diff(_)) => Some("Comparing overlay files"),
+        Some(Commands::Log(_)) => Some("Reading overlay history"),
+        Some(Commands::Git(_)) => Some("Inspecting git overlay"),
+        _ => None,
+    };
+    let _progress = progress_message.map(crate::ui::progress::Command::start);
+
     match args.cmd {
         Some(Commands::Secret(ref command)) => secret::execute(&args, command).await?,
         Some(Commands::Init(ref opt)) => {

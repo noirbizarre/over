@@ -172,6 +172,7 @@ fn add_symlink(
     }
     let default_target = imported_symlink_target(symlink_path, &overlay.root, ctx)?;
 
+    let pause = ui::progress::pause()?;
     let target: String = Input::with_theme(&DialogTheme::default())
         .with_prompt(format!(
             "Target for {}",
@@ -180,6 +181,7 @@ fn add_symlink(
         .default(default_target)
         .interact_text()
         .map_err(|e| anyhow!("target input cancelled: {}", e))?;
+    drop(pause);
 
     let link_config_name = rel_path.to_string_lossy();
     let config_path = overlay.root.join(format!("{}.link.toml", link_config_name));
