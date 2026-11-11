@@ -131,9 +131,9 @@ changes, `over restore --staged PATH` to unstage without changing target content
 or `over restore --source REV PATH` to recover historical content as an unstaged
 change. Restore overwrites selected content; preview with `--dry-run` first.
 
-Virtual checkout sync performs no network I/O. Syncing a root declared Git
-repository can fetch, merge, and push; nested declared repositories are provisioned
-but not synchronized by Over. Use [`status`](../usage/status.md) and
+Virtual checkout reconciliation performs no network I/O. `over sync` can optionally
+pull/rebase and push the Over source repository; all overlay-declared Git repositories
+remain independent working repositories managed with Git. Use [`status`](../usage/status.md) and
 [`diff`](../usage/diff.md) to inspect state before recording or reconciling it.
 
 Before changing mappings on an existing checkout, commit or resolve changes,

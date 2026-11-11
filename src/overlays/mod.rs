@@ -28,7 +28,7 @@ pub use data::{DataMap, DataValue};
 pub use discovery::OverlayDeclaration;
 pub use overlay::Overlay;
 pub use permissions::FileMode;
-pub use repository::Repository;
+pub use repository::{Repository, SyncConfig};
 pub use rules::{MaterializationKind, Rule};
 
 /// Overlay files search pattern

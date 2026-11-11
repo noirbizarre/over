@@ -1,5 +1,8 @@
-//! Bidirectional checkout synchronization (#110): `over sync`'s domain
-//! logic, driven by the CLI (`crate::cli::sync`).
+//! Local virtual-checkout reconciliation and separate declared-checkout synchronization.
+//!
+//! The CLI uses [`sync_local`] exclusively: overlay-declared Git repositories
+//! have independent, user-managed lifecycles (#231). The broader [`sync`] library
+//! entry point retains the original #110 behavior described below.
 //!
 //! Scope, matching the roadmap (#112): only an overlay's **root** `git`
 //! entry (`overlay.git["."]`, keyed by
@@ -42,7 +45,7 @@ use crate::xdg::state::StateFile;
 
 use state::{CheckoutRecord, SyncState};
 
-/// What `over sync` should attempt for every checkout it finds.
+/// Local reconciliation directions and options for checkout synchronization.
 #[derive(Debug, Clone, Copy)]
 pub struct SyncOptions {
     pub pull: bool,
@@ -238,12 +241,25 @@ struct SyncUnit {
 /// through [`SyncOptions`]. Never touches subpath `git` entries — those
 /// stay opaque resources, per this module's scope (see module doc).
 pub async fn sync(desired: &DesiredTree, opts: &SyncOptions) -> Result<Vec<SyncOutcome>> {
+    sync_entries(desired, opts, true).await
+}
+
+/// Reconcile local working copies without managing overlay-declared Git repositories.
+pub async fn sync_local(desired: &DesiredTree, opts: &SyncOptions) -> Result<Vec<SyncOutcome>> {
+    sync_entries(desired, opts, false).await
+}
+
+async fn sync_entries(
+    desired: &DesiredTree,
+    opts: &SyncOptions,
+    declared_checkouts: bool,
+) -> Result<Vec<SyncOutcome>> {
     let state_file: StateFile<SyncState> = state::state_file()?;
 
     let mut outcomes = Vec::new();
     for entry in desired.entries() {
         match &entry.intent {
-            MaterializationIntent::Checkout => {
+            MaterializationIntent::Checkout if declared_checkouts => {
                 let Provenance::Git { repo_key, .. } = &entry.provenance else {
                     unreachable!(
                         "Checkout entries only ever carry Provenance::Git \

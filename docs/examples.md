@@ -246,7 +246,8 @@ over sync workspace/client --dry-run
 
 Add stages a target snapshot; commit records **only staged changes** in the source
 repository. Further unstaged target edits stay outside that commit. Sync reconciles
-source and target locally, without fetching or pushing a remote.
+source and target locally by default. Use `over sync --pull --push` to fetch/rebase
+the Over source repository first and push its commits after successful reconciliation.
 
 To discard or recover a selected file instead of committing it:
 

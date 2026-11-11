@@ -32,7 +32,7 @@ workflows.
 
 | Command | When to use it |
 | --- | --- |
-| [`over sync`](sync.md) | Reconcile a checkout-materialized overlay with its git source |
+| [`over sync`](sync.md) | Reconcile virtual checkouts locally, optionally pulling/pushing the Over source repository |
 | [`over commit`](commit.md) | Record staged checkout changes in the source repository |
 | [`over restore`](restore.md) | Discard selected changes, unstage files, or recover historical content |
 | [`over log`](log.md) | Show the git history behind a checkout-materialized overlay |

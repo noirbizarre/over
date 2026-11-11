@@ -342,9 +342,10 @@ git:
     fetch.prune: "true"
 ```
 
-Apply provisions repositories and their configuration. Sync handles root `"."`
-entries/worktrees; nested entries are provisioning-only and must be managed with
-ordinary Git. See [`over sync`](../usage/sync.md).
+Apply provisions repositories and their configuration. Manage all declared
+repositories, including root `"."` entries and worktrees, with ordinary Git.
+[`over sync`](../usage/sync.md) reconciles virtual checkouts and optionally
+synchronizes the Over source repository instead.
 
 ## Install configuration
 

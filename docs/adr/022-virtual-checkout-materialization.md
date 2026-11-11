@@ -33,7 +33,9 @@ This is easy to conflate with existing concepts, so the boundary matters:
 - `overlay.git` + `MaterializationIntent::Checkout` +
   `CheckoutMaterializer` (#110, ADR-014) is a **real `git clone`** of a
   (possibly unrelated) declared repository, with a normal, visible `.git`
-  at the target. `over sync` fetches/merges/pushes it against a remote.
+  at the target. Its Git lifecycle is user-managed; #231 supersedes ADR-014's
+  original declared-checkout `over sync` workflow. Optional remote sync now
+  operates only on the Over source repository, around local reconciliation.
   This is a resource an overlay *declares*, whether at its root or a
   subpath (ADR-021 further splits root vs. declared for status/diff).
 - Issue #141's "virtual checkout" has neither of those: no `.git` ever

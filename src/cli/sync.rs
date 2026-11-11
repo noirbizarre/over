@@ -4,10 +4,11 @@ use anyhow::{Result, anyhow, bail};
 use clap::Args;
 use dirs::home_dir;
 
+use crate::actions::git::source_sync::SourceRepository;
 use crate::cli::CLI;
 use crate::desired::DesiredTree;
 use crate::exec::Context;
-use crate::overlays::{Overlay, Repository};
+use crate::overlays::{Overlay, Repository, SyncConfig};
 use crate::sync::{self, SyncOptions, SyncOutcome};
 use crate::ui;
 use crate::ui::{emojis, style};
@@ -42,23 +43,47 @@ pub struct Params {
 
     #[clap(
         long,
+        conflicts_with = "no_pull",
+        help = "Fetch and rebase the Over source repository before local sync"
+    )]
+    pull: bool,
+
+    #[clap(
+        long,
+        conflicts_with = "pull",
+        help = "Disable source-repository pull for this invocation"
+    )]
+    no_pull: bool,
+
+    #[clap(
+        long,
+        conflicts_with = "no_push",
+        help = "Push existing source-repository commits after successful local sync"
+    )]
+    push: bool,
+
+    #[clap(
+        long,
+        conflicts_with = "push",
+        help = "Disable source-repository push for this invocation"
+    )]
+    no_push: bool,
+
+    #[clap(
+        long,
         conflicts_with = "push_only",
-        help = "Only pull upstream changes into the checkout"
+        help = "Only refresh virtual checkouts from the local source"
     )]
     pull_only: bool,
 
     #[clap(
         long,
         conflicts_with = "pull_only",
-        help = "Only push local commits to the overlay source"
+        help = "Only record virtual-checkout changes in the local source"
     )]
     push_only: bool,
 
-    // Deliberately has no effect on `SyncOptions`: a plain re-run of `over
-    // sync` already behaves identically once conflicts are resolved (git's
-    // own `repo.state()` is what's actually being "continued", not any
-    // over-side flag) — kept purely for discoverability/intent-signaling,
-    // per #110's ask for an explicit `sync --continue` workflow.
+    // Native Git owns recovery state; this legacy flag is only a rerun alias.
     #[clap(
         long = "continue",
         conflicts_with = "abort",
@@ -68,7 +93,7 @@ pub struct Params {
 
     #[clap(
         long,
-        help = "Abort an in-progress merge, discarding uncommitted tracked/index changes"
+        help = "Report no abortable virtual-checkout operation; resolve source rebases with Git"
     )]
     abort: bool,
 
@@ -83,6 +108,13 @@ pub struct Params {
 }
 
 impl Params {
+    fn source_options(&self, config: SyncConfig) -> SyncConfig {
+        SyncConfig {
+            pull: self.pull || (config.pull && !self.no_pull),
+            push: self.push || (config.push && !self.no_push),
+        }
+    }
+
     fn options(&self) -> SyncOptions {
         SyncOptions {
             pull: !self.push_only,
@@ -99,8 +131,45 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         tracing::debug!(?cli, ?args, "CLI args");
     }
 
+    // This retained flag must not trigger unrelated configured remote mutations.
+    if args.abort {
+        bail!(
+            "no abortable sync operation; resolve source rebases with `git rebase --abort` (or `git rebase --continue`), then rerun `over sync`"
+        );
+    }
+
     let home = cli.resolve_home()?;
+    // Check Git state before parsing a descriptor that may contain rebase conflicts.
+    let source = SourceRepository::discover(home.clone()).await?;
     let repo = Repository::new(home);
+    let remote = args.source_options(repo.sync_config()?);
+    let upstream = if remote.pull || remote.push {
+        Some(
+            source
+                .as_ref()
+                .ok_or_else(|| {
+                    anyhow!("source synchronization requires a Git worktree containing OVER_HOME")
+                })?
+                .upstream()
+                .await?,
+        )
+    } else {
+        None
+    };
+    if remote.pull {
+        let source = source
+            .as_ref()
+            .expect("upstream validation requires a source");
+        if args.dry_run {
+            ui::info("Would fetch and rebase the Over source repository (remote state may have changed since the last fetch).").ok();
+        } else {
+            source
+                .pull(upstream.as_ref().expect("validated upstream"))
+                .await?;
+            // Re-read even for explicit/--all selections, which otherwise might miss an invalid root.
+            repo.sync_config()?;
+        }
+    }
     let root = args
         .root
         .clone()
@@ -109,7 +178,10 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let overlays = match (&args.name, args.all) {
         (Some(name), _) => vec![repo.get(name)?],
-        (None, true) => repo.overlays()?,
+        (None, true) => repo
+            .inspect_overlays()?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?,
         (None, false) => {
             let ctx = Context::builder()
                 .root(root.clone())
@@ -119,14 +191,16 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 .await??
             {
                 Some(overlay) => vec![overlay],
-                None => repo.overlays()?,
+                None => repo
+                    .inspect_overlays()?
+                    .into_iter()
+                    .collect::<Result<Vec<_>>>()?,
             }
         }
     };
 
     if overlays.is_empty() {
         ui::info("No overlays found.").ok();
-        return Ok(());
     }
 
     let opts = args.options();
@@ -137,6 +211,20 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     if needs_attention {
         bail!("one or more checkouts need attention — see `conflict`/`blocked` entries above");
+    }
+    if remote.push {
+        if args.dry_run {
+            ui::info(
+                "Would push existing Over source commits after successful local reconciliation.",
+            )
+            .ok();
+        } else {
+            source
+                .as_ref()
+                .expect("validated source")
+                .push(upstream.as_ref().expect("validated upstream"))
+                .await?;
+        }
     }
     Ok(())
 }
@@ -162,7 +250,7 @@ async fn sync_overlay(
     // Full `uses` graph (not `build_own`): sync reconciles everything an
     // overlay pulls in, exactly like `status`/`diff`/`Overlay::apply` do.
     let desired = DesiredTree::build(&ctx, overlay)?;
-    let outcomes = sync::sync(&desired, opts).await?;
+    let outcomes = sync::sync_local(&desired, opts).await?;
 
     if outcomes.is_empty() {
         if cli.verbose {
@@ -171,7 +259,7 @@ async fn sync_overlay(
                 emojis::PACKAGE,
                 style::white_b("Overlay"),
                 style::cyan(&overlay.name),
-                style::white("has no checkout-materialized root entry"),
+                style::white("has no virtual checkout to reconcile"),
             ))
             .ok();
         }
@@ -259,6 +347,10 @@ mod tests {
             root: Some(root),
             no_uses: false,
             all: false,
+            pull: false,
+            no_pull: false,
+            push: false,
+            no_push: false,
             pull_only: false,
             push_only: false,
             continue_: false,
@@ -442,6 +534,38 @@ mod tests {
         assert!(opts.push);
         assert!(!opts.abort);
         assert!(!opts.dry_run);
+    }
+
+    #[rstest::rstest]
+    fn source_overrides_are_independent(
+        #[values(false, true)] pull: bool,
+        #[values(false, true)] push: bool,
+        #[values(None, Some(true), Some(false))] pull_override: Option<bool>,
+        #[values(None, Some(true), Some(false))] push_override: Option<bool>,
+    ) {
+        let mut p = params(None, PathBuf::new());
+        p.pull = pull_override == Some(true);
+        p.no_pull = pull_override == Some(false);
+        p.push = push_override == Some(true);
+        p.no_push = push_override == Some(false);
+        assert_eq!(
+            p.source_options(SyncConfig { pull, push }),
+            SyncConfig {
+                pull: pull_override.unwrap_or(pull),
+                push: push_override.unwrap_or(push),
+            }
+        );
+    }
+
+    #[rstest::rstest]
+    #[case(&["--pull", "--no-pull"])]
+    #[case(&["--push", "--no-push"])]
+    #[case(&["--fetch"])]
+    #[case(&["--no-fetch"])]
+    fn contradictory_or_unsupported_remote_flags_are_rejected(#[case] flags: &[&str]) {
+        assert!(
+            CLI::try_parse_from(["over", "sync"].into_iter().chain(flags.iter().copied())).is_err()
+        );
     }
 
     #[test]

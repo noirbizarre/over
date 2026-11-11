@@ -14,7 +14,7 @@ overlays:
   - path: apps/*
 ```
 
-`format`, `repository`, `default_overlay`, and `overlays` are root-only settings.
+`format`, `repository`, `sync`, `default_overlay`, and `overlays` are root-only settings.
 Root hooks are also repository-scoped. Ordinary [overlay fields](overlay.md),
 such as `target`, `data`, `map`, and materialization rules, may appear here as
 inherited policy; they are not additional repository preferences.
@@ -45,6 +45,35 @@ to the canonical remote. With no field, it preserves the cloned origin. Existing
 checkouts require confirmation or `--set-origin` before changing origin.
 Explicit origin push URLs are preserved. Init validates or clones a repository;
 it does not create an empty project or apply overlays.
+
+## Source synchronization
+
+Opt into remote operations for [`over sync`](../usage/sync.md) in the root descriptor:
+
+```toml
+[sync]
+pull = false
+push = false
+```
+
+The equivalent YAML is:
+
+```yaml
+sync:
+  pull: false
+  push: false
+```
+
+Both keys default to `false`, including when the table or either key is omitted.
+`pull = true` fetches and rebases the current source branch onto its configured
+upstream before fresh overlay selection and local reconciliation. `push = true`
+publishes existing source commits to that upstream after successful reconciliation.
+Neither remote operation stages or commits changes. These settings apply only to
+the Git repository containing `OVER_HOME`, never overlay-declared repositories.
+
+`--pull` / `--no-pull` and `--push` / `--no-push` independently override their
+corresponding settings. Policy is resolved once before pull; updated remote
+defaults take effect on the next invocation. Dry-run performs no remote operation.
 
 ## Default overlay selection
 

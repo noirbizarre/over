@@ -438,8 +438,10 @@ fn virtual_sync_preview_preserves_filtered_objects_indexes_targets_and_state() {
     assert_eq!(snapshot(fixture.temp.path()), before);
 }
 
-#[test]
-fn abort_preview_preserves_the_conflicted_merge_and_all_user_edits() {
+#[rstest]
+fn sync_preserves_merge_state_and_user_edits_in_declared_repositories(
+    #[values(false, true)] dry_run: bool,
+) {
     let fixture = Fixture::new("");
     let repo = fixture.real_checkout();
     fs::write(fixture.target().join("file"), "local\n").unwrap();
@@ -447,26 +449,31 @@ fn abort_preview_preserves_the_conflicted_merge_and_all_user_edits() {
     let origin = Repository::open(fixture.temp.path().join("origin")).unwrap();
     fs::write(origin.workdir().unwrap().join("file"), "upstream\n").unwrap();
     commit_all(&origin);
-    fixture
-        .command("sync")
-        .arg("--pull-only")
-        .assert()
-        .failure();
+    repo.find_remote("origin")
+        .unwrap()
+        .fetch(&[] as &[&str], None, None)
+        .unwrap();
+    let fetched = repo.find_reference("FETCH_HEAD").unwrap();
+    let upstream = repo.reference_to_annotated_commit(&fetched).unwrap();
+    repo.merge(&[&upstream], None, None).unwrap();
     assert_eq!(repo.state(), git2::RepositoryState::Merge);
     fs::write(fixture.target().join("unrelated"), "keep this too").unwrap();
     let before = snapshot(fixture.temp.path());
-    fixture
-        .command("sync")
-        .args(["--abort", "--dry-run"])
+    let mut command = fixture.command("sync");
+    command.arg("--abort");
+    if dry_run {
+        command.arg("--dry-run");
+    }
+    command
         .assert()
-        .success()
-        .stdout(contains("would abort"));
+        .failure()
+        .stderr(contains("no abortable sync operation"));
     assert_eq!(snapshot(fixture.temp.path()), before);
     assert_eq!(repo.state(), git2::RepositoryState::Merge);
 }
 
 #[test]
-fn abort_refuses_an_unrelated_cherry_pick_operation() {
+fn sync_preserves_cherry_pick_state_in_declared_repositories() {
     let fixture = Fixture::new("");
     let repo = fixture.real_checkout();
     fs::write(
@@ -480,7 +487,7 @@ fn abort_refuses_an_unrelated_cherry_pick_operation() {
         .arg("--abort")
         .assert()
         .failure()
-        .stdout(contains("only an in-progress merge"));
+        .stderr(contains("no abortable sync operation"));
     assert_eq!(snapshot(&fixture.home), before);
 }
 
