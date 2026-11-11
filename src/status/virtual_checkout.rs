@@ -27,16 +27,36 @@ use super::Status;
 /// Aggregate [`Status`] for a virtual checkout entry — see the module doc
 /// for the 3-way comparison this reduces to a single value from.
 pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
+    Ok(inspect_with_details(entry, false)?.status)
+}
+
+pub(crate) struct Inspection {
+    pub status: Status,
+    pub staged: Vec<FileChange>,
+    pub unstaged: Vec<FileChange>,
+}
+
+pub(crate) fn inspect_tracked(entry: &DesiredEntry) -> Result<Inspection> {
+    // Status reports overlay ownership; destructive/sync callers retain the
+    // broader discovery in inspect so ignoring additions cannot make removal safe.
+    inspect_with_details(entry, true)
+}
+
+fn inspect_with_details(entry: &DesiredEntry, tracked_only: bool) -> Result<Inspection> {
     let Some(record) = state::record_for_blocking(&entry.target)? else {
         // No recorded association: `VirtualCheckoutMaterializer::classify`
         // would have produced `Create`/`Migrate` for this, never `Noop` —
         // reachable here only if the target was removed/state lost after
         // classification (a race, or manual XDG state deletion). Mirror
         // `status::git::inspect_checkout`'s own `Missing`/`Broken` split.
-        return Ok(if entry.target.exists() {
-            Status::Broken
-        } else {
-            Status::Missing
+        return Ok(Inspection {
+            status: if entry.target.exists() {
+                Status::Broken
+            } else {
+                Status::Missing
+            },
+            staged: Vec::new(),
+            unstaged: Vec::new(),
         });
     };
 
@@ -55,48 +75,69 @@ pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
     let base_entries = git::scoped_entries(&repo, &base_tree, &managed_path, &scope)?;
     let base_blobs = blob_ids(&base_entries);
 
-    let local_changes =
-        git::diff_canonical_target(&repo, &managed_path, &entry.target, &base_entries, &scope)?;
-
     let head_tree = git::base_tree(&repo, None)?;
     let head_entries = git::scoped_entries(&repo, &head_tree, &managed_path, &scope)?;
     let head_blobs = blob_ids(&head_entries);
+
+    let (local_changes, unstaged) = if tracked_only {
+        let index = indexed_entries(&repo, &managed_path, &scope)?;
+        // The union preserves staged additions and historical deletions without
+        // traversing unrelated working trees nested beneath the checkout.
+        let local = git::tracked_target_entries(
+            &repo,
+            &managed_path,
+            &entry.target,
+            &[&base_entries, &head_entries, &index],
+        )?;
+        (
+            git::entry_changes(&base_entries, &local),
+            git::entry_changes(&index, &local),
+        )
+    } else {
+        (
+            git::diff_canonical_target(&repo, &managed_path, &entry.target, &base_entries, &scope)?,
+            Vec::new(),
+        )
+    };
 
     // Include executable-bit drift, as the previous filtered-tree comparison did.
     let source_drifted = head_entries != base_entries;
 
     let staged = git::staged_changes(&repo, &managed_path, &scope)?;
-    Ok(
-        match (
-            local_changes.is_empty() && staged.is_empty(),
-            source_drifted,
-        ) {
-            (true, false) => Status::Applied,
-            (false, false) => Status::Modified,
-            (true, true) => {
-                // `commits_between` needs commits, not trees, to walk history.
+    let status = match (
+        local_changes.is_empty() && staged.is_empty(),
+        source_drifted,
+    ) {
+        (true, false) => Status::Applied,
+        (false, false) => Status::Modified,
+        (true, true) => {
+            // `commits_between` needs commits, not trees, to walk history.
+            let base_commit = repo.find_commit(Oid::from_str(&record.base_oid)?)?;
+            let head_commit = repo.head()?.peel_to_commit()?;
+            Status::Behind(git::commits_between(
+                &repo,
+                base_commit.id(),
+                head_commit.id(),
+            )?)
+        }
+        (false, true) => {
+            if conflicting_paths(&base_blobs, &head_blobs, &local_changes).is_empty() {
                 let base_commit = repo.find_commit(Oid::from_str(&record.base_oid)?)?;
                 let head_commit = repo.head()?.peel_to_commit()?;
-                Status::Behind(git::commits_between(
-                    &repo,
-                    base_commit.id(),
-                    head_commit.id(),
-                )?)
-            }
-            (false, true) => {
-                if conflicting_paths(&base_blobs, &head_blobs, &local_changes).is_empty() {
-                    let base_commit = repo.find_commit(Oid::from_str(&record.base_oid)?)?;
-                    let head_commit = repo.head()?.peel_to_commit()?;
-                    Status::Diverged {
-                        ahead: local_changes.len(),
-                        behind: git::commits_between(&repo, base_commit.id(), head_commit.id())?,
-                    }
-                } else {
-                    Status::Conflict
+                Status::Diverged {
+                    ahead: local_changes.len(),
+                    behind: git::commits_between(&repo, base_commit.id(), head_commit.id())?,
                 }
+            } else {
+                Status::Conflict
             }
-        },
-    )
+        }
+    };
+    Ok(Inspection {
+        status,
+        staged,
+        unstaged,
+    })
 }
 
 /// Paths that changed both locally and in the source repository since
@@ -181,10 +222,19 @@ pub(crate) fn unstaged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> 
     };
     let (repo, managed) = git::discover_source(source)?;
     let scope = entry.intent.checkout_scope();
+    let blobs = indexed_entries(&repo, &managed, &scope)?;
+    git::diff_canonical_target(&repo, &managed, &entry.target, &blobs, &scope)
+}
+
+fn indexed_entries(
+    repo: &git2::Repository,
+    managed: &std::path::Path,
+    scope: &crate::desired::CheckoutScope,
+) -> Result<BTreeMap<PathBuf, (Oid, i32)>> {
     let mut blobs = BTreeMap::new();
     for indexed in repo.index()?.iter() {
         let path = std::path::Path::new(std::str::from_utf8(&indexed.path)?);
-        if let Ok(relative) = path.strip_prefix(&managed)
+        if let Ok(relative) = path.strip_prefix(managed)
             && scope.owns_source(relative)
             && scope.owns_target(relative)
             && !git::is_overlay_metadata(relative)
@@ -193,7 +243,7 @@ pub(crate) fn unstaged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> 
             blobs.insert(relative.to_path_buf(), (indexed.id, indexed.mode as i32));
         }
     }
-    git::diff_canonical_target(&repo, &managed, &entry.target, &blobs, &scope)
+    Ok(blobs)
 }
 
 /// Paths that changed both locally (since `base`) and in the source

@@ -50,6 +50,19 @@ dependencies in composition order, directory mappings with resolved destinations
 materialization baseline and rule count, declared Git destinations, and
 lifecycle-hook counts including install. These describe intent even when targets are missing.
 
+Dependencies and composition are displayed vertically, one overlay per line;
+composition retains dependency-first evaluation order. Git declarations show
+configuration and contributing scope on indented lines. Entry provenance uses
+separate overlay, source, scope and mode lines.
+
+Headings and keys are bold white; paths are green, overlay names blue, modes
+yellow and scope annotations dimmed. Nonzero reconciliation counts and entry
+labels share severity colors: applied is green, changes and missing entries
+yellow, and broken entries or conflicts red. Zero counts stay neutral.
+
+Unknown-key warnings are available through [`over lint`](lint.md) and
+[`over doctor`](doctor.md), rather than appearing before status reports.
+
 Use `--verbose` to expand dependency configuration, policy scopes, selectors,
 permissions and excludes in cascade order. Scopes name their declaring descriptor;
 mapping origins name their declaration directory. Git summaries name
@@ -88,7 +101,7 @@ resolved configuration and whether it is healthy.
 
 ## Reconciliation states
 
-Each entry is classified into one of 8 health statuses. `over diff` shares
+Each entry is classified into one of these health statuses. `over diff` shares
 desired-state selection but presents Git changes independently of health:
 
 | Status | Meaning |
@@ -101,6 +114,7 @@ desired-state selection but presents Git changes independently of health:
 | `Ahead` | A git checkout is ahead of its upstream. |
 | `Behind` | A git checkout is behind its upstream. |
 | `Diverged` | A git checkout has diverged from its upstream. |
+| `Locked` | Encrypted content requires unlocking before it can be verified. |
 
 Without `--verbose`, only entries other than `Applied` are printed; pass
 `--verbose` to also print unchanged entries.
@@ -146,6 +160,12 @@ Its status is computed against the checkout's recorded base revision —
 not by inspecting a real git working tree, since there isn't one at the
 target:
 
+Only paths tracked in the overlay's recorded base, current source HEAD or source
+index are inspected. Status does not crawl the target for additions: unrelated
+target files and mounted repositories' own files are ignored. Explicitly tracked
+overlay files inside a mounted repository are still checked. Use `over add` to
+select target additions for the overlay; `over diff` can preview them.
+
 | Status | Meaning |
 |--------|---------|
 | `Applied` | No local edits, and the source repository hasn't moved since the checkout was last materialized/synced/committed. |
@@ -177,7 +197,8 @@ adopts identical files without prompting. For actual path collisions it offers:
 
 File/directory collisions are resolved as one group; keeping an obstructing file
 also keeps it in place instead of creating files beneath it. Existing extra files
-in the selected checkout scope appear as local additions. `--force` overwrites
+in the selected checkout scope can be selected as additions with `over add`;
+they do not affect status until tracked in the source index. `--force` overwrites
 eligible collisions; `--no-prompt` fails on unresolved collisions. Dry-run previews
 without prompting. Mapping holes and protected checkout boundaries remain protected.
 

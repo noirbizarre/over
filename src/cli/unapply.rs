@@ -99,14 +99,14 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     ui::info(format!(
         "{} {} {} {} {}",
         emojis::PACKAGE,
-        style::white_b(if ctx.dry_run {
+        style::heading(if ctx.dry_run {
             "Unapply preview for overlay"
         } else {
             "Overlay"
         }),
-        style::cyan(&overlay.name),
+        style::overlay(&overlay.name),
         style::white_b("->"),
-        style::cyan(&short_path(&target.to_string_lossy())),
+        style::path(short_path(&target.to_string_lossy())),
     ))
     .ok();
     ui::info(format!("  {}", report.counts())).ok();
