@@ -26,7 +26,7 @@ The report is split into four sections:
 |---|---|---|
 | Environment | doctor itself | `git` on `PATH`, the XDG state directory is writable. |
 | Overlay configuration | `over lint` | Every overlay descriptor issue `over lint` would report. |
-| Git-exclude | `over status` | `.git/info/exclude` drift for overlay-managed paths (the same diagnostics [`over status`](status.md) reports). |
+| Git exclusions | Git exclusion diagnostics | `.git/info/exclude` drift for desired overlay artifacts that currently exist on disk. |
 | XDG state | doctor itself | Stale `over sync`/virtual-checkout bookkeeping records (a target that no longer exists, or an overlay that no longer resolves). |
 
 Without `--verbose`, only findings that need attention are shown; a section
@@ -34,10 +34,18 @@ with nothing to report prints "No issues found". `over doctor` exits
 non-zero only when a finding's severity is `Error` — a warning (drift that
 self-heals on the next `over apply`, or a stale bookkeeping record) never
 fails the process, mirroring `over lint`'s "errors fail, warnings don't"
-contract.
+contract. Overlay configuration uses the same grouped overlay/file layout as
+`over lint`, with configuration warnings included once in that section.
+
+Git exclusions are checked only for desired artifact paths that exist, including
+dangling symlinks. Unapplied files do not require exclusions. This is an existence
+check, not proof of ownership of an existing target. In contrast,
+[`over status`](status.md) and `over apply` use the full desired target set.
+Existing orphaned or malformed blocks can still be diagnosed when no artifacts
+remain in a reachable repository.
 
 Unlike [`over status`](status.md)/[`over diff`](diff.md)/[`over
-sync`](sync.md), `NAME` here only narrows the Git-exclude section to a
+sync`](sync.md), `NAME` here only narrows the Git exclusions section to a
 single overlay's managed targets — Overlay configuration and XDG state
 always cover every overlay in the repository. A configured
 `default_overlay` does not select doctor's targets, and there is no `--all`
@@ -79,6 +87,7 @@ next `over apply` — it stays stuck until repaired, which is why it's the
 one exclude finding severe enough to fail `over doctor` on its own.
 
 Repair strips the stray marker line(s) and appends a fresh, well-formed
-block with the current expected content — it never touches any other block,
+block with exclusions for currently existing artifacts; if none remain, it
+removes the stray markers without adding a block. It never touches any other block,
 any hand-written content, or any of `over`'s own drifted-but-well-formed
 blocks. See [ADR-024](../adr/024-doctor-aggregates-diagnostics-and-repairs-only-its-own-corruption.md).

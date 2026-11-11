@@ -846,7 +846,140 @@ fn doctor_reports_lint_errors_and_exits_nonzero() -> TestResult {
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .failure()
-        .stdout(contains("error"));
+        .stdout(contains("error"))
+        .stderr(contains("skipping badly formatted overlay").not());
+    Ok(())
+}
+
+#[test]
+fn doctor_renders_configuration_like_lint_without_duplicate_warnings() -> TestResult {
+    let tmp = TempDir::new()?;
+    let source = tmp.path().join("source");
+    let target = tmp.path().join("target");
+    fs::create_dir_all(&target)?;
+    for name in ["alpha", "beta"] {
+        let overlay = source.join(name);
+        fs::create_dir_all(&overlay)?;
+        fs::write(
+            overlay.join("over.toml"),
+            format!("target = '~/{}'\ntargt = 'typo'\n", name),
+        )?;
+    }
+    let run = |verb: &str| -> Result<std::process::Output, Box<dyn Error>> {
+        let assertion = Command::cargo_bin("over")?
+            .arg("--home")
+            .arg(&source)
+            .args([verb, "--target"])
+            .arg(&target)
+            .env("NO_COLOR", "1")
+            .env("XDG_STATE_HOME", tmp.path().join("state"))
+            .assert()
+            .success()
+            .stderr(contains("unknown key").not());
+        Ok(assertion.get_output().clone())
+    };
+    let lint = String::from_utf8(run("lint")?.stdout)?;
+    let doctor = String::from_utf8(run("doctor")?.stdout)?;
+    let configuration = doctor
+        .split_once("Overlay configuration\n")
+        .unwrap()
+        .1
+        .split_once("Git exclusions")
+        .unwrap()
+        .0;
+    // Section nesting may add indentation, but overlay/file grouping must be identical.
+    let configuration: Vec<_> = configuration
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.contains('🔗'))
+        .map(|line| line.strip_prefix("  ").unwrap())
+        .collect();
+    let lint_body: Vec<_> = lint
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.ends_with(" found"))
+        .collect();
+    assert_eq!(configuration, lint_body);
+    assert_eq!(doctor.matches("unknown key").count(), 2);
+    assert!(doctor.contains("2 warnings found"));
+    Ok(())
+}
+
+#[rstest]
+#[case::invalid_root(
+    "this is not valid toml [[[",
+    "ignoring unreadable repository root config"
+)]
+#[case::invalid_declaration(
+    "overlays = [{path = 'hosts/['}]",
+    "invalid overlays declaration pattern"
+)]
+fn doctor_keeps_discovery_errors_in_the_configuration_section(
+    #[case] descriptor: &str,
+    #[case] runtime_warning: &str,
+) -> TestResult {
+    let tmp = TempDir::new()?;
+    let source = tmp.path().join("source");
+    let target = tmp.path().join("target");
+    fs::create_dir_all(source.join("child"))?;
+    fs::create_dir_all(&target)?;
+    fs::write(source.join("over.toml"), descriptor)?;
+    fs::write(source.join("child/over.toml"), "target = '~'\n")?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&source)
+        .args(["doctor", "--target"])
+        .arg(&target)
+        .env("XDG_STATE_HOME", tmp.path().join("state"))
+        .assert()
+        .failure()
+        .stdout(contains("Overlay configuration"))
+        .stdout(contains("error:"))
+        .stderr(contains(runtime_warning).not())
+        .stderr(contains("skipping badly formatted overlay").not());
+    Ok(())
+}
+
+#[test]
+fn doctor_does_not_require_exclusions_before_artifacts_exist() -> TestResult {
+    let tmp = TempDir::new()?;
+    let source = tmp.path().join("source");
+    let overlay = source.join("dotfiles");
+    let target = tmp.path().join("target");
+    fs::create_dir_all(&overlay)?;
+    fs::write(overlay.join("over.toml"), "target = '~'\n")?;
+    fs::write(overlay.join("file.txt"), "content")?;
+    let repo = git2::Repository::init(&target)?;
+    let exclude = repo.path().join("info/exclude");
+    let before = fs::read(&exclude)?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&source)
+        .args(["doctor", "--target"])
+        .arg(&target)
+        .env("XDG_STATE_HOME", tmp.path().join("state"))
+        .assert()
+        .success()
+        .stdout(contains("Git exclusions"))
+        .stdout(contains("exclude missing").not());
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&source)
+        .args(["status", "dotfiles", "--target"])
+        .arg(&target)
+        .env("XDG_STATE_HOME", tmp.path().join("state"))
+        .assert()
+        .stdout(contains("exclude missing"));
+    assert_eq!(fs::read(&exclude)?, before);
+    fs::write(target.join("file.txt"), "content")?;
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&source)
+        .args(["doctor", "--target"])
+        .arg(&target)
+        .env("XDG_STATE_HOME", tmp.path().join("state"))
+        .assert()
+        .success()
+        .stdout(contains("exclude missing"));
+    assert_eq!(fs::read(&exclude)?, before);
     Ok(())
 }
 
@@ -887,8 +1020,12 @@ fn doctor_reports_malformed_exclude_block_and_exits_nonzero() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn doctor_fix_repairs_malformed_exclude_block_and_exits_zero() -> TestResult {
+#[rstest]
+#[case::unapplied(false)]
+#[case::existing(true)]
+fn doctor_fix_repairs_malformed_blocks_without_excluding_absent_artifacts(
+    #[case] existing: bool,
+) -> TestResult {
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
     let root = TempDir::new()?;
@@ -899,6 +1036,9 @@ fn doctor_fix_repairs_malformed_exclude_block_and_exits_zero() -> TestResult {
     fs::create_dir_all(&ov)?;
     fs::write(ov.join("over.toml"), b"target = \"~\"")?;
     fs::write(ov.join("file.txt"), b"content")?;
+    if existing {
+        fs::write(target.join("file.txt"), b"content")?;
+    }
 
     let exclude_path = target.join(".git/info/exclude");
     fs::create_dir_all(exclude_path.parent().unwrap())?;
@@ -917,8 +1057,15 @@ fn doctor_fix_repairs_malformed_exclude_block_and_exits_zero() -> TestResult {
         .stdout(contains("repaired malformed"));
 
     let content = fs::read_to_string(&exclude_path)?;
-    assert!(content.contains("# >>> over: exclude:dotfiles >>>"));
-    assert!(content.contains("# <<< over: exclude:dotfiles <<<"));
+    assert_eq!(
+        content.contains("# >>> over: exclude:dotfiles >>>"),
+        existing
+    );
+    assert_eq!(
+        content.contains("# <<< over: exclude:dotfiles <<<"),
+        existing
+    );
+    assert_eq!(content.contains("/file.txt"), existing);
     Ok(())
 }
 
@@ -934,6 +1081,7 @@ fn doctor_fix_never_touches_a_merely_modified_block() -> TestResult {
     fs::create_dir_all(&ov)?;
     fs::write(ov.join("over.toml"), b"target = \"~\"")?;
     fs::write(ov.join("file.txt"), b"content")?;
+    fs::write(target.join("file.txt"), b"content")?;
 
     let exclude_path = target.join(".git/info/exclude");
     fs::create_dir_all(exclude_path.parent().unwrap())?;

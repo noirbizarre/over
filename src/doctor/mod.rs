@@ -3,7 +3,7 @@
 //! Rather than inventing a new diagnostic taxonomy, this module aggregates
 //! findings that are each already computed by an existing, focused pass —
 //! [`crate::lint::lint_repository`] for overlay configuration issues,
-//! [`crate::git_exclude::diagnose`] for `.git/info/exclude` drift — and
+//! [`crate::git_exclude::diagnose_existing`] for `.git/info/exclude` drift — and
 //! adds two new detection-only passes of its own: environment/plumbing
 //! sanity ([`checks::environment_findings`]) and stale XDG state bookkeeping
 //! ([`checks::xdg_state_findings`]).
@@ -12,14 +12,12 @@
 //! the XDG state directory. State inspection itself creates no locks or files.
 //! The explicit repair path, [`repair`]: `over doctor --fix`
 //! repairs a malformed `.git/info/exclude` block (#149's literal ask) via
-//! [`crate::git_exclude::repair`] — changing only `over`'s corrupted marker lines, never
+//! [`crate::git_exclude::repair_existing`] — changing only `over`'s corrupted marker lines, never
 //! user-owned git configuration or content (see ADR-024).
 //!
-//! Each source already has its own well-established human-facing shape
-//! ([`crate::lint::Diagnostic`]'s `Display`, [`crate::git_exclude::ExcludeDiagnosis`]'s
-//! `Display`) — [`Finding`] stores the fully rendered line rather than
-//! reinventing a unified structured format; doctor's own job is only to
-//! aggregate, gate by severity/verbosity, and count for the exit code.
+//! Configuration retains lint's structured result for its grouped renderer.
+//! Other sources retain their existing display in [`Finding`]; doctor aggregates,
+//! gates by severity/verbosity, and counts findings for the exit code.
 
 pub mod checks;
 
@@ -30,7 +28,7 @@ use anyhow::Result;
 use crate::desired::DesiredTree;
 use crate::exec::Context;
 use crate::git_exclude::{self, ExcludeDiagnosis, ExcludeStatus};
-use crate::lint::{self, Diagnostic as LintDiagnostic};
+use crate::lint::{self, LintResult};
 use crate::overlays::{Overlay, Repository};
 
 /// A finding's severity — distinct from [`crate::lint::Severity`] because
@@ -96,15 +94,6 @@ impl std::fmt::Display for Finding {
     }
 }
 
-impl From<&LintDiagnostic> for Finding {
-    fn from(diag: &LintDiagnostic) -> Self {
-        Self {
-            severity: diag.severity.into(),
-            line: format!("{diag}"),
-        }
-    }
-}
-
 impl From<&ExcludeDiagnosis> for Finding {
     fn from(diagnosis: &ExcludeDiagnosis) -> Self {
         // `Missing`/`Modified`/`Orphaned` self-heal on the next `over
@@ -139,7 +128,7 @@ impl From<&ExcludeDiagnosis> for Finding {
 #[derive(Debug, Default)]
 pub struct Report {
     pub environment: Vec<Finding>,
-    pub config: Vec<Finding>,
+    pub config: LintResult,
     pub git_exclude: Vec<Finding>,
     pub xdg_state: Vec<Finding>,
     /// Human-readable description of each repair `--fix` performed —
@@ -149,13 +138,8 @@ pub struct Report {
 }
 
 impl Report {
-    fn sections(&self) -> [&Vec<Finding>; 4] {
-        [
-            &self.environment,
-            &self.config,
-            &self.git_exclude,
-            &self.xdg_state,
-        ]
+    fn sections(&self) -> [&Vec<Finding>; 3] {
+        [&self.environment, &self.git_exclude, &self.xdg_state]
     }
 
     pub fn error_count(&self) -> usize {
@@ -164,6 +148,7 @@ impl Report {
             .flatten()
             .filter(|f| matches!(f.severity, Severity::Error))
             .count()
+            + self.config.error_count()
     }
 
     pub fn warning_count(&self) -> usize {
@@ -172,6 +157,7 @@ impl Report {
             .flatten()
             .filter(|f| matches!(f.severity, Severity::Warning))
             .count()
+            + self.config.warning_count()
     }
 
     pub fn has_errors(&self) -> bool {
@@ -192,6 +178,9 @@ pub struct Options {
 
 /// Run every check and return the aggregated [`Report`].
 pub async fn check(repo: &Repository, opts: &Options) -> Result<Report> {
+    // Later desired-tree and state loads must not log diagnostics already reported by lint.
+    let repo = repo.collecting_warnings();
+    let repo = &repo;
     let mut report = Report {
         environment: checks::environment_findings(),
         ..Default::default()
@@ -203,8 +192,7 @@ pub async fn check(repo: &Repository, opts: &Options) -> Result<Report> {
         .repository(repo.clone())
         .root(opts.root.clone())
         .build();
-    let lint_result = lint::lint_repository_with_context(&lint_context);
-    report.config = lint_result.diagnostics.iter().map(Finding::from).collect();
+    report.config = lint::lint_repository_with_context(&lint_context);
 
     // Per-overlay `.git/info/exclude` diagnostics (#148), optionally
     // preceded by a repair pass for malformed blocks only (#149).
@@ -216,13 +204,8 @@ pub async fn check(repo: &Repository, opts: &Options) -> Result<Report> {
         report
             .xdg_state
             .extend(checks::association_findings(&desired));
-        let targets = git_exclude::managed_targets(&desired)?;
-        if targets.is_empty() {
-            continue;
-        }
-
         if opts.fix {
-            let repair_report = git_exclude::repair(&targets)?;
+            let repair_report = git_exclude::repair_existing(&desired)?;
             report
                 .fixed
                 .extend(repair_report.repaired.iter().map(|(path, overlay)| {
@@ -233,7 +216,7 @@ pub async fn check(repo: &Repository, opts: &Options) -> Result<Report> {
                 }));
         }
 
-        let diagnoses = git_exclude::diagnose(&targets)?;
+        let diagnoses = git_exclude::diagnose_existing(&desired)?;
         report
             .git_exclude
             .extend(diagnoses.iter().map(Finding::from));
@@ -306,7 +289,9 @@ mod tests {
     fn report_counts_errors_and_warnings_across_every_section() {
         let report = Report {
             environment: vec![ok("git found"), err("state dir not writable")],
-            config: vec![warn("redundant exclude")],
+            config: LintResult {
+                diagnostics: vec![lint::Diagnostic::warning("demo", "redundant exclude")],
+            },
             git_exclude: vec![warn("exclude modified"), warn("exclude missing")],
             xdg_state: vec![err("corrupt state file")],
             fixed: vec![],
@@ -320,7 +305,9 @@ mod tests {
     fn report_without_errors_has_errors_is_false() {
         let report = Report {
             environment: vec![ok("git found")],
-            config: vec![warn("redundant exclude")],
+            config: LintResult {
+                diagnostics: vec![lint::Diagnostic::warning("demo", "redundant exclude")],
+            },
             ..Default::default()
         };
         assert!(!report.has_errors());
@@ -330,13 +317,5 @@ mod tests {
     fn lint_severity_converts_to_doctor_severity() {
         assert_eq!(Severity::from(lint::Severity::Error), Severity::Error);
         assert_eq!(Severity::from(lint::Severity::Warning), Severity::Warning);
-    }
-
-    #[test]
-    fn lint_diagnostic_converts_to_finding_preserving_rendered_display() {
-        let diag = LintDiagnostic::warning("myoverlay", "redundant empty exclude");
-        let finding: Finding = (&diag).into();
-        assert_eq!(finding.severity, Severity::Warning);
-        assert_eq!(finding.line, format!("{diag}"));
     }
 }
