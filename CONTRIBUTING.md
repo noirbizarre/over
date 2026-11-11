@@ -94,6 +94,29 @@ If a local check is unavailable or prohibitively expensive, proceed with the
 commit or PR and report which checks ran, which were skipped and why in the
 handoff or PR description. CI provides full validation.
 
+### Configuration schemas
+
+The documentation site publishes `schemas/config.json` and `schemas/overlay.json`,
+generated from Rust configuration definitions with the optional `schema`
+feature. The documentation generator lives in `docs/generate_schemas.rs`; its
+Cargo example target makes it runnable without adding an installed CLI command.
+When changing configuration fields or accepted input shapes, update their
+schema derives/adapters and validate them:
+
+```sh
+mise run schemas:validate
+mise run docs:build
+```
+
+The documentation workflow validates the schemas and supported/rejected
+descriptor shapes before generating and publishing the site. It runs when Rust
+schema inputs change, so published assets reflect the current definitions.
+Both `mise run docs` and `mise run docs:build` generate the JSON files under
+`docs/schemas/`; those files are ignored and must not be committed. To generate
+only the schemas, run `mise run schemas:generate`. Validation uses temporary
+files and does not require previously generated assets. The normal CLI build
+does not enable schema generation.
+
 ## Commits
 
 [Conventional Commits](https://www.conventionalcommits.org/), enforced by

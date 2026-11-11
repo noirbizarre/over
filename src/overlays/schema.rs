@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use config::{Map, Value, ValueKind};
 
 pub(crate) const OVERLAY_KEYS: &[&str] = &[
+    "$schema",
     "data",
     "default_overlay",
     "description",
@@ -24,9 +25,14 @@ pub(crate) const OVERLAY_KEYS: &[&str] = &[
     "target",
     "uses",
 ];
-const EVENTS: &[&str] = &["install", "post-clone", "post-init", "post-apply"];
-const HOOK_FIELDS: &[&str] = &["command", "env", "cwd", "when"];
-const REPO_FIELDS: &[&str] = &[
+pub(super) const EVENTS: &[&str] = &["install", "post-clone", "post-init", "post-apply"];
+pub(super) const HOOK_FIELDS: &[&str] = &["command", "env", "cwd", "when"];
+pub(super) const SYNC_FIELDS: &[&str] = &["pull", "push"];
+pub(super) const RULE_FIELDS: &[&str] = &["path", "mode", "permissions"];
+pub(super) const DECLARATION_FIELDS: &[&str] = &["path"];
+pub(super) const MAPPING_FIELDS: &[&str] = &["target"];
+pub(super) const WORKTREE_FIELDS: &[&str] = &["branch", "config"];
+pub(super) const REPO_FIELDS: &[&str] = &[
     "url",
     "branch",
     "tag",
@@ -102,20 +108,22 @@ pub(crate) fn descriptor_path(
 }
 
 pub(crate) fn normalize(values: &mut Map<String, Value>, file: &Path) -> Vec<Warning> {
+    // Editor associations belong to this document and must not enter the inheritance cascade.
+    values.remove("$schema");
     let mut warnings = Vec::new();
     fields(values, OVERLAY_KEYS, "", false, file, &mut warnings);
     for (key, value) in values {
         match key.as_str() {
             "sync" => {
                 if let ValueKind::Table(table) = &mut value.kind {
-                    fields(table, &["pull", "push"], "sync", false, file, &mut warnings);
+                    fields(table, SYNC_FIELDS, "sync", false, file, &mut warnings);
                 }
             }
             "rules" => entries(value, |value, index| {
                 if let ValueKind::Table(table) = &mut value.kind {
                     fields(
                         table,
-                        &["path", "mode", "permissions"],
+                        RULE_FIELDS,
                         &format!("rules[{}]", index + 1),
                         false,
                         file,
@@ -127,7 +135,7 @@ pub(crate) fn normalize(values: &mut Map<String, Value>, file: &Path) -> Vec<War
                 if let ValueKind::Table(table) = &mut value.kind {
                     fields(
                         table,
-                        &["path"],
+                        DECLARATION_FIELDS,
                         &format!("overlays[{}]", index + 1),
                         false,
                         file,
@@ -141,7 +149,7 @@ pub(crate) fn normalize(values: &mut Map<String, Value>, file: &Path) -> Vec<War
                         if let ValueKind::Table(table) = &mut mapping.kind {
                             fields(
                                 table,
-                                &["target"],
+                                MAPPING_FIELDS,
                                 &format!("map.{source}"),
                                 false,
                                 file,
@@ -215,7 +223,7 @@ fn git_repo(
             if let ValueKind::Table(table) = &mut worktree.kind {
                 fields(
                     table,
-                    &["branch", "config"],
+                    WORKTREE_FIELDS,
                     &format!("{location}.worktrees.{name}"),
                     false,
                     file,
@@ -297,6 +305,19 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    #[test]
+    fn inline_schema_metadata_is_removed_without_unknown_key_warnings() {
+        let mut values = File::from_str(
+            "$schema: https://noirbizarre.github.io/over/schemas/config.json\ntarget: '~'\n",
+            FileFormat::Yaml,
+        )
+        .collect()
+        .unwrap();
+        assert!(normalize(&mut values, Path::new("over.yaml")).is_empty());
+        assert!(!values.contains_key("$schema"));
+        assert_eq!(values["target"].clone().into_string().unwrap(), "~");
+    }
 
     #[rstest]
     #[case("extra: {arbitrary: [1, 2]}", "`extra`")]

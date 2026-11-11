@@ -15,6 +15,8 @@ FROM chef AS planner
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# Discover documentation tooling so the recipe includes its declared Cargo target.
+COPY docs/generate_schemas.rs ./docs/generate_schemas.rs
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ── Stage 3: Builder ────────────────────────────────────────────────────────

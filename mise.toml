@@ -165,10 +165,12 @@ run = "cargo install --path . --force"
 
 [tasks.docs]
 description = "Serve the documentation locally"
+depends = ["schemas:generate"]
 run = "uv tool run zensical serve"
 
 [tasks."docs:build"]
 description = "Build the documentation"
+depends = ["schemas:generate"]
 run = "uv tool run zensical build"
 
 # --- Release ----------------------------------------------------------------
@@ -249,6 +251,17 @@ git tpl diff --exit-code --stat
 [tasks."test:features"]
 description = "Test Dev Container Feature installation and lifecycle (requires Docker)"
 run = "python3 tests/features/run.py"
+
+[tasks."schemas:generate"]
+description = "Regenerate the published configuration schemas"
+run = "cargo run --locked --features schema --example generate_schemas"
+
+[tasks."schemas:validate"]
+description = "Validate generated configuration schemas and descriptor shapes"
+run = [
+  "cargo test --locked --features schema --lib overlays::json_schema::tests",
+  "cargo test --locked --features schema --example generate_schemas",
+]
 
 [tasks.demo]
 description = "Regenerate the README demo GIF"

@@ -12,6 +12,9 @@ repo_url = "https://github.com/noirbizarre/over"
 repo_name = "noirbizarre/over"
 edit_uri = "edit/main/docs/"
 
+# Documentation build tooling is source, not a downloadable site asset.
+exclude_docs = "/generate_schemas.rs"
+
 copyright = """
 Copyright &copy; 2026 Axel H. — MIT licensed
 """

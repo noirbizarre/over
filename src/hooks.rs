@@ -12,18 +12,35 @@ use tokio::process::Command;
 /// Preserve the shorthand on serialization without exposing executable values in Debug.
 #[derive(Clone, Serialize)]
 #[serde(untagged)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Hook {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "crate::overlays::json_schema::HookCommand")
+    )]
     Command(String),
     Structured(HookDefinition),
 }
 
 #[derive(Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 pub struct HookDefinition {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "crate::overlays::json_schema::HookCommand")
+    )]
     pub command: String,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(default, schema_with = "crate::overlays::json_schema::hook_env")
+    )]
     pub env: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schemars(default, with = "String", extend("pattern" = r"^[^\u0000]*$")))]
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schemars(default, with = "String", extend("pattern" = r"^[^\u0000]*$")))]
     pub when: Option<String>,
 }
 
@@ -34,7 +51,7 @@ impl fmt::Debug for Hook {
 }
 
 // These names describe authoritative lifecycle state, not user-provided environment.
-const RESERVED_ENV: &[&str] = &[
+pub(crate) const RESERVED_ENV: &[&str] = &[
     "OVER_HOOK_ACTIVE",
     "OVER_HOOK_EVENT",
     "OVER_REPOSITORY_ROOT",
@@ -108,6 +125,8 @@ impl Hook {
 /// Commands are deliberately hidden from Debug: overlays appear in debug traces.
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(default, deny_unknown_fields))]
 pub struct Hooks {
     pub install: Vec<Hook>,
     pub post_clone: Vec<Hook>,

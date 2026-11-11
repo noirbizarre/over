@@ -16,6 +16,27 @@ data:
   theme: dark
 ```
 
+## Editor support
+
+Use the [overlay schema](https://noirbizarre.github.io/over/schemas/overlay.json) for intermediate and local
+descriptors. For YAML (`over.yaml` or `over.yml`), set `$schema` at the top:
+
+```yaml
+$schema: https://noirbizarre.github.io/over/schemas/overlay.json
+description: Laptop configuration
+```
+
+For TOML, use a schema directive at the top of `over.toml`:
+
+```toml
+#:schema https://noirbizarre.github.io/over/schemas/overlay.json
+description = "Laptop configuration"
+```
+
+Fields may be omitted to inherit their values. Use the
+[root schema](root.md#editor-support) for repository-only preferences instead.
+See [Editor support](../configuration.md#editor-support) for validation scope.
+
 ## Fields and inheritance
 
 Configuration cascades from the repository root down the selected directory's

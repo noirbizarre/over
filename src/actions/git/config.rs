@@ -10,6 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// - **Detailed**: an object with `url` and optional fields
 #[derive(Debug, Serialize, Clone)]
 #[serde(from = "AllGitRepoForms")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GitRepoConfig {
     /// The clone URL (required).
     pub url: String,
@@ -116,6 +117,8 @@ impl From<AllGitRepoForms> for GitRepoConfig {
 /// Intermediate enum for untagged deserialization of git repo entries.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 enum AllGitRepoForms {
     /// Just a URL string.
     Simple(String),
@@ -141,6 +144,8 @@ enum AllGitRepoForms {
 /// - **Simple**: just a branch name string (e.g. `"feature-x" = "feature/x"`)
 /// - **Detailed**: an object with `branch` and optional `config`
 #[derive(Debug, Serialize, Clone)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(with = "AllWorktreeEntryForms"))]
 pub struct WorktreeEntry {
     /// The branch to check out in this worktree.
     pub branch: String,
@@ -162,6 +167,8 @@ impl<'de> Deserialize<'de> for WorktreeEntry {
 /// Intermediate enum for untagged deserialization of worktree entries.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 enum AllWorktreeEntryForms {
     /// Just a branch name string.
     Simple(String),
@@ -193,6 +200,7 @@ impl From<AllWorktreeEntryForms> for WorktreeEntry {
 /// Any additional keys are captured in `extras` to support tools that write
 /// custom options (e.g. `git-delete-merged-branches` adding `dmb-*` keys).
 #[derive(Debug, Deserialize, Serialize, Clone)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RemoteConfig {
     /// The remote URL (required).
     pub url: String,
@@ -215,6 +223,11 @@ pub struct RemoteConfig {
 ///
 /// Internally flattened to dotted key → value pairs.
 #[derive(Debug, Serialize, Clone)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schema",
+    schemars(schema_with = "crate::overlays::json_schema::git_config")
+)]
 pub struct GitConfig {
     pub entries: HashMap<String, String>,
 }
@@ -306,10 +319,13 @@ pub const ROOT_PATH: &str = ".";
 /// at least one other path entry so the map variant is selected instead.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum AllGitForms {
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) enum AllGitForms {
     /// A single repo config (string URL or detailed object).
     Single(Box<GitRepoConfig>),
     /// Map of `<path> → <repo config>`.
+    // Source normalization selects a detailed repository whenever the url key exists.
+    #[cfg_attr(feature = "schema", schemars(extend("not" = {"required": ["url"]})))]
     Map(HashMap<String, GitRepoConfig>),
 }
 

@@ -5,14 +5,25 @@ on:
     branches: [main]
     paths:
       - docs/**
+      - src/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - mise.toml
+      - mise.lock
       - zensical.toml
       - .github/workflows/docs.yaml
   # Same paths as the push trigger: this is a check that the docs still
-  # build, not a deploy, so it only needs to run when doc-affecting files
-  # change — not on every unrelated PR.
+  # build, not a deploy. Rust inputs affect the schemas published with the site.
   pull_request:
     paths:
       - docs/**
+      - src/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - mise.toml
+      - mise.lock
       - zensical.toml
       - .github/workflows/docs.yaml
   workflow_dispatch:
@@ -25,13 +36,17 @@ jobs:
     name: 📝 Build documentation
     runs-on: ubuntu-latest
     # Redundant pushes to the same PR/branch should cancel their predecessor's
-    # build — this is a fast check, not a deploy, so nothing needs the strict
-    # serialization the `pages` group below requires.
+    # build — only deployment needs the strict serialization of the `pages`
+    # group below.
     concurrency:
       group: docs-build-${{ github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v7
+
+      # Schemas must reflect the Rust definitions in the same revision as the site.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
       # uv is pinned by mise.lock, so the docs build uses the same version
       # as `mise run docs:build` locally.
@@ -39,7 +54,10 @@ jobs:
         with:
           cache: true
 
-      - name: Build the site
+      - name: Validate configuration schemas
+        run: mise run schemas:validate
+
+      - name: Generate schemas and build the site
         run: mise run docs:build
 
       - uses: actions/upload-pages-artifact@v5
