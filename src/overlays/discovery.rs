@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 /// read — a directory matched this way cannot itself declare further
 /// `overlays:` entries (ADR-018: no recursive/nested expansion).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 pub struct OverlayDeclaration {
     pub path: String,
 }

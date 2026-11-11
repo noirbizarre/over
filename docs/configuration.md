@@ -16,6 +16,32 @@ that inheritance chain.
 For complete layouts, start with [Examples](examples.md). For your first applied
 overlay, follow [Getting started](index.md#getting-started).
 
+## Editor support
+
+Published JSON Schemas provide completion, hover descriptions, and validation
+in schema-aware TOML and YAML editors:
+
+| Descriptor scope | Schema |
+| --- | --- |
+| Repository root | [root.json](schemas/root.json) |
+| Intermediate or overlay directory | [overlay.json](schemas/overlay.json) |
+
+Each schema supports `over.toml`, `over.yaml`, and `over.yml`. Select the schema
+by descriptor scope, not its filename: root and child files have the same name
+but accept different settings. Add the comment shown in the
+[root](configuration/root.md#editor-support) or
+[overlay](configuration/overlay.md#editor-support) reference to associate it
+with the correct schema. YAML comments work with YAML Language Server; TOML
+directives work with Taplo-compatible editors.
+
+Schemas describe authored settings, so inherited fields may be omitted.
+Unknown keys in documented objects are editor errors; Over still warns and
+ignores unknown keys when loading. Consumer metadata, Git option names, remote
+extras, and hook environment names remain open namespaces with their documented
+value types. Schemas do not replace [`over lint`](usage/lint.md) or runtime
+checks for filesystem state, dependency cycles, glob syntax, template evaluation,
+and Git remote validity.
+
 ## Path resolution
 
 Configured filesystem paths retain the root of their **declaring** descriptor:

@@ -9,6 +9,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::overlay::Overlay;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schema",
+    schemars(schema_with = "crate::overlays::json_schema::file_mode")
+)]
 pub struct FileMode(u32);
 
 impl FileMode {

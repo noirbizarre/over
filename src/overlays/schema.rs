@@ -24,9 +24,14 @@ pub(crate) const OVERLAY_KEYS: &[&str] = &[
     "target",
     "uses",
 ];
-const EVENTS: &[&str] = &["install", "post-clone", "post-init", "post-apply"];
-const HOOK_FIELDS: &[&str] = &["command", "env", "cwd", "when"];
-const REPO_FIELDS: &[&str] = &[
+pub(super) const EVENTS: &[&str] = &["install", "post-clone", "post-init", "post-apply"];
+pub(super) const HOOK_FIELDS: &[&str] = &["command", "env", "cwd", "when"];
+pub(super) const SYNC_FIELDS: &[&str] = &["pull", "push"];
+pub(super) const RULE_FIELDS: &[&str] = &["path", "mode", "permissions"];
+pub(super) const DECLARATION_FIELDS: &[&str] = &["path"];
+pub(super) const MAPPING_FIELDS: &[&str] = &["target"];
+pub(super) const WORKTREE_FIELDS: &[&str] = &["branch", "config"];
+pub(super) const REPO_FIELDS: &[&str] = &[
     "url",
     "branch",
     "tag",
@@ -108,14 +113,14 @@ pub(crate) fn normalize(values: &mut Map<String, Value>, file: &Path) -> Vec<War
         match key.as_str() {
             "sync" => {
                 if let ValueKind::Table(table) = &mut value.kind {
-                    fields(table, &["pull", "push"], "sync", false, file, &mut warnings);
+                    fields(table, SYNC_FIELDS, "sync", false, file, &mut warnings);
                 }
             }
             "rules" => entries(value, |value, index| {
                 if let ValueKind::Table(table) = &mut value.kind {
                     fields(
                         table,
-                        &["path", "mode", "permissions"],
+                        RULE_FIELDS,
                         &format!("rules[{}]", index + 1),
                         false,
                         file,
@@ -127,7 +132,7 @@ pub(crate) fn normalize(values: &mut Map<String, Value>, file: &Path) -> Vec<War
                 if let ValueKind::Table(table) = &mut value.kind {
                     fields(
                         table,
-                        &["path"],
+                        DECLARATION_FIELDS,
                         &format!("overlays[{}]", index + 1),
                         false,
                         file,
@@ -141,7 +146,7 @@ pub(crate) fn normalize(values: &mut Map<String, Value>, file: &Path) -> Vec<War
                         if let ValueKind::Table(table) = &mut mapping.kind {
                             fields(
                                 table,
-                                &["target"],
+                                MAPPING_FIELDS,
                                 &format!("map.{source}"),
                                 false,
                                 file,
@@ -215,7 +220,7 @@ fn git_repo(
             if let ValueKind::Table(table) = &mut worktree.kind {
                 fields(
                     table,
-                    &["branch", "config"],
+                    WORKTREE_FIELDS,
                     &format!("{location}.worktrees.{name}"),
                     false,
                     file,

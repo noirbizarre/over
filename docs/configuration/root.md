@@ -19,6 +19,26 @@ Root hooks are also repository-scoped. Ordinary [overlay fields](overlay.md),
 such as `target`, `data`, `map`, and materialization rules, may appear here as
 inherited policy; they are not additional repository preferences.
 
+## Editor support
+
+Use the [repository-root schema](../schemas/root.json) for this descriptor.
+For YAML (`over.yaml` or `over.yml`), add this comment at the top:
+
+```yaml
+# yaml-language-server: $schema=https://noirbizarre.github.io/over/schemas/root.json
+format: yaml
+```
+
+For TOML, use a schema directive at the top of `over.toml`:
+
+```toml
+#:schema https://noirbizarre.github.io/over/schemas/root.json
+format = "toml"
+```
+
+These comments associate the schema without adding a configuration key.
+See [Editor support](../configuration.md#editor-support) for validation scope.
+
 ## Format preference
 
 `format` controls what [`over new`](../usage/new.md) **writes**: `toml` (the

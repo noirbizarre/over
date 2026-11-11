@@ -301,20 +301,32 @@ impl Repository {
 /// The repository root's own descriptor fields, read once and not
 /// cascaded to overlays (ADR-018) — see [`Repository::root_config`].
 #[derive(Debug, Deserialize, Default)]
-struct RootConfig {
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(super) struct RootConfig {
     #[serde(default)]
     sync: SyncConfig,
     #[serde(default)]
     hooks: crate::hooks::Hooks,
+    /// Preferred format for descriptors written by over new: toml or yaml.
     format: Option<Format>,
+    /// Directories or glob patterns declaring overlays without local descriptors.
     overlays: Option<Vec<OverlayDeclaration>>,
+    /// Repository-relative overlay selected when no explicit selection is supplied.
     default_overlay: Option<String>,
+    /// Canonical literal Git remote; SCP-style remotes and local paths are supported.
+    // The root loader validates every present value as literal text before deserialization.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(default, with = "String", skip_serializing_if = "Option::is_none")
+    )]
     repository: Option<String>,
 }
 
 /// Opt-in remote synchronization of the repository containing Over's source.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 pub struct SyncConfig {
     pub pull: bool,
     pub push: bool,

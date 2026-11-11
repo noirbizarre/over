@@ -16,6 +16,8 @@ pub(crate) const EXTENSIONS: &[&str] = &["yml", "yaml", "toml"];
 pub mod data;
 pub mod discovery;
 pub mod ignore;
+#[cfg(feature = "schema")]
+pub mod json_schema;
 pub mod mapping;
 pub mod overlay;
 mod paths;
@@ -38,6 +40,7 @@ pub static GLOB_PATTERN: LazyLock<String> =
 /// Supported overlay descriptor formats.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Format {
     #[default]
     Toml,

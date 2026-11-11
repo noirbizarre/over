@@ -94,6 +94,24 @@ If a local check is unavailable or prohibitively expensive, proceed with the
 commit or PR and report which checks ran, which were skipped and why in the
 handoff or PR description. CI provides full validation.
 
+### Configuration schemas
+
+The documentation site publishes `docs/schemas/root.json` and
+`docs/schemas/overlay.json`, generated from Rust configuration definitions with
+the optional `schema` feature. When changing configuration fields or accepted
+input shapes, update their schema derives/adapters and regenerate the assets:
+
+```sh
+mise run schemas:generate
+mise run schemas:check
+cargo nextest run --features schema -E 'test(overlays::json_schema::tests)'
+cargo test --features schema --example generate_schemas
+```
+
+Commit the generated JSON files alongside the Rust changes. Schema CI checks
+that they stay in sync and validates supported and rejected descriptor shapes.
+The normal CLI build does not enable schema generation.
+
 ## Commits
 
 [Conventional Commits](https://www.conventionalcommits.org/), enforced by

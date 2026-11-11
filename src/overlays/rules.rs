@@ -12,6 +12,7 @@ use super::permissions::FileMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum MaterializationKind {
     #[default]
     Symlink,
@@ -32,7 +33,18 @@ impl fmt::Display for MaterializationKind {
 
 /// Both properties share selectors and ordering, but assignments are independent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+// A present-but-null assignment does not satisfy runtime rule validation.
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields, extend(
+    "anyOf" = [
+        {"required": ["mode"], "properties": {"mode": {"not": {"type": "null"}}}},
+        {"required": ["permissions"], "properties": {"permissions": {"not": {"type": "null"}}}}
+    ],
+    "if" = {"properties": {"path": {"pattern": "[*?\\[{]"}}, "required": ["path"]},
+    "then" = {"properties": {"mode": {"const": "symlink-directory"}}, "required": ["mode"]}
+)))]
 pub struct Rule {
+    #[cfg_attr(feature = "schema", schemars(length(min = 1), extend("pattern" = r"\S")))]
     pub path: String,
     pub mode: Option<MaterializationKind>,
     pub permissions: Option<FileMode>,

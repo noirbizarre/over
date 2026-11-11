@@ -250,6 +250,14 @@ git tpl diff --exit-code --stat
 description = "Test Dev Container Feature installation and lifecycle (requires Docker)"
 run = "python3 tests/features/run.py"
 
+[tasks."schemas:generate"]
+description = "Regenerate the published configuration schemas"
+run = "cargo run --features schema --example generate_schemas"
+
+[tasks."schemas:check"]
+description = "Check that published configuration schemas match Rust definitions"
+run = "cargo run --features schema --example generate_schemas -- --check"
+
 [tasks.demo]
 description = "Regenerate the README demo GIF"
 # vhs (and ttyd, which it drives to capture the terminal) are declared here

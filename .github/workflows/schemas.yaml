@@ -1,0 +1,24 @@
+name: Configuration schemas
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  schemas:
+    name: Validate published schemas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check generated assets
+        run: cargo run --locked --features schema --example generate_schemas -- --check
+      - name: Validate schema behavior
+        run: cargo test --locked --features schema overlays::json_schema::tests
+      - name: Validate generator checks
+        run: cargo test --locked --features schema --example generate_schemas
