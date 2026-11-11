@@ -3127,6 +3127,93 @@ fn virtual_checkout_apply_materializes_files_with_no_git_directory() -> TestResu
 }
 
 #[test]
+fn virtual_checkout_initializes_a_populated_root_and_preserves_local_additions() -> TestResult {
+    let state = TempDir::new()?;
+    let home = TempDir::new()?;
+    let home_path = canonical_for_matching(home.path())?;
+    setup_checkout_overlay(&home_path, "dotfiles");
+    git(&home_path, &["init"]);
+    commit_all(&home_path, "initial");
+    let root = TempDir::new()?;
+    fs::write(root.path().join("unrelated.txt"), "keep me\n")?;
+    // Matching content is adoption, not a collision requiring a terminal.
+    fs::write(root.path().join("file.txt"), "original\n")?;
+    for _ in 0..2 {
+        Command::cargo_bin("over")?
+            .arg("--home")
+            .arg(&home_path)
+            .args(["apply", "dotfiles", "--no-prompt", "--target"])
+            .arg(root.path())
+            .env("XDG_STATE_HOME", state.path())
+            .assert()
+            .success();
+    }
+    assert_eq!(
+        fs::read_to_string(root.path().join("unrelated.txt"))?,
+        "keep me\n"
+    );
+    assert!(!root.path().join(".git").exists());
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&home_path)
+        .args(["status", "dotfiles", "--verbose", "--target"])
+        .arg(root.path())
+        .env("XDG_STATE_HOME", state.path())
+        .assert()
+        .code(1)
+        .stdout(contains("A unrelated.txt"));
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&home_path)
+        .args(["diff", "dotfiles", "--target"])
+        .arg(root.path())
+        .env("XDG_STATE_HOME", state.path())
+        .assert()
+        .success()
+        .stdout(contains("keep me"));
+    Ok(())
+}
+
+#[rstest]
+#[case::no_prompt(&["--no-prompt"], false, "local\n")]
+#[case::force(&["--force", "--no-prompt"], true, "original\n")]
+#[case::preview(&["--dry-run"], true, "local\n")]
+fn virtual_checkout_initial_conflicts_obey_apply_flags(
+    #[case] flags: &[&str],
+    #[case] success: bool,
+    #[case] expected: &str,
+) -> TestResult {
+    let state = TempDir::new()?;
+    let home = TempDir::new()?;
+    let home_path = canonical_for_matching(home.path())?;
+    setup_checkout_overlay(&home_path, "dotfiles");
+    git(&home_path, &["init"]);
+    commit_all(&home_path, "initial");
+    let root = TempDir::new()?;
+    fs::write(root.path().join("file.txt"), "local\n")?;
+    fs::write(root.path().join("unrelated"), "keep")?;
+    let assertion = Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(&home_path)
+        .args(["apply", "dotfiles", "--target"])
+        .arg(root.path())
+        .args(flags)
+        .env("XDG_STATE_HOME", state.path())
+        .assert();
+    if success {
+        assertion.success();
+    } else {
+        assertion.failure();
+    }
+    assert_eq!(fs::read_to_string(root.path().join("file.txt"))?, expected);
+    assert_eq!(fs::read_to_string(root.path().join("unrelated"))?, "keep");
+    if !flags.contains(&"--force") {
+        assert!(!state.path().join("over/virtual_checkout.toml").exists());
+    }
+    Ok(())
+}
+
+#[test]
 fn virtual_checkout_status_and_diff_report_local_modification() -> TestResult {
     let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;

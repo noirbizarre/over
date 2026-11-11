@@ -175,6 +175,7 @@ pub(crate) fn managed_subtree<'repo>(
 /// Write the already-filtered managed tree into `target` without creating
 /// `.git` or updating the source index. Callers preflight target ownership;
 /// unrelated paths are never removed as a side effect of initialization.
+#[cfg(test)]
 pub(crate) fn checkout_subtree(repo: &Repository, tree: &Tree, target: &Path) -> Result<()> {
     fs::create_dir_all(target)
         .with_context(|| format!("failed to create '{}'", target.display()))?;
@@ -207,6 +208,7 @@ pub(crate) fn read_blob(repo: &Repository, oid: Oid) -> Result<Vec<u8>> {
 /// untouched even under `force()`/`remove_untracked()`). Reading blobs and
 /// writing them with plain `std::fs` sidesteps that comparison entirely —
 /// there is nothing to "look already up to date" against.
+#[cfg(test)]
 pub(crate) fn apply_tree_diff(
     repo: &Repository,
     target: &Path,
@@ -766,17 +768,6 @@ pub(crate) fn build_content_tree<'repo>(
     repo.find_tree(tree_id).map_err(Into::into)
 }
 
-/// The managed content of `subtree` with `over`'s own metadata removed —
-/// what actually gets checked out at a virtual checkout's target. Thin
-/// wrapper combining [`tracked_entries`] (already filtered) with
-/// [`build_content_tree`].
-pub(crate) fn managed_content_tree<'repo>(
-    repo: &'repo Repository,
-    subtree: &Tree<'repo>,
-) -> Result<Tree<'repo>> {
-    build_content_tree(repo, &tracked_entries(subtree)?)
-}
-
 /// Reverse of `git2::FileMode`'s `Into<i32>`: libgit2 only ever reports one
 /// of these fixed values from `TreeEntry::filemode`, so a linear scan
 /// against the small, closed set is simplest.
@@ -1027,7 +1018,7 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
 
 /// Native Git applies external/process smudge filters as well as EOL conversion;
 /// raw blobs belong at virtual targets, never in the source's real worktree.
-fn source_worktree_blob(repo: &Repository, path: &Path, oid: Oid) -> Result<Vec<u8>> {
+pub(crate) fn source_worktree_blob(repo: &Repository, path: &Path, oid: Oid) -> Result<Vec<u8>> {
     // Smudge filters own inherited stderr until their subprocess exits.
     let _pause = crate::ui::progress::pause()?;
     let mut command = std::process::Command::new("git");

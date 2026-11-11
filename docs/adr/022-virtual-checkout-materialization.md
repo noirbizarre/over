@@ -101,8 +101,8 @@ against a small git2 spike before implementation:
   the "index" the issue mentions is entirely ephemeral, recomputed from
   `base_oid` + a fresh tree walk whenever needed. Losing this file leaves
   target content intact but loses the recorded base and ownership association.
-  Classification refuses populated ordinary-file targets without that
-  association; reapply alone cannot reconstruct it. See
+  Reapply can initialize populated targets against current source `HEAD`, but
+  cannot reconstruct the lost historical base. See
   [lost association metadata](../usage/status.md#lost-association-metadata)
   for preservation and recovery limitations.
 
@@ -115,16 +115,19 @@ know whether a target already has a recorded association, so
 without the `spawn_blocking`/`.await` wrapper) rather than making
 `classify` — and therefore the whole `Materializer` trait — `async`.
 
-**`VirtualCheckoutMaterializer` mirrors `CheckoutMaterializer`'s "Noop for
-anything but Missing" policy exactly**, for the same reason: an existing,
+**`VirtualCheckoutMaterializer` leaves associated checkouts unchanged**:
+an existing,
 known virtual checkout (one with a recorded association) is never routed
 through filesystem conflict-resolution semantics built for symlinks —
 dirty/behind/conflict states are `over status`/`over diff`/`over
-sync`/`over commit`'s job, never `apply`'s. A directory with no recorded
-association is only auto-adopted when it's provably a legacy
-symlink-only directory (`actual::is_symlink_only`, the same check
-`CheckoutMaterializer` uses for its own legacy-adoption case, #130);
-anything else is a `Conflict`, never silently claimed.
+sync`/`over commit`'s job, never `apply`'s. First initialization into an
+unassociated directory preserves its root and unrelated content. Missing files
+are created and identical files adopted. Actual path collisions offer Skip,
+Overwrite, Absorb, and Diff. Skip retains local content and continues; Absorb
+also adopts that content into the source working tree without staging or
+committing it. Both retain local differences against the captured `HEAD` base.
+Overwrite replaces only the approved conflicting path or structural group.
+Legacy symlink-only installations retain their existing migration checks.
 
 **Migration both ways** follows the existing `Operation::Migrate`
 pattern: a stale symlink migrating *to* a virtual checkout is always safe

@@ -12,11 +12,12 @@
 //! checkout — dirty/added/deleted files, divergence from the source
 //! repository — is deliberately left to `over status`/`over diff`/
 //! `over commit`/`over sync` (`crate::status::virtual_checkout`), never
-//! `apply`'s reconciliation loop; routing real, possibly-uncommitted
-//! content through filesystem conflict-resolution semantics built for
-//! symlinks/files could silently discard it.
+//! `apply`'s reconciliation loop. First initialization into an unassociated
+//! directory resolves only actual path collisions, preserving local content
+//! when the user chooses Skip or Absorb.
 
 pub(crate) mod git;
+mod initial;
 pub(crate) mod snapshot;
 pub(crate) mod state;
 
@@ -34,7 +35,6 @@ use crate::plan::actual::{self, ActualState};
 use crate::plan::{Operation, PlanStep};
 
 use super::Materializer;
-use state::VirtualCheckoutRecord;
 
 /// Owns [`MaterializationIntent::VirtualCheckout`]. See the module doc for
 /// the scope split with `over status`/`over diff`/`over commit`/`over sync`.
@@ -111,10 +111,7 @@ impl Materializer for VirtualCheckoutMaterializer {
             return Ok(Operation::Noop);
         }
 
-        // No recorded association: only auto-adopt a legacy symlink-only
-        // directory (nothing lost by discarding it, same reasoning as
-        // `CheckoutMaterializer`'s #130 handling) — anything else is a
-        // genuine conflict, never silently adopted as a virtual checkout.
+        // Preserve the legacy migration checks before assessing ordinary content.
         if matches!(actual, ActualState::Directory)
             && (!scope.target_excludes.is_empty() || scope.source_policy.is_some())
             && !git::has_owned_content(&entry.target, &scope)?
@@ -138,15 +135,23 @@ impl Materializer for VirtualCheckoutMaterializer {
             });
         }
 
+        if matches!(actual, ActualState::Directory) {
+            return if initial::has_conflicts(entry)? {
+                Ok(Operation::Conflict { current: actual })
+            } else {
+                Ok(Operation::Create)
+            };
+        }
+
         Ok(Operation::Conflict { current: actual })
     }
 
-    /// Invoked for `Operation::Create` and for an unblocked
-    /// `Operation::Migrate` — the latter first removes what's there
-    /// (always safe per `classify`'s own reasoning), then both fall
-    /// through to the same checkout-from-source-HEAD logic.
+    /// Initialize missing or unassociated directory targets, resolving leaf
+    /// conflicts. Unblocked migrations first remove their verified legacy layout.
     async fn materialize(&self, ctx: Ctx, step: &PlanStep) -> Result<()> {
-        if let Operation::Conflict { current } = &step.operation {
+        if let Operation::Conflict { current } = &step.operation
+            && !matches!(current, ActualState::Directory)
+        {
             bail!(
                 "refusing to materialize a virtual checkout at '{}': found {}, not a \
                  reconstructible legacy `over` installation — move it aside and rerun",
@@ -156,6 +161,19 @@ impl Materializer for VirtualCheckoutMaterializer {
         }
         if ctx.dry_run {
             return Ok(());
+        }
+
+        if matches!(step.operation, Operation::Conflict { .. }) {
+            anyhow::ensure!(
+                matches!(
+                    self.classify(&step.entry)?,
+                    Operation::Create
+                        | Operation::Conflict {
+                            current: ActualState::Directory
+                        }
+                ),
+                "virtual checkout target changed since classification"
+            );
         }
 
         if matches!(step.operation, Operation::Create) {
@@ -204,45 +222,12 @@ impl Materializer for VirtualCheckoutMaterializer {
         let overlay = overlay.clone();
         let source = source.clone();
         let scope = step.entry.intent.checkout_scope();
+        let ctx = ctx.clone();
         let record =
-            spawn_blocking(move || checkout_from_head(&target, &overlay, &source, scope)).await??;
+            spawn_blocking(move || initial::initialize(&ctx, &target, &overlay, &source, scope))
+                .await??;
         state::persist(&step.entry.target, record).await
     }
-}
-
-/// Blocking: discover the source repository, checkout its current `HEAD`
-/// (restricted to the managed path) into `target` with no `.git`, and
-/// build the association record to persist. All git2/filesystem work here
-/// is synchronous, hence `spawn_blocking` at the call site.
-fn checkout_from_head(
-    target: &Path,
-    overlay: &str,
-    source: &Path,
-    scope: crate::desired::CheckoutScope,
-) -> Result<VirtualCheckoutRecord> {
-    let (repo, managed_path) = git::discover_source(source)?;
-    let head_tree = git::base_tree(&repo, None)?;
-    let subtree = git::scoped_subtree(&repo, &head_tree, &managed_path, &scope)?;
-    let content_tree = git::managed_content_tree(&repo, &subtree)?;
-    // Never use remove_untracked on a target containing another unit's files.
-    if scope.target_excludes.is_empty() {
-        git::checkout_subtree(&repo, &content_tree, target)?;
-    } else {
-        std::fs::create_dir_all(target)?;
-        let empty = git::build_content_tree(&repo, &Default::default())?;
-        git::apply_tree_diff(&repo, target, &empty, &content_tree)?;
-    }
-
-    let base_oid = repo.head()?.peel_to_commit()?.id().to_string();
-    Ok(VirtualCheckoutRecord {
-        overlay: overlay.to_string(),
-        managed_path,
-        base_oid,
-        created_at: now(),
-        last_commit_at: None,
-        scope,
-        source_repository: repo.workdir().map(Path::to_path_buf),
-    })
 }
 
 pub(crate) fn now() -> i64 {
@@ -355,19 +340,17 @@ mod tests {
     }
 
     #[test]
-    fn classify_directory_with_no_recorded_state_and_foreign_content_is_conflict() {
+    fn an_existing_directory_with_unrelated_content_is_a_valid_container() {
         let _xdg = isolate_xdg_state();
         let m = VirtualCheckoutMaterializer;
         let td = TempDir::new().unwrap();
         let target = td.child("target_dir");
         target.create_dir_all().unwrap();
         fs::write(target.path().join("foreign.txt"), "not from over").unwrap();
-
-        let e = entry(target.path().to_path_buf(), td.path().to_path_buf());
-        assert!(matches!(
-            m.classify(&e).unwrap(),
-            Operation::Conflict { .. }
-        ));
+        let source = TempDir::new().unwrap();
+        init_committed_repo(source.path());
+        let e = entry(target.path().to_path_buf(), source.path().to_path_buf());
+        assert!(matches!(m.classify(&e).unwrap(), Operation::Create));
     }
 
     #[tokio::test]
