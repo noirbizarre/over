@@ -125,7 +125,7 @@ impl fmt::Display for ExcludeDiagnosis {
             ExcludeStatus::Ok => write!(
                 f,
                 "{} {} {} (overlay '{}')",
-                emojis::CHECKMARK,
+                emojis::checkmark(),
                 style::white("exclude ok:"),
                 repo,
                 self.overlay,
@@ -133,7 +133,7 @@ impl fmt::Display for ExcludeDiagnosis {
             ExcludeStatus::Missing => write!(
                 f,
                 "{} {} {} (overlay '{}')",
-                emojis::CROSSMARK,
+                emojis::crossmark(),
                 style::white("exclude missing:"),
                 repo,
                 self.overlay,
@@ -141,7 +141,7 @@ impl fmt::Display for ExcludeDiagnosis {
             ExcludeStatus::Modified => write!(
                 f,
                 "{} {} {} (overlay '{}')",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("exclude modified:"),
                 repo,
                 self.overlay,
@@ -157,7 +157,7 @@ impl fmt::Display for ExcludeDiagnosis {
             ExcludeStatus::Malformed => write!(
                 f,
                 "{} {} {} (overlay '{}')",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("exclude malformed:"),
                 repo,
                 self.overlay,

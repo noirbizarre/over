@@ -553,7 +553,7 @@ impl Overlay {
 
         ui::info(format!(
             "{} {} {} {} {}",
-            style::green("✔"),
+            emojis::checkmark(),
             style::white_b("Applied overlay"),
             style::cyan(&self.name),
             style::white_b("to"),

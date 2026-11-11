@@ -1,16 +1,28 @@
-use console::Emoji;
+use console::{Emoji, StyledObject};
+
+use crate::ui::style;
+
+// Text glyphs accept terminal-palette coloring instead of fixed emoji colors.
+pub fn checkmark() -> StyledObject<&'static str> {
+    style::green("✔")
+}
+
+pub fn crossmark() -> StyledObject<&'static str> {
+    style::red("✘")
+}
+
+pub fn warning() -> StyledObject<&'static str> {
+    style::yellow("⚠")
+}
 
 // Unicode
 pub static DIRECTORY: Emoji<'_, '_> = Emoji("📁", "");
 pub static LINK: Emoji<'_, '_> = Emoji("🔗", "");
 pub static PACKAGE: Emoji<'_, '_> = Emoji("📦", "");
 pub static THREAD: Emoji<'_, '_> = Emoji("🧵", "");
-pub static CHECKMARK: Emoji<'_, '_> = Emoji("✔️", "");
-pub static CROSSMARK: Emoji<'_, '_> = Emoji("❌", "");
 pub static GREEN_CIRCLE: Emoji<'_, '_> = Emoji("🟢", "");
 pub static SPARKLE: Emoji<'_, '_> = Emoji("✨", "");
 pub static MOVE_FILE: Emoji<'_, '_> = Emoji("📃", "");
-pub static WARNING: Emoji<'_, '_> = Emoji("⚠️", "");
 pub static TRASH: Emoji<'_, '_> = Emoji("🗑️", "");
 pub static BLOCK: Emoji<'_, '_> = Emoji("🧩", "");
 pub static MIGRATE: Emoji<'_, '_> = Emoji("🔀", "");

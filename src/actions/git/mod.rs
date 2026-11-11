@@ -243,7 +243,7 @@ impl Action for EnsureGitRepository {
             }
 
             if let Err(e) = task.await? {
-                ui::warn(format!("{} {}", emojis::CROSSMARK, e))?;
+                ui::warn(format!("{} {}", emojis::crossmark().for_stderr(), e))?;
                 bail!(e);
             }
         }

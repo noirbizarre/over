@@ -104,7 +104,7 @@ impl fmt::Display for PlanStep {
             (MaterializationIntent::Directory, Operation::Noop) => write!(
                 f,
                 "{} {} {} ({})",
-                emojis::CHECKMARK,
+                emojis::checkmark(),
                 style::white("directory:"),
                 target,
                 style::white("already exists"),
@@ -112,7 +112,7 @@ impl fmt::Display for PlanStep {
             (MaterializationIntent::Directory, Operation::Conflict { current }) => write!(
                 f,
                 "{} {} expected directory at {}, found {}",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("conflict:"),
                 target,
                 current,
@@ -136,7 +136,7 @@ impl fmt::Display for PlanStep {
             ) => write!(
                 f,
                 "{} {} {} ({} {})",
-                emojis::CHECKMARK,
+                emojis::checkmark(),
                 style::white("link:"),
                 target,
                 style::white("already linked to"),
@@ -149,7 +149,7 @@ impl fmt::Display for PlanStep {
             ) => write!(
                 f,
                 "{} {} {} already exists ({}), overlay expects a link to {}",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("conflict:"),
                 target,
                 current,
@@ -165,7 +165,7 @@ impl fmt::Display for PlanStep {
             (MaterializationIntent::Checkout, Operation::Noop) => write!(
                 f,
                 "{} {} {} ({})",
-                emojis::CHECKMARK,
+                emojis::checkmark(),
                 style::white("checkout:"),
                 target,
                 style::white("present (use `over sync` to update)"),
@@ -178,7 +178,7 @@ impl fmt::Display for PlanStep {
             (MaterializationIntent::Checkout, Operation::Conflict { current }) => write!(
                 f,
                 "{} {} {} ({})",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("conflict:"),
                 target,
                 current,
@@ -201,7 +201,7 @@ impl fmt::Display for PlanStep {
             ) => write!(
                 f,
                 "{} {} {} ({})",
-                emojis::CHECKMARK,
+                emojis::checkmark(),
                 style::white("checkout:"),
                 target,
                 style::white("present (use `over status`/`over sync` for details)"),
@@ -219,7 +219,7 @@ impl fmt::Display for PlanStep {
             ) => write!(
                 f,
                 "{} {} {} ({})",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("conflict:"),
                 target,
                 current,
@@ -236,7 +236,7 @@ impl fmt::Display for PlanStep {
             (MaterializationIntent::PartialFile { marker, .. }, Operation::Noop) => write!(
                 f,
                 "{} {} {} ({} '{}' {})",
-                emojis::CHECKMARK,
+                emojis::checkmark(),
                 style::white("block:"),
                 target,
                 style::white("marker"),
@@ -250,7 +250,7 @@ impl fmt::Display for PlanStep {
                 write!(
                     f,
                     "{} {} block '{}' in {} doesn't match ({})",
-                    emojis::WARNING,
+                    emojis::warning(),
                     style::yellow("conflict:"),
                     marker,
                     target,
@@ -288,7 +288,7 @@ impl fmt::Display for PlanStep {
             ) => write!(
                 f,
                 "{} {} {} ({} -> {}, {})",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("migrate blocked:"),
                 target,
                 intent_label(from),
@@ -298,7 +298,7 @@ impl fmt::Display for PlanStep {
             // Every intent has a registered `Materializer` since #110; no
             // step should ever classify as `Deferred` anymore — unreachable
             // in practice, but a clear fallback beats a silently wrong line.
-            (_, Operation::Deferred) => write!(f, "{} deferred: {}", emojis::WARNING, target),
+            (_, Operation::Deferred) => write!(f, "{} deferred: {}", emojis::warning(), target),
             (_, Operation::Repair { current, desired }) => write!(
                 f,
                 "{} {} {} ({} -> {})",

@@ -159,7 +159,7 @@ impl fmt::Display for SyncOutcome {
                 write!(
                     f,
                     "{} {} {}",
-                    emojis::CHECKMARK,
+                    emojis::checkmark(),
                     style::white("up to date:"),
                     target
                 )
@@ -167,7 +167,7 @@ impl fmt::Display for SyncOutcome {
             SyncOutcome::FastForwarded { .. } => write!(
                 f,
                 "{} {} {}",
-                emojis::CHECKMARK,
+                emojis::checkmark(),
                 style::white("fast-forwarded:"),
                 target
             ),
@@ -175,7 +175,7 @@ impl fmt::Display for SyncOutcome {
                 write!(
                     f,
                     "{} {} {}",
-                    emojis::CHECKMARK,
+                    emojis::checkmark(),
                     style::white("merged:"),
                     target
                 )
@@ -201,7 +201,7 @@ impl fmt::Display for SyncOutcome {
             SyncOutcome::Conflict { .. } => write!(
                 f,
                 "{} {} {} ({})",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("conflict:"),
                 target,
                 style::white("resolve manually, then re-run `over sync`, or `over sync --abort`"),
@@ -209,7 +209,7 @@ impl fmt::Display for SyncOutcome {
             SyncOutcome::Blocked { reason, .. } => write!(
                 f,
                 "{} {} {} ({})",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("blocked:"),
                 target,
                 reason,
@@ -218,7 +218,7 @@ impl fmt::Display for SyncOutcome {
                 write!(
                     f,
                     "{} {} {}",
-                    emojis::CROSSMARK,
+                    emojis::crossmark(),
                     style::white("aborted:"),
                     target
                 )

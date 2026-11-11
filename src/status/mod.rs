@@ -90,35 +90,35 @@ impl fmt::Display for EntryStatus {
             Status::Applied => write!(
                 f,
                 "{} {} {}",
-                emojis::CHECKMARK,
+                emojis::checkmark(),
                 style::white("applied:"),
                 target
             )?,
             Status::Missing => write!(
                 f,
                 "{} {} {}",
-                emojis::CROSSMARK,
+                emojis::crossmark(),
                 style::white("missing:"),
                 target
             )?,
             Status::Modified => write!(
                 f,
                 "{} {} {}",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("modified:"),
                 target
             )?,
             Status::Broken => write!(
                 f,
                 "{} {} {}",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("broken:"),
                 target
             )?,
             Status::Conflict => write!(
                 f,
                 "{} {} {}",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("conflict:"),
                 target
             )?,
@@ -143,7 +143,7 @@ impl fmt::Display for EntryStatus {
             Status::Diverged { ahead, behind } => write!(
                 f,
                 "{} {} {} ({ahead} ahead, {behind} behind)",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("diverged:"),
                 target,
             )?,

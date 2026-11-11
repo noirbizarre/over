@@ -100,7 +100,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     overlay.add_files(&ctx, &resolved).await.inspect_err(|e| {
         ui::warn(format!(
             "{} {} {}: {}",
-            emojis::CROSSMARK,
+            emojis::crossmark().for_stderr(),
             style::white_b("Failed to add to overlay"),
             style::cyan(&overlay.name),
             e,
@@ -125,7 +125,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 .collect();
             ui::info(format!(
                 "{} {} {}",
-                emojis::CHECKMARK,
+                emojis::checkmark(),
                 style::white("Updated git exclude:"),
                 style::cyan(&updated.join(", ")),
             ))

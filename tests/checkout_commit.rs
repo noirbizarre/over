@@ -296,7 +296,7 @@ fn stale_checkpoints_recognize_raw_head_targets_and_sync_converges() {
         .assert()
         .failure()
         .stdout(contains("1 diverged"))
-        .stdout(contains("⚠️ conflict:").not());
+        .stdout(contains("⚠ conflict:").not());
     fixture
         .command("sync")
         .args(["ov", "--no-prompt", "--target"])

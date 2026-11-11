@@ -66,21 +66,21 @@ impl fmt::Display for CommitOutcome {
             CommitOutcome::NotVirtualCheckout => write!(
                 f,
                 "{} {}",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("not checkout-materialized"),
             ),
             CommitOutcome::NothingToCommit => {
                 write!(
                     f,
                     "{} {}",
-                    emojis::CHECKMARK,
+                    emojis::checkmark(),
                     style::white("nothing to commit")
                 )
             }
             CommitOutcome::Blocked { conflicting_files } => write!(
                 f,
                 "{} {} ({})",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("blocked: conflicting files"),
                 conflicting_files
                     .iter()
