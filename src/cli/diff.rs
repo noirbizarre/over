@@ -126,8 +126,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             }
             eprintln!(
                 "Overlay {} — repository {} — {}{}\n  scope: {}",
-                overlay.name,
-                comparison.repository.display(),
+                crate::ui::style::overlay(&overlay.name).for_stderr(),
+                crate::ui::style::repository(comparison.repository.display()).for_stderr(),
                 if comparison.view == View::Staged {
                     "staged"
                 } else {
@@ -141,7 +141,9 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 comparison
                     .scope
                     .iter()
-                    .map(|path| path.display().to_string())
+                    .map(|path| crate::ui::style::path(path.display())
+                        .for_stderr()
+                        .to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
             );

@@ -28,6 +28,7 @@ pub enum Value {
     Text(String),
     Path(String),
     Overlay(String),
+    Repository(String),
     Mode(String),
     Change {
         symbol: &'static str,
@@ -178,6 +179,14 @@ fn origin(overlay: &Overlay, key: &str) -> String {
         .unwrap_or_else(|| "built-in default".into())
 }
 
+fn origin_value(overlay: &Overlay, key: &str) -> Value {
+    // Built-in defaults are provenance labels, not filesystem paths.
+    overlay.field_origins.get(key).map_or_else(
+        || Value::Text("built-in default".into()),
+        |path| Value::Path(path.display().to_string()),
+    )
+}
+
 fn hook_summary(hooks: &Hooks) -> Field {
     let mut field = Field::new("hooks", Value::Text(String::new()));
     field.children = [
@@ -202,7 +211,7 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
         )
     })?;
     let mut summary = vec![
-        Field::new("target origin", Value::Path(origin(overlay, "target"))),
+        Field::new("target origin", origin_value(overlay, "target")),
         Field::list(
             "uses",
             Some(format!("scope: {}", origin(overlay, "uses"))),
@@ -323,21 +332,18 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
         } else {
             Path::new(key)
         };
-        let mut field = Field::new("git", Value::Text(key.clone()));
+        let mut field = Field::new("git", Value::Repository(key.clone()));
         field.values.extend([
             Value::Text(" → ".into()),
             Value::Path(mappings.target_for(logical).display().to_string()),
         ]);
         field.children = vec![
             Field::new("configuration", Value::Text("present".into())),
-            Field::new(
-                "latest contributing scope",
-                Value::Path(origin(overlay, "git")),
-            ),
+            Field::new("latest contributing scope", origin_value(overlay, "git")),
         ];
         summary.push(field);
         if let Some(config) = overlay.git.as_ref().and_then(|git| git.get(key)) {
-            let mut settings = Field::new("git settings for", Value::Text(key.clone()));
+            let mut settings = Field::new("git settings for", Value::Repository(key.clone()));
             settings.children = vec![
                 Field::new("worktree", Value::Text(config.worktree.to_string())),
                 Field::new(
@@ -411,16 +417,20 @@ fn explain(entry: &DesiredEntry, overlays: &[Overlay]) -> Vec<Field> {
         } => (
             overlay,
             format!("{} (referent: {})", config.display(), resolved.display()),
-            Some("sidecar declaration".into()),
+            Some(Value::Text("sidecar declaration".into())),
         ),
         Provenance::PartialSidecar { overlay, config } => (
             overlay,
             config.display().to_string(),
-            Some("sidecar declaration".into()),
+            Some(Value::Text("sidecar declaration".into())),
         ),
         Provenance::Git {
             overlay, repo_key, ..
-        } => (overlay, repo_key.clone(), Some("Git declaration".into())),
+        } => (
+            overlay,
+            repo_key.clone(),
+            Some(Value::Text("Git declaration".into())),
+        ),
     };
     let intent = match entry.intent {
         MaterializationIntent::EncryptedFile(_) => "encrypted file",
@@ -434,10 +444,10 @@ fn explain(entry: &DesiredEntry, overlays: &[Overlay]) -> Vec<Field> {
     };
     let scope = scope.unwrap_or_else(|| {
         if matches!(entry.intent, MaterializationIntent::Directory) {
-            return "built-in scaffold".into();
+            return Value::Text("built-in scaffold".into());
         }
         let Some(overlay) = overlays.iter().find(|overlay| &overlay.name == owner) else {
-            return "built-in default".into();
+            return Value::Text("built-in default".into());
         };
         // Match against the source namespace: mappings must not change rule provenance.
         let path = Path::new(&source);
@@ -460,15 +470,26 @@ fn explain(entry: &DesiredEntry, overlays: &[Overlay]) -> Vec<Field> {
                     .find(|(_, rule)| {
                         rule.mode.is_some() && scope.matches(rule, path, is_directory)
                     })
-                    .map(|(index, _)| format!("{} rule {}", scope.descriptor.display(), index + 1))
-                    .or_else(|| scope.mode.map(|_| scope.descriptor.display().to_string()))
+                    .map(|(index, _)| {
+                        Value::Path(format!("{} rule {}", scope.descriptor.display(), index + 1))
+                    })
+                    .or_else(|| {
+                        scope
+                            .mode
+                            .map(|_| Value::Path(scope.descriptor.display().to_string()))
+                    })
             })
-            .unwrap_or_else(|| "built-in default".into())
+            .unwrap_or_else(|| Value::Text("built-in default".into()))
     });
+    let source = if matches!(entry.provenance, Provenance::Git { .. }) {
+        Value::Repository(source)
+    } else {
+        Value::Path(source)
+    };
     let mut fields = vec![
         Field::new("overlay", Value::Overlay(owner.clone())),
-        Field::new("source", Value::Path(source)),
-        Field::new("scope", Value::Path(scope)),
+        Field::new("source", source),
+        Field::new("scope", scope),
         Field::new("mode", Value::Mode(intent.into())),
     ];
     if let Some(mode) = entry.permissions {

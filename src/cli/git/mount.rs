@@ -94,7 +94,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         "{} {} {} {} {}",
         emojis::LINK,
         style::white("Mounting"),
-        style::path(short_path(&repo_root.to_string_lossy())),
+        style::repository(short_path(&repo_root.to_string_lossy())),
         style::white("to overlay"),
         style::overlay(&overlay.name),
     ))
@@ -252,26 +252,31 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             style::path(rel_path_str),
         ))
         .ok();
-        ui::info(format!("  url: {}", style::cyan(&existing.url))).ok();
+        ui::info(format!("  url: {}", style::repository(&existing.url))).ok();
         if let Some(ref branch) = existing.branch {
-            ui::info(format!("  branch: {}", style::cyan(branch))).ok();
+            ui::info(format!("  branch: {branch}")).ok();
         }
         if let Some(ref remotes) = existing.remotes {
             for (name, cfg) in remotes {
-                ui::info(format!("  remote {}: {}", style::cyan(name), cfg.url)).ok();
+                ui::info(format!(
+                    "  remote {}: {}",
+                    name,
+                    style::repository(&cfg.url)
+                ))
+                .ok();
             }
         }
         if let Some(ref config) = existing.config {
             for (key, value) in &config.entries {
-                ui::info(format!("  config {}: {}", style::cyan(key), value)).ok();
+                ui::info(format!("  config {key}: {value}")).ok();
             }
         }
         if existing.per_worktree_config {
-            ui::info(format!("  per_worktree_config: {}", style::cyan("true"))).ok();
+            ui::info("  per_worktree_config: true").ok();
         }
         if let Some(ref wt_config) = existing.worktree_config {
             for (key, value) in &wt_config.entries {
-                ui::info(format!("  worktree_config {}: {}", style::cyan(key), value)).ok();
+                ui::info(format!("  worktree_config {key}: {value}")).ok();
             }
         }
         ui::info("").ok();

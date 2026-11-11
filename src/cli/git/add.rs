@@ -153,7 +153,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         "{} {} {} {} {} ({})",
         emojis::SPARKLE,
         style::white_b("Added"),
-        style::cyan(&format!("{}", added_display.len())),
+        added_display.len(),
         style::white_b("file(s) to overlay"),
         style::overlay(&overlay.name),
         added_display.join(", "),

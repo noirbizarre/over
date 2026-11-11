@@ -66,9 +66,10 @@ broken overlay to report on anything that `uses` it, and flags dependency cycles
 Findings are grouped by overlay, then file, in alphabetical order, with errors
 before warnings within each file. Findings without an associated file appear
 directly beneath the overlay, before file groups. Only overlays with findings
-are shown; the repository-root overlay is displayed as `.`. Keys and inline
-configuration references are cyan, and commands are green, without backticks
-in human output. Hints and multiline details appear beneath their finding.
+are shown; the repository-root overlay is displayed as `.`. Overlay names are
+cyan and file paths blue. Inline configuration references and commands use
+bold emphasis with the default foreground, without backticks in human output.
+Hints and multiline details appear beneath their finding.
 
 Configuration and graph errors stay on the overlay responsible for them. Every
 transitive consumer receives a warning identifying the invalid overlay, once per
@@ -129,8 +130,7 @@ Messages and hints retain their original text, including backticks. The root
 overlay's identity is an empty string, displayed as `.` only in human output.
 A clean result has an empty `diagnostics` array and zero counts.
 
-Terminal output is pretty-printed and syntax-colored; setting a nonempty
-`NO_COLOR` disables colors while retaining indentation. Piped or redirected
+Terminal output is pretty-printed using the default foreground. Piped or redirected
 output is compact JSON with a trailing newline and no ANSI colors, even when
 color is forced through the environment.
 

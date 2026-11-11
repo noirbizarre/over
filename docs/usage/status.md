@@ -55,8 +55,11 @@ composition retains dependency-first evaluation order. Git declarations show
 configuration and contributing scope on indented lines. Entry provenance uses
 separate overlay, source, scope and mode lines.
 
-Headings and keys are bold white; paths are green, overlay names blue, modes
-yellow and scope annotations dimmed. Nonzero reconciliation counts and entry
+The headings are 📦 **Overlay**, 🛠️ **Configuration** and ♻️ **Reconciliation**.
+Overlay names and spinners are cyan; paths and Git repository identities are blue.
+Other text uses the default foreground, with bold headings and keys and dimmed
+scope annotations. Green, yellow and red are reserved for success, warning and
+error semantics. Nonzero reconciliation counts and entry
 labels share severity colors: applied is green, changes and missing entries
 yellow, and broken entries or conflicts red. Zero counts stay neutral.
 

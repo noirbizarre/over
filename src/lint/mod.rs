@@ -90,7 +90,7 @@ impl Diagnostic {
         };
         write!(f, "{severity_label}")?;
         if standalone {
-            write!(f, "{}", style::cyan(format!("[{}]", self.overlay)))?;
+            write!(f, "{}", style::overlay(format!("[{}]", self.overlay)))?;
         }
         write!(
             f,
@@ -110,7 +110,7 @@ impl Diagnostic {
                 f,
                 "\n  {} {}",
                 console::style("-->").dim(),
-                console::style(format!("{overlay}/{file}")).dim()
+                style::path(format!("{overlay}/{file}"))
             )?;
         }
 
@@ -135,14 +135,9 @@ fn highlight_inline(text: &str, colors: bool) -> String {
         .map(|(index, span)| {
             if index % 2 == 0 {
                 span.to_owned()
-            } else if span.starts_with("over ") {
-                console::style(span)
-                    .green()
-                    .force_styling(colors)
-                    .to_string()
             } else {
                 console::style(span)
-                    .cyan()
+                    .bold()
                     .force_styling(colors)
                     .to_string()
             }
@@ -183,11 +178,11 @@ impl fmt::Display for GroupedDiagnostics<'_> {
                 writeln!(f)?;
             }
             let name = if overlay.is_empty() { "." } else { overlay };
-            writeln!(f, "{}", style::cyan(name))?;
+            writeln!(f, "{}", style::overlay(name))?;
             // Option ordering places overlay-wide findings before file groups.
             for (file, diagnostics) in files {
                 let indent = if let Some(file) = file {
-                    writeln!(f, "  {}", style::dim(file))?;
+                    writeln!(f, "  {}", style::path(file))?;
                     "    "
                 } else {
                     "  "
@@ -1659,13 +1654,13 @@ mod tests {
     }
 
     #[test]
-    fn human_highlighting_distinguishes_commands_without_changing_canonical_text() {
+    fn human_highlighting_emphasizes_code_without_changing_canonical_text() {
         let text = "replace `install` with `hooks.install`; run `over apply --install`";
         let colored = highlight_inline(text, true);
         assert!(
             colored.contains(
                 &console::style("install")
-                    .cyan()
+                    .bold()
                     .force_styling(true)
                     .to_string()
             )
@@ -1673,7 +1668,7 @@ mod tests {
         assert!(
             colored.contains(
                 &console::style("over apply --install")
-                    .green()
+                    .bold()
                     .force_styling(true)
                     .to_string()
             )

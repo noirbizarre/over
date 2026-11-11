@@ -56,8 +56,8 @@ pub(crate) fn prompt_conflict(source: &Path, target: &Path) -> Result<ConflictCh
     let _pause = ui::progress::pause()?;
     let prompt = format!(
         "Conflict: {} already exists (overlay source: {})",
-        style::yellow(short_path(&target.to_string_lossy())),
-        style::yellow(short_path(&source.to_string_lossy())),
+        style::path(short_path(&target.to_string_lossy())),
+        style::path(short_path(&source.to_string_lossy())),
     );
     let selection = Select::with_theme(&DialogTheme::default())
         .with_prompt(prompt)

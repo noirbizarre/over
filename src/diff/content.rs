@@ -92,8 +92,8 @@ impl fmt::Display for ContentDiff {
         for line in lines {
             match line.tag {
                 LineTag::Equal => writeln!(f, "  {}", line.content)?,
-                LineTag::Delete => writeln!(f, "{}", style::red(format!("- {}", line.content)))?,
-                LineTag::Insert => writeln!(f, "{}", style::green(format!("+ {}", line.content)))?,
+                LineTag::Delete => writeln!(f, "- {}", line.content)?,
+                LineTag::Insert => writeln!(f, "+ {}", line.content)?,
             }
         }
         Ok(())

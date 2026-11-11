@@ -42,6 +42,8 @@ pub fn init_tracing(verbose: bool, debug: bool) {
         .with_writer(super::progress::TraceWriter::default)
         .with_env_filter(filter)
         .with_target(false)
+        // Tracing's built-in palette colors ordinary metadata as well as levels.
+        .with_ansi(false)
         .without_time()
         .init();
 }

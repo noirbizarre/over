@@ -73,7 +73,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         "{} {} {}",
         emojis::THREAD,
         style::bold("History for").force_styling(colors),
-        style::cyan(&label).force_styling(colors),
+        label.render(colors),
     ))?;
 
     for entry in entries {
@@ -115,16 +115,37 @@ struct HistoryScope {
     scope: CheckoutScope,
 }
 
+#[derive(Debug)]
+enum HistoryLabel {
+    Overlay(String),
+    Repository(String),
+}
+
+impl HistoryLabel {
+    fn render(&self, colors: bool) -> String {
+        match self {
+            Self::Overlay(name) => style::overlay(name).force_styling(colors).to_string(),
+            Self::Repository(name) => style::repository(name).force_styling(colors).to_string(),
+        }
+    }
+}
+
 fn resolve_scope(
     repo: &Repository,
     root: &Path,
     name: Option<&str>,
-) -> Result<(GitRepository, Vec<HistoryScope>, String)> {
+) -> Result<(GitRepository, Vec<HistoryScope>, HistoryLabel)> {
     if let Some(name) = name {
         let overlay = repo.get(name)?;
         return checkout_scope(repo, root, &overlay)
             .with_context(|| format!("overlay '{name}' is not checkout-materialized"))
-            .map(|(git_repo, managed_path)| (git_repo, managed_path, name.to_string()));
+            .map(|(git_repo, managed_path)| {
+                (
+                    git_repo,
+                    managed_path,
+                    HistoryLabel::Overlay(name.to_string()),
+                )
+            });
     }
 
     let ctx = Context::builder()
@@ -188,13 +209,13 @@ fn resolve_scope(
     }
 
     if let Some((_, git_repo, scope, name)) = best {
-        return Ok((git_repo, vec![scope], name));
+        return Ok((git_repo, vec![scope], HistoryLabel::Overlay(name)));
     }
 
     if let Some(overlay) = inferred {
         return checkout_scope(repo, root, &overlay)
             .with_context(|| format!("overlay '{}' is not checkout-materialized", overlay.name))
-            .map(|(git_repo, managed)| (git_repo, managed, overlay.name));
+            .map(|(git_repo, managed)| (git_repo, managed, HistoryLabel::Overlay(overlay.name)));
     }
 
     // Nothing matched (or matched but isn't checkout-materialized): fall
@@ -207,7 +228,7 @@ fn resolve_scope(
             managed: PathBuf::new(),
             scope: CheckoutScope::default(),
         }],
-        repo.root.display().to_string(),
+        HistoryLabel::Repository(repo.root.display().to_string()),
     ))
 }
 
@@ -276,14 +297,7 @@ impl LogEntry {
         let decorations = self
             .decorations
             .iter()
-            .map(|decoration| {
-                let styled = if decoration.tag {
-                    style::yellow(&decoration.label)
-                } else {
-                    style::cyan(&decoration.label)
-                };
-                styled.force_styling(colors).to_string()
-            })
+            .map(|decoration| decoration.label.clone())
             .collect::<Vec<_>>();
         let refs = if decorations.is_empty() {
             String::new()
@@ -292,7 +306,7 @@ impl LogEntry {
         };
         format!(
             "{} {}{} {}",
-            style::yellow(&self.short_oid).force_styling(colors),
+            self.short_oid,
             style::bold(&self.summary).force_styling(colors),
             refs,
             style::dim(format!("— ({}, {})", self.author, self.when)).force_styling(colors),
@@ -447,7 +461,6 @@ fn configure_walk(
 
 struct Decoration {
     label: String,
-    tag: bool,
 }
 
 fn reference_decorations(repo: &GitRepository) -> Result<BTreeMap<git2::Oid, Vec<Decoration>>> {
@@ -494,10 +507,7 @@ fn reference_decorations(repo: &GitRepository) -> Result<BTreeMap<git2::Oid, Vec
         decorations
             .entry(object.id())
             .or_default()
-            .push(Decoration {
-                label,
-                tag: reference.is_tag(),
-            });
+            .push(Decoration { label });
     }
     if repo.head_detached()?
         && let Some(head) = head
@@ -509,7 +519,6 @@ fn reference_decorations(repo: &GitRepository) -> Result<BTreeMap<git2::Oid, Vec
                 0,
                 Decoration {
                     label: "HEAD".into(),
-                    tag: false,
                 },
             );
     }
@@ -858,10 +867,10 @@ mod tests {
         assert_eq!(resolved.path(), git_repo.path());
         assert_eq!(scopes.len(), 1);
         if infer {
-            assert_eq!(label, "dotfiles");
+            assert_eq!(label.render(false), "dotfiles");
             assert_eq!(scopes[0].managed, Path::new("dotfiles"));
         } else {
-            assert_eq!(label, tmp.path().display().to_string());
+            assert_eq!(label.render(false), tmp.path().display().to_string());
             assert!(scopes[0].managed.as_os_str().is_empty());
         }
         let explicit_error = resolve_scope(&repo, &root, Some("invalid")).err().unwrap();
@@ -1037,7 +1046,7 @@ mod tests {
         let repo = Repository::new(tmp.path().to_path_buf());
         let (resolved, scopes, label) = resolve_scope(&repo, root.path(), None).unwrap();
         assert_eq!(resolved.path(), git_repo.path());
-        assert_eq!(label, "dotfiles");
+        assert_eq!(label.render(false), "dotfiles");
         assert_eq!(scopes.len(), 1);
         assert_eq!(scopes[0].managed, Path::new("dotfiles"));
         // Whole-repository fallback also succeeds, so verify it cannot leak unrelated history.

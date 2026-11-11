@@ -473,19 +473,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "console-json"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de4619fe9c9ea3aadc51dec3394cfc830791cf576b8397e3442b62cccd145a33"
-dependencies = [
- "console",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "windows-sys",
-]
-
-[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1974,7 +1961,6 @@ dependencies = [
  "clap_complete",
  "config",
  "console",
- "console-json",
  "dialoguer",
  "dirs 7.0.0",
  "etcetera",

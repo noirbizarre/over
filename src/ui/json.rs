@@ -3,12 +3,9 @@
 use std::io::{self, IsTerminal, Write};
 
 use anyhow::{Context as _, Result};
-use console_json::{ColorMode, JsonOptions};
 use serde::Serialize;
 
-/// Print a JSON document, pretty and colored on terminals, compact in pipes.
-///
-/// A nonempty `NO_COLOR` disables terminal colors without disabling indentation.
+/// Print neutral JSON, pretty on terminals and compact in pipes.
 pub fn print_json<T: Serialize>(value: &T) -> Result<()> {
     print_json_with_context(value, DEFAULT_CONTEXT)
 }
@@ -32,45 +29,26 @@ pub(crate) fn print_json_with_context<T: Serialize>(
 ) -> Result<()> {
     let _pause = super::progress::pause()?;
     let terminal = io::stdout().is_terminal();
-    let colors = colors_allowed(
-        terminal,
-        std::env::var_os("NO_COLOR").as_deref(),
-        console::colors_enabled(),
-    );
-    write_json(&mut io::stdout().lock(), value, terminal, colors, context)
-}
-
-fn colors_allowed(terminal: bool, no_color: Option<&std::ffi::OsStr>, supported: bool) -> bool {
-    terminal && no_color.is_none_or(|value| value.is_empty()) && supported
+    write_json(&mut io::stdout().lock(), value, terminal, context)
 }
 
 fn write_json<T: Serialize>(
     writer: &mut impl Write,
     value: &T,
     terminal: bool,
-    colors: bool,
     context: JsonErrorContext,
 ) -> Result<()> {
     // Finish serialization before writing so failures cannot leave a partial document.
-    let json = format_json(value, terminal, colors).context(context.serialize)?;
+    let json = format_json(value, terminal).context(context.serialize)?;
     writer.write_all(&json).context(context.write)?;
     writer.write_all(b"\n").context(context.write)?;
     writer.flush().context(context.flush)
 }
 
-fn format_json<T: Serialize>(value: &T, terminal: bool, colors: bool) -> Result<Vec<u8>> {
+fn format_json<T: Serialize>(value: &T, terminal: bool) -> Result<Vec<u8>> {
     if terminal {
-        let mut json = Vec::new();
-        console_json::write_json_with_options(
-            &mut json,
-            value,
-            JsonOptions::default().color(if colors {
-                ColorMode::Always
-            } else {
-                ColorMode::Never
-            }),
-        )?;
-        Ok(json)
+        // JSON syntax is not an identity or severity, so it uses the default foreground.
+        Ok(serde_json::to_vec_pretty(value)?)
     } else {
         // Bypass all color policy in pipes, even when the environment forces colors.
         Ok(serde_json::to_vec(value)?)
@@ -79,13 +57,12 @@ fn format_json<T: Serialize>(value: &T, terminal: bool, colors: bool) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsStr;
     use std::io::{self, Write};
 
     use rstest::rstest;
     use serde::ser::{Serialize, SerializeSeq, Serializer};
 
-    use super::{DEFAULT_CONTEXT, JsonErrorContext, colors_allowed, format_json, write_json};
+    use super::{DEFAULT_CONTEXT, JsonErrorContext, format_json, write_json};
 
     #[derive(Default)]
     struct RecordingWriter {
@@ -125,39 +102,14 @@ mod tests {
     }
 
     #[rstest]
-    #[case(false, None, true, false)]
-    #[case(true, None, true, true)]
-    #[case(true, Some(""), true, true)]
-    #[case(true, Some("1"), true, false)]
-    #[case(true, Some("0"), true, false)]
-    #[case(true, None, false, false)]
-    #[case(true, Some(""), false, false)]
-    fn colors_require_a_supported_terminal_without_a_nonempty_no_color(
-        #[case] terminal: bool,
-        #[case] no_color: Option<&str>,
-        #[case] supported: bool,
-        #[case] expected: bool,
-    ) {
-        assert_eq!(
-            colors_allowed(terminal, no_color.map(OsStr::new), supported),
-            expected
-        );
-    }
-
-    #[rstest]
-    #[case(false, false)]
-    #[case(true, false)]
-    #[case(true, true)]
-    fn late_serialization_errors_leave_the_destination_untouched(
-        #[case] terminal: bool,
-        #[case] colors: bool,
-    ) {
+    #[case(false)]
+    #[case(true)]
+    fn late_serialization_errors_leave_the_destination_untouched(#[case] terminal: bool) {
         let mut writer = RecordingWriter::default();
         let error = write_json(
             &mut writer,
             &LateSerializationFailure,
             terminal,
-            colors,
             DEFAULT_CONTEXT,
         )
         .unwrap_err();
@@ -168,17 +120,13 @@ mod tests {
     }
 
     #[rstest]
-    #[case(false, false)]
-    #[case(true, false)]
-    #[case(true, true)]
-    fn successful_output_adds_one_newline_and_flushes(
-        #[case] terminal: bool,
-        #[case] colors: bool,
-    ) {
+    #[case(false)]
+    #[case(true)]
+    fn successful_output_adds_one_newline_and_flushes(#[case] terminal: bool) {
         let value = serde_json::json!({"key": "value"});
         let mut writer = RecordingWriter::default();
-        write_json(&mut writer, &value, terminal, colors, DEFAULT_CONTEXT).unwrap();
-        let mut expected = format_json(&value, terminal, colors).unwrap();
+        write_json(&mut writer, &value, terminal, DEFAULT_CONTEXT).unwrap();
+        let mut expected = format_json(&value, terminal).unwrap();
         expected.push(b'\n');
         assert_eq!(writer.bytes, expected);
         assert!(writer.flushed);
@@ -201,7 +149,6 @@ mod tests {
             &mut writer,
             &serde_json::json!({}),
             false,
-            false,
             JsonErrorContext {
                 serialize: "serialize context",
                 write: "write context",
@@ -217,14 +164,14 @@ mod tests {
         assert_eq!(writer.flushed, !fail_write);
     }
 
-    fn formatted(value: &impl serde::Serialize, terminal: bool, colors: bool) -> String {
-        String::from_utf8(format_json(value, terminal, colors).unwrap()).unwrap()
+    fn formatted(value: &impl serde::Serialize, terminal: bool) -> String {
+        String::from_utf8(format_json(value, terminal).unwrap()).unwrap()
     }
 
     #[test]
-    fn json_layout_and_color_follow_the_output_destination() {
+    fn json_layout_follows_the_output_destination_without_adding_colors() {
         let value = serde_json::json!({"key": "value", "count": 1});
-        let compact = formatted(&value, false, true);
+        let compact = formatted(&value, false);
         assert!(!compact.contains('\n'));
         assert!(!compact.contains('\x1b'));
         assert_eq!(
@@ -232,27 +179,23 @@ mod tests {
             value
         );
 
-        let pretty = formatted(&value, true, false);
+        let pretty = formatted(&value, true);
         assert!(pretty.contains('\n'));
         assert!(!pretty.contains('\x1b'));
-        let colored = formatted(&value, true, true);
-        assert!(colored.contains('\x1b'));
-        assert_eq!(console::strip_ansi_codes(&colored), pretty);
     }
 
     #[test]
-    fn colored_output_preserves_json_escapes_and_unicode_exactly() {
+    fn terminal_output_preserves_json_escapes_and_unicode_exactly() {
         let value = serde_json::json!({
             "escaped\"key": "Unicode: é 🦀; quotes: \"; slash: \\; pair: \\\"; newline:\n; `over lint`",
             "punctuation": "{\"key\":null}",
             "values": [true, false, null, -2, 1.25e30]
         });
         let pretty = serde_json::to_string_pretty(&value).unwrap();
-        let colored = formatted(&value, true, true);
-        let stripped = console::strip_ansi_codes(&colored);
-        assert_eq!(stripped, pretty);
+        let rendered = formatted(&value, true);
+        assert_eq!(rendered, pretty);
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&stripped).unwrap(),
+            serde_json::from_str::<serde_json::Value>(&rendered).unwrap(),
             value
         );
     }
