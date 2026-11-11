@@ -4,10 +4,9 @@
 //! Safety checks combine this association with source git objects and target
 //! content (`super::git`, `crate::status::virtual_checkout`). Losing it leaves
 //! target files intact but loses their recorded base and ownership scope.
-//! `VirtualCheckoutMaterializer::classify` refuses populated ordinary-file
-//! directories without an association; reapplying alone cannot recover it.
-//! Restore matching state from backup when available, preserving target files
-//! and source history before attempting recovery.
+//! Reapplying can initialize an existing directory against current source HEAD,
+//! resolving collisions, but cannot reconstruct its previous base. Restore
+//! matching state from backup when recovering that historical association.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -47,9 +46,8 @@ pub struct VirtualCheckoutRecord {
     /// working directory root (empty for a whole-repository virtual
     /// checkout).
     pub managed_path: PathBuf,
-    /// The source repository commit this checkout's target content was
-    /// last known to fully reflect (either at creation, or after the most
-    /// recent `over commit`/`over sync` fast-forward).
+    /// Source comparison base at initialization or the most recent commit/sync.
+    /// Skipped or absorbed initial collisions may already differ from this base.
     pub base_oid: String,
     pub created_at: i64,
     pub last_commit_at: Option<i64>,
@@ -144,8 +142,7 @@ pub(crate) fn state_file() -> Result<StateFile<VirtualCheckoutState>> {
 }
 
 /// The state map's key for `target` — canonicalized (resolves symlinks/
-/// `.`/`..`, matching `super::git::checkout_subtree`'s own
-/// canonicalization before the actual git2 checkout call) so that two
+/// `.`/`..`) so that two
 /// `over` invocations naming the *same* directory via different relative
 /// paths (or a different current directory) always map to the same
 /// record. Without this, e.g. two different overlays both applied with a

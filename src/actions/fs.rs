@@ -23,7 +23,7 @@ use crate::utils::short_path;
 
 /// Choices presented to the user when a conflict is detected during apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConflictChoice {
+pub(crate) enum ConflictChoice {
     Skip,
     Overwrite,
     Absorb,
@@ -52,7 +52,7 @@ impl fmt::Display for ConflictChoice {
 }
 
 /// Prompt the user to resolve a conflict between `source` (overlay) and `target` (existing).
-fn prompt_conflict(source: &Path, target: &Path) -> Result<ConflictChoice> {
+pub(crate) fn prompt_conflict(source: &Path, target: &Path) -> Result<ConflictChoice> {
     let _pause = ui::progress::pause()?;
     let prompt = format!(
         "Conflict: {} already exists (overlay source: {})",
@@ -69,7 +69,7 @@ fn prompt_conflict(source: &Path, target: &Path) -> Result<ConflictChoice> {
 }
 
 /// Show a diff between the overlay source and the existing target using `git diff --no-index`.
-fn show_diff(source: &Path, target: &Path) -> Result<()> {
+pub(crate) fn show_diff(source: &Path, target: &Path) -> Result<()> {
     let _pause = ui::progress::pause()?;
     let status = Command::new("git")
         .arg("diff")

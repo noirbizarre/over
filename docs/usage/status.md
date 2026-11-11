@@ -162,21 +162,38 @@ staging can appear in both lists. Mapped checkout units are inspected
 independently, so changes confined to a mapped sibling do not make the
 residual checkout behind.
 
+### Initialization into an existing directory
+
+`over apply` can initialize a virtual checkout in an existing directory. It
+preserves the root and unrelated files, creates missing committed files, and
+adopts identical files without prompting. For actual path collisions it offers:
+
+- **Skip:** keep the existing content as a local checkout change and continue.
+- **Overwrite:** replace only the conflicting path with committed overlay content.
+- **Absorb:** keep the existing content and copy it into the overlay's source
+  working tree, without staging or committing it. Independent source edits must
+  be resolved first.
+- **Diff:** show differences against committed overlay content, then decide.
+
+File/directory collisions are resolved as one group; keeping an obstructing file
+also keeps it in place instead of creating files beneath it. Existing extra files
+in the selected checkout scope appear as local additions. `--force` overwrites
+eligible collisions; `--no-prompt` fails on unresolved collisions. Dry-run previews
+without prompting. Mapping holes and protected checkout boundaries remain protected.
+
 ### Lost association metadata
 
 The association is stored in `$XDG_STATE_HOME/over/virtual_checkout.toml`.
 Losing it leaves target files intact, but loses the recorded base revision and
-ownership scope needed to interpret those files. A populated ordinary-file
-directory without an association is reported as a conflict during classification;
-`over apply` does not silently re-adopt it, even if its content matches source
-`HEAD`. Reapplying alone cannot reconstruct the association or its old base.
+ownership scope needed to interpret those files. Reapplying can initialize the
+existing directory against current source `HEAD`, using the collision choices
+above. That creates a new association; it cannot reconstruct the old base.
 
 Preserve the target files, source repository history, and any remaining state
 before recovery. If available, restore a matching association from a state backup
-for the same target, source and mapping scope. Without that backup, there is no
-automatic in-place recovery: recreating a projection from current source content
-does not recover its previous base or local edits. Keep an independent copy of
-existing target content for manual comparison and recovery.
+for the same target, source and mapping scope. Without that backup, initialization
+against current source content does not recover its previous base. Keep an
+independent copy of existing target content for manual comparison and recovery.
 
 ## `.git/info/exclude` diagnostics
 

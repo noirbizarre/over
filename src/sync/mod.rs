@@ -708,13 +708,10 @@ async fn commit_virtual_checkout_interactively(
 /// independent local/index edits survive, and already-converged files only
 /// need their checkpoint advanced. All git2/filesystem work is synchronous.
 ///
-/// Deliberately does *not* use [`vc_git::checkout_subtree`] here (unlike
-/// the materializer's own first-time `Create` path): re-checking out the
-/// *whole* subtree via `git2::checkout_tree` proved unreliable at
-/// overwriting a file that already exists at `target` with different
-/// content (observed directly in CI, not reproducible locally — see
-/// `vc_git::apply_tree_diff`'s own doc). Reading/writing only the
-/// changed blobs with plain `std::fs` avoids that entirely.
+/// Reconcile only changed paths rather than rerunning first initialization:
+/// local/index edits already have a recorded base and must survive independently
+/// of source updates. Explicit blob writes also avoid libgit2 checkout's unreliable
+/// existing-file comparison when redirected to a different target directory.
 async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
     let Provenance::Overlay { source, .. } = &entry.provenance else {
         unreachable!(
