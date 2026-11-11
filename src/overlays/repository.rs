@@ -250,22 +250,8 @@ impl Repository {
     /// `over.toml` the same as an absent one and broke `default_overlay`'s
     /// own documented hard-error contract above.
     fn root_config(&self) -> Result<RootConfig> {
+        let (values, _) = self.root_source()?;
         let basename = self.root.join(BASENAME);
-        let Some(path) = basename.to_str() else {
-            return Ok(RootConfig::default());
-        };
-        let mut values = File::with_name(path).required(false)
-            .collect()
-            .map_err(|_| {
-                // Parser excerpts can contain executable commands with embedded secrets.
-                anyhow::anyhow!(
-                    "failed to load repository root config '{}': check descriptor syntax (source contents omitted)",
-                    basename.display()
-                )
-            })?;
-        let descriptor = super::schema::descriptor_path(&values, &self.root)?;
-        self.warnings
-            .report(super::schema::normalize(&mut values, &descriptor));
         // config can coerce scalar values into strings; a remote must be literal text.
         if let Some(value) = values.get("repository") {
             let ValueKind::String(remote) = &value.kind else {
@@ -282,6 +268,28 @@ impl Repository {
             .build()?
             .try_deserialize()
             .with_context(|| format!("invalid repository root config '{}'", basename.display()))
+    }
+
+    /// Keep readable root declarations available to lint even if another field
+    /// prevents deserializing the complete root configuration.
+    pub(crate) fn root_source(&self) -> Result<(config::Map<String, config::Value>, PathBuf)> {
+        let basename = self.root.join(BASENAME);
+        let Some(path) = basename.to_str() else {
+            return Ok((config::Map::new(), basename));
+        };
+        let mut values = File::with_name(path).required(false)
+            .collect()
+            .map_err(|_| {
+                // Parser excerpts can contain executable commands with embedded secrets.
+                anyhow::anyhow!(
+                    "failed to load repository root config '{}': check descriptor syntax (source contents omitted)",
+                    basename.display()
+                )
+            })?;
+        let descriptor = super::schema::descriptor_path(&values, &self.root)?;
+        self.warnings
+            .report(super::schema::normalize(&mut values, &descriptor));
+        Ok((values, descriptor))
     }
 }
 

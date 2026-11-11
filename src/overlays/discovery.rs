@@ -24,8 +24,8 @@ pub struct OverlayDeclaration {
 /// as used by `GLOB_PATTERN`/`exclude`/`rules`) because a declaration
 /// describes what to enumerate on disk, not what to test — mirrors
 /// `cli::common::resolve_inputs`. A malformed glob, or one matching
-/// nothing, is silently skipped (ADR-018): no error, no lint check in
-/// this issue.
+/// nothing, is skipped (ADR-018); `over lint` diagnoses declarations
+/// separately so runtime discovery stays tolerant.
 pub(super) fn resolve_declared_dirs(
     repo_root: &Path,
     declarations: &[OverlayDeclaration],
@@ -58,6 +58,18 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn broken_declarations_do_not_hide_valid_overlay_directories() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join("shared")).unwrap();
+        let declarations = ["hosts/[", "optional/*", "missing", "shared"]
+            .map(|path| OverlayDeclaration { path: path.into() });
+        assert_eq!(
+            resolve_declared_dirs(tmp.path(), &declarations),
+            vec![tmp.path().join("shared")]
+        );
+    }
 
     #[test]
     fn a_literal_path_matching_an_existing_directory_resolves_to_it() {
