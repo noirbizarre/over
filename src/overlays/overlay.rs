@@ -16,6 +16,7 @@ use crate::git_exclude;
 use crate::plan::Plan;
 use crate::ui;
 use crate::ui::{emojis, style};
+use crate::utils::short_path;
 
 use super::permissions::{self, FileMode};
 use super::rules::{self, MaterializationKind, PolicyScope, Rule};
@@ -491,13 +492,15 @@ impl Overlay {
 
     async fn apply_own(&self, ctx: &Ctx) -> Result<()> {
         let target = self.resolve_target(ctx)?;
+        // Match plan output's home-relative paths instead of leaking sandbox paths.
+        let display_target = short_path(&target.to_string_lossy());
         ui::info(format!(
             "{} {} {} {} {}",
             emojis::PACKAGE,
             style::white_b("Applying overlay"),
             style::cyan(&self.name),
             style::white_b("to"),
-            style::cyan(&target.to_string_lossy()),
+            style::cyan(&display_target),
         ))
         .ok();
 
@@ -555,7 +558,7 @@ impl Overlay {
             style::white_b("Applied overlay"),
             style::cyan(&self.name),
             style::white_b("to"),
-            style::cyan(&target.to_string_lossy()),
+            style::cyan(&display_target),
             style::white_b("with success"),
         ))
         .ok();

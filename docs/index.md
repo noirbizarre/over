@@ -7,7 +7,7 @@ whose contents are applied to a **target** directory. Descriptors configure wher
 files go and how they appear there. By default, Over links individual files.
 
 <p align="center">
-  <img src="images/demo.gif" alt="over creating, composing (uses:), and applying overlays">
+  <img src="images/demo.gif" alt="Over composing, previewing, and applying dotfile overlays">
 </p>
 
 ## Getting started
