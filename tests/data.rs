@@ -141,6 +141,7 @@ fn all_targets_keep_host_data_without_leaking_other_targets_metadata() -> TestRe
         fs::write(repo.path().join(name).join("file"), name)?;
     }
     Command::cargo_bin("over")?
+        .current_dir(repo.path())
         .arg("--home")
         .arg(repo.path())
         .args(["status", "--all", "--target"])
@@ -150,7 +151,9 @@ fn all_targets_keep_host_data_without_leaking_other_targets_metadata() -> TestRe
         .stdout(contains("alpha-workstation"))
         .stdout(contains("beta-workstation-clean"));
     // Omitting NAME still selects the default operational target.
+    // The real checkout may have a Git overlay association unrelated to this fixture.
     Command::cargo_bin("over")?
+        .current_dir(repo.path())
         .arg("--home")
         .arg(repo.path())
         .args(["apply", "--no-prompt", "--target"])
