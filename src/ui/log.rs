@@ -63,7 +63,7 @@ pub fn display_error(err: &anyhow::Error) {
     if let Some(top) = chain.next() {
         let _ = term.write_line(&format!(
             "{} {} {}",
-            style("✘").red().bold(),
+            super::emojis::crossmark().for_stderr().bold(),
             style("error:").red().bold(),
             top,
         ));

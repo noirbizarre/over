@@ -119,7 +119,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             .inspect_err(|e| {
                 ui::warn(format!(
                     "{} {} {}: {}",
-                    emojis::CROSSMARK,
+                    emojis::crossmark().for_stderr(),
                     style::white_b("Failed to add to overlay"),
                     style::cyan(&overlay.name),
                     e,
@@ -199,7 +199,7 @@ fn add_symlink(
 
     ui::info(format!(
         "{} {} {} {}",
-        emojis::CHECKMARK,
+        emojis::checkmark(),
         style::white_b("Created symlink config"),
         style::cyan(config_path.display()),
         style::white_b("in overlay"),

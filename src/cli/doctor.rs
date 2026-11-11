@@ -79,7 +79,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if !report.fixed.is_empty() {
         ui::info(format!("{}", style::white_b("Fixed"))).ok();
         for line in &report.fixed {
-            ui::info(format!("  {} {line}", emojis::CHECKMARK)).ok();
+            ui::info(format!("  {} {line}", emojis::checkmark())).ok();
         }
         ui::info("").ok();
     }

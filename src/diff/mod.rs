@@ -114,12 +114,14 @@ impl fmt::Display for VirtualCheckoutFileChange {
             if self.staged { "staged" } else { "unstaged" }
         );
         match self.kind {
-            VirtualCheckoutFileKind::Added => write!(f, "  {} added: {path}", emojis::CHECKMARK),
+            VirtualCheckoutFileKind::Added => {
+                write!(f, "  {} added: {path}", emojis::checkmark())
+            }
             VirtualCheckoutFileKind::Deleted => {
-                write!(f, "  {} deleted: {path}", emojis::CROSSMARK)
+                write!(f, "  {} deleted: {path}", emojis::crossmark())
             }
             VirtualCheckoutFileKind::Modified => {
-                writeln!(f, "  {} modified: {path}", emojis::WARNING)?;
+                writeln!(f, "  {} modified: {path}", emojis::warning())?;
                 if let Some(diff) = &self.diff {
                     write!(f, "{diff}")?;
                 }
@@ -152,28 +154,28 @@ impl fmt::Display for DiffEntry {
             Change::Unchanged => write!(
                 f,
                 "{} {} {}",
-                emojis::CHECKMARK,
+                emojis::checkmark(),
                 style::white("unchanged:"),
                 target
             ),
             Change::Missing => write!(
                 f,
                 "{} {} {}",
-                emojis::CROSSMARK,
+                emojis::crossmark(),
                 style::white("missing:"),
                 target
             ),
             Change::Broken => write!(
                 f,
                 "{} {} {}",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("broken:"),
                 target
             ),
             Change::Unexpected { actual } => write!(
                 f,
                 "{} {} {} (found {})",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("unexpected:"),
                 target,
                 actual,
@@ -182,7 +184,7 @@ impl fmt::Display for DiffEntry {
                 writeln!(
                     f,
                     "{} {} {}",
-                    emojis::WARNING,
+                    emojis::warning(),
                     style::yellow("modified:"),
                     target
                 )?;

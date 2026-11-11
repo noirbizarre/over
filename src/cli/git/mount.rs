@@ -282,7 +282,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if exportable.is_empty() {
         ui::info(format!(
             "{} {}",
-            emojis::CHECKMARK,
+            emojis::checkmark(),
             style::white("No exportable properties found in local repo"),
         ))
         .ok();
@@ -314,7 +314,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         if selections.is_empty() {
             ui::info(format!(
                 "{} {}",
-                emojis::CHECKMARK,
+                emojis::checkmark(),
                 style::white("No properties selected, skipping export"),
             ))
             .ok();
@@ -429,7 +429,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     set_overlay_config(&git_repo, &overlay.name)?;
     ui::info(format!(
         "{} {} {}",
-        emojis::CHECKMARK,
+        emojis::checkmark(),
         style::white("Set over.overlay ="),
         style::cyan(&overlay.name),
     ))

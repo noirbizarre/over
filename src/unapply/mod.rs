@@ -125,21 +125,21 @@ impl fmt::Display for EntryOutcome {
             Outcome::AlreadyAbsent => write!(
                 f,
                 "{} {} {}",
-                emojis::CHECKMARK,
+                emojis::checkmark(),
                 style::white("already absent:"),
                 target
             ),
             Outcome::NotOwned { current } => write!(
                 f,
                 "{} {} {} ({current} — not created by this overlay, left untouched)",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("skip:"),
                 target,
             ),
             Outcome::CheckoutNotClean { status } => write!(
                 f,
                 "{} {} {} ({} — run `over sync` or resolve manually first)",
-                emojis::WARNING,
+                emojis::warning(),
                 style::yellow("skip:"),
                 target,
                 status_word(status),

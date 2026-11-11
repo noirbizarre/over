@@ -165,7 +165,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
     if managed_files.is_empty() && unapplied_files.is_empty() {
         ui::info(format!(
             "  {} {}",
-            emojis::CHECKMARK,
+            emojis::checkmark(),
             style::white("No overlay-managed files found"),
         ))
         .ok();
