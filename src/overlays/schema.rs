@@ -20,6 +20,7 @@ pub(crate) const OVERLAY_KEYS: &[&str] = &[
     "permissions",
     "repository",
     "rules",
+    "sync",
     "target",
     "uses",
 ];
@@ -105,6 +106,11 @@ pub(crate) fn normalize(values: &mut Map<String, Value>, file: &Path) -> Vec<War
     fields(values, OVERLAY_KEYS, "", false, file, &mut warnings);
     for (key, value) in values {
         match key.as_str() {
+            "sync" => {
+                if let ValueKind::Table(table) = &mut value.kind {
+                    fields(table, &["pull", "push"], "sync", false, file, &mut warnings);
+                }
+            }
             "rules" => entries(value, |value, index| {
                 if let ValueKind::Table(table) = &mut value.kind {
                     fields(

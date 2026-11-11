@@ -2,6 +2,15 @@
 
 **Status:** accepted
 
+## Command scope superseded by #231
+
+`over sync` now reconciles virtual checkouts locally, with opt-in pull/rebase and
+push for the Over source repository only. All overlay-declared Git repositories,
+including root checkouts and their worktrees, have user-managed Git lifecycles.
+The declared-checkout implementation below remains a separate library capability;
+its merge/abort workflow is no longer exposed through this command. See the
+[current sync contract](../usage/sync.md). The following records the original decision.
+
 ## Safety amendment (#195)
 
 The [current safety contract](../usage/safety.md) clarifies that `--abort`

@@ -1394,7 +1394,7 @@ fn sync_overlay_without_git_entry_succeeds_quietly() -> TestResult {
 }
 
 #[test]
-fn sync_reports_up_to_date_right_after_apply() -> TestResult {
+fn sync_leaves_a_declared_checkout_unchanged_after_apply() -> TestResult {
     let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
@@ -1420,13 +1420,12 @@ fn sync_reports_up_to_date_right_after_apply() -> TestResult {
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
-        .success()
-        .stdout(contains("up to date"));
+        .success();
     Ok(())
 }
 
 #[test]
-fn sync_pulls_and_fast_forwards_after_upstream_advances() -> TestResult {
+fn sync_does_not_fetch_or_refresh_a_declared_checkout() -> TestResult {
     let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
@@ -1471,15 +1470,14 @@ fn sync_pulls_and_fast_forwards_after_upstream_advances() -> TestResult {
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
-        .success()
-        .stdout(contains("fast-forwarded"));
+        .success();
 
-    assert!(root.path().join("new.txt").exists());
+    assert!(!root.path().join("new.txt").exists());
     Ok(())
 }
 
 #[test]
-fn sync_blocks_on_dirty_checkout_without_touching_it() -> TestResult {
+fn sync_leaves_dirty_declared_checkouts_to_the_user() -> TestResult {
     let xdg_state_home = TempDir::new()?;
     let tmp = TempDir::new()?;
     let canonical_tmp = canonical_for_matching(tmp.path())?;
@@ -1507,8 +1505,7 @@ fn sync_blocks_on_dirty_checkout_without_touching_it() -> TestResult {
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
-        .failure()
-        .stdout(contains("blocked"));
+        .success();
 
     // Untouched: the dirty file is still there, nothing was reverted/merged.
     assert!(root.path().join("dirty.txt").exists());
@@ -1543,8 +1540,7 @@ fn sync_dry_run_reports_without_mutating() -> TestResult {
         .arg("--dry-run")
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
-        .success()
-        .stdout(contains("would leave unchanged"));
+        .success();
     Ok(())
 }
 

@@ -111,7 +111,7 @@ pub enum Commands {
 
     #[clap(
         name = "sync",
-        about = "Reconcile a checkout-materialized overlay with its git source"
+        about = "Reconcile virtual checkouts, optionally pulling/pushing the Over source repository"
     )]
     Sync(sync::Params),
 

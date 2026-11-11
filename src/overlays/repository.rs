@@ -56,6 +56,11 @@ impl Repository {
         Ok(self.root_config()?.hooks)
     }
 
+    /// Read source-repository remote policy without inheriting overlay descriptors.
+    pub fn sync_config(&self) -> Result<SyncConfig> {
+        Ok(self.root_config()?.sync)
+    }
+
     /// Bootstrap requires an explicit root descriptor, unlike overlay discovery.
     pub fn validate_initialization(&self) -> Result<Option<String>> {
         let descriptors = EXTENSIONS
@@ -290,11 +295,57 @@ impl Repository {
 #[derive(Debug, Deserialize, Default)]
 struct RootConfig {
     #[serde(default)]
+    sync: SyncConfig,
+    #[serde(default)]
     hooks: crate::hooks::Hooks,
     format: Option<Format>,
     overlays: Option<Vec<OverlayDeclaration>>,
     default_overlay: Option<String>,
     repository: Option<String>,
+}
+
+/// Opt-in remote synchronization of the repository containing Over's source.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SyncConfig {
+    pub pull: bool,
+    pub push: bool,
+}
+
+#[cfg(test)]
+mod sync_config_tests {
+    use super::*;
+
+    #[rstest::rstest]
+    #[case("toml", "", false, false)]
+    #[case("toml", "[sync]", false, false)]
+    #[case("toml", "[sync]\npull = true", true, false)]
+    #[case("toml", "[sync]\npush = true", false, true)]
+    #[case("yaml", "sync: {}", false, false)]
+    #[case("yaml", "sync:\n  pull: true", true, false)]
+    #[case("yml", "sync:\n  push: true", false, true)]
+    fn root_sync_settings_default_each_missing_key_to_false(
+        #[case] extension: &str,
+        #[case] descriptor: &str,
+        #[case] pull: bool,
+        #[case] push: bool,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(format!("over.{extension}")), descriptor).unwrap();
+        let repo = Repository::new(temp.path().to_path_buf());
+        assert_eq!(repo.sync_config().unwrap(), SyncConfig { pull, push });
+    }
+
+    #[test]
+    fn malformed_sync_settings_are_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("over.toml"), "[sync]\npull = []").unwrap();
+        assert!(
+            Repository::new(temp.path().to_path_buf())
+                .sync_config()
+                .is_err()
+        );
+    }
 }
 
 fn validate_repository_remote(remote: &str) -> Result<()> {
