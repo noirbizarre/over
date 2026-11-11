@@ -1,4 +1,5 @@
 mod checks;
+mod declarations;
 mod ownership;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -839,6 +840,9 @@ fn lint_dirs(
         );
     }
 
+    // Discovery mistakes do not invalidate an overlay's own composition or dependencies.
+    diagnostics.extend(declarations::check(repo));
+
     for warning in repo.warnings.warnings() {
         // Attribute shared ancestor findings to their declaring directory, once per pass.
         let directory = warning.file.parent().unwrap_or(&warning_root);
@@ -1166,6 +1170,50 @@ mod tests {
                 .diagnostics
                 .iter()
                 .any(|d| d.message.contains("repository"))
+        );
+    }
+
+    #[rstest]
+    #[case(None)]
+    #[case(Some(true))]
+    #[case(Some(false))]
+    fn root_declarations_are_checked_once_even_when_only_children_are_selected(
+        #[case] include_uses: Option<bool>,
+    ) {
+        let (td, repo) = setup_repo();
+        td.child("over.toml")
+            .write_str("overlays = [{path = 'missing'}, {path = 'optional/*'}]")
+            .unwrap();
+        td.child("child/over.toml")
+            .write_str("overlays = [{path = 'nested-missing'}]")
+            .unwrap();
+        let result = match include_uses {
+            Some(include_uses) => lint_overlay(&repo, "child", include_uses).unwrap(),
+            None => lint_repository(&repo),
+        };
+        assert_eq!(result.error_count(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.warning_count(), 1, "{:?}", result.diagnostics);
+        assert!(result.diagnostics.iter().all(|d| d.overlay.is_empty()));
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("nested-missing"))
+        );
+    }
+
+    #[rstest]
+    fn an_unreadable_root_does_not_gain_a_duplicate_declaration_error() {
+        let (td, repo) = setup_repo();
+        td.child("over.toml").write_str("overlays = [[[").unwrap();
+        td.child("child").create_dir_all().unwrap();
+        let result = lint_overlay(&repo, "child", false).unwrap();
+        assert!(!result.diagnostics.is_empty());
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("overlays["))
         );
     }
 

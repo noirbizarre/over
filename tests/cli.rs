@@ -506,6 +506,73 @@ fn add_nonexistent_file_fails() -> TestResult {
 
 // ── lint integration tests ──────────────────────────────────────────────
 
+#[rstest::rstest]
+#[case("[{path = 'shared'}]", 0, 0)]
+#[case("[{path = 'hosts/*'}]", 0, 0)]
+#[case("[{path = 'hosts/['}]", 1, 0)]
+#[case("[{path = 'missing'}]", 1, 0)]
+#[case("[{path = 'optional/*'}]", 0, 1)]
+#[case(
+    "[{path = 'missing'}, {path = 'hosts/['}, {path = 'optional/*'}]",
+    2,
+    1
+)]
+fn lint_root_declarations_agree_in_human_and_json_output(
+    #[case] declarations: &str,
+    #[case] errors: usize,
+    #[case] warnings: usize,
+) -> TestResult {
+    let source = TempDir::new()?;
+    let target = TempDir::new()?;
+    for directory in ["shared", "hosts/laptop"] {
+        fs::create_dir_all(source.path().join(directory))?;
+    }
+    // A destination with the declared name must not hide a missing source path.
+    fs::create_dir(target.path().join("missing"))?;
+    fs::write(
+        source.path().join("over.toml"),
+        format!("overlays = {declarations}"),
+    )?;
+    let mut outputs = Vec::new();
+    for json in [false, true] {
+        let mut command = Command::cargo_bin("over")?;
+        command
+            .current_dir(target.path())
+            .arg("--home")
+            .arg(source.path())
+            .arg("lint")
+            .arg("--target")
+            .arg(target.path());
+        if json {
+            command.arg("--json").env("CLICOLOR_FORCE", "1");
+        } else {
+            command.env("NO_COLOR", "1");
+        }
+        let output = command.output()?;
+        assert_eq!(output.status.success(), errors == 0, "{output:?}");
+        let stdout = String::from_utf8(output.stdout)?;
+        assert!(!stdout.contains('\x1b'), "{stdout}");
+        outputs.push(stdout);
+    }
+    let report: serde_json::Value = serde_json::from_str(&outputs[1])?;
+    assert_eq!(report["error_count"], errors, "{}", outputs[1]);
+    assert_eq!(report["warning_count"], warnings, "{}", outputs[1]);
+    let diagnostics = report["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), errors + warnings);
+    for diagnostic in diagnostics {
+        assert_eq!(diagnostic["overlay"], "");
+        assert_eq!(diagnostic["file"], "over.toml");
+        let severity = diagnostic["severity"].as_str().unwrap();
+        let message = diagnostic["message"].as_str().unwrap();
+        let hint = diagnostic["hint"].as_str().unwrap();
+        assert!(message.contains("overlays["));
+        assert!(outputs[0].contains("over.toml"));
+        assert!(outputs[0].contains(&format!("{severity}: {}", message.replace('`', ""))));
+        assert!(outputs[0].contains(&hint.replace('`', "")));
+    }
+    Ok(())
+}
+
 #[test]
 fn lint_clean_overlay() -> TestResult {
     let tmp = TempDir::new()?;

@@ -97,6 +97,14 @@ descriptor can supply policy without appearing as a separate listed overlay.
 An ancestor can still be selected explicitly. Descriptor-less overlays inherit
 ancestor policy and built-in defaults just like other overlays.
 
+`over lint` validates these root declarations, including when checking a named
+overlay. Malformed globs and missing literal paths are errors; globs matching no
+usable overlay directories are warnings. Files and `.over` administration paths
+do not count as overlay matches. An optional unmatched glob can be retained
+without failing lint. Diagnostics identify the descriptor and declaration entry
+and suggest a fix. Discovery itself continues to skip invalid or unmatched
+patterns.
+
 ## Lifecycle hooks
 
 Hooks run repository-provided shell commands. Only initialize or apply

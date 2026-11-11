@@ -28,6 +28,14 @@ has no effect because every overlay is checked independently.
 Relevant inherited and repository-root configuration is still validated when
 linting a named overlay, including with `--no-uses`.
 
+Root `overlays` declarations are checked independently of discovered overlays.
+Malformed globs and nonexistent literal paths are errors. Globs matching no
+usable overlay directories produce warnings, so intentionally optional patterns
+do not fail lint. Files and the `.over` administration directory do not count as
+overlay matches. Paths resolve relative to the source repository root, regardless
+of `--target`. Findings identify the root descriptor, the exact path or pattern,
+and its one-based `overlays[N].path` entry, with a hint for fixing it.
+
 Destinations resolve using the current machine, consumer metadata, and your home
 directory as `~`. Use `--target` or `OVER_TARGET` to inspect a different deployment root; `--home`
 selects the source repository. Unavailable template variables are errors unless
