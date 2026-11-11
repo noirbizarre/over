@@ -844,7 +844,10 @@ mod tests {
     }
 
     #[rstest]
-    #[case("target='~'\n[map.'../invalid']\ntarget='elsewhere'", "mapping source")]
+    #[case(
+        "target='~'\n[[rules]]\npath='*'\ntarget='elsewhere'",
+        "literal path selector"
+    )]
     #[case("target='{{ missing_variable('", "render")]
     fn unnamed_history_skips_invalid_candidates_but_named_history_reports_them(
         #[case] config: &str,

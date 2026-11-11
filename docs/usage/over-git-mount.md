@@ -28,7 +28,7 @@ over git mount --overlay workspaces/demo
 over git status
 ```
 
-The repository path is reverse-routed through configured directory mappings
+The repository path is reverse-routed through configured rule targets
 before being recorded in the overlay's logical namespace. Its destination can
 be outside the base target. Mount offers to export selected Git properties and
 stores `over.overlay` for later commands. See the [Git group overview](git.md)

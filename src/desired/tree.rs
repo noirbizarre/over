@@ -210,15 +210,15 @@ fn collect_own_entries(
     });
 
     // #141: the whole overlay resolves to a virtual checkout (via
-    // `mode = "checkout"`, or an explicit `path = "."`
-    // rule) — one entry owns the entire subtree; the base `Directory` entry
+    // `mode = "checkout"`, including inherited policy) — one entry owns
+    // the entire subtree; the base `Directory` entry
     // and the per-file/per-directory walk below are both skipped, since
     // `VirtualCheckoutMaterializer` handles the whole managed path itself
     // (mirrors `SymlinkDirectory`'s "children not separately enumerated",
     // just anchored at the overlay root instead of a subdirectory).
     if overlay.materialization_for(Path::new("")) == MaterializationKind::Checkout {
         entries.push(DesiredEntry {
-            target: target.to_path_buf(),
+            target: routing.target_for(Path::new("")),
             provenance: Provenance::Overlay {
                 overlay: overlay.name.clone(),
                 source: overlay.root.clone(),
@@ -226,7 +226,7 @@ fn collect_own_entries(
             intent: checkout_intent(&routing, Path::new("")),
             permissions: None,
         });
-        for source in routing.directories.keys() {
+        for source in routing.boundaries.keys() {
             walk_overlay_tree(ctx, overlay, &routing, &policy, source, &mut entries)?;
         }
         build_git_entries(overlay, &routing, &mut entries);
@@ -243,7 +243,7 @@ fn collect_own_entries(
     // (a `uses`-only or git-only overlay) — mirrors the unconditional
     // `EnsureDir` at the top of `Overlay::apply_inner`.
     entries.push(DesiredEntry {
-        target: target.to_path_buf(),
+        target: routing.target_for(Path::new("")),
         provenance: Provenance::Overlay {
             overlay: overlay.name.clone(),
             source: overlay.root.clone(),
@@ -255,7 +255,7 @@ fn collect_own_entries(
     build_git_entries(overlay, &routing, &mut entries);
 
     walk_overlay_tree(ctx, overlay, &routing, &policy, Path::new(""), &mut entries)?;
-    for source in routing.directories.keys() {
+    for source in routing.boundaries.keys() {
         walk_overlay_tree(ctx, overlay, &routing, &policy, source, &mut entries)?;
     }
 
@@ -314,7 +314,7 @@ fn finalize_entries(
             }
         }
     }
-    if overlay.map.is_empty() {
+    if !overlay.has_target_rules() {
         return Ok(());
     }
     let independent: Vec<_> = entries
@@ -348,7 +348,7 @@ fn finalize_entries(
                 }
                 _ => mapping::physical(&entry.target)?,
             };
-            for destination in routing.directories.values() {
+            for destination in routing.boundaries.values() {
                 // Lexically distinct aliases must not punch holes into indivisible units.
                 let source = routing.logical_path_for(destination)?;
                 let physical_destination =
@@ -397,7 +397,7 @@ fn build_git_entries(
     };
     for (repo_key, config) in git_repos {
         let repo_target = if repo_key == ROOT_PATH {
-            routing.base.clone()
+            routing.target_for(Path::new(""))
         } else {
             routing.target_for(Path::new(repo_key))
         };
@@ -426,12 +426,24 @@ fn walk_overlay_tree(
     start: &Path,
     entries: &mut Vec<DesiredEntry>,
 ) -> Result<()> {
-    let walk_root = overlay.root.join(start);
-    if policy.is_ignored(&walk_root, true) {
+    let mut walk_root = overlay.root.join(start);
+    if !walk_root.exists() {
+        let mut encrypted = walk_root.clone().into_os_string();
+        encrypted.push(".age");
+        if Path::new(&encrypted).is_file() {
+            // Target selectors address decrypted logical names, not their storage suffix.
+            walk_root = PathBuf::from(encrypted);
+        }
+    }
+    if policy.is_ignored(&walk_root, !walk_root.is_file()) {
         return Ok(());
     }
     // An absent mapped directory can be populated later by reverse add.
     if !walk_root.exists() {
+        if sidecar_config_path(&overlay.root, &start.to_string_lossy(), policy).is_file() {
+            // A link sidecar materializes its logical name later; a directory here would conflict.
+            return Ok(());
+        }
         if !start.as_os_str().is_empty() && policy.includes(&walk_root, true) {
             entries.push(DesiredEntry {
                 target: routing.target_for(start),
@@ -468,11 +480,6 @@ fn walk_overlay_tree(
             Err(_) => continue,
         };
 
-        if rel_path != start && routing.directories.contains_key(rel_path) {
-            walker.skip_current_dir();
-            continue;
-        }
-
         let encrypted = !entry.file_type().is_dir() && crate::secrets::is_encrypted(path);
         let logical = if encrypted {
             anyhow::ensure!(
@@ -495,6 +502,12 @@ fn walk_overlay_tree(
         } else {
             rel_path.to_path_buf()
         };
+        if logical != start && routing.boundaries.contains_key(&logical) {
+            if entry.file_type().is_dir() {
+                walker.skip_current_dir();
+            }
+            continue;
+        }
         let entry_target = routing.target_for(&logical);
         anyhow::ensure!(
             routing.logical_path_for(&entry_target)? == logical,
@@ -649,13 +662,13 @@ fn build_symlink_sidecars(
 fn checkout_intent(routing: &ResolvedMappings, logical: &Path) -> MaterializationIntent {
     let target = routing.target_for(logical);
     let source_excludes: Vec<_> = routing
-        .directories
+        .boundaries
         .keys()
         .filter(|source| source.as_path() != logical)
         .filter_map(|source| source.strip_prefix(logical).ok().map(Path::to_path_buf))
         .collect();
     let mut target_excludes = source_excludes.clone();
-    for destination in routing.directories.values() {
+    for destination in routing.boundaries.values() {
         if destination != &target
             && let Ok(tail) = destination.strip_prefix(&target)
         {
@@ -773,7 +786,7 @@ mod tests {
             .unwrap();
         temp.child("ov/over.toml")
             .write_str(&format!(
-                "target='~/base'\ngit='https://example.com/repo.git'\n[map.config]\ntarget='{}'",
+                "target='~/base'\ngit='https://example.com/repo.git'\n[[rules]]\npath='config'\ntarget='{}'",
                 temp.path().join("alias/new").display()
             ))
             .unwrap();
@@ -783,7 +796,7 @@ mod tests {
             DesiredTree::build_own(&ctx, &overlay)
                 .unwrap_err()
                 .to_string()
-                .contains("indivisible target")
+                .contains("indivisible Git checkout")
         );
         assert!(!temp.path().join("home/base/new").exists());
     }
@@ -814,7 +827,7 @@ mod tests {
     ) {
         let (td, repo) = repo_and_root();
         td.child("ov/over.yaml").write_str(&format!(
-            "map:\n  config: {{target: '~/mapped'}}\nrules:\n  - {{path: first, permissions: '{first_mode}'}}\n  - {{path: second, permissions: '{second_mode}'}}"
+            "rules:\n  - {{path: config, target: '~/mapped'}}\n  - {{path: first, permissions: '{first_mode}'}}\n  - {{path: second, permissions: '{second_mode}'}}"
         )).unwrap();
         td.child("ov/config/file")
             .write_str("mapped content")

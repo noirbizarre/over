@@ -161,14 +161,15 @@ Partial-file blocks with distinct markers may share a file, provided their expli
 file permissions agree. Duplicate markers and incompatible file-wide permissions
 are errors.
 
-## Mode and permission rules
+## Overlay rules
 
 Lint validates the shared `rules` list and reports obsolete configuration keys
-with migration hints. A rule must set `mode`, `permissions`, or both. Literal
+with migration hints. A rule must set `target`, `mode`, or `permissions`. Literal
 paths select a path and its descendants, respecting component boundaries.
-Globs are accepted only for rules selecting `mode: symlink-directory`; they
-select directory boundaries. Other modes and permissions-only rules cannot
-use globs.
+Globs can match files or directories, including permissions-only rules.
+Target-bearing rules require literal selectors. See
+[Overlay Rules](../configuration/overlay.md#overlay-rules) for cascading and
+target inference semantics.
 
 For example, this descendant override is unreachable:
 

@@ -389,7 +389,7 @@ mod tests {
         fs::write(
             home.join("over.toml"),
             format!(
-                "target = '{}'\n[map.'ov/config']\ntarget = '{}'\n",
+                "target = '{}'\n[[rules]]\npath = 'ov/config'\ntarget = '{}'\n",
                 target.display(),
                 mapped.display()
             ),

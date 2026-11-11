@@ -50,10 +50,9 @@ other's files; overlapping ownership is a conflict.
 | `target` | Base destination; defaults to `~` | Nearest value wins, retaining its declaring root |
 | `uses` | List of repository-relative overlay names | Nearest list replaces the inherited list; `[]` clears it |
 | `exclude` | Source exclusion glob or list of globs | Nearest declaration wins with its original base; `[]` clears it |
-| `map` | Redirect source directories | Merge by source key; nearer entries override the same key |
 | `mode` | Directory materialization baseline | Ordered policy cascade |
-| `permissions` | Octal baseline for partial-file targets | Ordered policy cascade, independent of mode |
-| `rules` | Ordered path-specific mode/permission assignments | All scopes contribute; `[]` does not clear ancestor rules |
+| `permissions` | Octal baseline for directly written content | Ordered policy cascade, independent of mode |
+| `rules` | Ordered path-specific target/mode/permission assignments | All scopes contribute; `[]` does not clear ancestor rules |
 | `data` | Consumer-owned metadata mapping | Recursive mapping merge; other values replace |
 | `git` | Repositories/worktrees to provision | Tables merge by key; nearer conflicting values replace |
 | `hooks` | Overlay-local install and post-apply commands | Never inherited |
@@ -62,7 +61,7 @@ Root-only preferences are documented in [Root configuration](root.md). Runtime
 fields such as the overlay's name and source root are not descriptor settings.
 
 Unknown keys are ignored with a warning identifying the declaring descriptor.
-This includes extra fields in rules, mappings, Git repository/worktree objects,
+This includes extra fields in rules, Git repository/worktree objects,
 and hooks. Removed settings such as `install`, `default`, `defaults`,
 `materialization`, and `link_dirs` also warn and are ignored, with migration hints.
 Warnings do not prevent application. Invalid values for recognized settings,
@@ -93,7 +92,7 @@ The same context is available to path templates and every lifecycle hook field
 | --- | --- |
 | `paths.home` | The current user's detected home directory, independent of `--target`, `OVER_TARGET`, and `--home` |
 | `paths.over` | The active Over source repository root |
-| `paths.target` | The current overlay's resolved base destination, independent of directory mappings |
+| `paths.target` | The current overlay's resolved base destination, independent of rule targets |
 
 These values are filesystem paths serialized as absolute native path strings.
 They retain symlink spelling and do not require the destination to exist. Paths
@@ -200,18 +199,21 @@ if it would expose them. Reverse add performs the same check; recursive
 file-level add skips ignored children, and explicitly adding an ignored file
 fails.
 
-## Directory target mappings
+## Overlay Rules
 
-Use `map` when one overlay should own several destination directories:
+Use one ordered `rules` list for source-path configuration. Each rule has a
+`path` selector and any supported subset of `target`, `mode`, and `permissions`:
 
 ```yaml
 # ~/.dotfiles/workspace/client/over.yaml
 target: ~/Workspace/Client
-map:
-  config:
+rules:
+  - path: config
     target: ~/.config/client
-  state:
+  - path: state
     target: ~/.local/share/client
+  - path: config/private
+    permissions: "0600"
 ```
 
 `config/settings.json` lands at `~/.config/client/settings.json`, not below
@@ -219,34 +221,100 @@ map:
 `~/Workspace/Client/main/app`. [`over add`](../usage/add.md) routes the other way:
 `~/.config/client/other.yaml` belongs to `workspace/client/config/other.yaml`.
 
-- Keys are literal relative directory names without `.` or `..` components.
-  Overlapping keys such as `config` and `config/editor` are rejected. A source
-  directory may be absent until files are added.
-- Targets use the same templates and path resolution as the base target.
-  Inherited mappings retain their declaring origin.
-- Destinations cannot overlap each other, contain the base target, overlap the
-  overlay source, or collide with residual managed content. A destination below
-  the base target is supported.
-- Rules/excludes select sources before routing. Each mapped root has its own
-  effective mode. A mapping inside a whole-directory symlink is rejected.
-- Link placement and declared Git placement follow mappings. Partial files keep
-  their explicit destinations.
+### Matching and cascade
 
-In checkout mode, mapped directories and the residual overlay are separate
-ownership units. Before changing mappings on an existing checkout, resolve its
-changes and unapply using the old configuration, then edit and apply again.
+Literal `path` selectors match source prefixes by component: `config` matches
+`config/editor/file`, never `config-old`. A literal `.` selector is forbidden;
+set overlay-wide defaults directly with `target`, `mode`, or `permissions`.
+Paths retain their [declaring scope](../configuration.md#path-resolution)
+when inherited. Globs such as `dotfiles/ssh/*.pub` match files or directories;
+`*` does not cross a path separator. **Rules defining `target` require literal
+selectors**, even when they also set other attributes.
+
+Every matching rule participates in declaration order against the **original
+source path**. A redirected destination never becomes another rule's input.
+The last matching assignment wins **independently for each attribute**:
+
+- An absent attribute leaves the earlier value intact.
+- A later broad rule can override an earlier specific rule.
+- A permissions-only rule preserves target and mode, and a target-only rule
+  preserves permissions and mode.
+
+Descriptors cascade from the repository root through intermediate directories
+to the selected overlay. At each scope, explicit mode/permission baselines apply
+before its rules; omitted baselines preserve earlier decisions. Rule lists append
+to this cascade; `rules: []` does not clear ancestor rules. Implicit mode is
+`symlink`, with permissions unmanaged. `uses` composes independent overlays;
+it does not extend another overlay's inheritance chain.
+
+### Target redirection and defaults
+
+A matching target rule replaces its source prefix with `target`, preserving
+the remaining relative suffix. A later matching target rule replaces that
+mapping using its own source prefix:
+
+```yaml
+rules:
+  - path: dotfiles/ssh
+    target: ~/.ssh
+  - path: dotfiles/ssh/*.pub
+    permissions: "0666"
+  - path: dotfiles/ssh/id_rsa
+    permissions: "0600"
+  - path: dotfiles/ssh/hosts
+    target: ~/.config/ssh-hosts
+```
+
+`dotfiles/ssh/id_rsa` resolves to `~/.ssh/id_rsa` with permission policy `0600`.
+`dotfiles/ssh/hosts/work` resolves to `~/.config/ssh-hosts/work`. Public keys
+retain the SSH destination and receive permission policy `0666`. Permission
+enforcement depends on the materialization mechanism described below.
+
+Without a matching target assignment, the overlay-level target applies, then
+the inherited root configuration target, then home (`~`). Top-level target
+settings supply this fallback; they do not reset inherited target rules.
+Targets use existing templates, home expansion, and lexical normalization.
+Relative destinations are **descriptor-relative**; use `~/.config/env` for a
+home-relative destination. `paths.target` in templates remains the resolved
+base target, independent of rule redirection.
+
+Directory targets preserve descendant layout; file targets can rename individual
+files. Literal directory sources may be absent until reverse add populates them.
+Link placement and declared Git placement follow target rules. Link referents
+and partial-file explicit destinations keep their own semantics.
+
+Redirection is resolved before desired-state construction. Effective directory
+redirects partition checkout ownership; shadowed or layout-equivalent rules do
+not create redundant units. A redirect cannot split a whole-directory symlink
+or declared Git checkout. Independently redirected files inheriting
+`mode: checkout` are rejected: redirect their containing directory or select
+`mode: symlink` for the file. Source overlap and conflicting destination ownership
+are rejected before changes. Before changing a live checkout's layout, resolve
+its changes and unapply with the old configuration, then edit and apply again.
 See [Materialization](materialization.md#atomic-boundaries-and-mappings).
 
-## Materialization rules
+### Target-based inference
 
-`mode` accepts `symlink`, `symlink-directory`, or `checkout`. `rules` assigns mode
-and/or permissions to source paths. See the complete
-[materialization and precedence reference](materialization.md), including
-directory boundaries, the directory-link glob exception, and lifecycle guidance.
+When no overlay is specified, a uniquely identifying rule target also identifies
+its overlay and corresponding source directory. Inside `~/.ssh/subdir`, the SSH
+rule above resolves the source directory `dotfiles/ssh/subdir`. Relative suffixes
+are preserved, including for missing source paths. Shadowed destinations cannot
+identify their former source paths.
 
-## File permissions
+Multiple overlays or multiple valid rule/source explanations are ambiguous;
+Over does not choose by specificity or use a default to break a tie. Naming an
+overlay does not resolve a source-path ambiguity inside it. See
+[contextual selection](../usage/selection.md) for evidence priorities.
 
-Use an octal string for a baseline or path-specific assignment:
+### Materialization mode
+
+`mode` accepts `symlink`, `symlink-directory`, or `checkout`. See
+[Materialization](materialization.md) for directory boundaries and lifecycle
+guidance. Mode and permissions use the same rule cascade as target routing.
+
+### File permissions
+
+Use an octal **string** for a baseline or path-specific assignment:
 
 ```toml
 # ~/.dotfiles/apps/shell/over.toml
@@ -257,15 +325,15 @@ path = "ssh/agent"
 permissions = "600"
 ```
 
-Permissions only manage **partial-file targets**. Symlinks share the source
+Permissions manage **partial-file and decrypted-file targets**. Symlinks share the source
 inode, so applying permissions there would mutate source files. This setting
 does not independently chmod virtual checkout content.
 
-The selector matches a sidecar's own stem (`ssh/agent` for
-`ssh/agent.partial.toml`), not its rendered destination. Mode and permissions
-cascade independently, last matching assignment per property wins. Without an
-assignment, permissions remain unmanaged. Permission drift is a pending change
-fixed by apply, not a blocking content conflict.
+For partials, the selector matches the sidecar's own stem (`ssh/agent` for
+`ssh/agent.partial.toml`), not its rendered destination. Encrypted files use the
+decrypted logical name, without `.age`. Without an assignment, partial permissions
+remain unmanaged and decrypted files default to `0600`. Permission drift is a
+pending change fixed by apply, not a blocking content conflict.
 
 ## Link sidecars
 

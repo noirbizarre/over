@@ -817,7 +817,17 @@ fn lint_dirs(
                 crate::desired::DesiredTree::build(&context, overlay)
             })();
             match desired {
-                Ok(tree) => diagnostics.extend(ownership::check(&root, &tree, &mut seen)),
+                Ok(tree) => {
+                    for selection in &tree.sources {
+                        if selection.overlay.has_target_rules() {
+                            diagnostics.extend(checks::check_routed_terminal_rules(
+                                &selection.overlay,
+                                &selection.routing,
+                            ));
+                        }
+                    }
+                    diagnostics.extend(ownership::check(&root, &tree, &mut seen));
+                }
                 Err(error) => {
                     let message = format!("{error:#}");
                     diagnostics.push(Diagnostic::error(&root, format!("cannot resolve desired ownership: {message}"))

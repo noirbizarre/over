@@ -15,7 +15,6 @@ pub(crate) const OVERLAY_KEYS: &[&str] = &[
     "format",
     "git",
     "hooks",
-    "map",
     "mode",
     "overlays",
     "permissions",
@@ -28,9 +27,8 @@ pub(crate) const OVERLAY_KEYS: &[&str] = &[
 pub(super) const EVENTS: &[&str] = &["install", "post-clone", "post-init", "post-apply"];
 pub(super) const HOOK_FIELDS: &[&str] = &["command", "env", "cwd", "when"];
 pub(super) const SYNC_FIELDS: &[&str] = &["pull", "push"];
-pub(super) const RULE_FIELDS: &[&str] = &["path", "mode", "permissions"];
+pub(super) const RULE_FIELDS: &[&str] = &["path", "mode", "permissions", "target"];
 pub(super) const DECLARATION_FIELDS: &[&str] = &["path"];
-pub(super) const MAPPING_FIELDS: &[&str] = &["target"];
 pub(super) const WORKTREE_FIELDS: &[&str] = &["branch", "config"];
 pub(super) const REPO_FIELDS: &[&str] = &[
     "url",
@@ -147,22 +145,6 @@ pub(crate) fn normalize(values: &mut Map<String, Value>, file: &Path) -> Vec<War
                     );
                 }
             }),
-            "map" => {
-                if let ValueKind::Table(mappings) = &mut value.kind {
-                    for (source, mapping) in mappings {
-                        if let ValueKind::Table(table) = &mut mapping.kind {
-                            fields(
-                                table,
-                                MAPPING_FIELDS,
-                                &format!("map.{source}"),
-                                false,
-                                file,
-                                &mut warnings,
-                            );
-                        }
-                    }
-                }
-            }
             "hooks" => {
                 if let ValueKind::Table(events) = &mut value.kind {
                     fields(events, EVENTS, "hooks", true, file, &mut warnings);
@@ -326,7 +308,7 @@ mod tests {
     #[rstest]
     #[case("extra: {arbitrary: [1, 2]}", "`extra`")]
     #[case("rules: [{path: config, mode: checkout, extra: 1}]", "rules[1]")]
-    #[case("map: {config: {target: '~', extra: 1}}", "map.config")]
+    #[case("rules: [{path: config, target: '~', extra: 1}]", "rules[1]")]
     #[case("overlays: [{path: hosts, extra: 1}]", "overlays[1]")]
     #[case("git: {url: source, extra: 1}", "in git")]
     #[case("git: {vendor: {url: source, extra: 1}}", "git.vendor")]

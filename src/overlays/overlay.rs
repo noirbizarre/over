@@ -81,10 +81,6 @@ pub struct Overlay {
 
     pub target: String,
 
-    /// Directory prefixes relocated independently of the base target.
-    #[serde(default)]
-    pub map: std::collections::BTreeMap<String, super::mapping::DirectoryMapping>,
-
     pub uses: Option<Vec<String>>,
 
     #[serde(
@@ -104,8 +100,6 @@ pub struct Overlay {
     pub scopes: Vec<PolicyScope>,
     #[serde(skip)]
     pub(crate) target_origin: PathBuf,
-    #[serde(skip)]
-    pub(crate) mapping_origins: std::collections::BTreeMap<String, PathBuf>,
     /// Reporting metadata contains declaration paths, never configuration values.
     #[serde(skip)]
     pub(crate) field_origins: std::collections::BTreeMap<String, PathBuf>,
@@ -165,7 +159,6 @@ impl Overlay {
         let mut local_hooks = crate::hooks::Hooks::default();
         let mut scopes = Vec::new();
         let mut scoped_sources = Vec::new();
-        let mut mapping_origins = std::collections::BTreeMap::new();
         let mut target_origin = root.to_path_buf();
         let mut field_origins = std::collections::BTreeMap::new();
         let directories: Vec<_> = root
@@ -200,7 +193,7 @@ impl Overlay {
                 .transpose()
                 .with_context(|| {
                     format!(
-                        "{}: rules use `mode` and/or `permissions`, not `materialization`",
+                        "{}: rules use `path` with `target`, `mode` and/or `permissions`",
                         descriptor.display()
                     )
                 })?
@@ -245,19 +238,6 @@ impl Overlay {
             if values.contains_key("target") {
                 target_origin = origin.clone();
             }
-            if let Some(value) = values.get_mut("map") {
-                let table = value.clone().into_table()?;
-                let mut normalized = config::Map::new();
-                for (key, mapping) in table {
-                    if let Some(logical) = super::paths::logical_path(&key, directory, root)? {
-                        if mapping.clone().into_table()?.contains_key("target") {
-                            mapping_origins.insert(logical.clone(), origin.clone());
-                        }
-                        normalized.insert(logical, mapping);
-                    }
-                }
-                value.kind = config::ValueKind::Table(normalized);
-            }
             if let Some(value) = values.get_mut("git") {
                 super::paths::resolve_git_paths(value, &origin, root)?;
             }
@@ -290,7 +270,6 @@ impl Overlay {
         overlay.hooks = local_hooks;
         overlay.scopes = scopes;
         overlay.target_origin = target_origin;
-        overlay.mapping_origins = mapping_origins;
         overlay.field_origins = field_origins;
         Ok(overlay)
     }
@@ -306,6 +285,12 @@ impl Overlay {
         ctx: &exec::Context,
     ) -> Result<super::mapping::ResolvedMappings> {
         super::mapping::ResolvedMappings::new(self, ctx)
+    }
+
+    pub fn has_target_rules(&self) -> bool {
+        self.scopes
+            .iter()
+            .any(|scope| scope.rules.iter().any(|rule| rule.target.is_some()))
     }
 
     /// Resolve a directory's mode using the ordered descriptor cascade.
@@ -524,7 +509,7 @@ impl Overlay {
         if !ctx.dry_run || !plan.has_blocked_children() {
             // A preview cannot inspect clone destinations through a scaffold it
             // deliberately leaves intact; the plan reports those pending children.
-            actions::git::clone_repositories(ctx.clone(), self, &target).await?;
+            actions::git::clone_repositories(ctx.clone(), self).await?;
         }
         if self.git.is_some() {
             // Cloning may already perform a legacy-checkout migration;

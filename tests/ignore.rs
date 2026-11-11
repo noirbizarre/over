@@ -313,7 +313,10 @@ fn atomic_directory_links_reject_ignored_descendants_before_apply_or_reverse_add
 #[rstest]
 #[case("mode = 'checkout'\n", "app")]
 #[case("[[rules]]\npath = 'app'\nmode = 'checkout'\n", "app")]
-#[case("mode = 'checkout'\n[map.app]\ntarget = '~/target/routed'\n", "routed")]
+#[case(
+    "mode = 'checkout'\n[[rules]]\npath = 'app'\ntarget = '~/target/routed'\n",
+    "routed"
+)]
 fn checkout_workflows_preserve_newly_ignored_files_and_staged_changes(
     #[case] config: &str,
     #[case] destination: &str,
@@ -577,7 +580,7 @@ fn git_add_and_status_respect_ignores_without_hiding_unmanaged_host_files() {
 #[case("mode = 'checkout'\n")]
 fn a_mapped_start_cannot_bypass_an_ignored_parent_directory(#[case] materialization: &str) {
     let fixture = Fixture::new(&format!(
-        "{materialization}[map.'parent/app']\ntarget = '~/target/routed'\n"
+        "{materialization}[[rules]]\npath = 'parent/app'\ntarget = '~/target/routed'\n"
     ));
     write(&fixture.source, ".overignore", "parent/\n");
     write(&fixture.source, "ov/parent/app/.overignore", "!file\n");

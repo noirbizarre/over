@@ -308,12 +308,22 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
     if let Some(description) = &overlay.description {
         summary.push(Field::new("description", Value::Text(description.clone())));
     }
-    if mappings.directories.is_empty() {
-        summary.push(Field::new("mappings", Value::Text("none".into())));
+    let effective_root = mappings.target_for(Path::new(""));
+    if effective_root != mappings.base {
+        // Keep the fallback visible: templates still resolve paths.target against it.
+        summary.push(Field::new(
+            "effective root",
+            Value::Path(effective_root.display().to_string()),
+        ));
     }
-    for (source, target) in &mappings.directories {
-        let key = source.to_string_lossy().replace('\\', "/");
-        let mut field = Field::new("map", Value::Path(source.display().to_string()));
+    if mappings.boundaries.is_empty() {
+        summary.push(Field::new(
+            "target rules",
+            Value::Text("no independent boundaries".into()),
+        ));
+    }
+    for (source, target) in &mappings.boundaries {
+        let mut field = Field::new("target rule", Value::Path(source.display().to_string()));
         field.values.extend([
             Value::Text(" → ".into()),
             Value::Path(target.display().to_string()),
@@ -321,9 +331,9 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
         field.children.push(Field::new(
             "origin",
             Value::Path(
-                overlay
-                    .mapping_origins
-                    .get(&key)
+                mappings
+                    .rule_for(source)
+                    .map(|origin| origin.descriptor.as_path())
                     .unwrap_or(&overlay.root)
                     .display()
                     .to_string(),
@@ -380,6 +390,10 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
                     Value::Path(rule.path.clone()),
                 );
                 field.children = vec![
+                    Field::new(
+                        "target",
+                        Value::Path(rule.target.clone().unwrap_or_else(|| "unchanged".into())),
+                    ),
                     Field::new(
                         "mode",
                         Value::Mode(

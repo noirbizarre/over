@@ -2,7 +2,9 @@
 
 > Amended by #190: scalar `permissions` replaces the permission baseline,
 > and shared `rules` carry optional `permissions` overrides in cascade order.
-> Permission enforcement remains scoped to partial content. The schema and
+> Issue #244 adds optional target redirection to this same ordered rule cascade.
+> Permission enforcement covers partial and decrypted content, never symlink
+> referents. The original schema and
 > specificity rules below are historical; see the
 > [configuration reference](../configuration/overlay.md#file-permissions).
 

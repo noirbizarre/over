@@ -8,7 +8,6 @@ use serde_json::Value;
 use crate::actions::git::config::AllGitForms;
 use crate::hooks::Hooks;
 
-use super::mapping::DirectoryMapping;
 use super::repository::RootConfig;
 use super::{FileMode, MaterializationKind, Rule};
 
@@ -43,13 +42,6 @@ struct OverlayDescriptor {
     /// Destination directory. Omit to inherit the ancestor's target (default: ~).
     #[schemars(default, with = "String", skip_serializing_if = "Option::is_none")]
     target: Option<String>,
-    /// Relocate source directory prefixes independently of the base target.
-    #[schemars(
-        default,
-        with = "BTreeMap<String, DirectoryMapping>",
-        skip_serializing_if = "Option::is_none"
-    )]
-    map: Option<BTreeMap<String, DirectoryMapping>>,
     /// Compose these repository-relative overlay names in declaration order.
     uses: Option<Vec<String>>,
     /// Source patterns excluded from materialization; a string or a list.
@@ -250,7 +242,6 @@ mod tests {
                 "/definitions/OverlayDeclaration",
                 schema::DECLARATION_FIELDS,
             ),
-            ("/definitions/DirectoryMapping", schema::MAPPING_FIELDS),
             (
                 "/definitions/WorktreeEntry/anyOf/1",
                 schema::WORKTREE_FIELDS,
@@ -277,9 +268,11 @@ mod tests {
     #[case(json!({"exclude":"*.tmp"}))]
     #[case(json!({"exclude":["*.tmp", "cache"]}))]
     #[case(json!({"data":{"custom":{"nested":[null, true, 1, "text"]}}}))]
-    #[case(json!({"map":{"config":{"target":"~/.config"}}}))]
+    #[case(json!({"rules":[{"path":"config","target":"~/.config"}]}))]
     #[case(json!({"mode":"checkout", "permissions":"0o600", "rules":[{"path":"config", "permissions":"0644"}]}))]
     #[case(json!({"rules":[{"path":"apps/*", "mode":"symlink-directory"}]}))]
+    #[case(json!({"rules":[{"path":"config/*.pub", "permissions":"0666"}]}))]
+    #[case(json!({"rules":[{"path":"config", "target":"~/settings", "mode":"checkout", "permissions":"0600"}]}))]
     #[case(json!({"rules":[{"path":"config", "mode":null, "permissions":"644"}]}))]
     #[case(json!({"git":"git@example.com:repo.git"}))]
     #[case(json!({"git":{"url":"../source", "branch":"main"}}))]
@@ -331,10 +324,14 @@ mod tests {
     #[case(json!({"permissions":null}))]
     #[case(json!({"rules":null}))]
     #[case(json!({"rules":[{"path":"config"}]}))]
+    #[case(json!({"rules":[{"path":".", "target":"~/redirected"}]}))]
+    #[case(json!({"rules":[{"path":"./", "mode":"checkout"}]}))]
+    #[case(json!({"rules":[{"path":"./.", "permissions":"0600"}]}))]
     #[case(json!({"rules":[{"path":"config", "mode":null}]}))]
     #[case(json!({"rules":[{"path":" ", "mode":"checkout"}]}))]
     #[case(json!({"rules":[{"mode":"checkout"}]}))]
-    #[case(json!({"rules":[{"path":"apps/*", "mode":"checkout"}]}))]
+    #[case(json!({"rules":[{"path":"apps/*", "target":"~/apps"}]}))]
+    #[case(json!({"rules":[{"path":"config", "target":" "}]}))]
     #[case(json!({"rules":[{"path":"config", "mode":"checkout", "materialization":"checkout"}]}))]
     #[case(json!({"git":{"vendor":{"branch":"main"}}}))]
     #[case(json!({"git":{"url":{"url":"../source"}, "vendor":"../vendor"}}))]

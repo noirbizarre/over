@@ -9,7 +9,7 @@ use crate::actions::git::association;
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent};
 use crate::exec::Context;
 use crate::overlays::Overlay;
-use crate::overlays::mapping::{self, ResolvedMappings};
+use crate::overlays::mapping::{self, ResolvedMappings, ReverseMatch, ReverseResolution};
 
 struct Candidate {
     overlay: Overlay,
@@ -25,8 +25,14 @@ enum Evidence {
     Target,
 }
 
+/// The source correspondence is retained for callers operating from a redirected target.
+pub struct InferredOverlay {
+    pub overlay: Overlay,
+    pub paths: Vec<(PathBuf, ReverseMatch)>,
+}
+
 /// Infer from paths (or captured cwd when empty). Ambiguity is never absence.
-pub fn infer(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Overlay>> {
+pub fn infer_selection(ctx: &Context, paths: &[PathBuf]) -> Result<Option<InferredOverlay>> {
     let paths = if paths.is_empty() {
         vec![ctx.absolute_path(Path::new("."))?]
     } else {
@@ -37,6 +43,7 @@ pub fn infer(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Overlay>> {
     };
     let mut candidates = None;
     let mut selected = BTreeMap::new();
+    let mut resolved_paths = Vec::new();
     for path in &paths {
         if let Some(name) = git_association(path)? {
             let overlay = ctx.repository.get(&name).with_context(|| {
@@ -107,7 +114,7 @@ pub fn infer(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Overlay>> {
                 Some(Evidence::Ownership)
             } else if sibling {
                 Some(Evidence::Sibling)
-            } else if candidate.routing.logical_path_for(path).is_ok() {
+            } else if !matches!(candidate.routing.reverse(path)?, ReverseResolution::Absent) {
                 Some(Evidence::Target)
             } else {
                 None
@@ -127,6 +134,14 @@ pub fn infer(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Overlay>> {
                 tier.keys().cloned().collect::<Vec<_>>().join(", ")
             );
             for (name, candidate) in tier {
+                match candidate.routing.reverse(path)? {
+                    ReverseResolution::Unique(found) => resolved_paths.push((path.clone(), found)),
+                    ReverseResolution::Ambiguous(_) => {
+                        // Naming the overlay cannot disambiguate two source paths within it.
+                        candidate.routing.logical_path_for(path)?;
+                    }
+                    ReverseResolution::Absent => {}
+                }
                 if let Err(error) = &candidate.tree {
                     return Err(anyhow!(
                         "cannot resolve overlay '{name}' for '{}': {error:#}",
@@ -142,7 +157,17 @@ pub fn infer(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Overlay>> {
         "ambiguous overlay across selected paths: {}; specify NAME or --overlay NAME explicitly",
         selected.keys().cloned().collect::<Vec<_>>().join(", ")
     );
-    Ok(selected.into_values().next())
+    Ok(selected
+        .into_values()
+        .next()
+        .map(|overlay| InferredOverlay {
+            overlay,
+            paths: resolved_paths,
+        }))
+}
+
+pub fn infer(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Overlay>> {
+    Ok(infer_selection(ctx, paths)?.map(|selection| selection.overlay))
 }
 
 fn paths_inside_source(path: &Path, source: &Path) -> Result<bool> {

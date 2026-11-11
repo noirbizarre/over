@@ -4,8 +4,9 @@ use std::io::Write;
 use anyhow::{Context as _, Result, ensure};
 use async_trait::async_trait;
 
+use crate::actions::EnsureDir;
 use crate::desired::{DesiredEntry, MaterializationIntent};
-use crate::exec::Ctx;
+use crate::exec::{Action, Ctx};
 use crate::plan::{ActualState, Operation, PlanStep, actual};
 
 use super::Materializer;
@@ -57,6 +58,12 @@ impl Materializer for EncryptedFileMaterializer {
     async fn materialize(&self, ctx: Ctx, step: &PlanStep) -> Result<()> {
         if ctx.dry_run {
             return Ok(());
+        }
+        if let Some(parent) = step.entry.target.parent() {
+            // A file-level target rule may place plaintext outside all walked directory scaffolds.
+            EnsureDir::new(parent.to_path_buf())
+                .execute(ctx.clone())
+                .await?;
         }
         let entry = step.entry.clone();
         let prompt = !ctx.no_prompt;

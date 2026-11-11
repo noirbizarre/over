@@ -47,12 +47,12 @@ fn inherited_destinations_and_mapping_entries_keep_independent_origins() {
     write(
         temp.path(),
         "over.yaml",
-        "target: ../deployed\nmap:\n  group/ov/config:\n    target: ../root-config\n  group/ov/etc:\n    target: ../root-etc\nrules:\n  - {path: group/ov/config, mode: checkout}\nexclude: [group/ov/secret]\n",
+        "target: ../deployed\nrules:\n  - {path: group/ov/config, target: ../root-config, mode: checkout}\n  - {path: group/ov/etc, target: ../root-etc}\nexclude: [group/ov/secret]\n",
     );
     write(
         temp.path(),
         "group/over.yaml",
-        "map:\n  ov/config:\n    target: ../../group-config\n",
+        "rules:\n  - path: ov/config\n    target: ../../group-config\n",
     );
     fs::create_dir_all(temp.path().join("group/ov")).unwrap();
     let repo = Repository::new(temp.path().into());
@@ -99,15 +99,24 @@ fn inherited_local_git_sources_keep_the_declaring_root() {
 #[rstest]
 #[case("permissions: [{path: secret, mode: '600'}]\n", "octal string")]
 #[case("rules: [{path: config, materialization: checkout}]\n", "mode")]
-#[case("rules: [{path: config}]\n", "must set mode or permissions")]
+#[case("rules: [{path: config}]\n", "must set target, mode or permissions")]
 #[case(
-    "rules: [{path: 'config/*', mode: checkout}]\n",
-    "requires mode: symlink-directory"
+    "rules: [{path: '.', target: '~/redirected'}]\n",
+    "set target, mode or permissions directly"
 )]
 #[case(
-    "rules: [{path: 'config/*', permissions: '600'}]\n",
-    "requires mode: symlink-directory"
+    "rules: [{path: './', mode: checkout}]\n",
+    "set target, mode or permissions directly"
 )]
+#[case(
+    "rules: [{path: './.', permissions: '0600'}]\n",
+    "set target, mode or permissions directly"
+)]
+#[case(
+    "rules: [{path: 'config/*', target: '~/apps'}]\n",
+    "requires a literal path selector"
+)]
+#[case("rules: [{path: config, target: ' '}]\n", "empty target")]
 fn invalid_ancestor_rules_are_not_hidden_by_children(#[case] config: &str, #[case] message: &str) {
     let temp = TempDir::new().unwrap();
     write(temp.path(), "over.yaml", config);
@@ -149,7 +158,7 @@ fn apply_resolves_descriptor_and_sidecar_paths_identically_from_unrelated_direct
     write(
         &repo,
         "over.yaml",
-        "target: ../deployed\nmap:\n  ov/config:\n    target: ../mapped\nexclude: [ov/secret]\n",
+        "target: ../deployed\nrules:\n  - path: ov/config\n    target: ../mapped\nexclude: [ov/secret]\n",
     );
     write(&repo, "ov/file", "base");
     write(&repo, "ov/config/file", "mapped");
@@ -236,7 +245,7 @@ fn lint_reports_cross_scope_glob_boundaries_and_exits_unsuccessfully() {
 )]
 #[case(
     "mode: checkout\n",
-    "map: {config: {target: '~/mapped'}}\nrules: [{path: config, mode: symlink}]\n",
+    "rules: [{path: config, target: '~/mapped', mode: symlink}]\n",
     false
 )]
 #[case(
@@ -248,6 +257,16 @@ fn lint_reports_cross_scope_glob_boundaries_and_exits_unsuccessfully() {
     "mode: symlink\n",
     "rules: [{path: 'config/**', mode: symlink-directory}]\n",
     false
+)]
+#[case(
+    "mode: checkout\n",
+    "rules: [{path: config, target: '~/mapped'}, {path: config/editor, target: '~/mapped/editor', mode: symlink}]\n",
+    true
+)]
+#[case(
+    "mode: checkout\n",
+    "rules: [{path: config/editor, target: '~/unused', mode: symlink}, {path: config, target: '~/mapped'}]\n",
+    true
 )]
 fn lint_uses_final_boundaries_and_respects_mapping_and_permission_ownership(
     #[case] root_config: &str,

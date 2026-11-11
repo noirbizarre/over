@@ -592,12 +592,12 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_mapping_destinations_are_configuration_errors() {
+    fn ambiguous_target_destinations_are_configuration_errors() {
         let (temp, context) = fixture();
         write(
             &temp,
             "selected/over.yaml",
-            "map:\n  first: {target: '~/mapped'}\n  second: {target: '~/mapped/nested'}",
+            "rules:\n  - {path: first, target: '~/mapped'}\n  - {path: second, target: '~/mapped/nested'}",
         );
         write(&temp, "selected/first/file", "first");
         write(&temp, "selected/second/file", "second");
@@ -607,7 +607,7 @@ mod tests {
             result
                 .diagnostics
                 .iter()
-                .any(|diag| diag.message.contains("overlap") && diag.hint.is_some()),
+                .any(|diag| diag.message.contains("ambiguous source path") && diag.hint.is_some()),
             "{result:?}"
         );
     }
@@ -650,7 +650,7 @@ mod tests {
         write(
             &temp,
             "selected/over.yaml",
-            "uses: [dependency]\nmap:\n  config: {target: '~/mapped'}",
+            "uses: [dependency]\nrules:\n  - {path: config, target: '~/mapped'}",
         );
         write(&temp, "selected/config/editor", "selected");
         write(&temp, "dependency/over.yaml", "target: '~'");
@@ -671,7 +671,7 @@ mod tests {
         write(
             &temp,
             "selected/over.yaml",
-            "uses: [dependency]\nmode: checkout\nmap:\n  config: {target: '~/outside'}",
+            "uses: [dependency]\nmode: checkout\nrules:\n  - {path: config, target: '~/outside'}",
         );
         write(&temp, "selected/config/editor", "mapped");
         write(&temp, "selected/ordinary", "ordinary");
@@ -697,7 +697,7 @@ mod tests {
             &temp,
             "selected/over.yaml",
             &format!(
-                "uses: [dependency]\nmode: checkout\nmap:\n  config: {{target: '~/outside'}}\n{config}"
+                "uses: [dependency]\nmode: checkout\nrules:\n  - {{path: config, target: '~/outside'}}\n{config}"
             ),
         );
         write(&temp, "selected/config/editor", "mapped");

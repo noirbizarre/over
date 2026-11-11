@@ -31,23 +31,29 @@ impl fmt::Display for MaterializationKind {
     }
 }
 
-/// Both properties share selectors and ordering, but assignments are independent.
+/// Properties share selectors and ordering, but assignments are independent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 // A present-but-null assignment does not satisfy runtime rule validation.
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields, extend(
     "anyOf" = [
         {"required": ["mode"], "properties": {"mode": {"not": {"type": "null"}}}},
-        {"required": ["permissions"], "properties": {"permissions": {"not": {"type": "null"}}}}
+        {"required": ["permissions"], "properties": {"permissions": {"not": {"type": "null"}}}},
+        {"required": ["target"], "properties": {"target": {"type": "string", "pattern": "\\S"}}}
     ],
     "if" = {"properties": {"path": {"pattern": "[*?\\[{]"}}, "required": ["path"]},
-    "then" = {"properties": {"mode": {"const": "symlink-directory"}}, "required": ["mode"]}
+    "then" = {"properties": {"target": {"type": "null"}}}
 )))]
 pub struct Rule {
-    #[cfg_attr(feature = "schema", schemars(length(min = 1), extend("pattern" = r"\S")))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1), extend(
+        "pattern" = r"\S",
+        "not" = {"pattern": r"^\.(/\.?)*/?$"}
+    )))]
     pub path: String,
     pub mode: Option<MaterializationKind>,
     pub permissions: Option<FileMode>,
+    #[cfg_attr(feature = "schema", schemars(extend("pattern" = r"\S")))]
+    pub target: Option<String>,
 }
 
 impl Rule {
@@ -57,15 +63,28 @@ impl Rule {
 
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.mode.is_some() || self.permissions.is_some(),
-            "rule '{}' must set mode or permissions",
+            self.mode.is_some() || self.permissions.is_some() || self.target.is_some(),
+            "rule '{}' must set target, mode or permissions",
             self.path
         );
         ensure!(!self.path.trim().is_empty(), "rule path must not be empty");
+        ensure!(
+            !Path::new(&self.path)
+                .components()
+                .all(|part| part == std::path::Component::CurDir),
+            "rule path '.' is not supported; set target, mode or permissions directly on the declaring overlay instead"
+        );
+        if let Some(target) = &self.target {
+            ensure!(
+                !target.trim().is_empty(),
+                "rule '{}' has an empty target",
+                self.path
+            );
+        }
         if self.is_glob() {
             ensure!(
-                self.mode == Some(MaterializationKind::SymlinkDirectory),
-                "glob rule '{}' requires mode: symlink-directory; other rules use literal path prefixes",
+                self.target.is_none(),
+                "target rule '{}' requires a literal path selector",
                 self.path
             );
             GlobBuilder::new(&self.path)
@@ -75,15 +94,14 @@ impl Rule {
         Ok(())
     }
 
-    pub fn matches(&self, relative: &Path, is_directory: bool) -> bool {
+    pub fn matches(&self, relative: &Path, _is_directory: bool) -> bool {
         if self.is_glob() {
-            is_directory
-                && GlobBuilder::new(&self.path)
-                    .literal_separator(true)
-                    .build()
-                    .is_ok_and(|glob| glob.compile_matcher().is_match(relative))
+            GlobBuilder::new(&self.path)
+                .literal_separator(true)
+                .build()
+                .is_ok_and(|glob| glob.compile_matcher().is_match(relative))
         } else {
-            relative.starts_with(Path::new(&self.path)) || self.path == "."
+            relative.starts_with(Path::new(&self.path))
         }
     }
 }
@@ -123,6 +141,7 @@ pub(crate) struct ResolvedProperties<'a> {
     pub permissions: Option<FileMode>,
     pub mode_origin: Option<AssignmentOrigin<'a>>,
     pub permissions_origin: Option<AssignmentOrigin<'a>>,
+    pub target_origin: Option<AssignmentOrigin<'a>>,
 }
 
 pub(crate) fn resolve_with_origins<'a>(
@@ -135,6 +154,7 @@ pub(crate) fn resolve_with_origins<'a>(
         permissions: None,
         mode_origin: None,
         permissions_origin: None,
+        target_origin: None,
     };
     let source = overlay
         .scopes
@@ -160,6 +180,9 @@ pub(crate) fn resolve_with_origins<'a>(
                 if let Some(value) = rule.permissions {
                     resolved.permissions = Some(value);
                     resolved.permissions_origin = Some((scope, Some(index)));
+                }
+                if rule.target.is_some() {
+                    resolved.target_origin = Some((scope, Some(index)));
                 }
             }
         }
@@ -241,23 +264,27 @@ mod tests {
             path: "foo".into(),
             mode: Some(MaterializationKind::Symlink),
             permissions: None,
+            target: None,
         };
         assert!(rule.matches(Path::new("foo/bar"), true));
         assert!(!rule.matches(Path::new("foobar"), true));
     }
 
     #[test]
-    fn only_directory_symlink_rules_allow_globs_and_select_directory_boundaries() {
+    fn globs_match_files_and_directories_but_cannot_redirect_targets() {
         let mut rule = Rule {
             path: "config/*".into(),
             mode: Some(MaterializationKind::SymlinkDirectory),
             permissions: None,
+            target: None,
         };
         assert!(rule.validate().is_ok());
         assert!(rule.matches(Path::new("config/editor"), true));
-        assert!(!rule.matches(Path::new("config/editor"), false));
+        assert!(rule.matches(Path::new("config/editor"), false));
         assert!(!rule.matches(Path::new("config/editor/nested"), true));
         rule.mode = Some(MaterializationKind::Checkout);
+        assert!(rule.validate().is_ok());
+        rule.target = Some("~/editor".into());
         assert!(rule.validate().is_err());
     }
 }

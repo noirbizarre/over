@@ -1076,7 +1076,7 @@ mod tests {
         // `Plan::build`/`execute` (ADR-014) — by the time the plan sees the
         // `Checkout` entry, the repository already exists and classifies
         // as `Noop`, exactly like a real `apply`.
-        crate::actions::git::clone_repositories(clone_ctx.clone(), &overlay, root.path())
+        crate::actions::git::clone_repositories(clone_ctx.clone(), &overlay)
             .await
             .unwrap();
         assert!(root.path().join(".git").exists());

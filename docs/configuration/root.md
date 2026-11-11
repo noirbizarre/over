@@ -16,7 +16,7 @@ overlays:
 
 `format`, `repository`, `sync`, `default_overlay`, and `overlays` are root-only settings.
 Root hooks are also repository-scoped. Ordinary [overlay fields](overlay.md),
-such as `target`, `data`, `map`, and materialization rules, may appear here as
+such as `target`, `data`, and overlay rules, may appear here as
 inherited policy; they are not additional repository preferences.
 
 ## Editor support

@@ -19,7 +19,7 @@ impl Fixture {
         fs::write(source.join("ov/etc/file"), "mapped\n").unwrap();
         fs::write(
             source.join("ov/over.toml"),
-            "target='~/base'\nmode='checkout'\n[map.etc]\ntarget='../../external-a'\n",
+            "target='~/base'\nmode='checkout'\n[[rules]]\npath='etc'\ntarget='../../external-a'\n",
         )
         .unwrap();
         let repo = git2::Repository::init(&source).unwrap();
