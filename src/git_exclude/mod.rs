@@ -529,6 +529,48 @@ fn discover_desired_groups(desired: &DesiredTree) -> Result<DiscoveredGroups> {
     Ok((repos, groups))
 }
 
+fn discover_existing_groups(desired: &DesiredTree) -> Result<DiscoveredGroups> {
+    let (repos, mut groups) = discover_desired_groups(desired)?;
+    for targets in groups.values_mut() {
+        let mut existing = BTreeSet::new();
+        for target in targets.iter() {
+            // A dangling symlink still needs exclusion; exists() would follow it and lose it.
+            match fs::symlink_metadata(target) {
+                Ok(_) => {
+                    existing.insert(target.clone());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to inspect '{}'", target.display()));
+                }
+            }
+        }
+        *targets = existing;
+    }
+    // Keep empty discovery anchors so absent artifacts do not hide corrupted or stale blocks.
+    Ok((repos, groups))
+}
+
+/// Diagnose exclusions for desired artifacts currently on disk, including dangling symlinks.
+pub fn diagnose_existing(desired: &DesiredTree) -> Result<Vec<ExcludeDiagnosis>> {
+    let (repos, groups) = discover_existing_groups(desired)?;
+    groups
+        .into_iter()
+        .map(|((repo_key, overlay), targets)| diagnose_group(&repos[&repo_key], &overlay, &targets))
+        .collect()
+}
+
+/// Repair only malformed blocks, using the same existing-artifact expectations as diagnosis.
+pub fn repair_existing(desired: &DesiredTree) -> Result<RepairReport> {
+    let (repos, groups) = discover_existing_groups(desired)?;
+    let mut report = RepairReport::default();
+    for ((repo_key, overlay), targets) in groups {
+        repair_group(&repos[&repo_key], &overlay, &targets, &mut report)?;
+    }
+    Ok(report)
+}
+
 /// Newly ignored deployments still need their old host exclude block removed,
 /// even when no selected file remains to identify the enclosing repository.
 pub fn unreconcile_desired(desired: &DesiredTree) -> Result<ExcludeReport> {
@@ -935,6 +977,100 @@ mod tests {
                 link_type: crate::actions::symlink::LinkType::Soft,
             },
         )
+    }
+
+    #[rstest::rstest]
+    #[case::scaffold_only(false)]
+    #[case::absent_artifact(true)]
+    fn absent_artifacts_do_not_require_exclusions_but_keep_stale_blocks_discoverable(
+        #[case] with_artifact: bool,
+    ) {
+        let (td, repo) = temp_git_repo();
+        let mut entries = vec![entry(
+            td.path().to_path_buf(),
+            "demo",
+            MaterializationIntent::Directory,
+        )];
+        if with_artifact {
+            entries.push(symlink_file(td.path().join("missing/parent/file"), "demo"));
+        }
+        let desired = DesiredTree::from_entries(entries);
+        let exclude = repo.commondir().join("info/exclude");
+        fs::remove_file(&exclude).unwrap();
+        assert_eq!(
+            diagnose_existing(&desired).unwrap()[0].status,
+            ExcludeStatus::Ok
+        );
+        assert!(
+            !exclude.exists(),
+            "diagnosis must not create the exclude file"
+        );
+        let stale = partial::append_block("# handwritten\n", "exclude:demo", "/old");
+        fs::write(&exclude, &stale).unwrap();
+        assert_eq!(
+            diagnose_existing(&desired).unwrap()[0].status,
+            ExcludeStatus::Orphaned
+        );
+        assert!(repair_existing(&desired).unwrap().repaired.is_empty());
+        assert_eq!(fs::read_to_string(&exclude).unwrap(), stale);
+    }
+
+    #[test]
+    fn existing_artifacts_require_exclusions_without_claiming_future_paths() {
+        let (td, repo) = temp_git_repo();
+        td.child("present").write_str("content").unwrap();
+        let desired = DesiredTree::from_entries(vec![
+            symlink_file(td.path().join("present"), "demo"),
+            symlink_file(td.path().join("future"), "demo"),
+        ]);
+        let before = exclude_content(&repo);
+        assert_eq!(
+            diagnose_existing(&desired).unwrap()[0].status,
+            ExcludeStatus::Missing
+        );
+        assert_eq!(exclude_content(&repo), before);
+        let exclude = repo.commondir().join("info/exclude");
+        fs::write(
+            &exclude,
+            partial::append_block(&before, "exclude:demo", "/present"),
+        )
+        .unwrap();
+        assert_eq!(
+            diagnose_existing(&desired).unwrap()[0].status,
+            ExcludeStatus::Ok
+        );
+        // Status/apply still expect the future artifact's exclusion as well.
+        assert_eq!(
+            diagnose(&managed_targets(&desired).unwrap()).unwrap()[0].status,
+            ExcludeStatus::Modified
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlinks_still_require_exclusions() {
+        let (td, _) = temp_git_repo();
+        let target = td.path().join("dangling");
+        std::os::unix::fs::symlink(td.path().join("missing"), &target).unwrap();
+        let desired = DesiredTree::from_entries(vec![symlink_file(target, "demo")]);
+        assert_eq!(
+            diagnose_existing(&desired).unwrap()[0].status,
+            ExcludeStatus::Missing
+        );
+    }
+
+    #[test]
+    fn existing_nested_checkouts_are_excluded_only_in_the_parent_repository() {
+        let (td, parent) = temp_git_repo();
+        let nested = td.path().join("nested");
+        let child = Repository::init(&nested).unwrap();
+        let desired =
+            DesiredTree::from_entries(vec![entry(nested, "demo", MaterializationIntent::Checkout)]);
+        let diagnoses = diagnose_existing(&desired).unwrap();
+        assert_eq!(diagnoses.len(), 1);
+        assert_eq!(diagnoses[0].repo_root, parent.workdir().unwrap());
+        assert_eq!(diagnoses[0].status, ExcludeStatus::Missing);
+        assert!(!exclude_content(&child).contains("exclude:demo"));
     }
 
     // ── managed_targets: narrowest-path filter ────────────────────────────

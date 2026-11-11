@@ -60,14 +60,23 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         &format!("{} Environment", emojis::STETHOSCOPE),
         &report.environment,
     );
+    ui::info(format!(
+        "{}",
+        style::white_b(format!("{} Overlay configuration", emojis::PACKAGE))
+    ))
+    .ok();
+    if report.config.diagnostics.is_empty() {
+        ui::info(format!("  {}", style::green("No issues found"))).ok();
+    } else {
+        // Indent every line so lint's file groups and hints retain their relative layout.
+        for line in report.config.grouped().to_string().lines() {
+            ui::info(format!("  {line}")).ok();
+        }
+    }
+    ui::info("").ok();
     print_section(
         cli,
-        &format!("{} Overlay configuration", emojis::PACKAGE),
-        &report.config,
-    );
-    print_section(
-        cli,
-        &format!("{} Git-exclude", emojis::LINK),
+        &format!("{} Git exclusions", emojis::LINK),
         &report.git_exclude,
     );
     print_section(

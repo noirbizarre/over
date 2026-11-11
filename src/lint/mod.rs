@@ -205,7 +205,7 @@ impl fmt::Display for GroupedDiagnostics<'_> {
 }
 
 /// Aggregated lint results.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct LintResult {
     pub diagnostics: Vec<Diagnostic>,
 }

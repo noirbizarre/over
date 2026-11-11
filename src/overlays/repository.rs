@@ -102,7 +102,10 @@ impl Repository {
                 Ok(overlay) => overlays.push(Ok(overlay)),
                 Err(e) if strict => overlays.push(Err(e)),
                 Err(e) => {
-                    tracing::warn!("skipping badly formatted overlay {}: {}", dir.display(), e,);
+                    // Diagnostic callers already retain the parse error in lint's report.
+                    if !self.warnings.is_collecting() {
+                        tracing::warn!("skipping badly formatted overlay {}: {}", dir.display(), e,);
+                    }
                 }
             }
         }
@@ -143,6 +146,7 @@ impl Repository {
             resolve_declared_dirs(
                 &self.root,
                 &self.root_config()?.overlays.unwrap_or_default(),
+                &self.warnings,
             )
         } else {
             self.declared_overlay_dirs()
@@ -190,7 +194,9 @@ impl Repository {
         match self.root_config() {
             Ok(cfg) => cfg.format,
             Err(e) => {
-                tracing::warn!("ignoring unreadable repository root config: {e:#}");
+                if !self.warnings.is_collecting() {
+                    tracing::warn!("ignoring unreadable repository root config: {e:#}");
+                }
                 None
             }
         }
@@ -208,11 +214,13 @@ impl Repository {
         let declarations = match self.root_config() {
             Ok(cfg) => cfg.overlays.unwrap_or_default(),
             Err(e) => {
-                tracing::warn!("ignoring unreadable repository root config: {e:#}");
+                if !self.warnings.is_collecting() {
+                    tracing::warn!("ignoring unreadable repository root config: {e:#}");
+                }
                 Vec::new()
             }
         };
-        resolve_declared_dirs(&self.root, &declarations)
+        resolve_declared_dirs(&self.root, &declarations, &self.warnings)
     }
 
     /// Resolve the repository root's configured `default_overlay`, if any

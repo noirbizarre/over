@@ -60,6 +60,10 @@ pub(crate) struct Reporter {
 }
 
 impl Reporter {
+    pub fn is_collecting(&self) -> bool {
+        self.collected
+    }
+
     pub fn collecting() -> Self {
         Self {
             collected: true,

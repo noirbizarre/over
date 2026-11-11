@@ -95,3 +95,25 @@ scope limits. It cannot detect anything `lint`/`status` themselves can't
 (e.g. it does not walk `Plan`/`DesiredTree` reconciliation status the way
 `over status`'s own entries do — only the git-exclude drift layered on top
 of that).
+
+## Amendment: grouped configuration and existing artifacts
+
+Doctor retains the structured `LintResult` from
+`lint::lint_repository_with_context` and renders it with lint's grouped
+overlay/file display. Other findings retain their already rendered display.
+Configuration loading collects warnings throughout the diagnostic pass, so
+configuration diagnostics appear once in their section rather than also being
+logged before the report.
+
+The **Git exclusions** section uses `git_exclude::diagnose_existing`, and
+`--fix` uses `git_exclude::repair_existing`. Both reuse the existing group-level
+diagnosis, expectation, and repair logic, but require exclusions only for desired
+artifact paths currently on disk, including dangling symlinks. This existence
+check does not establish ownership. Repository discovery anchors remain even
+when no artifacts exist, allowing stale or malformed blocks to be diagnosed.
+Status and apply retain their full desired-state exclusion expectations.
+
+Repair remains limited to malformed blocks. Its regenerated content covers
+currently existing artifacts; with an empty expectation it strips corrupted
+markers without appending a block. All other repair restrictions and severity
+rules above remain in effect.

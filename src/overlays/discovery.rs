@@ -31,6 +31,7 @@ pub struct OverlayDeclaration {
 pub(super) fn resolve_declared_dirs(
     repo_root: &Path,
     declarations: &[OverlayDeclaration],
+    warnings: &super::schema::Reporter,
 ) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for decl in declarations {
@@ -39,7 +40,10 @@ pub(super) fn resolve_declared_dirs(
             continue;
         };
         let Ok(paths) = glob::glob(pattern_str) else {
-            tracing::warn!("invalid overlays declaration pattern '{}'", decl.path);
+            // Lint diagnoses invalid declarations itself; runtime discovery still warns.
+            if !warnings.is_collecting() {
+                tracing::warn!("invalid overlays declaration pattern '{}'", decl.path);
+            }
             continue;
         };
         // Only directories are overlays; a glob like `hosts/*` may also
@@ -68,7 +72,7 @@ mod tests {
         let declarations = ["hosts/[", "optional/*", "missing", "shared"]
             .map(|path| OverlayDeclaration { path: path.into() });
         assert_eq!(
-            resolve_declared_dirs(tmp.path(), &declarations),
+            resolve_declared_dirs(tmp.path(), &declarations, &Default::default()),
             vec![tmp.path().join("shared")]
         );
     }
@@ -83,6 +87,7 @@ mod tests {
             &[OverlayDeclaration {
                 path: "shared".to_string(),
             }],
+            &Default::default(),
         );
 
         assert_eq!(dirs, vec![tmp.path().join("shared")]);
@@ -99,6 +104,7 @@ mod tests {
             &[OverlayDeclaration {
                 path: "hosts/*".to_string(),
             }],
+            &Default::default(),
         );
         dirs.sort();
 
@@ -122,6 +128,7 @@ mod tests {
             &[OverlayDeclaration {
                 path: "hosts/*".to_string(),
             }],
+            &Default::default(),
         );
 
         assert!(dirs.is_empty());
@@ -136,6 +143,7 @@ mod tests {
             &[OverlayDeclaration {
                 path: "nonexistent/*".to_string(),
             }],
+            &Default::default(),
         );
 
         assert!(dirs.is_empty());
@@ -151,6 +159,7 @@ mod tests {
             &[OverlayDeclaration {
                 path: "hosts/[".to_string(),
             }],
+            &Default::default(),
         );
 
         assert!(dirs.is_empty());
