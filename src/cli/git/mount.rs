@@ -94,9 +94,9 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         "{} {} {} {} {}",
         emojis::LINK,
         style::white("Mounting"),
-        style::cyan(&short_path(&repo_root.to_string_lossy())),
+        style::path(short_path(&repo_root.to_string_lossy())),
         style::white("to overlay"),
-        style::cyan(&overlay.name),
+        style::overlay(&overlay.name),
     ))
     .ok();
 
@@ -248,8 +248,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         ui::info(format!(
             "\n{} {} {}",
             emojis::PACKAGE,
-            style::white_b("Overlay already has a git entry for"),
-            style::cyan(rel_path_str),
+            style::heading("Overlay already has a git entry for"),
+            style::path(rel_path_str),
         ))
         .ok();
         ui::info(format!("  url: {}", style::cyan(&existing.url))).ok();
@@ -415,10 +415,10 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             ui::info(format!(
                 "{} {} {} {} {}",
                 emojis::SPARKLE,
-                style::white_b("Exported git config for"),
-                style::cyan(rel_path_str),
+                style::heading("Exported git config for"),
+                style::path(rel_path_str),
                 style::white_b("to overlay"),
-                style::cyan(&overlay.name),
+                style::overlay(&overlay.name),
             ))
             .ok();
         }
@@ -430,8 +430,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     ui::info(format!(
         "{} {} {}",
         emojis::checkmark(),
-        style::white("Set over.overlay ="),
-        style::cyan(&overlay.name),
+        style::key("Set over.overlay ="),
+        style::overlay(&overlay.name),
     ))
     .ok();
 

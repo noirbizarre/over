@@ -78,9 +78,9 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         "{} {} {} {} {}",
         emojis::PACKAGE,
         style::white("Adding files from"),
-        style::cyan(&short_path(&workdir.to_string_lossy())),
+        style::path(short_path(&workdir.to_string_lossy())),
         style::white("to overlay"),
-        style::cyan(&overlay.name),
+        style::overlay(&overlay.name),
     ))
     .ok();
 
@@ -101,8 +101,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         ui::warn(format!(
             "{} {} {}: {}",
             emojis::crossmark().for_stderr(),
-            style::white_b("Failed to add to overlay"),
-            style::cyan(&overlay.name),
+            style::heading("Failed to add to overlay"),
+            style::overlay(&overlay.name),
             e,
         ))
         .ok();
@@ -126,8 +126,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             ui::info(format!(
                 "{} {} {}",
                 emojis::checkmark(),
-                style::white("Updated git exclude:"),
-                style::cyan(&updated.join(", ")),
+                style::key("Updated git exclude:"),
+                style::path(updated.join(", ")),
             ))
             .ok();
         }
@@ -155,7 +155,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         style::white_b("Added"),
         style::cyan(&format!("{}", added_display.len())),
         style::white_b("file(s) to overlay"),
-        style::cyan(&overlay.name),
+        style::overlay(&overlay.name),
         added_display.join(", "),
     ))
     .ok();

@@ -9,8 +9,8 @@ use crate::cli::CLI;
 use crate::exec::Context;
 use crate::overlays::{Overlay, Repository};
 use crate::status::Counts;
-use crate::status::overlay::{OverlayReport, ResolvedConfiguration};
-use crate::ui;
+use crate::status::overlay::{Field, OverlayReport, ResolvedConfiguration, Value};
+use crate::ui::{self, emojis, style};
 
 #[derive(Args, Debug)]
 pub struct Params {
@@ -46,7 +46,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
 
     let home = cli.resolve_home()?;
-    let repo = Repository::new(home);
+    // Schema diagnostics belong to lint/doctor; status still propagates load errors.
+    let repo = Repository::new(home).collecting_warnings();
     let root = args
         .root
         .clone()
@@ -104,6 +105,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                             .filter(|problem| problem.needs_attention())
                             .count();
                         counts.applied += current.applied;
+                        counts.locked += current.locked;
                         counts.missing += current.missing;
                         counts.modified += current.modified;
                         counts.broken += current.broken;
@@ -132,7 +134,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
     if overlays.len() > 1 {
         write_output(&format!(
-            "Overall: {} overlays; {healthy} fully applied, {unhealthy} need attention, {failed} could not be checked\n  {counts}\n  {exclude_problems} exclude problem(s)\n  Entry counts are summed per overlay, including shared dependencies.",
+            "{} {} overlays; {healthy} fully applied, {unhealthy} need attention, {failed} could not be checked\n  {counts}\n  {exclude_problems} exclude problem(s)\n  Entry counts are summed per overlay, including shared dependencies.",
+            style::heading("Overall:"),
             overlays.len()
         ))?;
     }
@@ -178,52 +181,139 @@ fn render_configuration(
     verbose: bool,
     lines: &mut Vec<String>,
 ) {
-    lines.push(format!("  source: {}", configuration.source.display()));
-    lines.push(format!("  target: {}", configuration.target.display()));
-    lines.extend(configuration.summary.iter().map(|line| format!("  {line}")));
+    render_field(
+        &Field::new(
+            "source",
+            Value::Path(configuration.source.display().to_string()),
+        ),
+        2,
+        lines,
+    );
+    render_field(
+        &Field::new(
+            "target",
+            Value::Path(configuration.target.display().to_string()),
+        ),
+        2,
+        lines,
+    );
+    for field in &configuration.summary {
+        render_field(field, 2, lines);
+    }
     if verbose {
-        lines.extend(
-            configuration
-                .details
-                .iter()
-                .map(|line| format!("    {line}")),
-        );
+        for field in &configuration.details {
+            render_field(field, 4, lines);
+        }
+    }
+}
+
+fn render_field(field: &Field, indent: usize, lines: &mut Vec<String>) {
+    let annotation = field
+        .annotation
+        .as_ref()
+        .map(|value| format!(" {}", style::annotation(format!("({value})"))))
+        .unwrap_or_default();
+    let values = field
+        .values
+        .iter()
+        .map(|value| match value {
+            Value::Text(value) => style::cyan(value).to_string(),
+            Value::Path(value) => style::path(value).to_string(),
+            Value::Overlay(value) => style::overlay(value).to_string(),
+            Value::Mode(value) => style::mode(value).to_string(),
+            Value::Change {
+                symbol,
+                path,
+                staging,
+            } => format!(
+                "{} {} {}",
+                style::yellow(symbol),
+                style::path(path.display()),
+                style::annotation(format!("({staging})"))
+            ),
+        })
+        .collect::<String>();
+    let values = if values.is_empty() && field.children.is_empty() && field.sequence.is_empty() {
+        "none".into()
+    } else {
+        values
+    };
+    if field.key.is_empty() {
+        lines.push(format!("{:indent$}{values}", ""));
+        return;
+    }
+    lines.push(format!(
+        "{:indent$}{}{annotation}:{}{}",
+        "",
+        style::key(&field.key),
+        if values.is_empty() { "" } else { " " },
+        values
+    ));
+    for (index, name) in field.sequence.iter().enumerate() {
+        let connector = if index + 1 == field.sequence.len() {
+            "└─→"
+        } else {
+            "├─→"
+        };
+        lines.push(format!(
+            "{:indent$}  {} {}",
+            "",
+            style::annotation(connector),
+            style::overlay(name)
+        ));
+    }
+    for child in &field.children {
+        render_field(child, indent + 2, lines);
     }
 }
 
 fn render_overlay(snapshot: &OverlayReport, verbose: bool) -> String {
     let mut lines = vec![
-        format!("Overlay {}", snapshot.configuration.name),
-        "Configuration:".into(),
+        format!(
+            "{} {}",
+            style::heading("Overlay"),
+            style::overlay(&snapshot.configuration.name)
+        ),
+        format!("{} {}", emojis::DIRECTORY, style::heading("Configuration:")),
     ];
     render_configuration(&snapshot.configuration, verbose, &mut lines);
     if verbose {
         for dependency in &snapshot.dependencies {
-            lines.push(format!("Dependency {}:", dependency.name));
+            lines.push(format!(
+                "{} {}:",
+                style::heading("Dependency"),
+                style::overlay(&dependency.name)
+            ));
             render_configuration(dependency, true, &mut lines);
         }
     }
-    lines.push("Reconciliation:".into());
+    lines.push(format!(
+        "{} {}",
+        emojis::PACKAGE,
+        style::heading("Reconciliation:")
+    ));
     match &snapshot.health {
         Ok(report) => {
             lines.push(format!(
-                "  {} — {}",
+                "  {} —\n  {}",
                 if report.needs_attention() {
-                    "Needs attention"
+                    style::yellow("Needs attention").to_string()
                 } else {
-                    "Fully applied"
+                    style::green("Fully applied").to_string()
                 },
                 report.counts()
             ));
             for (entry, details) in report.entries().iter().zip(&snapshot.entry_details) {
                 if verbose || entry.status.needs_attention() {
                     lines.push(format!("  {entry}"));
-                    lines.extend(details.iter().map(|line| format!("    {line}")));
+                    for field in details {
+                        render_field(field, 6, &mut lines);
+                    }
                 }
             }
             for problem in report.exclude_problems() {
                 if verbose || problem.needs_attention() {
-                    lines.push(format!("  {problem}"));
+                    lines.extend(problem.to_string().lines().map(|line| format!("  {line}")));
                 }
             }
         }
@@ -278,6 +368,35 @@ mod tests {
         let before = render_overlay(&snapshot, true);
         tmp.close().unwrap();
         assert_eq!(render_overlay(&snapshot, true), before);
+    }
+
+    #[test]
+    fn structured_fields_preserve_punctuation_and_indent_metadata_and_sequences() {
+        let field = Field {
+            key: "uses".into(),
+            annotation: Some("scope: /source:with;punctuation/over.yaml".into()),
+            values: Vec::new(),
+            sequence: vec!["apps/first".into(), "apps/second".into()],
+            children: Vec::new(),
+        };
+        let mut lines = Vec::new();
+        render_field(&field, 2, &mut lines);
+        let mut git = Field::new("git", Value::Text("project".into()));
+        git.values
+            .extend([Value::Text(" → ".into()), Value::Path("/target:a;b".into())]);
+        git.children
+            .push(Field::new("configuration", Value::Text("present".into())));
+        render_field(&git, 2, &mut lines);
+        assert_eq!(
+            console::strip_ansi_codes(&lines.join("\n")),
+            concat!(
+                "  uses (scope: /source:with;punctuation/over.yaml):\n",
+                "    ├─→ apps/first\n",
+                "    └─→ apps/second\n",
+                "  git: project → /target:a;b\n",
+                "    configuration: present",
+            )
+        );
     }
 
     #[tokio::test]

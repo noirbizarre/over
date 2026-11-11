@@ -97,8 +97,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         ui::warn(format!(
             "{} {} {}: {}",
             emojis::crossmark().for_stderr(),
-            style::white_b("Failed to apply overlay"),
-            style::cyan(&overlay.name),
+            style::heading("Failed to apply overlay"),
+            style::overlay(&overlay.name),
             e,
         ))
         .ok();

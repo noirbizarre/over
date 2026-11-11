@@ -1,6 +1,6 @@
 //! A resolved, secret-safe inspection snapshot shared by overlay views.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow, ensure};
@@ -18,8 +18,58 @@ pub struct ResolvedConfiguration {
     pub name: String,
     pub source: PathBuf,
     pub target: PathBuf,
-    pub summary: Vec<String>,
-    pub details: Vec<String>,
+    pub summary: Vec<Field>,
+    pub details: Vec<Field>,
+}
+
+/// Presentation data stays unstyled so collecting a snapshot never depends on a terminal.
+#[derive(Debug, Clone)]
+pub enum Value {
+    Text(String),
+    Path(String),
+    Overlay(String),
+    Mode(String),
+    Change {
+        symbol: &'static str,
+        path: PathBuf,
+        staging: &'static str,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct Field {
+    pub key: String,
+    pub annotation: Option<String>,
+    pub values: Vec<Value>,
+    pub children: Vec<Field>,
+    pub sequence: Vec<String>,
+}
+
+impl Field {
+    pub fn new(key: impl Into<String>, value: Value) -> Self {
+        Self {
+            key: key.into(),
+            annotation: None,
+            values: vec![value],
+            children: Vec::new(),
+            sequence: Vec::new(),
+        }
+    }
+
+    fn annotated(mut self, annotation: impl Into<String>) -> Self {
+        self.annotation = Some(annotation.into());
+        self
+    }
+
+    fn list(key: &str, annotation: Option<String>, sequence: Vec<String>) -> Self {
+        Self {
+            key: key.into(),
+            annotation,
+            values: Vec::new(),
+            children: Vec::new(),
+            sequence,
+        }
+    }
 }
 
 /// Configuration survives a reconciliation failure, so an unapplied or damaged
@@ -28,7 +78,7 @@ pub struct OverlayReport {
     pub configuration: ResolvedConfiguration,
     pub dependencies: Vec<ResolvedConfiguration>,
     pub health: Result<Report>,
-    pub entry_details: Vec<Vec<String>>,
+    pub entry_details: Vec<Vec<Field>>,
 }
 
 impl OverlayReport {
@@ -48,40 +98,41 @@ impl OverlayReport {
         let mut configuration = configurations
             .pop()
             .ok_or_else(|| anyhow!("overlay composition is empty"))?;
-        configuration.summary.push(format!(
-            "composition: {}{}",
-            ordered
-                .iter()
-                .map(|item| item.name.as_str())
-                .collect::<Vec<_>>()
-                .join(" -> "),
-            if ctx.no_uses {
-                " (dependency operations skipped; data retained)"
-            } else {
-                ""
-            }
+        configuration.summary.push(Field::list(
+            "composition",
+            ctx.no_uses
+                .then(|| "dependency operations skipped; data retained".into()),
+            ordered.iter().map(|item| item.name.clone()).collect(),
         ));
-        let health = DesiredTree::build(&ctx, overlay).and_then(|desired| Report::build(&desired));
+        // Reuse inspection results for details rather than cleaning every dirty file twice.
+        let mut inspections = BTreeMap::new();
+        let health = DesiredTree::build(&ctx, overlay).and_then(|desired| {
+            Report::build_with_inspector(&desired, |entry| {
+                let inspection = virtual_checkout::inspect_tracked(entry)?;
+                let status = inspection.status.clone();
+                inspections.insert(entry.target.clone(), inspection);
+                Ok(status)
+            })
+        });
         let mut entry_details = Vec::new();
         let health = health
-            .and_then(|report| {
+            .inspect(|report| {
                 for entry in report.entries() {
-                    let mut details = vec![explain(&entry.entry, &ordered)];
+                    let mut details = explain(&entry.entry, &ordered);
                     if entry.entry.intent.is_virtual_checkout()
                         && matches!(entry.status, Status::Modified | Status::Diverged { .. } | Status::Conflict)
                     {
                         for (label, changes) in [
-                            ("staged", virtual_checkout::staged_changes(&entry.entry)?),
-                            ("unstaged", virtual_checkout::unstaged_changes(&entry.entry)?),
+                            ("staged", &inspections[&entry.entry.target].staged),
+                            ("unstaged", &inspections[&entry.entry.target].unstaged),
                         ] {
-                            details.extend(changes.into_iter().map(|change| {
-                                format!("{} {} ({label})", file_change_symbol(change.kind), change.path.display())
+                            details.extend(changes.iter().map(|change| {
+                                Field::new("", Value::Change { symbol: file_change_symbol(change.kind), path: change.path.clone(), staging: label })
                             }));
                         }
                     }
                     entry_details.push(details);
                 }
-                Ok(report)
             })
             // Git/parser errors may quote credentials, scripts, or rendered data.
             .map_err(|_| anyhow!("cannot check overlay '{}': inspect source files, Git configuration/index and checkout association", overlay.name));
@@ -127,14 +178,18 @@ fn origin(overlay: &Overlay, key: &str) -> String {
         .unwrap_or_else(|| "built-in default".into())
 }
 
-fn hook_summary(hooks: &Hooks) -> String {
-    format!(
-        "post-clone: {}, post-init: {}, post-apply: {}, install: {}",
-        hooks.post_clone.len(),
-        hooks.post_init.len(),
-        hooks.post_apply.len(),
-        hooks.install.len()
-    )
+fn hook_summary(hooks: &Hooks) -> Field {
+    let mut field = Field::new("hooks", Value::Text(String::new()));
+    field.children = [
+        ("post-clone", hooks.post_clone.len()),
+        ("post-init", hooks.post_init.len()),
+        ("post-apply", hooks.post_apply.len()),
+        ("install", hooks.install.len()),
+    ]
+    .into_iter()
+    .map(|(key, count)| Field::new(key, Value::Text(count.to_string())))
+    .collect();
+    field
 }
 
 fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> {
@@ -147,36 +202,38 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
         )
     })?;
     let mut summary = vec![
-        format!("target origin: {}", origin(overlay, "target")),
-        format!(
-            "uses: {} (scope: {})",
-            overlay
-                .uses
-                .as_ref()
-                .filter(|uses| !uses.is_empty())
-                .map(|uses| uses.join(", "))
-                .unwrap_or_else(|| "none".into()),
-            origin(overlay, "uses")
+        Field::new("target origin", Value::Path(origin(overlay, "target"))),
+        Field::list(
+            "uses",
+            Some(format!("scope: {}", origin(overlay, "uses"))),
+            overlay.uses.clone().unwrap_or_default(),
         ),
     ];
     if let Some(description) = &overlay.description {
-        summary.push(format!("description: {description}"));
+        summary.push(Field::new("description", Value::Text(description.clone())));
     }
     if mappings.directories.is_empty() {
-        summary.push("mappings: none".into());
+        summary.push(Field::new("mappings", Value::Text("none".into())));
     }
     for (source, target) in &mappings.directories {
         let key = source.to_string_lossy().replace('\\', "/");
-        summary.push(format!(
-            "map: {} -> {} (origin: {})",
-            source.display(),
-            target.display(),
-            overlay
-                .mapping_origins
-                .get(&key)
-                .unwrap_or(&overlay.root)
-                .display()
+        let mut field = Field::new("map", Value::Path(source.display().to_string()));
+        field.values.extend([
+            Value::Text(" → ".into()),
+            Value::Path(target.display().to_string()),
+        ]);
+        field.children.push(Field::new(
+            "origin",
+            Value::Path(
+                overlay
+                    .mapping_origins
+                    .get(&key)
+                    .unwrap_or(&overlay.root)
+                    .display()
+                    .to_string(),
+            ),
         ));
+        summary.push(field);
     }
     let baseline = overlay
         .scopes
@@ -185,10 +242,15 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
         .find_map(|scope| scope.mode)
         .unwrap_or_default();
     let rule_count: usize = overlay.scopes.iter().map(|scope| scope.rules.len()).sum();
-    summary.push(format!(
-        "mode: {}; baseline: {baseline}; {rule_count} path rule(s)",
-        overlay.materialization_for(Path::new(""))
-    ));
+    let mut mode = Field::new(
+        "mode",
+        Value::Mode(overlay.materialization_for(Path::new("")).to_string()),
+    );
+    mode.children = vec![
+        Field::new("baseline", Value::Mode(baseline.to_string())),
+        Field::new("path rules", Value::Text(rule_count.to_string())),
+    ];
+    summary.push(mode);
     let mut details = Vec::new();
     for scope in &overlay.scopes {
         if scope.mode.is_some()
@@ -196,40 +258,58 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
             || !scope.rules.is_empty()
             || scope.exclude.is_some()
         {
-            details.push(format!(
-                "scope: {} (base: {})",
-                scope.descriptor.display(),
-                scope.root.display()
-            ));
+            details.push(
+                Field::new("scope", Value::Path(scope.descriptor.display().to_string()))
+                    .annotated(format!("base: {}", scope.root.display())),
+            );
             if let Some(mode) = scope.mode {
-                summary.push(format!(
-                    "mode scope: {} = {mode}",
-                    scope.descriptor.display()
-                ));
+                let mut field = Field::new(
+                    "mode scope",
+                    Value::Path(scope.descriptor.display().to_string()),
+                );
+                field
+                    .values
+                    .extend([Value::Text(" = ".into()), Value::Mode(mode.to_string())]);
+                summary.push(field);
             }
             if let Some(permissions) = scope.permissions {
-                details.push(format!("permissions: {permissions}"));
-            }
-            for (index, rule) in scope.rules.iter().enumerate() {
-                details.push(format!(
-                    "rule {}: {} mode={} permissions={}",
-                    index + 1,
-                    rule.path,
-                    rule.mode
-                        .map(|mode| mode.to_string())
-                        .unwrap_or_else(|| "unchanged".into()),
-                    rule.permissions
-                        .map(|mode| mode.to_string())
-                        .unwrap_or_else(|| "unchanged".into())
+                details.push(Field::new(
+                    "permissions",
+                    Value::Mode(permissions.to_string()),
                 ));
             }
+            for (index, rule) in scope.rules.iter().enumerate() {
+                let mut field = Field::new(
+                    format!("rule {}", index + 1),
+                    Value::Path(rule.path.clone()),
+                );
+                field.children = vec![
+                    Field::new(
+                        "mode",
+                        Value::Mode(
+                            rule.mode
+                                .map(|mode| mode.to_string())
+                                .unwrap_or_else(|| "unchanged".into()),
+                        ),
+                    ),
+                    Field::new(
+                        "permissions",
+                        Value::Mode(
+                            rule.permissions
+                                .map(|mode| mode.to_string())
+                                .unwrap_or_else(|| "unchanged".into()),
+                        ),
+                    ),
+                ];
+                details.push(field);
+            }
             if let Some(exclude) = &scope.exclude {
-                details.push(format!("exclude: {}", exclude.join(", ")));
+                details.push(Field::new("exclude", Value::Path(exclude.join(", "))));
             }
         }
     }
     if overlay.git.as_ref().is_none_or(|git| git.is_empty()) {
-        summary.push("git: none".into());
+        summary.push(Field::new("git", Value::Text("none".into())));
     }
     let mut git_keys = overlay
         .git
@@ -243,13 +323,46 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
         } else {
             Path::new(key)
         };
-        summary.push(format!(
-            "git: {key} -> {} (configuration present; latest contributing scope: {})",
-            mappings.target_for(logical).display(),
-            origin(overlay, "git")
-        ));
+        let mut field = Field::new("git", Value::Text(key.clone()));
+        field.values.extend([
+            Value::Text(" → ".into()),
+            Value::Path(mappings.target_for(logical).display().to_string()),
+        ]);
+        field.children = vec![
+            Field::new("configuration", Value::Text("present".into())),
+            Field::new(
+                "latest contributing scope",
+                Value::Path(origin(overlay, "git")),
+            ),
+        ];
+        summary.push(field);
         if let Some(config) = overlay.git.as_ref().and_then(|git| git.get(key)) {
-            details.push(format!("git settings for {key}: worktree={}, submodules={}, revision configured={}, extra remotes={}", config.worktree, config.recurse_submodules, config.branch.is_some() || config.tag.is_some() || config.rev.is_some(), config.remotes.as_ref().map_or(0, |remotes| remotes.len())));
+            let mut settings = Field::new("git settings for", Value::Text(key.clone()));
+            settings.children = vec![
+                Field::new("worktree", Value::Text(config.worktree.to_string())),
+                Field::new(
+                    "submodules",
+                    Value::Text(config.recurse_submodules.to_string()),
+                ),
+                Field::new(
+                    "revision configured",
+                    Value::Text(
+                        (config.branch.is_some() || config.tag.is_some() || config.rev.is_some())
+                            .to_string(),
+                    ),
+                ),
+                Field::new(
+                    "extra remotes",
+                    Value::Text(
+                        config
+                            .remotes
+                            .as_ref()
+                            .map_or(0, |remotes| remotes.len())
+                            .to_string(),
+                    ),
+                ),
+            ];
+            details.push(settings);
             let mut worktrees = config
                 .worktrees
                 .iter()
@@ -257,23 +370,27 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
                 .collect::<Vec<_>>();
             worktrees.sort();
             for name in worktrees {
-                summary.push(format!(
-                    "git worktree: {}",
-                    mappings.target_for(logical).join(name).display()
+                summary.push(Field::new(
+                    "git worktree",
+                    Value::Path(
+                        mappings
+                            .target_for(logical)
+                            .join(name)
+                            .display()
+                            .to_string(),
+                    ),
                 ));
             }
         }
     }
-    summary.push(format!(
-        "hooks (overlay local: {}): {}",
-        overlay.root.display(),
+    summary.push(
         hook_summary(&overlay.hooks)
-    ));
-    summary.push(format!(
-        "hooks (repository: {}): {}",
-        ctx.repository.root.display(),
+            .annotated(format!("overlay local: {}", overlay.root.display())),
+    );
+    summary.push(
         hook_summary(&ctx.repository.hooks()?)
-    ));
+            .annotated(format!("repository: {}", ctx.repository.root.display())),
+    );
     Ok(ResolvedConfiguration {
         name: overlay.name.clone(),
         source: overlay.root.clone(),
@@ -283,7 +400,7 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
     })
 }
 
-fn explain(entry: &DesiredEntry, overlays: &[Overlay]) -> String {
+fn explain(entry: &DesiredEntry, overlays: &[Overlay]) -> Vec<Field> {
     let (owner, source, scope) = match &entry.provenance {
         Provenance::Overlay { overlay, source } => (overlay, source.display().to_string(), None),
         Provenance::SymlinkSidecar {
@@ -348,9 +465,14 @@ fn explain(entry: &DesiredEntry, overlays: &[Overlay]) -> String {
             })
             .unwrap_or_else(|| "built-in default".into())
     });
-    let permissions = entry
-        .permissions
-        .map(|mode| format!("; permissions: {mode}"))
-        .unwrap_or_default();
-    format!("source: {source}; overlay: {owner}; mode: {intent}; scope: {scope}{permissions}")
+    let mut fields = vec![
+        Field::new("overlay", Value::Overlay(owner.clone())),
+        Field::new("source", Value::Path(source)),
+        Field::new("scope", Value::Path(scope)),
+        Field::new("mode", Value::Mode(intent.into())),
+    ];
+    if let Some(mode) = entry.permissions {
+        fields.push(Field::new("permissions", Value::Mode(mode.to_string())));
+    }
+    fields
 }

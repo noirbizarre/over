@@ -497,10 +497,10 @@ impl Overlay {
         let _progress = ctx.ui_progress.phase(format!(
             "{} {} {} {} {}",
             emojis::PACKAGE,
-            style::white_b("Applying overlay"),
-            style::cyan(&self.name),
+            style::heading("Applying overlay"),
+            style::overlay(&self.name),
             style::white_b("to"),
-            style::cyan(&display_target),
+            style::path(&display_target),
         ));
 
         // Preflight before clone-time reconciliation, then rebuild after
@@ -554,10 +554,10 @@ impl Overlay {
         ui::info(format!(
             "{} {} {} {} {}",
             emojis::checkmark(),
-            style::white_b("Applied overlay"),
-            style::cyan(&self.name),
+            style::heading("Applied overlay"),
+            style::overlay(&self.name),
             style::white_b("to"),
-            style::cyan(&display_target),
+            style::path(&display_target),
         ))
         .ok();
 

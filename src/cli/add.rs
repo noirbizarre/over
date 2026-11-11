@@ -120,8 +120,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 ui::warn(format!(
                     "{} {} {}: {}",
                     emojis::crossmark().for_stderr(),
-                    style::white_b("Failed to add to overlay"),
-                    style::cyan(&overlay.name),
+                    style::heading("Failed to add to overlay"),
+                    style::overlay(&overlay.name),
                     e,
                 ))
                 .ok();
@@ -176,7 +176,7 @@ fn add_symlink(
     let target: String = Input::with_theme(&DialogTheme::default())
         .with_prompt(format!(
             "Target for {}",
-            style::cyan(symlink_path.display())
+            style::path(symlink_path.display())
         ))
         .default(default_target)
         .interact_text()
@@ -200,8 +200,8 @@ fn add_symlink(
     ui::info(format!(
         "{} {} {} {}",
         emojis::checkmark(),
-        style::white_b("Created symlink config"),
-        style::cyan(config_path.display()),
+        style::heading("Created symlink config"),
+        style::path(config_path.display()),
         style::white_b("in overlay"),
     ))
     .ok();

@@ -55,6 +55,41 @@ pub fn red<D>(value: D) -> StyledObject<D> {
     style(value).red()
 }
 
+// Semantic roles keep command output consistent without changing patch colors.
+pub fn heading<D>(value: D) -> StyledObject<D> {
+    white_b(value)
+}
+pub fn key<D>(value: D) -> StyledObject<D> {
+    white_b(value)
+}
+pub fn path<D>(value: D) -> StyledObject<D> {
+    green(value)
+}
+pub fn overlay<D>(value: D) -> StyledObject<D> {
+    style(value).blue()
+}
+pub fn mode<D>(value: D) -> StyledObject<D> {
+    yellow(value)
+}
+pub fn annotation<D>(value: D) -> StyledObject<D> {
+    dim(value)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Severity {
+    Success,
+    Warning,
+    Error,
+}
+
+pub fn severity<D>(value: D, severity: Severity) -> StyledObject<D> {
+    match severity {
+        Severity::Success => green(value),
+        Severity::Warning => yellow(value),
+        Severity::Error => red(value),
+    }
+}
+
 pub struct DialogTheme {
     /// The style for default values
     pub defaults_style: Style,

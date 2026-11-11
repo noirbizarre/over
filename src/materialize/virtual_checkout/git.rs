@@ -632,6 +632,64 @@ pub(crate) fn diff_canonical_target(
     Ok(changes)
 }
 
+/// Inspect only explicitly tracked paths: status must not import unrelated target
+/// content or invoke the overlay's clean filters on mounted repositories.
+pub(crate) fn tracked_target_entries(
+    repo: &Repository,
+    managed: &Path,
+    target: &Path,
+    references: &[&BTreeMap<PathBuf, (Oid, i32)>],
+) -> Result<BTreeMap<PathBuf, (Oid, i32)>> {
+    let paths: std::collections::BTreeSet<_> = references
+        .iter()
+        .flat_map(|entries| entries.keys().cloned())
+        .collect();
+    let scratch = crate::actions::git::diff::Scratch::new(repo)?;
+    let mut entries = BTreeMap::new();
+    for path in paths {
+        if let Some((content, mode)) = super::snapshot::target_content(target, &path)? {
+            // Any known canonical blob bypasses a potentially non-idempotent filter.
+            let expected = references
+                .iter()
+                .map(|entries| entries.get(&path).copied())
+                .collect::<Vec<_>>();
+            let entry = super::snapshot::canonical_entry(
+                repo,
+                &scratch,
+                &managed.join(&path),
+                &content,
+                mode,
+                &expected,
+            )?;
+            entries.insert(path, entry);
+        }
+    }
+    Ok(entries)
+}
+
+pub(crate) fn entry_changes(
+    expected: &BTreeMap<PathBuf, (Oid, i32)>,
+    local: &BTreeMap<PathBuf, (Oid, i32)>,
+) -> Vec<FileChange> {
+    let paths: std::collections::BTreeSet<_> = expected.keys().chain(local.keys()).collect();
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let before = expected.get(path).copied();
+            let after = local.get(path).copied();
+            (!entries_match(after, before)).then(|| FileChange {
+                path: path.clone(),
+                kind: match (before, after) {
+                    (_, None) => FileChangeKind::Deleted,
+                    (None, _) => FileChangeKind::Added,
+                    _ => FileChangeKind::Modified,
+                },
+                local_oid: after.map(|entry| entry.0),
+            })
+        })
+        .collect()
+}
+
 /// Number of commits reachable from `to` but not from `from` — used to
 /// report how far behind a virtual checkout's recorded `base_oid` is from
 /// the source repository's current `HEAD` (mirrors `status::git::ahead_behind`'s

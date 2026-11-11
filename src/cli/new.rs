@@ -109,8 +109,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
     ui::info(format!(
         "{} {} {}",
-        style::white_b("Created overlay directory"),
-        style::cyan(&path),
+        style::heading("Created overlay directory"),
+        style::path(&path),
         style::white_b(&format!("({})", format)),
     ))
     .ok();
@@ -127,7 +127,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if args.dry_run {
         ui::info(format!(
             "{}",
-            style::white_b("Descriptor content (dry-run):")
+            style::heading("Descriptor content (dry-run):")
         ))
         .ok();
         ui::info(&content).ok();
@@ -158,10 +158,10 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     ui::info(format!(
         "{} {} {} {}{}",
-        style::white_b("Overlay"),
-        style::cyan(&path),
+        style::heading("Overlay"),
+        style::path(&path),
         style::white_b("created targeting"),
-        style::cyan(&target_str),
+        style::path(&target_str),
         if files_to_absorb.is_empty() {
             String::new()
         } else {

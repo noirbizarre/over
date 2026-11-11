@@ -2557,7 +2557,7 @@ fn show_overlay_with_uses() -> TestResult {
         .assert()
         .success()
         .stdout(contains("myoverlay"))
-        .stdout(contains("uses:"))
+        .stdout(contains("uses (scope:"))
         .stdout(contains("base"));
     Ok(())
 }
@@ -2609,7 +2609,7 @@ mode = "symlink-directory"
         .assert()
         .success()
         .stdout(contains("linkdir_overlay"))
-        .stdout(contains("mode=symlink-directory"))
+        .stdout(contains("mode: symlink-directory"))
         .stdout(contains(".config/nvim"));
     Ok(())
 }
@@ -2640,7 +2640,7 @@ mode = "symlink"
         .stdout(contains("rules_overlay"))
         .stdout(contains("mode: symlink-directory"))
         .stdout(contains("rule 1:"))
-        .stdout(contains("special mode=symlink"));
+        .stdout(contains("rule 1: special\n      mode: symlink"));
     Ok(())
 }
 
@@ -3308,8 +3308,8 @@ fn virtual_checkout_initializes_a_populated_root_and_preserves_local_additions()
         .arg(root.path())
         .env("XDG_STATE_HOME", state.path())
         .assert()
-        .code(1)
-        .stdout(contains("A unrelated.txt"));
+        .success()
+        .stdout(contains("A unrelated.txt").not());
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&home_path)

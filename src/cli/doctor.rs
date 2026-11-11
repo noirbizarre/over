@@ -62,7 +62,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     );
     ui::info(format!(
         "{}",
-        style::white_b(format!("{} Overlay configuration", emojis::PACKAGE))
+        style::heading(format!("{} Overlay configuration", emojis::PACKAGE))
     ))
     .ok();
     if report.config.diagnostics.is_empty() {
@@ -86,7 +86,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     );
 
     if !report.fixed.is_empty() {
-        ui::info(format!("{}", style::white_b("Fixed"))).ok();
+        ui::info(format!("{}", style::heading("Fixed"))).ok();
         for line in &report.fixed {
             ui::info(format!("  {} {line}", emojis::checkmark())).ok();
         }
@@ -108,7 +108,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 }
 
 fn print_section(cli: &CLI, title: &str, findings: &[Finding]) {
-    ui::info(format!("{}", style::white_b(title))).ok();
+    ui::info(format!("{}", style::heading(title))).ok();
     let visible: Vec<&Finding> = findings
         .iter()
         .filter(|f| cli.verbose || f.needs_attention())

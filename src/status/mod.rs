@@ -68,6 +68,13 @@ pub enum Status {
 }
 
 impl Status {
+    fn severity(&self) -> style::Severity {
+        match self {
+            Self::Applied => style::Severity::Success,
+            Self::Broken | Self::Conflict => style::Severity::Error,
+            _ => style::Severity::Warning,
+        }
+    }
     /// Whether this status needs attention — used by [`Report::needs_attention`]
     /// and by the CLI to decide what to show without `--verbose`.
     pub fn needs_attention(&self) -> bool {
@@ -84,49 +91,24 @@ pub struct EntryStatus {
 
 impl fmt::Display for EntryStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let target = short_path(&self.entry.target.to_string_lossy());
+        let target = style::path(short_path(&self.entry.target.to_string_lossy()));
+        let label = |text| style::severity(text, self.status.severity());
         match &self.status {
-            Status::Locked => write!(f, "locked: {target} (set OVER_SECRET to verify)")?,
-            Status::Applied => write!(
+            Status::Locked => write!(
                 f,
-                "{} {} {}",
-                emojis::checkmark(),
-                style::white("applied:"),
-                target
+                "{} {target} (set OVER_SECRET to verify)",
+                label("locked:")
             )?,
-            Status::Missing => write!(
-                f,
-                "{} {} {}",
-                emojis::crossmark(),
-                style::white("missing:"),
-                target
-            )?,
-            Status::Modified => write!(
-                f,
-                "{} {} {}",
-                emojis::warning(),
-                style::yellow("modified:"),
-                target
-            )?,
-            Status::Broken => write!(
-                f,
-                "{} {} {}",
-                emojis::warning(),
-                style::yellow("broken:"),
-                target
-            )?,
-            Status::Conflict => write!(
-                f,
-                "{} {} {}",
-                emojis::warning(),
-                style::yellow("conflict:"),
-                target
-            )?,
+            Status::Applied => write!(f, "{} {}", label("✔ applied:"), target)?,
+            Status::Missing => write!(f, "{} {}", label("✘ missing:"), target)?,
+            Status::Modified => write!(f, "{} {}", label("⚠ modified:"), target)?,
+            Status::Broken => write!(f, "{} {}", label("⚠ broken:"), target)?,
+            Status::Conflict => write!(f, "{} {}", label("⚠ conflict:"), target)?,
             Status::Ahead(n) => write!(
                 f,
                 "{} {} {} ({} commit{} ahead)",
                 emojis::THREAD,
-                style::white("ahead:"),
+                label("ahead:"),
                 target,
                 n,
                 if *n == 1 { "" } else { "s" },
@@ -135,16 +117,15 @@ impl fmt::Display for EntryStatus {
                 f,
                 "{} {} {} ({} commit{} behind)",
                 emojis::THREAD,
-                style::white("behind:"),
+                label("behind:"),
                 target,
                 n,
                 if *n == 1 { "" } else { "s" },
             )?,
             Status::Diverged { ahead, behind } => write!(
                 f,
-                "{} {} {} ({ahead} ahead, {behind} behind)",
-                emojis::warning(),
-                style::yellow("diverged:"),
+                "{} {} ({ahead} ahead, {behind} behind)",
+                label("⚠ diverged:"),
                 target,
             )?,
         }
@@ -187,21 +168,41 @@ impl fmt::Display for Counts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} applied, {} missing, {} modified, {} broken, {} conflict(s), \
-             {} ahead, {} behind, {} diverged",
-            self.applied,
-            self.missing,
-            self.modified,
-            self.broken,
-            self.conflict,
-            self.ahead,
-            self.behind,
-            self.diverged,
+            "{}, {}, {}, {}, {}, {}, {}, {}",
+            count_label(self.applied, "applied", Status::Applied),
+            count_label(self.missing, "missing", Status::Missing),
+            count_label(self.modified, "modified", Status::Modified),
+            count_label(self.broken, "broken", Status::Broken),
+            count_label(self.conflict, "conflict(s)", Status::Conflict),
+            count_label(self.ahead, "ahead", Status::Ahead(0)),
+            count_label(self.behind, "behind", Status::Behind(0)),
+            count_label(
+                self.diverged,
+                "diverged",
+                Status::Diverged {
+                    ahead: 0,
+                    behind: 0
+                }
+            ),
         )?;
         if self.locked > 0 {
-            write!(f, ", {} locked", self.locked)?;
+            write!(
+                f,
+                ", {}",
+                count_label(self.locked, "locked", Status::Locked)
+            )?;
         }
         Ok(())
+    }
+}
+
+fn count_label(count: usize, label: &str, status: Status) -> console::StyledObject<String> {
+    let text = format!("{count} {label}");
+    // Zero buckets carry no severity, making actual problems stand out.
+    if count == 0 {
+        console::style(text)
+    } else {
+        style::severity(text, status.severity())
     }
 }
 
@@ -226,6 +227,15 @@ impl Report {
     /// module instead — see `CheckoutMaterializer`/`VirtualCheckoutMaterializer`'s
     /// own docs).
     pub fn build(desired: &DesiredTree) -> Result<Self> {
+        Self::build_with_inspector(desired, virtual_checkout::inspect)
+    }
+
+    pub(crate) fn build_with_inspector(
+        desired: &DesiredTree,
+        mut inspect: impl FnMut(&DesiredEntry) -> Result<Status>,
+    ) -> Result<Self> {
+        // Overlay views retain the inspector's details; other consumers can keep
+        // their existing content-discovery policy without a second status model.
         let plan = Plan::build(desired)?;
         let mut entries = Vec::with_capacity(plan.len());
         for step in plan.steps() {
@@ -236,7 +246,7 @@ impl Report {
                     MaterializationIntent::VirtualCheckout
                     | MaterializationIntent::ScopedVirtualCheckout(_),
                     _,
-                ) => virtual_checkout::inspect(&step.entry)?,
+                ) => inspect(&step.entry)?,
                 (_, Operation::Create) => Status::Missing,
                 (_, Operation::Conflict { .. }) => Status::Conflict,
                 (intent, Operation::Noop) => classify_noop(intent),
@@ -810,6 +820,30 @@ mod tests {
         assert!(s.contains("7 behind"));
         assert!(s.contains("8 diverged"));
         assert!(s.contains("9 locked"));
+    }
+
+    #[rstest::rstest]
+    #[case(Status::Modified, "modified", 33)]
+    #[case(Status::Conflict, "conflict(s)", 31)]
+    #[case(Status::Broken, "broken", 31)]
+    #[case(Status::Applied, "applied", 32)]
+    fn nonzero_counts_use_the_entry_severity_and_zero_counts_stay_neutral(
+        #[case] status: Status,
+        #[case] label: &str,
+        #[case] color: u8,
+    ) {
+        assert_eq!(
+            count_label(1, label, status.clone())
+                .force_styling(true)
+                .to_string(),
+            format!("\x1b[{color}m1 {label}\x1b[0m"),
+        );
+        assert_eq!(
+            count_label(0, label, status)
+                .force_styling(true)
+                .to_string(),
+            format!("0 {label}")
+        );
     }
 
     // ── exclude_problems: #148 ──────────────────────────────────────────

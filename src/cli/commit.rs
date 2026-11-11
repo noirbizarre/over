@@ -97,10 +97,10 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     ui::info(format!(
         "{} {} {} {} {}",
         emojis::PACKAGE,
-        style::white_b("Overlay"),
-        style::cyan(&overlay.name),
+        style::heading("Overlay"),
+        style::overlay(&overlay.name),
         style::white_b("->"),
-        style::cyan(&short_path(&target.to_string_lossy())),
+        style::path(short_path(&target.to_string_lossy())),
     ))
     .ok();
 

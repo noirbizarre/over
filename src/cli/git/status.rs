@@ -41,39 +41,36 @@ pub async fn execute(cli: &CLI) -> Result<()> {
     ui::info(format!(
         "{} {} {}",
         emojis::PACKAGE,
-        style::white_b("Repository:"),
-        style::cyan(&short_path(&repo_root.to_string_lossy())),
+        style::heading("Repository:"),
+        style::path(short_path(&repo_root.to_string_lossy())),
     ))
     .ok();
     if is_worktree {
         ui::info(format!(
             "  {} {}",
-            style::white("Worktree:"),
-            style::cyan(&short_path(&workdir.to_string_lossy())),
+            style::key("Worktree:"),
+            style::path(short_path(&workdir.to_string_lossy())),
         ))
         .ok();
     } else if is_bare {
         ui::info(format!(
             "  {} {}",
-            style::white("Mode:"),
-            style::cyan("worktree workspace (bare)"),
+            style::key("Mode:"),
+            style::mode("worktree workspace (bare)"),
         ))
         .ok();
     }
     ui::info(format!(
         "  {} {} {}",
-        style::white("Overlay:"),
-        style::cyan(&overlay.name),
-        style::white(&format!(
-            "({})",
-            short_path(&overlay.root.to_string_lossy())
-        )),
+        style::key("Overlay:"),
+        style::overlay(&overlay.name),
+        style::annotation(format!("({})", short_path(&overlay.root.to_string_lossy()))),
     ))
     .ok();
     ui::info(format!(
         "  {} {}",
-        style::white("Relative path:"),
-        style::cyan(rel_path.display()),
+        style::key("Relative path:"),
+        style::path(rel_path.display()),
     ))
     .ok();
     ui::info("").ok();
@@ -176,12 +173,12 @@ pub async fn execute(cli: &CLI) -> Result<()> {
         ui::info(format!(
             "{} {} ({})",
             emojis::LINK,
-            style::white_b("Managed files"),
+            style::heading("Managed files"),
             managed_files.len(),
         ))
         .ok();
         for file in &managed_files {
-            ui::info(format!("  {} {}", emojis::GREEN_CIRCLE, style::cyan(file))).ok();
+            ui::info(format!("  {} {}", emojis::GREEN_CIRCLE, style::path(file))).ok();
         }
     }
 
@@ -192,7 +189,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
         ui::info(format!(
             "{} {} ({})",
             emojis::PACKAGE,
-            style::white_b("Overlay files not applied"),
+            style::heading("Overlay files not applied"),
             unapplied_files.len(),
         ))
         .ok();
