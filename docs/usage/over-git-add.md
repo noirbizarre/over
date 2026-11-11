@@ -37,7 +37,7 @@ over git add .editorconfig --dry-run
 over git add .editorconfig
 ```
 
-Directory mappings are reversed just as for [`over add`](add.md), including
+Rule targets are reversed just as for [`over add`](add.md), including
 repositories outside the overlay's base target. Virtual-checkout inputs stage
 selected snapshots in the overlay source index; symlink inputs retain
 move-and-link ingestion. Use [`over git status`](over-git-status.md) to inspect

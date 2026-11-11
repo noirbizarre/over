@@ -127,9 +127,10 @@ See [Templates and external tools](configuration/overlay.md#templates-and-extern
 
 See [Ignore files](configuration/overlay.md#ignoring-files-with-overignore).
 
-## Directory target mappings
+## Overlay Rules
 
-See [Directory target mappings](configuration/overlay.md#directory-target-mappings).
+See [Overlay Rules](configuration/overlay.md#overlay-rules) for source selectors,
+ordered independent target/mode/permission cascading, defaults, and inference.
 
 ## Materialization rules
 

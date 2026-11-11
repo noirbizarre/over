@@ -76,7 +76,7 @@ renders text, binary, added/deleted files, and executable-mode changes. Owned
 new target files appear as additions even before staging. Source attributes
 and clean filters apply to the target's logical source paths.
 
-Directory mappings are projected back to source-repository paths. Each unit
+Rule targets are projected back to source-repository paths. Each unit
 respects its managed ownership boundaries and protected target namespaces;
 unrelated index entries and foreign files are excluded. A missing recorded
 association is reported without adopting the checkout or updating its base.

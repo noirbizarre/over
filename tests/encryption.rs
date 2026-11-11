@@ -3,6 +3,7 @@ use std::path::Path;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use rstest::rstest;
 use tempfile::TempDir;
 
 const PASSPHRASE: &str = "overlay-passphrase-sentinel";
@@ -207,17 +208,23 @@ fn repository_administration_is_never_deployed_even_when_ignore_rules_negate_it(
         .failure();
 }
 
-#[test]
-fn mappings_and_permission_rules_use_the_decrypted_logical_filename() {
+#[rstest]
+#[case("config", "~/mapped", "mapped/token")]
+#[case("config/token", "~/renamed/private", "renamed/private")]
+fn targets_and_permissions_use_the_decrypted_logical_filename(
+    #[case] source: &str,
+    #[case] destination: &str,
+    #[case] deployed: &str,
+) {
     let (_temp, home, root, _) = fixture();
-    fs::write(home.join("selected/over.yaml"), "target: '~'\nmap:\n  config: {target: '~/mapped'}\nrules:\n  - {path: config/token, permissions: '640'}\n").unwrap();
+    fs::write(home.join("selected/over.yaml"), format!("target: '~'\nrules:\n  - {{path: '{source}', target: '{destination}'}}\n  - {{path: config/token, permissions: '640'}}\n")).unwrap();
     command(&home, &root, "apply")
         .args(["selected", "--no-prompt"])
         .assert()
         .success();
-    let target = root.join("mapped/token");
+    let target = root.join(deployed);
     assert_eq!(fs::read(&target).unwrap(), VALUE);
-    assert!(!root.join("config").exists());
+    assert!(!root.join("config/token").exists());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -145,7 +145,7 @@ impl Fixture {
             .unwrap();
         }
         fs::write(source.join("workspace/client/over.yaml"), format!(
-            "target: ~/Workspace/Client\n{}map:\n  etc:\n    target: {:?}\n  config:\n    target: ~/Workspace/Client/.config/client\n",
+            "target: ~/Workspace/Client\n{}rules:\n  - path: etc\n    target: {:?}\n  - path: config\n    target: ~/Workspace/Client/.config/client\n",
             if checkout { "mode: checkout\n" } else { "" }, etc.to_string_lossy()
         )).unwrap();
         let repo = git2::Repository::init(&source).unwrap();
@@ -362,7 +362,7 @@ fn status_and_show_do_not_write_filtered_git_objects_targets_or_state(#[case] ap
             .assert()
             .code(1)
             .stdout(contains("Configuration:"))
-            .stdout(contains("map: config"));
+            .stdout(contains("target rule: config"));
         assert_eq!(filesystem_snapshot(fixture.temp.path()), before);
     }
 }
@@ -613,17 +613,264 @@ fn mapped_source_drift_syncs_only_its_own_checkout() {
 }
 
 #[test]
-fn overlapping_mappings_fail_before_creating_targets() {
+fn nested_target_rules_preserve_separate_descendant_layouts() {
     let fixture = Fixture::new(false);
-    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/Workspace/Client\nmap:\n  config:\n    target: ~/.config/client\n  config/editor:\n    target: ~/.config/editor\n").unwrap();
+    fs::create_dir_all(fixture.source.join("workspace/client/config/editor")).unwrap();
+    fs::write(
+        fixture.source.join("workspace/client/config/editor/init"),
+        "editor",
+    )
+    .unwrap();
+    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/Workspace/Client\nrules:\n  - path: config\n    target: ~/.config/client\n  - path: config/editor\n    target: ~/.config/editor\n").unwrap();
+    fixture
+        .command("apply")
+        .args(["workspace/client", "--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(fixture.home.join(".config/editor/init")).unwrap(),
+        "editor"
+    );
+    assert!(!fixture.home.join(".config/client/editor").exists());
+}
+
+#[test]
+fn a_file_target_rule_renames_a_link_without_mutating_source_permissions() {
+    let fixture = Fixture::new(false);
+    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/Workspace/Client\nrules:\n  - {path: config, target: '~/settings'}\n  - {path: config/file, target: '~/renamed/file', permissions: '0600'}\n").unwrap();
+    let source = fixture.source.join("workspace/client/config/file");
+    let permissions = fs::metadata(&source).unwrap().permissions();
+    fixture.apply();
+    let target = fixture.home.join("renamed/file");
+    assert!(target.is_symlink());
+    assert_eq!(fs::read_link(target).unwrap(), source);
+    assert_eq!(fs::metadata(source).unwrap().permissions(), permissions);
+    assert!(!fixture.home.join("settings/file").exists());
+}
+
+#[test]
+fn a_redirected_file_inheriting_checkout_fails_before_any_writes() {
+    let fixture = Fixture::new(true);
+    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/Workspace/Client\nmode: checkout\nrules:\n  - {path: config/file, target: '~/renamed/file'}\n").unwrap();
     fixture
         .command("apply")
         .args(["workspace/client", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
         .failure()
-        .stderr(contains("nested mapping"));
-    assert!(!fixture.base.exists());
+        .stderr(contains("inherits mode: checkout"));
+    assert!(!fixture.home.exists());
+}
+
+#[test]
+fn an_inherited_target_rule_routes_the_residual_checkout_and_nested_units() {
+    let fixture = Fixture::new(true);
+    fs::write(
+        fixture.source.join("over.yaml"),
+        "rules: [{path: workspace/client, target: '~/redirected'}]\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.source.join("workspace/client/over.yaml"),
+        "target: ~/unused\nmode: checkout\nrules:\n  - {path: config, target: '~/settings'}\n",
+    )
+    .unwrap();
+    commit_all(&fixture.repo(), "redirect root");
+    fixture.apply();
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("redirected/main/file")).unwrap(),
+        "main\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("settings/file")).unwrap(),
+        "config\n"
+    );
+    assert!(!fixture.home.join("unused").exists());
+    assert!(!fixture.home.join("redirected/config").exists());
+    fixture
+        .command("show")
+        .args(["workspace/client", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("effective root:"))
+        .stdout(contains("redirected"));
+}
+
+#[test]
+fn inherited_root_redirection_never_provisions_the_fallback_git_repository() {
+    let fixture = Fixture::new(false);
+    let remote = fixture.temp.path().join("remote");
+    let remote_repo = git2::Repository::init(&remote).unwrap();
+    remote_repo
+        .config()
+        .unwrap()
+        .set_str("user.name", "Test")
+        .unwrap();
+    remote_repo
+        .config()
+        .unwrap()
+        .set_str("user.email", "test@example.com")
+        .unwrap();
+    fs::write(remote.join("remote-file"), "remote content\n").unwrap();
+    // A clone must produce the same fixture bytes under Windows' global autocrlf setting.
+    fs::write(remote.join(".gitattributes"), "* -text\n").unwrap();
+    commit_all(&remote_repo, "remote fixture");
+    fs::write(
+        fixture.source.join("over.yaml"),
+        "rules: [{path: workspace/client, target: '~/redirected'}]\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.source.join("workspace/client/over.yaml"),
+        format!(
+            "target: ~/unused\ngit:\n  url: {:?}\n  config: {{test.routing: redirected}}\n",
+            remote.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let fallback = fixture.home.join("unused");
+    let fallback_repo = git2::Repository::init(&fallback).unwrap();
+    fallback_repo
+        .config()
+        .unwrap()
+        .set_str("test.routing", "untouched")
+        .unwrap();
+    let config_path = fallback_repo.path().join("config");
+    let before = fs::read(&config_path).unwrap();
+    fs::write(fallback.join("keep"), "fallback content").unwrap();
+    fixture.apply();
+    assert_eq!(fs::read(config_path).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(fallback.join("keep")).unwrap(),
+        "fallback content"
+    );
+    assert!(!fallback.join("remote-file").exists());
+    let redirected = fixture.home.join("redirected");
+    assert_eq!(
+        fs::read_to_string(redirected.join("remote-file")).unwrap(),
+        "remote content\n"
+    );
+    assert_eq!(
+        git2::Repository::open(redirected)
+            .unwrap()
+            .config()
+            .unwrap()
+            .get_string("test.routing")
+            .unwrap(),
+        "redirected"
+    );
+}
+
+#[test]
+fn a_target_rule_can_redirect_a_file_link_sidecars_own_logical_name() {
+    let fixture = Fixture::new(false);
+    let referent = fixture.temp.path().join("referent");
+    fs::write(&referent, "external content").unwrap();
+    fs::write(
+        fixture.source.join("workspace/client/shortcut.link.yaml"),
+        format!("target: {:?}\n", referent.to_string_lossy()),
+    )
+    .unwrap();
+    fs::write(
+        fixture.source.join("workspace/client/over.yaml"),
+        "target: ~/Workspace/Client\nrules: [{path: shortcut, target: '~/renamed/link'}]\n",
+    )
+    .unwrap();
+    fixture.apply();
+    let target = fixture.home.join("renamed/link");
+    assert!(target.is_symlink());
+    assert_eq!(fs::read_link(target).unwrap(), referent);
+    assert!(!fixture.base.join("shortcut").exists());
+    assert!(!fixture.source.join("workspace/client/shortcut").exists());
+}
+
+#[test]
+fn recursive_add_does_not_ingest_any_files_when_a_descendant_route_is_ambiguous() {
+    let fixture = Fixture::new(false);
+    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/Workspace/Client\nrules:\n  - {path: config, target: '~/Workspace/Client/nested'}\n  - {path: etc, target: '~/Workspace/Client/nested'}\n").unwrap();
+    fs::create_dir_all(fixture.base.join("nested")).unwrap();
+    fs::write(fixture.base.join("ordinary"), "ordinary target").unwrap();
+    fs::write(fixture.base.join("nested/ambiguous"), "ambiguous target").unwrap();
+    let index_path = fixture
+        .repo()
+        .index()
+        .unwrap()
+        .path()
+        .unwrap()
+        .to_path_buf();
+    let before = fs::read(&index_path).unwrap();
+    fixture
+        .command("add")
+        .args(["--overlay", "workspace/client", "--target"])
+        .arg(&fixture.home)
+        .arg(&fixture.base)
+        .assert()
+        .failure()
+        .stderr(contains("ambiguous source path"));
+    assert_eq!(fs::read(index_path).unwrap(), before);
+    for (path, content) in [
+        ("ordinary", "ordinary target"),
+        ("nested/ambiguous", "ambiguous target"),
+    ] {
+        let target = fixture.base.join(path);
+        assert!(!target.is_symlink());
+        assert_eq!(fs::read_to_string(target).unwrap(), content);
+    }
+    assert!(!fixture.source.join("workspace/client/ordinary").exists());
+    for path in ["etc", "config"] {
+        assert_eq!(
+            fs::read_to_string(
+                fixture
+                    .source
+                    .join("workspace/client")
+                    .join(path)
+                    .join("file")
+            )
+            .unwrap(),
+            format!("{path}\n")
+        );
+        assert!(
+            !fixture
+                .source
+                .join("workspace/client")
+                .join(path)
+                .join("ambiguous")
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn nested_target_rules_partition_checkout_staging_and_commit() {
+    let fixture = Fixture::new(true);
+    fs::create_dir_all(fixture.source.join("workspace/client/config/editor")).unwrap();
+    fs::write(
+        fixture.source.join("workspace/client/config/editor/init"),
+        "original\n",
+    )
+    .unwrap();
+    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/Workspace/Client\nmode: checkout\nrules:\n  - {path: config, target: '~/settings'}\n  - {path: config/editor, target: '~/editor'}\n").unwrap();
+    commit_all(&fixture.repo(), "nested targets");
+    fixture.apply();
+    assert!(!fixture.home.join("settings/editor").exists());
+    assert!(!fixture.base.join("config").exists());
+    let target = fixture.home.join("editor/init");
+    fs::write(&target, "staged\n").unwrap();
+    fs::write(fixture.home.join("settings/file"), "unstaged config\n").unwrap();
+    fixture.add(&[&target], false);
+    fs::write(&target, "later edit\n").unwrap();
+    fixture.commit();
+    assert_eq!(
+        fs::read_to_string(fixture.source.join("workspace/client/config/editor/init")).unwrap(),
+        "staged\n"
+    );
+    assert_eq!(fs::read_to_string(target).unwrap(), "later edit\n");
+    assert_eq!(
+        fs::read_to_string(fixture.source.join("workspace/client/config/file")).unwrap(),
+        "config\n"
+    );
 }
 
 #[test]
@@ -646,7 +893,7 @@ fn mapped_whole_directory_symlinks_create_their_external_parents() {
 fn mappings_inside_whole_directory_symlinks_are_rejected() {
     let fixture = Fixture::new(false);
     fs::create_dir_all(fixture.source.join("workspace/client/config/editor")).unwrap();
-    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/workspace\nrules:\n  - path: config\n    mode: symlink-directory\nmap:\n  config/editor:\n    target: ~/editor\n").unwrap();
+    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/workspace\nrules:\n  - path: config\n    mode: symlink-directory\n  - path: config/editor\n    target: ~/editor\n").unwrap();
     fixture
         .command("apply")
         .args(["workspace/client", "--no-prompt", "--target"])
@@ -693,7 +940,7 @@ fn mappings_partition_an_enclosing_subtree_checkout() {
         "mapped",
     )
     .unwrap();
-    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/Workspace/Client\nrules:\n  - path: main\n    mode: checkout\n  - path: main/external\n    mode: checkout\nmap:\n  main/external:\n    target: ~/external\n").unwrap();
+    fs::write(fixture.source.join("workspace/client/over.yaml"), "target: ~/Workspace/Client\nrules:\n  - path: main\n    mode: checkout\n  - path: main/external\n    mode: checkout\n    target: ~/external\n").unwrap();
     commit_all(&fixture.repo(), "subtree mapping");
     fixture.apply();
     assert_eq!(

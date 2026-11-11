@@ -32,7 +32,10 @@ pub fn check_overlay_selected(
     diagnostics.extend(check_invalid_rules_globs(overlay));
     diagnostics.extend(check_duplicate_rule_paths(overlay));
     diagnostics.extend(check_rules_paths_exist(overlay));
-    diagnostics.extend(check_terminal_rules(overlay));
+    if !overlay.has_target_rules() {
+        // Target boundaries require the selected consumer's rendered routing context.
+        diagnostics.extend(check_terminal_rules(overlay));
+    }
     diagnostics.extend(check_git(overlay));
     diagnostics.extend(check_symlinks_selected(overlay, policy));
     diagnostics.extend(check_partials_selected(overlay, policy));
@@ -160,7 +163,8 @@ fn check_duplicate_rule_paths(overlay: &Overlay) -> Vec<Diagnostic> {
             for (later_index, later) in scope.rules.iter().enumerate().skip(index + 1) {
                 let mode = rule.mode.is_some() && later.mode.is_some();
                 let permissions = rule.permissions.is_some() && later.permissions.is_some();
-                if !mode && !permissions {
+                let target = rule.target.is_some() && later.target.is_some();
+                if !mode && !permissions && !target {
                     continue;
                 }
                 let first = lexical(&scope.root.join(&rule.path));
@@ -180,11 +184,18 @@ fn check_duplicate_rule_paths(overlay: &Overlay) -> Vec<Diagnostic> {
                     for entry in WalkDir::new(&overlay.root).sort_by_file_name() {
                         match entry {
                             Ok(entry)
-                                if entry.file_type().is_dir()
-                                    && scope.matches(rule, entry.path(), true)
-                                    && scope.matches(later, entry.path(), true) =>
+                                if scope.matches(
+                                    rule,
+                                    entry.path(),
+                                    entry.file_type().is_dir(),
+                                ) && scope.matches(
+                                    later,
+                                    entry.path(),
+                                    entry.file_type().is_dir(),
+                                ) =>
                             {
-                                witness = Some((entry.path().to_path_buf(), true));
+                                witness =
+                                    Some((entry.path().to_path_buf(), entry.file_type().is_dir()));
                                 break;
                             }
                             Ok(_) => {}
@@ -208,6 +219,17 @@ fn check_duplicate_rule_paths(overlay: &Overlay) -> Vec<Diagnostic> {
                 let resolved = resolve_with_origins(overlay, relative, is_dir);
                 let mut winners = Vec::new();
                 for (property, active, origin, value) in [
+                    (
+                        "target",
+                        target,
+                        resolved.target_origin,
+                        resolved
+                            .target_origin
+                            .and_then(|(scope, index)| {
+                                index.and_then(|index| scope.rules[index].target.clone())
+                            })
+                            .unwrap_or_default(),
+                    ),
                     (
                         "mode",
                         mode,
@@ -295,6 +317,20 @@ fn check_rules_paths_exist(overlay: &Overlay) -> Vec<Diagnostic> {
 
 /// Checkout mappings form separate traversal roots; permissions on partials are independent.
 fn check_terminal_rules(overlay: &Overlay) -> Vec<Diagnostic> {
+    check_terminal_rules_with_boundaries(overlay, &std::collections::BTreeMap::new())
+}
+
+pub(super) fn check_routed_terminal_rules(
+    overlay: &Overlay,
+    routing: &crate::overlays::mapping::ResolvedMappings,
+) -> Vec<Diagnostic> {
+    check_terminal_rules_with_boundaries(overlay, &routing.boundaries)
+}
+
+fn check_terminal_rules_with_boundaries(
+    overlay: &Overlay,
+    boundaries: &std::collections::BTreeMap<std::path::PathBuf, std::path::PathBuf>,
+) -> Vec<Diagnostic> {
     use crate::overlays::MaterializationKind;
     let mut diagnostics = Vec::new();
     for scope in &overlay.scopes {
@@ -338,10 +374,9 @@ fn check_terminal_rules(overlay: &Overlay) -> Vec<Diagnostic> {
                 let Ok(relative) = candidate.strip_prefix(&overlay.root) else {
                     continue;
                 };
-                let mapped = overlay
-                    .map
+                // Only effective target assignments can reopen a checkout traversal root.
+                let mapped = boundaries
                     .keys()
-                    .map(std::path::Path::new)
                     .filter(|path| relative.starts_with(path))
                     .max_by_key(|path| path.components().count());
                 for ancestor in relative.ancestors().skip(1) {

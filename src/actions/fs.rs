@@ -665,40 +665,44 @@ pub async fn add_dir(ctx: Ctx, overlay: &Overlay, dir: &Path) -> Result<()> {
         let walk_overlay = overlay.clone();
         let walk_routing = routing.clone();
         let walk_policy = policy.clone();
-        let files: Vec<PathBuf> = spawn_blocking(move || {
-            WalkDir::new(&walk_src)
-                .min_depth(1)
-                .into_iter()
-                .filter_entry(|entry| {
-                    !entry.path().starts_with(&walk_overlay.root)
-                        && walk_routing
-                            .logical_path_for(entry.path())
-                            .is_ok_and(|logical| {
-                                walk_policy.includes(
-                                    &walk_overlay.root.join(logical),
-                                    entry.file_type().is_dir(),
-                                )
-                            })
-                })
-                .filter_map(|entry| match entry {
-                    Ok(e) => Some(e),
-                    Err(e) => {
-                        tracing::warn!("skipping entry due to error: {}", e);
-                        None
+        let files: Vec<PathBuf> = spawn_blocking(move || -> Result<Vec<PathBuf>> {
+            let mut files = Vec::new();
+            let mut walker = WalkDir::new(&walk_src).min_depth(1).into_iter();
+            while let Some(entry) = walker.next() {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        // Recursive add retains its best-effort handling of unreadable children.
+                        tracing::warn!(%error, "skipping unreadable entry");
+                        continue;
                     }
-                })
-                .filter(|e| e.file_type().is_file())
-                .filter(|e| {
-                    let rel = match walk_routing.logical_path_for(e.path()) {
-                        Ok(r) => r,
-                        Err(_) => return false,
-                    };
-                    !walk_overlay.is_excluded(&rel)
-                })
-                .map(|e| e.path().to_path_buf())
-                .collect()
+                };
+                let logical = match walk_routing.reverse(entry.path())? {
+                    crate::overlays::mapping::ReverseResolution::Absent => None,
+                    crate::overlays::mapping::ReverseResolution::Unique(found) => {
+                        Some(found.source)
+                    }
+                    crate::overlays::mapping::ReverseResolution::Ambiguous(_) => {
+                        // Resolve the complete walk before ingesting any file; ambiguity must not cause partial add.
+                        Some(walk_routing.logical_path_for(entry.path())?)
+                    }
+                };
+                let included = !entry.path().starts_with(&walk_overlay.root)
+                    && logical.is_some_and(|logical| {
+                        walk_policy
+                            .includes(&walk_overlay.root.join(logical), entry.file_type().is_dir())
+                    });
+                if !included {
+                    if entry.file_type().is_dir() {
+                        walker.skip_current_dir();
+                    }
+                } else if entry.file_type().is_file() {
+                    files.push(entry.into_path());
+                }
+            }
+            Ok(files)
         })
-        .await?;
+        .await??;
 
         for file in files {
             add_file_selected(ctx.clone(), overlay, &file, &policy).await?;
@@ -747,7 +751,7 @@ impl EnsureLink {
 impl fmt::Display for EnsureLink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(overlay) = self.ctx.overlay.as_ref()
-            && overlay.map.is_empty()
+            && !overlay.has_target_rules()
             && let Ok(rel_path) = self.source.strip_prefix(&overlay.root)
         {
             let rel_str = rel_path.to_string_lossy();
@@ -964,7 +968,7 @@ impl EnsureDirLink {
 impl fmt::Display for EnsureDirLink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(overlay) = self.ctx.overlay.as_ref()
-            && overlay.map.is_empty()
+            && !overlay.has_target_rules()
             && let Ok(rel_path) = self.source.strip_prefix(&overlay.root)
         {
             let rel_str = rel_path.to_string_lossy();
@@ -1050,7 +1054,7 @@ impl MoveFile {
 impl fmt::Display for MoveFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(overlay) = self.ctx.overlay.as_ref()
-            && overlay.map.is_empty()
+            && !overlay.has_target_rules()
             && let Ok(source_root) = overlay.resolve_target(&self.ctx)
             && let Ok(rel_path) = self.source.strip_prefix(&source_root)
         {
@@ -1686,6 +1690,38 @@ mod tests {
         // Original location should be a symlink to the overlay directory
         assert!(dir.is_symlink(), "original dir should be a symlink");
         assert_eq!(fs::read_link(&dir).unwrap(), moved_dir);
+    }
+
+    #[tokio::test]
+    async fn recursive_add_resolves_ambiguous_descendants_before_moving_any_file() {
+        let (td, repo) = repo_and_root();
+        td.child("ov/over.yaml").write_str("target: '~'\nrules:\n  - {path: first, target: '~/selected/nested'}\n  - {path: second, target: '~/selected/nested'}\n").unwrap();
+        td.child("selected/ordinary")
+            .write_str("ordinary content")
+            .unwrap();
+        td.child("selected/nested/ambiguous")
+            .write_str("ambiguous content")
+            .unwrap();
+        let overlay = repo.get("ov").unwrap();
+        let context = ctx(td.path().to_path_buf(), repo, Some(overlay.clone()));
+        let error = add_dir(context, &overlay, &td.path().join("selected"))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("ambiguous source path"),
+            "{error:#}"
+        );
+        for (name, expected) in [
+            ("ordinary", "ordinary content"),
+            ("nested/ambiguous", "ambiguous content"),
+        ] {
+            let path = td.path().join("selected").join(name);
+            assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+            assert!(!path.is_symlink());
+        }
+        for name in ["selected", "first", "second"] {
+            assert!(!overlay.root.join(name).exists());
+        }
     }
 
     #[tokio::test]

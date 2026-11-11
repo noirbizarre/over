@@ -1,5 +1,13 @@
 # ADR-025: Directory mappings partition ownership; checkout adds stage snapshots
 
+> Configuration amended by #244: optional `target` attributes on ordered overlay
+> rules replace the unreleased `map` surface. Literal file and nested directory
+> selectors are supported, with independent last-assignment-wins cascading.
+> Effective routing boundaries partition ownership; reverse routing checks final
+> forward results and reports ambiguous source explanations. See
+> [Overlay Rules](../configuration/overlay.md#overlay-rules). The original
+> configuration and blanket overlap restrictions below are historical.
+>
 > Path resolution amended by #190: mapping sources and destinations use the
 > declaring descriptor's root, retaining their origins through inheritance.
 > Relative destinations no longer use the deployment target as their base.

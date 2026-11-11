@@ -34,13 +34,13 @@ use crate::overlays::Overlay;
 use crate::plan::actual::{self, ActualState};
 use crate::ui::{self, emojis, style};
 
-pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay, to: &Path) -> Result<()> {
+pub async fn clone_repositories(ctx: Ctx, overlay: &Overlay) -> Result<()> {
     let routing = overlay.resolve_mappings(&ctx)?;
     if let Some(git_repos) = &overlay.git {
         let _progress = ctx.ui_progress.phase("Cloning repositories");
         let results = join_all(git_repos.iter().map(|(path, repo_config)| {
             let target = if path == ROOT_PATH {
-                to.to_path_buf()
+                routing.target_for(Path::new(""))
             } else {
                 routing.target_for(Path::new(path))
             };
@@ -110,10 +110,9 @@ impl fmt::Display for EnsureGitRepository {
 pub(crate) fn legacy_source(ctx: &Ctx, overlay_name: &str, target: &Path) -> Result<PathBuf> {
     let overlay = ctx.repository.get(overlay_name)?;
     let routing = overlay.resolve_mappings(ctx)?;
-    let root = overlay.resolve_target(ctx)?;
     for key in overlay.git.iter().flat_map(|repos| repos.keys()) {
         let destination = if key == ROOT_PATH {
-            root.clone()
+            routing.target_for(Path::new(""))
         } else {
             routing.target_for(Path::new(key))
         };

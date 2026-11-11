@@ -157,7 +157,7 @@ both parent and child. Ancestor settings follow field-specific
 
 ## One workspace, several destinations
 
-Use directory mappings to keep related files together while deploying them to
+Use rule targets to keep related files together while deploying them to
 several writable locations. This example can coexist with the preceding ones.
 
 ```text
@@ -173,8 +173,8 @@ Overlay descriptor, `workspace/client/over.yaml`:
 
 ```yaml
 target: ~/Workspace/Client
-map:
-  config:
+rules:
+  - path: config
     target: ~/.config/client
 ```
 
@@ -201,7 +201,7 @@ There is no `~/Workspace/Client/config` directory. If you later create
 `~/.config/client/other.json`, `over add --overlay workspace/client
 ~/.config/client/other.json` reverse-routes it to `config/other.json`.
 
-See [Directory mappings](configuration/overlay.md#directory-target-mappings) for
+See [Overlay Rules](configuration/overlay.md#overlay-rules) for
 overlap restrictions and ownership boundaries.
 
 ## Edit ordinary files with checkout
@@ -214,8 +214,8 @@ to its overlay descriptor **before the first apply**:
 # workspace/client/over.yaml (complete descriptor)
 target: ~/Workspace/Client
 mode: checkout
-map:
-  config:
+rules:
+  - path: config
     target: ~/.config/client
 ```
 

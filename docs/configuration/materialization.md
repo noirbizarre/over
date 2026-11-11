@@ -24,19 +24,11 @@ Root `checkout` owns the whole overlay except independently mapped directories.
 Initial checkout materialization reads committed source `HEAD`, so commit source
 content before applying it. It is distinct from a declared `git` clone.
 
-## Ordered precedence
+## Rule configuration
 
-For each source path and each property (`mode` and `permissions`), Over resolves:
-
-1. The implicit mode `symlink`, with permissions unmanaged.
-2. The repository root's explicit baseline, then its rules in declaration order.
-3. Each intermediate descriptor down to the overlay: its explicit baseline,
-   then its rules in declaration order.
-
-The **last matching assignment wins per property**. Specificity does not rank
-rules. A mode-only rule leaves permissions unchanged, and vice versa. Omitted
-baselines preserve earlier decisions. Child rule lists append to the cascade;
-`rules: []` does not clear ancestor rules.
+[Overlay Rules](overlay.md#overlay-rules) is the shared reference for selectors,
+declaration order, independent target/mode/permission cascading, defaults, and
+inference. For example:
 
 ```yaml
 # ~/.dotfiles/over.yaml
@@ -68,20 +60,6 @@ ownership safe or add descriptors to another overlay's inheritance chain.
 [`over lint`](../usage/lint.md) diagnoses composed target conflicts and explains
 overlapping rules with the winning declaration for each property.
 
-## Rule selectors
-
-Literal `path` selectors are component-aware source prefixes: `foo` selects
-`foo` and `foo/bar`, never `foobar`. `.` selects the declaring directory and
-descendants. Paths retain their [declaring scope](../configuration.md#path-resolution),
-even when policy is inherited or destinations are mapped elsewhere.
-
-Globs are supported **only** when a rule explicitly sets
-`mode: symlink-directory`. They select directory boundaries: `tools/*` selects
-immediate child directories, not files or grandchildren. Rules selecting
-`symlink`, `checkout`, or permissions alone use literal prefixes. Every rule
-must set mode, permissions, or both. Excludes and discovery use their own glob
-languages.
-
 ## Atomic boundaries and mappings
 
 An effective directory link owns its entire subtree; descendant rules cannot
@@ -91,10 +69,12 @@ the blocking declaration and a repair hint. Reopen a boundary with a later
 same-path assignment or a nearer baseline selecting `symlink`, then select the
 desired child units.
 
-[Directory mappings](overlay.md#directory-target-mappings) create explicit
+[Rule targets](overlay.md#overlay-rules) create explicit
 ownership boundaries with their own effective mode. With checkout mode, the
 residual overlay and each mapped directory are separate checkout units. A
 mapping cannot hide inside a whole-directory link that already owns its subtree.
+Single-file checkout units are unsupported; a file redirect inheriting checkout
+mode must redirect a containing directory instead or explicitly select symlink mode.
 
 A whole-directory link is rejected before changes if it would expose ignored
 children or control metadata. Use file-level symlinks or checkout instead.

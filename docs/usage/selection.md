@@ -18,12 +18,17 @@ Over checks evidence in this order, stopping at the first matching tier:
    immediate managed children. Configured entries count even before application
    or after deletion. Over does not search recursively or climb parent directories.
 4. **Target containment:** the path lies inside an overlay's resolved target or
-   mapped destination. Paths routed away by mappings are excluded.
+   [rule target](../configuration/overlay.md#overlay-rules). Paths routed away
+   by rules are excluded. A unique match preserves the target rule and source
+   directory correspondence, including the remaining relative suffix.
 
 The first matching tier must identify one overlay. Multiple candidates are an
 error, even when one target is deeper or a default is configured. The error lists
 the candidates and asks for an explicit overlay. Conflicting Git association
 values and stale associations also require correction or an explicit override.
+
+Multiple valid source explanations within one overlay are also ambiguous.
+Neither an explicit overlay nor a configured default chooses between its rules.
 
 File-taking commands infer from their operands, including missing literal paths
 that represent tracked deletions. Inferred operands must agree on one overlay;

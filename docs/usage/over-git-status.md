@@ -2,7 +2,7 @@
 
 Show overlay status for the current git repository.
 
-Repository paths honor the overlay's directory mappings. Source directories
+Repository paths honor the overlay's target rules. Source directories
 mapped elsewhere are not listed as unapplied in the current repository.
 
 ```text

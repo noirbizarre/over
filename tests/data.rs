@@ -40,7 +40,7 @@ fn explicit_apply_renders_all_path_surfaces_with_host_data_without_applying_host
     descriptor(
         repo.path(),
         "selected",
-        "uses: [shared]\ntarget: '~/{{ data.destination }}'\ndata: {destination: selected-files}\nmap:\n  config:\n    target: '~/{{ data.mapped }}'",
+        "uses: [shared]\ntarget: '~/{{ data.destination }}'\ndata: {destination: selected-files}\nrules:\n  - path: config\n    target: '~/{{ data.mapped }}'",
     )?;
     fs::write(repo.path().join("host/host-only"), "host")?;
     fs::write(repo.path().join("shared/dependency-only"), "dependency")?;

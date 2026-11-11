@@ -250,8 +250,7 @@ fn unknown_keys_warn_once_and_allow_application_and_lint(#[case] extension: &str
     let config = serde_json::json!({
         "target": "~", "mode": "symlink", "extra": {"secret_value_sentinel": 42},
         "install": {"old": "ignored"},
-        "rules": [{"path": "config", "mode": "symlink", "extra_rule": true}],
-        "map": {"config": {"target": "~/mapped", "extra_mapping": 1}},
+        "rules": [{"path": "config", "mode": "symlink", "target": "~/mapped", "extra_rule": true, "extra_target": 1}],
         "hooks": {"secret_hook_sentinel": {"invalid_payload": true}}
     });
     let descriptor = if extension == "toml" {
@@ -277,7 +276,7 @@ fn unknown_keys_warn_once_and_allow_application_and_lint(#[case] extension: &str
         .clone();
     assert_eq!(fs::read_to_string(target.join("mapped/file"))?, "deployed");
     let stderr = String::from_utf8(output.stderr)?;
-    for key in ["extra", "install", "extra_rule", "extra_mapping"] {
+    for key in ["extra", "install", "extra_rule", "extra_target"] {
         assert_eq!(
             stderr.matches(&format!("unknown key `{key}`")).count(),
             1,
@@ -2627,7 +2626,9 @@ mode = "symlink"
         .stdout(contains("rules_overlay"))
         .stdout(contains("mode: symlink-directory"))
         .stdout(contains("rule 1:"))
-        .stdout(contains("rule 1: special\n      mode: symlink"));
+        .stdout(contains(
+            "rule 1: special\n      target: unchanged\n      mode: symlink",
+        ));
     Ok(())
 }
 

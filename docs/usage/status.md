@@ -46,7 +46,7 @@ host layout used here.
 
 Each overlay has separate **Configuration** and **Reconciliation** sections.
 Configuration includes the source root, resolved target and its origin,
-dependencies in composition order, directory mappings with resolved destinations,
+dependencies in composition order, target rules with resolved destinations,
 materialization baseline and rule count, declared Git destinations, and
 lifecycle-hook counts including install. These describe intent even when targets are missing.
 
@@ -155,7 +155,7 @@ This changes the remote configuration, not the checkout's files or history. See
 ## Virtual checkouts (`mode = "checkout"`) {#virtual-checkouts-mode--checkout}
 
 A subtree (or the whole overlay, via `mode = "checkout"`
-or a `path = "."` rule) can be materialized as a **virtual
+or inherited policy) can be materialized as a **virtual
 checkout**: ordinary, directly editable files at the target, with no
 `.git` there at all, backed by the overlay's own source repository. See
 [ADR-022](../adr/022-virtual-checkout-materialization.md) for how this

@@ -77,9 +77,10 @@ impl Report {
                 // rule would otherwise select checkout materialization.
                 let boundary = selection
                     .routing
-                    .directories
+                    .boundaries
                     .keys()
-                    .find(|path| relative.starts_with(path))
+                    .filter(|path| relative.starts_with(path))
+                    .max_by_key(|path| path.components().count())
                     .map(PathBuf::as_path)
                     .unwrap_or(Path::new(""));
                 let terminal = relative

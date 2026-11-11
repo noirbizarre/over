@@ -31,8 +31,8 @@ mechanism `over apply` uses in reverse.
 ## Mapped directories
 
 Inputs are reverse-routed through the overlay's
-[directory mappings](../configuration/overlay.md#directory-target-mappings).
-For example, with `map.etc.target: /etc/client`:
+[rule targets](../configuration/overlay.md#overlay-rules).
+For example, with a rule `{path: etc, target: /etc/client}`:
 
 ```sh
 over add --overlay workspace/client /etc/client/other.yaml

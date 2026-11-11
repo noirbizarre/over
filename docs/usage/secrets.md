@@ -91,7 +91,7 @@ removing it does not erase prior Git history.
 
 Use a case-sensitive final `.age` suffix for passphrase-encrypted overlay files.
 For example, `selected/config/token.age` deploys as `config/token` under the
-overlay's resolved destination. Exactly one suffix is removed, directory mappings
+overlay's resolved destination. Exactly one suffix is removed, target rules
 apply to the logical output path, and collisions with ordinary files or partial
 files are rejected before apply writes anything. Both binary and ASCII-armored
 Age inputs are accepted.

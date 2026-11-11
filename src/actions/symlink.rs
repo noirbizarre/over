@@ -110,6 +110,11 @@ impl Action for EnsureSymlink {
                 return Ok(());
             }
 
+            if let Some(parent) = target.parent() {
+                // A file-level target rule can place a sidecar outside all source-directory scaffolds.
+                fs::create_dir_all(parent).with_context(|| format!("failed to create link parent '{}'", parent.display()))?;
+            }
+
             match link_type {
                 LinkType::Soft => {
                     if is_dir {

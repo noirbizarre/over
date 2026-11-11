@@ -177,7 +177,10 @@ fn operands_from_different_owners_fail_before_ingestion() {
 #[test]
 fn mappings_infer_external_destinations_and_exclude_the_old_base_subtree() {
     let fixture = Fixture::new();
-    fixture.overlay("one", "target = '~'\n[map.config]\ntarget = '../mapped'");
+    fixture.overlay(
+        "one",
+        "target = '~'\n[[rules]]\npath = 'config'\ntarget = '../mapped'",
+    );
     fixture
         .temp
         .child("repo/one/config/file")
@@ -188,6 +191,84 @@ fn mappings_infer_external_destinations_and_exclude_the_old_base_subtree() {
         Some("one")
     );
     assert_eq!(fixture.infer(&["home/config/new"]).unwrap(), None);
+}
+
+#[test]
+fn target_inference_retains_the_rule_and_corresponding_source_directory() {
+    let fixture = Fixture::new();
+    fixture.overlay(
+        "one",
+        "target = '~/base'\n[data]\nowner = 'one'\n[[rules]]\npath = 'config'\ntarget = '../mapped'",
+    );
+    let path = fixture.path("repo/mapped/editor/nested");
+    let selected = selection::infer_selection(&fixture.ctx, std::slice::from_ref(&path))
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.overlay.name, "one");
+    assert_eq!(selected.paths[0].0, path);
+    assert_eq!(
+        selected.paths[0].1.source,
+        Path::new("config/editor/nested")
+    );
+    let origin = selected.paths[0].1.rule.as_ref().unwrap();
+    assert_eq!(origin.descriptor, fixture.path("repo/one/over.toml"));
+    assert_eq!(origin.index, 0);
+    fixture
+        .temp
+        .child("repo/mapped/editor/nested")
+        .create_dir_all()
+        .unwrap();
+    fixture
+        .command("data", &path)
+        .assert()
+        .success()
+        .stdout(contains("\"owner\":\"one\""));
+}
+
+#[test]
+fn overlapping_target_rules_in_one_overlay_do_not_guess_a_source() {
+    let fixture = Fixture::new();
+    fixture.overlay("one", "target = '~/base'\n[[rules]]\npath = 'first'\ntarget = '../mapped'\n[[rules]]\npath = 'second'\ntarget = '../mapped/nested'");
+    fixture
+        .temp
+        .child("repo/over.toml")
+        .write_str("default_overlay = 'one'")
+        .unwrap();
+    let error = selection::select(
+        &fixture.ctx,
+        None,
+        &[fixture.path("repo/mapped/nested/new")],
+        true,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("ambiguous source path"),
+        "{error:#}"
+    );
+    for source in [
+        Path::new("first").join("nested").join("new"),
+        Path::new("second").join("new"),
+    ] {
+        assert!(
+            error
+                .to_string()
+                .contains(source.to_string_lossy().as_ref()),
+            "{error:#}"
+        );
+    }
+}
+
+#[test]
+fn rule_targets_shared_by_two_overlays_remain_ambiguous() {
+    let fixture = Fixture::new();
+    for name in ["one", "two"] {
+        fixture.overlay(
+            name,
+            "target = '~/base'\n[[rules]]\npath = 'config'\ntarget = '../mapped'",
+        );
+    }
+    let error = fixture.infer(&["repo/mapped/nested"]).unwrap_err();
+    assert!(error.to_string().contains("ambiguous overlay"), "{error:#}");
 }
 
 #[test]
