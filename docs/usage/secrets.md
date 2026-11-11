@@ -1,25 +1,21 @@
-# Secrets and Age-encrypted files
+# Native secrets and legacy Age files
 
-Over uses passphrase-based [Age](https://age-encryption.org/) encryption for
-named secrets and encrypted overlay files. Both use the same passphrase source.
-No GPG installation, key pair, or external identity file is needed.
+Over's native key-value store shares the repository key and persistent unlock
+state used by [Git encryption](crypt.md). Standard [Age](https://age-encryption.org/)
+identities or passphrases protect that repository key through per-key envelopes.
 
-## Passphrase lifecycle
+## Unlock once
 
-When encryption or decryption is needed, a nonempty `OVER_SECRET` supplies the
-passphrase without prompting. Whitespace is significant. If the variable is
-unset or empty, Over asks through a hidden terminal prompt. It never consumes
-stdin as the passphrase. Without a usable terminal, or with `--no-prompt`, set
-`OVER_SECRET`; otherwise the operation fails with an actionable error.
+Create an initial user/key with `over user add`, then use `over unlock` after
+cloning or explicitly locking. Unlock persists a private repository key under
+Git's common administrative directory; it survives terminal closure and reboot.
+`over lock` restores clean protected Git-worktree files to ciphertext and removes
+the local key, refusing unsafe local edits. Filters and secret commands do not
+prompt for a second credential. See [key management](crypt.md#users-and-keys).
 
-The credential is unlocked lazily and shared for the current invocation. Using
-multiple secrets or encrypted files does not require multiple passphrase
-prompts. Over never persists the passphrase or caches plaintext values. As with
-other environment variables, child commands inherit `OVER_SECRET` when it is set.
-
-Read-only reports and dry-run never prompt. Existing decrypted destinations are
-reported as **locked** when no credential is available to verify their content.
-Supplying `OVER_SECRET` enables in-memory verification in those reports.
+Without that local key, native operations fail with unlock guidance. Provider
+resolution treats a locked native store as a session-unavailable candidate;
+corrupt ciphertext remains a fatal error. Plaintext values are never cached.
 
 ## Named secrets
 
@@ -35,18 +31,20 @@ The store belongs to the repository selected by `--home` / `OVER_HOME`, with
 current Git repository, or the target `--target`. The repository directory must
 already exist.
 
-Each secret is a versionable ciphertext file:
+The entire binary-safe map is one versionable ciphertext file:
 
 ```text
 .over/
-  secrets/
-    github-token.age
-    npm-token.age
+  secrets.yaml
 ```
 
 Repository-root `.over` is reserved administration: overlay discovery and
 materialization always exclude it, even if `.overignore` negations select it.
-Secret commands do not automatically stage or commit these files.
+Secret commands do not automatically stage or commit this file. Despite its
+filename, `secrets.yaml` contains a versioned binary encrypted payload, including
+in the working tree while unlocked. Only secret operations decrypt its contents
+in memory. Aggregate updates are serialized across processes and atomically
+publish ciphertext, preventing lost updates or partial writes.
 
 Names contain 1–128 ASCII letters, digits, underscores, or hyphens, and start
 with a letter or digit. Platform-reserved device names such as `CON` and `LPT1`
@@ -66,8 +64,8 @@ For example, pipe the output of an existing credential provider:
 credential-provider | over secret add github-token
 ```
 
-Provide `OVER_SECRET` through your environment or credential manager for
-noninteractive encryption. Avoid typing literal secret values in shell commands.
+Unlock before using noninteractive secret commands. Avoid typing literal secret
+values in shell commands; standard Age identity files support noninteractive unlock.
 
 An existing secret requires explicit `--replace`; the flag is the replacement
 authorization and does not cause another confirmation prompt. Failed encryption
@@ -76,18 +74,28 @@ publication files.
 
 ### List, retrieve, or remove
 
-`list` prints sorted names only. `list` and `remove` never decrypt or ask for a
-passphrase. Reading a missing store does not create one.
+`list` prints sorted names only. All operations require the shared unlock state,
+including `list` and `remove`, because names reside inside the encrypted map.
+Reading a missing store does not create one.
 
 `get` intentionally writes the fully decrypted value to stdout, without adding
 a newline. This is the explicit plaintext-output command; redirect or pipe it
 only where that value is intended. Authentication failure emits no partial
 plaintext. Other diagnostics and Debug output redact values and passphrases.
 
-`remove` deletes the current ciphertext file. As with any versioned file,
-removing it does not erase prior Git history.
+`remove` updates the aggregate ciphertext. As with any versioned data, removing
+a value does not erase prior Git history.
 
-## Encrypted overlay files
+## Legacy encrypted overlay files
+
+Existing repositories without repository-key metadata retain the original
+passphrase-based `.age` reader and per-name `.over/secrets/NAME.age` store.
+For this legacy format only, a nonempty `OVER_SECRET` supplies the credential,
+otherwise an allowed hidden terminal prompt acquires it for the invocation.
+Legacy listing/removal do not require decryption. Migrate explicitly with
+[`over crypt migrate`](crypt.md#migration-and-recovery); Over never silently
+reinterprets or discards legacy ciphertext. Mixing both native store formats
+requires migration before native secret operations continue.
 
 Use a case-sensitive final `.age` suffix for passphrase-encrypted overlay files.
 For example, `selected/config/token.age` deploys as `config/token` under the
@@ -140,7 +148,7 @@ Already-tracked destinations must be untracked before apply;
 excludes cannot protect tracked files. Retained encrypted destinations keep the
 overlay's exclude block after unapply.
 
-### Current scope
+### Legacy format scope
 
 - Encrypted files require ordinary file-level materialization. Whole-directory
   symlinks, directory-valued link sidecars, and virtual checkouts reject encrypted

@@ -31,7 +31,22 @@ pub(crate) fn canonical_source_entry(
     // Only targets contain materializer-written raw blobs. A real worktree must
     // always be cleaned, or a non-idempotent filter can hide native Git edits.
     let scratch = crate::actions::git::diff::Scratch::new(repo)?;
-    let oid = scratch.target_blob(repo, path, &content)?;
+    // A newly protected historical plaintext blob is still an unchanged source
+    // baseline. This comparison-only exception must never be used to stage targets.
+    let legacy_baseline = if crate::crypt::policy::protected(repo, path)? {
+        let raw = git2::Oid::hash_object(git2::ObjectType::Blob, &content)?;
+        head.filter(|(oid, _)| raw == *oid)
+            .map(|(oid, _)| repo.find_blob(oid))
+            .transpose()?
+            .filter(|blob| !crate::crypt::format::recognized(blob.content()))
+    } else {
+        None
+    };
+    let oid = if let Some(blob) = legacy_baseline {
+        blob.id()
+    } else {
+        scratch.target_blob(repo, path, &content)?
+    };
     if !honors_filemode(repo)? {
         mode = head.or(indexed).map(|entry| entry.1).unwrap_or(0o100644);
     }
@@ -64,7 +79,10 @@ pub(crate) fn canonical_entry(
     expected: &[Option<(git2::Oid, i32)>],
 ) -> Result<(git2::Oid, i32)> {
     let raw = git2::Oid::hash_object(git2::ObjectType::Blob, content)?;
-    let oid = if expected.iter().flatten().any(|entry| entry.0 == raw) {
+    let protected = crate::crypt::policy::protected(repo, logical)?;
+    let oid = if (!protected || crate::crypt::format::inspect(content).is_ok())
+        && expected.iter().flatten().any(|entry| entry.0 == raw)
+    {
         raw
     } else {
         scratch.target_blob(repo, logical, content)?

@@ -13,7 +13,9 @@ workflows.
 | [`over new`](new.md) | Create a new overlay |
 | [`over list`](list.md) (`ls`) | List known overlays |
 | [`over data`](data.md) | Export resolved overlay data as JSON |
-| [`over secret`](secrets.md) | Manage repository-local Age-encrypted secrets |
+| [`over crypt`, `over unlock`, `over lock`](crypt.md) | Manage transparent repository encryption |
+| [`over user`, `over key`](crypt.md#users-and-keys) | Manage logical users, Age keys, and rotation |
+| [`over secret`](secrets.md) | Manage the repository-key-protected native secret store |
 | [`over completion`](completion.md) | Generate shell completion scripts |
 
 ## Apply and inspect

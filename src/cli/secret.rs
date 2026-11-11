@@ -14,7 +14,7 @@ pub enum Commands {
         #[arg(long)]
         replace: bool,
     },
-    /// List secret names without decrypting values
+    /// List secret names using the repository unlock state
     List,
     /// Write a decrypted secret to stdout
     Get { name: String },

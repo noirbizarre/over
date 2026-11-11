@@ -140,7 +140,10 @@ pub(crate) fn restore_paths(
             );
             let after = selected
                 .map(|(oid, mode)| -> Result<_> {
-                    Ok((prepared.repo.find_blob(oid)?.content().to_vec(), mode))
+                    Ok((
+                        crate::crypt::policy::materialized_blob(&prepared.repo, path, oid)?,
+                        mode,
+                    ))
                 })
                 .transpose()?;
             if target != after {
@@ -153,6 +156,15 @@ pub(crate) fn restore_paths(
         }
         if options.staged && before != selected {
             if let Some((oid, mode)) = selected {
+                if crate::crypt::policy::protected(&prepared.repo, path)? {
+                    let blob = prepared.repo.find_blob(oid)?;
+                    crate::crypt::format::inspect(blob.content()).context("historical plaintext cannot be restored directly to a protected index; restore its worktree content then stage through over add")?;
+                    ensure!(
+                        blob.content()[10..crate::crypt::format::HEADER_LEN]
+                            == crate::crypt::access::load(&prepared.repo)?.generation,
+                        "historical ciphertext belongs to an old generation; recover plaintext with a historical trusted key and stage it through the current filter"
+                    );
+                }
                 let serialized = path
                     .to_str()
                     .context("source path is not UTF-8")?
@@ -268,15 +280,28 @@ pub(crate) fn restore_paths(
             None
         });
     }
-    let mut transaction = SourceTransaction::default();
+    let mut transactions: BTreeMap<_, _> = indexes
+        .iter()
+        .map(|(path, prepared)| {
+            Ok((
+                path.clone(),
+                SourceTransaction::for_repository(&prepared.repo)?,
+            ))
+        })
+        .collect::<Result<_>>()?;
     let result = (|| -> Result<()> {
         for target in &targets {
-            transaction.prepare(
-                target.request.root.join(&target.request.relative),
-                target.after.clone(),
-            )?;
+            transactions
+                .get_mut(&target.request.repository)
+                .context("missing restore transaction")?
+                .prepare(
+                    target.request.root.join(&target.request.relative),
+                    target.after.clone(),
+                )?;
         }
-        transaction.apply()?;
+        for transaction in transactions.values_mut() {
+            transaction.apply()?;
+        }
         for ((prepared, lock), bytes) in indexes.values().zip(&mut locks).zip(publications) {
             if let Some(bytes) = bytes {
                 lock.publish(&prepared.path, &bytes)?;
@@ -285,12 +310,17 @@ pub(crate) fn restore_paths(
         Ok(())
     })();
     if let Err(error) = result {
-        transaction
-            .rollback()
-            .with_context(|| format!("{error:#}; target rollback also failed"))?;
+        for transaction in transactions.values_mut().rev() {
+            transaction
+                .rollback()
+                .with_context(|| format!("{error:#}; target rollback also failed"))?;
+        }
         return Err(error);
     }
-    transaction.cleanup()
+    for transaction in transactions.values() {
+        transaction.cleanup()?;
+    }
+    Ok(())
 }
 
 fn tree_entry(tree: &git2::Tree<'_>, path: &Path) -> Result<Option<(Oid, u32)>> {

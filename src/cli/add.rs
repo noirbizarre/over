@@ -16,6 +16,12 @@ use crate::ui::style::{self, DialogTheme};
 
 #[derive(Args, Debug)]
 pub struct Params {
+    #[clap(
+        long,
+        conflicts_with = "patch",
+        help = "Declare crypt policy and stage encrypted content"
+    )]
+    crypt: bool,
     #[clap(required = true, help = "Files, directories, or glob patterns to add")]
     files: Vec<String>,
 
@@ -89,6 +95,30 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let routing = overlay.resolve_mappings(&ctx)?;
     for path in &resolved {
         routing.logical_path_for(path)?;
+    }
+
+    if args.crypt {
+        let (git, _) = crate::materialize::virtual_checkout::git::discover_source(&overlay.root)?;
+        let mut inputs = std::collections::BTreeMap::new();
+        for physical in &resolved {
+            anyhow::ensure!(
+                physical.is_file() && !physical.is_symlink(),
+                "--crypt requires individual regular files"
+            );
+            let logical = routing.logical_path_for(physical)?;
+            let source = overlay.root.join(logical);
+            let path = source
+                .strip_prefix(crate::crypt::access::root(&git)?)?
+                .to_path_buf();
+            inputs.insert(path, physical.clone());
+        }
+        if !args.dry_run {
+            let patterns = inputs
+                .keys()
+                .map(|path| path.to_string_lossy().replace('\\', "/"))
+                .collect::<Vec<_>>();
+            crate::crypt::policy::update_inputs(&git, &patterns, true, &inputs)?;
+        }
     }
 
     if args.patch {

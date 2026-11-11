@@ -204,6 +204,41 @@ fn commit_blocking(
         .message
         .clone()
         .unwrap_or_else(|| default_message(&changes));
+    if crate::crypt::access::configured(&repo)? {
+        let index = repo.index()?;
+        let head = repo.head()?.peel_to_tree()?;
+        for path in [
+            ".gitattributes",
+            ".over/.gitattributes",
+            ".over/crypt/access.json",
+        ] {
+            let relative = PathBuf::from(path);
+            if let Some(entry) = index.get_path(&relative, 0)
+                && head.get_path(&relative).ok().map(|old| old.id()) != Some(entry.id)
+            {
+                if path == ".gitattributes" {
+                    let old = head
+                        .get_path(&relative)
+                        .ok()
+                        .map(|entry| repo.find_blob(entry.id()))
+                        .transpose()?;
+                    let before = old.as_ref().map(|blob| blob.content()).unwrap_or_default();
+                    let after = repo.find_blob(entry.id)?;
+                    anyhow::ensure!(
+                        crate::crypt::policy::is_policy_extension(before, after.content()),
+                        "staged .gitattributes includes unrelated edits; commit the complete intended policy/content transition explicitly with Git or separate unrelated policy edits before over commit"
+                    );
+                }
+                // Policy is inseparable from encrypted content; refuse unstaged policy edits.
+                anyhow::ensure!(
+                    std::fs::read(crate::crypt::access::root(&repo)?.join(path))?
+                        == repo.find_blob(entry.id)?.content(),
+                    "resolve unstaged crypt metadata before committing"
+                );
+                paths.push(relative);
+            }
+        }
+    }
     let oid = git::commit_staged(&repo, &paths, &message)?;
 
     for (_, record) in &mut records {

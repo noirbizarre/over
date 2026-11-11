@@ -26,6 +26,7 @@ Options:
 | Section | Source | What it covers |
 |---|---|---|
 | Environment | doctor | Git on `PATH` and XDG state directory writability. |
+| Encryption security | repository encryption | Effective attributes, required local filters, raw index/HEAD blobs, and bounded historical exposure. |
 | Overlay health | lint and status | Per-overlay warning/error summaries. |
 | XDG state | doctor | Stale or corrupt sync/virtual-checkout bookkeeping. |
 
@@ -53,6 +54,20 @@ issues count once in the overall warning/error totals. Overlay summary rows do
 not add findings to those totals.
 
 ## Selection and exit status
+
+Encryption checks are repository-wide, including reserved `.over` data. They
+identify working-tree/index/`HEAD` separately: decrypted working-tree plaintext
+is expected after unlock. Stored plaintext, malformed/unsupported ciphertext,
+attribute overrides, and incorrect filter configuration are security findings.
+Authentication is performed only with an already available key, without
+prompting; locked structure checks do not claim authenticated content. These
+checks never stage/repair encryption data, including with `--fix`.
+
+Known plaintext in the bounded history sample is reported with remediation and
+the warning that encryption does not erase old commits, clones, backups, or
+remotes. The sample covers at most 16 commits and 256 path/blob checks; a full
+reachable-history audit remains a separate future capability. See
+[storage checks](crypt.md#storage-checks-and-format).
 
 Doctor checks all runtime overlays unless `NAME` is supplied. Static lint and
 global XDG checks remain repository-wide. `default_overlay` does not narrow the

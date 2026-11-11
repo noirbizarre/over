@@ -179,6 +179,22 @@ pub async fn check(repo: &Repository, opts: &Options) -> Result<Report> {
         ..Default::default()
     };
 
+    // Encryption findings inspect stored Git blobs, never infer exposure from targets.
+    if let Ok(git) = git2::Repository::discover(&repo.root) {
+        match crate::crypt::policy::inspect(&git) {
+            Ok(findings) => report
+                .environment
+                .extend(findings.into_iter().map(|finding| match finding {
+                    crate::crypt::policy::Diagnostic::Error(message) => Finding::error(message),
+                    crate::crypt::policy::Diagnostic::Warning(message) => Finding::warning(message),
+                    crate::crypt::policy::Diagnostic::Healthy(message) => Finding::ok(message),
+                })),
+            Err(error) => report.environment.push(Finding::error(format!(
+                "crypt inspection failed: {error:#}"
+            ))),
+        }
+    }
+
     // Overlay configuration — delegates entirely to `lint`'s own tolerant,
     // pre-deserialization pass (ADR-009); doctor never re-derives it.
     let lint_context = Context::builder()

@@ -20,9 +20,15 @@ objects, indexes, or refs. It is a snapshot, not a reservation of those paths.
   confirmation defaulting to No. `--discard-checkout` explicitly authorizes
   that loss without a prompt, including with `--no-prompt`. `--force` alone
   cannot authorize checkout disposal.
-- **Encrypted files** offer only skip or explicitly authorized overwrite, never
+- **Legacy `.age` files** offer only skip or explicitly authorized overwrite, never
   Absorb or plaintext diff. Authentication completes before target writes, and
   unapply retains changed or unverifiable plaintext. See [Age encryption](secrets.md).
+- **Repository crypt protection** uses required local Git filters and one
+  persistent local key. `over lock` refuses unsafe edits before restoring clean
+  protected Git-worktree files to ciphertext and removing the key. Policy removal
+  requires confirmation because it stages plaintext. Revocation rotates current
+  state, never erases old history or copied data. Recovery journals are encrypted
+  and refuse intervening edits. See [repository encryption](crypt.md).
 - A clean Git working tree does **not** prove a repository is backed up.
   Ignored files, other branches, tags, stashes, reflogs, hooks and local
   configuration may be its only copy. Consequently, real checkout disposal

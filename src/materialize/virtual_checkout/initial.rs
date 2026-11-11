@@ -14,11 +14,34 @@ use crate::materialize::disposal::{PathGuard, validate_relative_ancestors};
 
 use super::{git, snapshot, state::VirtualCheckoutRecord};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 enum Node {
     Directory,
     File(Vec<u8>, i32),
     Link(PathBuf),
+}
+
+impl std::fmt::Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Directory => f.write_str("Directory"),
+            Self::File(_, mode) => f
+                .debug_tuple("File")
+                .field(&"[REDACTED]")
+                .field(mode)
+                .finish(),
+            Self::Link(path) => f.debug_tuple("Link").field(path).finish(),
+        }
+    }
+}
+
+impl Drop for Node {
+    fn drop(&mut self) {
+        if let Self::File(bytes, _) = self {
+            use zeroize::Zeroize;
+            bytes.zeroize();
+        }
+    }
 }
 
 type Inventory = BTreeMap<PathBuf, Node>;
@@ -182,7 +205,14 @@ impl Initial {
             let relative = path.strip_prefix(&group.path)?;
             result.insert(
                 relative.to_path_buf(),
-                Node::File(git::read_blob(&self.repo, *oid)?, *mode),
+                Node::File(
+                    crate::crypt::policy::materialized_blob(
+                        &self.repo,
+                        &self.managed.join(path),
+                        *oid,
+                    )?,
+                    *mode,
+                ),
             );
         }
         Ok(result)
@@ -283,6 +313,22 @@ fn initialize_with(
     );
     let mut decisions = Vec::new();
     for group in &initial.groups {
+        let mut protected = false;
+        for path in initial
+            .entries
+            .keys()
+            .filter(|path| path.starts_with(&group.path))
+        {
+            protected |=
+                crate::crypt::policy::protected(&initial.repo, &initial.managed.join(path))?;
+        }
+        ensure!(
+            !protected
+                || !group.conflict
+                || (group.before.len() == 1
+                    && matches!(group.before.get(Path::new("")), Some(Node::File(..)))),
+            "protected directory-shape conflict requires manual resolution before apply"
+        );
         let choice = if !group.conflict || ctx.force {
             ConflictChoice::Overwrite
         } else {
@@ -296,6 +342,10 @@ fn initialize_with(
                 if choice != ConflictChoice::Diff {
                     break choice;
                 }
+                ensure!(
+                    !protected,
+                    "protected conflicts cannot create plaintext comparison directories; inspect the intended destination explicitly"
+                );
                 ensure!(
                     !group
                         .before
@@ -325,7 +375,7 @@ fn initialize_with(
             "virtual checkout target changed during conflict resolution"
         );
     }
-    let mut regular = git::SourceTransaction::default();
+    let mut regular = git::SourceTransaction::for_repository(&initial.repo)?;
     let mut replacements = Vec::new();
     let mut source_observations = Vec::new();
     let prepared = (|| -> Result<()> {

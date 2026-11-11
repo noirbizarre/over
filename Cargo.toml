@@ -103,6 +103,10 @@ strip = true
 # favour of the project if `git tpl update` ever touches it.
 
 [dependencies]
+aes-siv = { version = "0.7", default-features = false, features = ["alloc"] }
+# Enable wiping expanded AES schedules inside the SIV dependency as well as raw keys.
+aes = { version = "0.8", features = ["zeroize"] }
+getrandom = "0.3"
 age = { version = "0.12", default-features = false, features = ["armor"] }
 zeroize = "1"
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }

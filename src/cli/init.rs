@@ -17,6 +17,12 @@ pub struct Params {
     /// Set an existing checkout's canonical origin without prompting
     #[arg(long)]
     set_origin: bool,
+    /// Explicitly unlock repository encryption during initialization
+    #[arg(long)]
+    unlock: bool,
+    /// Use a standard Age identity when unlocking
+    #[arg(long, requires = "unlock")]
+    identity: Option<std::path::PathBuf>,
 }
 
 pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
@@ -51,6 +57,26 @@ pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
         })
         .await
         .context("origin update task failed")??;
+    }
+    let git = git2::Repository::open(&result.destination)?;
+    crate::crypt::access::configure_filters(&git)?;
+    if crate::crypt::access::configured(&git)? && crate::crypt::access::local_key(&git).is_err() {
+        let consent = params.unlock
+            || (io::stderr().is_terminal()
+                && Confirm::new()
+                    .with_prompt("Unlock repository encryption before bootstrap hooks?")
+                    .default(false)
+                    .interact()?);
+        if consent {
+            super::crypt::unlock_repository(
+                &git,
+                &super::crypt::Unlock {
+                    identity: params.identity.clone(),
+                    user: None,
+                    key: None,
+                },
+            )?;
+        }
     }
     // Do not discover child overlays until bootstrap tools have unlocked them.
     let repository = result.repository.clone();
