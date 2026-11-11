@@ -5,7 +5,7 @@ use clap::Args;
 use dirs::home_dir;
 
 use crate::cli::CLI;
-use crate::doctor::{self, Finding, Report};
+use crate::doctor::{self, Finding, OverlayHealth, Report};
 use crate::overlays::Repository;
 use crate::ui;
 use crate::ui::{emojis, style};
@@ -62,23 +62,12 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     );
     ui::info(format!(
         "{}",
-        style::heading(format!("{} Overlay configuration", emojis::PACKAGE))
-    ))
-    .ok();
-    if report.config.diagnostics.is_empty() {
-        ui::info(format!("  {}", style::green("No issues found"))).ok();
-    } else {
-        // Indent every line so lint's file groups and hints retain their relative layout.
-        for line in report.config.grouped().to_string().lines() {
-            ui::info(format!("  {line}")).ok();
-        }
+        style::heading(format!("{} Overlay health", emojis::PACKAGE))
+    ))?;
+    for line in render_overlay_health(&report.overlay_health, cli.verbose).lines() {
+        ui::info(line)?;
     }
-    ui::info("").ok();
-    print_section(
-        cli,
-        &format!("{} Git exclusions", emojis::LINK),
-        &report.git_exclude,
-    );
+    ui::info("")?;
     print_section(
         cli,
         &format!("{} XDG state", emojis::DIRECTORY),
@@ -105,6 +94,54 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn render_overlay_health(overlays: &[OverlayHealth], verbose: bool) -> String {
+    let lines: Vec<_> = overlays
+        .iter()
+        .filter(|overlay| verbose || overlay.needs_attention())
+        .map(|overlay| {
+            let name = if overlay.name.is_empty() {
+                "."
+            } else {
+                &overlay.name
+            };
+            let mut severities = Vec::new();
+            if overlay.errors > 0 {
+                severities.push(format!(
+                    "{} {}",
+                    emojis::crossmark(),
+                    style::severity(
+                        format!("{} error(s)", overlay.errors),
+                        style::Severity::Error
+                    )
+                ));
+            }
+            if overlay.warnings > 0 {
+                severities.push(format!(
+                    "{} {}",
+                    emojis::warning(),
+                    style::severity(
+                        format!("{} warning(s)", overlay.warnings),
+                        style::Severity::Warning
+                    )
+                ));
+            }
+            if severities.is_empty() {
+                severities.push(emojis::checkmark().to_string());
+            }
+            format!("  {}: {}", style::overlay(name), severities.join(", "))
+        })
+        .collect();
+    if lines.is_empty() {
+        format!(
+            "  {} {}",
+            emojis::checkmark(),
+            style::severity("No issues found", style::Severity::Success)
+        )
+    } else {
+        lines.join("\n")
+    }
 }
 
 fn print_section(cli: &CLI, title: &str, findings: &[Finding]) {
@@ -159,6 +196,52 @@ mod tests {
     use assert_fs::prelude::*;
     use clap::Parser;
     use std::fs;
+
+    #[test]
+    fn overlay_health_uses_semantic_colors_and_only_nonzero_severities() {
+        if crate::cli::common::run_in_isolated_process() {
+            return;
+        }
+        // Isolate console's global color switch from concurrently rendered tests.
+        console::set_colors_enabled(true);
+        let rendered = render_overlay_health(
+            &[
+                OverlayHealth {
+                    name: "healthy".into(),
+                    errors: 0,
+                    warnings: 0,
+                },
+                OverlayHealth {
+                    name: "warning".into(),
+                    errors: 0,
+                    warnings: 1,
+                },
+                OverlayHealth {
+                    name: "error".into(),
+                    errors: 2,
+                    warnings: 0,
+                },
+                OverlayHealth {
+                    name: "mixed".into(),
+                    errors: 1,
+                    warnings: 3,
+                },
+            ],
+            true,
+        );
+        assert!(rendered.contains("\x1b[36mhealthy\x1b[0m: \x1b[32m✔\x1b[0m"));
+        assert!(rendered.contains("\x1b[33m⚠\x1b[0m \x1b[33m1 warning(s)\x1b[0m"));
+        assert!(rendered.contains("\x1b[31m✘\x1b[0m \x1b[31m2 error(s)\x1b[0m"));
+        let plain = console::strip_ansi_codes(&rendered);
+        assert!(plain.contains("mixed: ✘ 1 error(s), ⚠ 3 warning(s)"));
+        assert!(!plain.contains("0 error"));
+        assert!(!plain.contains("0 warning"));
+        assert!(!plain.contains("over status"));
+        assert!(
+            console::strip_ansi_codes(&render_overlay_health(&[], false))
+                .contains("✔ No issues found")
+        );
+    }
 
     fn make_cli(home: PathBuf) -> CLI {
         CLI::parse_from(vec!["over", "--home", home.to_str().unwrap()])

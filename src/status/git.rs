@@ -49,6 +49,30 @@ use super::Status;
 /// which `DesiredTree::build`/`build_own` only ever pair with
 /// `Provenance::Git`.
 pub fn inspect(entry: &DesiredEntry) -> Result<Status> {
+    let status = inspect_runtime(entry)?;
+    if status == Status::Applied {
+        let Provenance::Git {
+            overlay,
+            config,
+            repo_key,
+        } = &entry.provenance
+        else {
+            unreachable!()
+        };
+        if repo_key != ROOT_PATH
+            && super::configuration::inspect_repository(&entry.target, overlay, config)?
+                .iter()
+                .any(|issue| issue.kind != super::configuration::Kind::Association)
+        {
+            return Ok(Status::Conflict);
+        }
+    }
+    Ok(status)
+}
+
+/// Configuration has its own exhaustive warning findings in a report, rather
+/// than masquerading as a content/ownership conflict on the checkout entry.
+pub(crate) fn inspect_runtime(entry: &DesiredEntry) -> Result<Status> {
     let Provenance::Git {
         repo_key, config, ..
     } = &entry.provenance
@@ -60,6 +84,12 @@ pub fn inspect(entry: &DesiredEntry) -> Result<Status> {
     };
 
     if repo_key == ROOT_PATH {
+        if config.worktree || config.worktrees.is_some() {
+            let presence = inspect_declared(&entry.target, config)?;
+            if presence != Status::Applied {
+                return Ok(presence);
+            }
+        }
         inspect_content(entry)
     } else {
         inspect_declared(&entry.target, config)
@@ -141,7 +171,7 @@ fn inspect_declared(target: &Path, config: &GitRepoConfig) -> Result<Status> {
             Ok(r) => r,
             Err(_) => return Ok(Status::Broken),
         };
-        return declared_config_status(&repo, config, true);
+        return declared_ref_status(&repo, config, true);
     }
 
     let bare_path = target.join(".git");
@@ -153,6 +183,19 @@ fn inspect_declared(target: &Path, config: &GitRepoConfig) -> Result<Status> {
         Err(_) => return Ok(Status::Broken),
     };
 
+    if !declared_worktrees_present(&repo, target, config)? {
+        return Ok(Status::Missing);
+    }
+    // Bare repos never checkout a tag/rev (`actions::git::checkout_ref` is
+    // only ever called for non-bare repos) — `check_ref: false`.
+    declared_ref_status(&repo, config, false)
+}
+
+fn declared_worktrees_present(
+    repo: &Repository,
+    target: &Path,
+    config: &GitRepoConfig,
+) -> Result<bool> {
     // Structural presence only: every explicitly named worktree directory
     // must exist, and — when `worktree: true` auto-creates an unnamed
     // default-branch worktree — that one too. Never inspects *content* of
@@ -160,53 +203,28 @@ fn inspect_declared(target: &Path, config: &GitRepoConfig) -> Result<Status> {
     if let Some(worktrees) = &config.worktrees {
         for name in worktrees.keys() {
             if !target.join(name).exists() {
-                return Ok(Status::Missing);
+                return Ok(false);
             }
         }
-    } else if config.worktree {
-        let default_branch = detect_default_branch(&repo)?;
+    }
+    if config.worktree {
+        // Provisioning creates the automatic worktree even when named ones are declared.
+        let default_branch = detect_default_branch(repo)?;
         if !target.join(&default_branch).exists() {
-            return Ok(Status::Missing);
+            return Ok(false);
         }
     }
 
-    // Bare repos never checkout a tag/rev (`actions::git::checkout_ref` is
-    // only ever called for non-bare repos) — `check_ref: false`.
-    declared_config_status(&repo, config, false)
+    Ok(true)
 }
 
-/// Whether a declared repository's configuration invariants are satisfied:
-/// the declared `url` (as the `origin` remote), `tag`/`rev` (non-bare
-/// only), extra `remotes`, and arbitrary `config` entries. Returns the
-/// first mismatch found as [`Status::Conflict`] ("configuration drift"),
-/// or [`Status::Applied`] once every declared invariant holds — regardless
-/// of anything else in the repository (extra files, local commits,
-/// uncommitted changes, unrelated branches).
-///
-/// Deliberately does **not** check `config.branch`: `actions::git`'s own
-/// `EnsureGitRepository` only ever applies a branch at clone time (via
-/// `RepoBuilder::branch`), never reconciling it afterwards — re-checking
-/// out a different branch on an existing repository risks discarding local
-/// work, so `over apply` itself never does it. Reporting a "drift" here
-/// that `apply` can never fix would be misleading. Also deliberately
-/// coarse about `remotes`/`config` beyond url/key-value equality (no
-/// per-remote `push`/`tagopt`/`extras`, no `worktree_config`) — a natural
-/// follow-up, not required to satisfy #140's acceptance criteria.
-fn declared_config_status(
+/// Revision drift remains a reconciliation conflict; supporting Git settings
+/// are separate exhaustive findings. Branch selection remains clone-time-only.
+fn declared_ref_status(
     repo: &Repository,
     config: &GitRepoConfig,
     check_ref: bool,
 ) -> Result<Status> {
-    if !config.url.is_empty() {
-        let matches = repo
-            .find_remote("origin")
-            .ok()
-            .is_some_and(|r| r.url().ok() == Some(config.url.as_str()));
-        if !matches {
-            return Ok(Status::Conflict);
-        }
-    }
-
     if check_ref {
         let head_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
         if let Some(head_commit) = head_commit {
@@ -226,28 +244,6 @@ fn declared_config_status(
                 if expected.is_none_or(|c| c.id() != head_commit.id()) {
                     return Ok(Status::Conflict);
                 }
-            }
-        }
-    }
-
-    if let Some(remotes) = &config.remotes {
-        for (name, remote_config) in remotes {
-            let matches = repo
-                .find_remote(name)
-                .ok()
-                .is_some_and(|r| r.url().ok() == Some(remote_config.url.as_str()));
-            if !matches {
-                return Ok(Status::Conflict);
-            }
-        }
-    }
-
-    if let Some(git_config) = &config.config {
-        let cfg = repo.config()?;
-        for (key, value) in &git_config.entries {
-            let matches = cfg.get_string(key).ok().as_deref() == Some(value.as_str());
-            if !matches {
-                return Ok(Status::Conflict);
             }
         }
     }
@@ -400,6 +396,7 @@ mod tests {
         let mut cfg = repo.config().unwrap();
         cfg.set_str("user.name", "Test").unwrap();
         cfg.set_str("user.email", "test@test.com").unwrap();
+        cfg.set_str("over.overlay", "ov").unwrap();
         drop(cfg);
         let sig = Signature::now("Test", "test@test.com").unwrap();
         fs::write(path.join("README.md"), "# Test").unwrap();
@@ -608,6 +605,11 @@ mod tests {
             .bare(true)
             .clone(source.to_str().unwrap(), &bare_path)
             .unwrap();
+        bare_repo
+            .config()
+            .unwrap()
+            .set_str("over.overlay", "ov")
+            .unwrap();
 
         let main_wt = dest.join("main");
         {
@@ -789,6 +791,32 @@ mod tests {
         let target = td.path().join("does-not-exist");
         let e = declared_entry(target, git_config(false, None));
         assert_eq!(inspect(&e).unwrap(), Status::Missing);
+    }
+
+    #[test]
+    fn missing_automatic_worktrees_are_unhealthy_without_weakening_content_safety() {
+        let source = TempDir::new().unwrap();
+        init_committed_repo(source.path());
+        let target = TempDir::new().unwrap();
+        let repo = clone_bare_with_main_worktree(source.path(), target.path());
+        repo.worktree("other", &target.path().join("other"), None)
+            .unwrap();
+        fs::write(target.path().join("other/README.md"), "local work").unwrap();
+        fs::remove_dir_all(target.path().join("main")).unwrap();
+        let worktrees = HashMap::from([(
+            "other".into(),
+            crate::actions::git::config::WorktreeEntry {
+                branch: "other".into(),
+                config: None,
+            },
+        )]);
+        let entry = entry(
+            target.path().to_path_buf(),
+            git_config(true, Some(worktrees)),
+        );
+        assert_eq!(inspect_runtime(&entry).unwrap(), Status::Missing);
+        // Destructive consumers must still see dirt in every remaining worktree.
+        assert_eq!(inspect_content(&entry).unwrap(), Status::Modified);
     }
 
     #[test]

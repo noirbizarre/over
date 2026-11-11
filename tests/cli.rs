@@ -173,7 +173,7 @@ fn doctor_ownership_diagnostics_use_the_requested_target_root() -> TestResult {
         .env("XDG_STATE_HOME", temp.path().join("state"))
         .assert()
         .code(1)
-        .stdout(contains("conflicting target ownership"))
+        .stdout(contains("selected: ✘ 1 error(s)"))
         .stdout(contains("dependency"))
         .stdout(contains("selected"));
     Ok(())
@@ -852,7 +852,7 @@ fn doctor_reports_lint_errors_and_exits_nonzero() -> TestResult {
 }
 
 #[test]
-fn doctor_renders_configuration_like_lint_without_duplicate_warnings() -> TestResult {
+fn doctor_summarizes_lint_and_runtime_health_without_duplicate_diagnostics() -> TestResult {
     let tmp = TempDir::new()?;
     let source = tmp.path().join("source");
     let target = tmp.path().join("target");
@@ -880,26 +880,13 @@ fn doctor_renders_configuration_like_lint_without_duplicate_warnings() -> TestRe
     };
     let lint = String::from_utf8(run("lint")?.stdout)?;
     let doctor = String::from_utf8(run("doctor")?.stdout)?;
-    let configuration = doctor
-        .split_once("Overlay configuration\n")
-        .unwrap()
-        .1
-        .split_once("Git exclusions")
-        .unwrap()
-        .0;
-    // Section nesting may add indentation, but overlay/file grouping must be identical.
-    let configuration: Vec<_> = configuration
-        .lines()
-        .filter(|line| !line.trim().is_empty() && !line.contains('🔗'))
-        .map(|line| line.strip_prefix("  ").unwrap())
-        .collect();
-    let lint_body: Vec<_> = lint
-        .lines()
-        .filter(|line| !line.trim().is_empty() && !line.ends_with(" found"))
-        .collect();
-    assert_eq!(configuration, lint_body);
-    assert_eq!(doctor.matches("unknown key").count(), 2);
-    assert!(doctor.contains("2 warnings found"));
+    assert_eq!(lint.matches("unknown key").count(), 2);
+    assert!(!doctor.contains("unknown key"));
+    assert!(doctor.contains("Overlay health"));
+    assert!(doctor.contains("alpha: ⚠ 2 warning(s)"));
+    assert!(doctor.contains("beta: ⚠ 2 warning(s)"));
+    assert!(!doctor.contains("over status"));
+    assert!(doctor.contains("4 warnings found"));
     Ok(())
 }
 
@@ -931,8 +918,8 @@ fn doctor_keeps_discovery_errors_in_the_configuration_section(
         .env("XDG_STATE_HOME", tmp.path().join("state"))
         .assert()
         .failure()
-        .stdout(contains("Overlay configuration"))
-        .stdout(contains("error:"))
+        .stdout(contains("Overlay health"))
+        .stdout(contains("✘ 1 error(s)"))
         .stderr(contains(runtime_warning).not())
         .stderr(contains("skipping badly formatted overlay").not());
     Ok(())
@@ -958,7 +945,7 @@ fn doctor_does_not_require_exclusions_before_artifacts_exist() -> TestResult {
         .env("XDG_STATE_HOME", tmp.path().join("state"))
         .assert()
         .success()
-        .stdout(contains("Git exclusions"))
+        .stdout(contains("Overlay health"))
         .stdout(contains("exclude missing").not());
     Command::cargo_bin("over")?
         .arg("--home")
@@ -967,7 +954,7 @@ fn doctor_does_not_require_exclusions_before_artifacts_exist() -> TestResult {
         .arg(&target)
         .env("XDG_STATE_HOME", tmp.path().join("state"))
         .assert()
-        .stdout(contains("exclude missing"));
+        .stdout(contains("exclude missing").not());
     assert_eq!(fs::read(&exclude)?, before);
     fs::write(target.join("file.txt"), "content")?;
     Command::cargo_bin("over")?
@@ -977,8 +964,8 @@ fn doctor_does_not_require_exclusions_before_artifacts_exist() -> TestResult {
         .arg(&target)
         .env("XDG_STATE_HOME", tmp.path().join("state"))
         .assert()
-        .success()
-        .stdout(contains("exclude missing"));
+        .failure()
+        .stdout(contains("dotfiles: ✘ 1 error(s)"));
     assert_eq!(fs::read(&exclude)?, before);
     Ok(())
 }
@@ -1009,7 +996,7 @@ fn doctor_reports_malformed_exclude_block_and_exits_nonzero() -> TestResult {
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .failure()
-        .stdout(contains("exclude malformed"));
+        .stdout(contains("dotfiles: ✘ 1 error(s)"));
 
     // Detection-only without `--fix`: the malformed block must survive
     // byte-for-byte.
@@ -1037,7 +1024,7 @@ fn doctor_fix_repairs_malformed_blocks_without_excluding_absent_artifacts(
     fs::write(ov.join("over.toml"), b"target = \"~\"")?;
     fs::write(ov.join("file.txt"), b"content")?;
     if existing {
-        fs::write(target.join("file.txt"), b"content")?;
+        symlink::symlink_file(ov.join("file.txt"), target.join("file.txt"))?;
     }
 
     let exclude_path = target.join(".git/info/exclude");
@@ -1081,7 +1068,7 @@ fn doctor_fix_never_touches_a_merely_modified_block() -> TestResult {
     fs::create_dir_all(&ov)?;
     fs::write(ov.join("over.toml"), b"target = \"~\"")?;
     fs::write(ov.join("file.txt"), b"content")?;
-    fs::write(target.join("file.txt"), b"content")?;
+    symlink::symlink_file(ov.join("file.txt"), target.join("file.txt"))?;
 
     let exclude_path = target.join(".git/info/exclude");
     fs::create_dir_all(exclude_path.parent().unwrap())?;

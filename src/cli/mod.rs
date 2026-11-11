@@ -81,12 +81,15 @@ pub enum Commands {
     #[clap(name = "apply", about = "Apply a given overlay")]
     Apply(apply::Params),
 
-    #[clap(name = "lint", about = "Check overlays for configuration issues")]
+    #[clap(
+        name = "lint",
+        about = "Check static overlay declarations and source content"
+    )]
     Lint(lint::Params),
 
     #[clap(
         name = "doctor",
-        about = "Check the environment and overlays for issues"
+        about = "Summarize global environment and overlay health (use status or lint for details)"
     )]
     Doctor(doctor::Params),
 
@@ -96,7 +99,7 @@ pub enum Commands {
     #[clap(
         name = "status",
         visible_alias = "show",
-        about = "Show resolved overlay configuration and reconciliation health"
+        about = "Show resolved overlay configuration, deployment health and Git prerequisites"
     )]
     Status(status::Params),
 
