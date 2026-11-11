@@ -714,6 +714,8 @@ fn inherited_root_redirection_never_provisions_the_fallback_git_repository() {
         .set_str("user.email", "test@example.com")
         .unwrap();
     fs::write(remote.join("remote-file"), "remote content\n").unwrap();
+    // A clone must produce the same fixture bytes under Windows' global autocrlf setting.
+    fs::write(remote.join(".gitattributes"), "* -text\n").unwrap();
     commit_all(&remote_repo, "remote fixture");
     fs::write(
         fixture.source.join("over.yaml"),

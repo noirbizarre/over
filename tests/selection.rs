@@ -245,8 +245,17 @@ fn overlapping_target_rules_in_one_overlay_do_not_guess_a_source() {
         error.to_string().contains("ambiguous source path"),
         "{error:#}"
     );
-    assert!(error.to_string().contains("first/nested/new"), "{error:#}");
-    assert!(error.to_string().contains("second/new"), "{error:#}");
+    for source in [
+        Path::new("first").join("nested").join("new"),
+        Path::new("second").join("new"),
+    ] {
+        assert!(
+            error
+                .to_string()
+                .contains(source.to_string_lossy().as_ref()),
+            "{error:#}"
+        );
+    }
 }
 
 #[test]
