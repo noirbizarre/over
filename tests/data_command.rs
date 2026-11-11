@@ -159,6 +159,25 @@ fn an_overlay_without_data_exports_an_empty_object() -> TestResult {
     assert_json(command(repo.path())?.arg("selected"), json!({}))
 }
 
+#[rstest]
+#[case(None)]
+#[case(Some("1"))]
+#[case(Some("0"))]
+fn redirected_data_stays_compact_and_uncolored_even_with_forced_colors(
+    #[case] no_color: Option<&str>,
+) -> TestResult {
+    let repo = TempDir::new()?;
+    descriptor(repo.path(), "selected", "data: {nested: {value: true}}")?;
+    let mut command = command(repo.path())?;
+    command.arg("selected").env("CLICOLOR_FORCE", "1");
+    if let Some(no_color) = no_color {
+        command.env("NO_COLOR", no_color);
+    } else {
+        command.env_remove("NO_COLOR");
+    }
+    assert_json(&mut command, json!({"nested": {"value": true}}))
+}
+
 #[test]
 fn the_environment_can_select_the_repository() -> TestResult {
     let repo = TempDir::new()?;
