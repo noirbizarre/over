@@ -401,17 +401,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
-name = "colored_json"
-version = "5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e35980a1b846f8e3e359fd18099172a0857140ba9230affc4f71348081e039b6"
-dependencies = [
- "serde",
- "serde_json",
- "yansi",
-]
-
-[[package]]
 name = "config"
 version = "0.15.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -433,6 +422,19 @@ dependencies = [
  "encode_unicode",
  "libc",
  "unicode-width",
+ "windows-sys",
+]
+
+[[package]]
+name = "console-json"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de4619fe9c9ea3aadc51dec3394cfc830791cf576b8397e3442b62cccd145a33"
+dependencies = [
+ "console",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
  "windows-sys",
 ]
 
@@ -1749,9 +1751,9 @@ dependencies = [
  "async-trait",
  "clap",
  "clap_complete",
- "colored_json",
  "config",
  "console",
+ "console-json",
  "dialoguer",
  "dirs 7.0.0",
  "etcetera",

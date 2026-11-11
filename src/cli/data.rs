@@ -1,11 +1,10 @@
-use std::io::{self, Write};
-
 use anyhow::{Context as _, Result};
 use clap::Args;
 
 use crate::cli::CLI;
 use crate::exec::Context;
 use crate::overlays::Repository;
+use crate::ui::json::{JsonErrorContext, print_json_with_context};
 
 #[derive(Args, Debug)]
 pub struct Params {
@@ -30,10 +29,12 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     .await??;
     let data = repo.resolve_data(&ctx, Some(&selected))?;
 
-    // Serialize before writing so a serialization error cannot leave partial JSON on stdout.
-    let json = serde_json::to_string(&data).context("failed to serialize overlay data as JSON")?;
-    let mut stdout = io::stdout().lock();
-    writeln!(stdout, "{json}").context("failed to write overlay data to stdout")?;
-    stdout.flush().context("failed to flush overlay data")?;
-    Ok(())
+    print_json_with_context(
+        &data,
+        JsonErrorContext {
+            serialize: "failed to serialize overlay data as JSON",
+            write: "failed to write overlay data to stdout",
+            flush: "failed to flush overlay data",
+        },
+    )
 }
