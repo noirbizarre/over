@@ -19,6 +19,218 @@ fn command(source: &Path, root: &Path, verb: &str) -> Command {
 }
 
 #[test]
+fn globally_ignored_overlay_files_need_no_managed_exclusion_in_status_or_doctor() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("home");
+    let state = temp.path().join("state");
+    fs::create_dir_all(source.join("selected")).unwrap();
+    fs::write(source.join("selected/over.toml"), "target = '~'\n").unwrap();
+    fs::write(source.join("selected/mise.toml"), "# managed").unwrap();
+    let repo = git2::Repository::init(&root).unwrap();
+    symlink::symlink_file(source.join("selected/mise.toml"), root.join("mise.toml")).unwrap();
+    let global = temp.path().join(".gitconfig");
+    let ignore = temp.path().join("global-ignore");
+    fs::write(&ignore, "mise.toml\n").unwrap();
+    fs::write(&global, "").unwrap();
+    // Git quotes native Windows backslashes rather than interpreting them as escapes.
+    git2::Config::open(&global)
+        .unwrap()
+        .set_str("core.excludesFile", ignore.to_str().unwrap())
+        .unwrap();
+    let before = fs::read(repo.path().join("info/exclude")).unwrap();
+    for verb in ["status", "doctor"] {
+        command(&source, &root, verb)
+            .arg("selected")
+            .env("GIT_CONFIG_GLOBAL", &global)
+            .env("HOME", temp.path())
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("XDG_STATE_HOME", &state)
+            .assert()
+            .success()
+            .stdout(contains("exclude missing").not());
+    }
+    assert_eq!(fs::read(repo.path().join("info/exclude")).unwrap(), before);
+    fs::write(&ignore, "").unwrap();
+    command(&source, &root, "status")
+        .arg("selected")
+        .env("GIT_CONFIG_GLOBAL", &global)
+        .env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("XDG_STATE_HOME", &state)
+        .assert()
+        .code(1)
+        .stdout(contains("Git configuration:"))
+        .stdout(contains("exclude missing: mise.toml"));
+    command(&source, &root, "doctor")
+        .arg("selected")
+        .env("GIT_CONFIG_GLOBAL", &global)
+        .env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("XDG_STATE_HOME", &state)
+        .assert()
+        .success()
+        .stdout(contains("1 warning found"))
+        .stdout(contains("selected: ⚠ 1 warning(s)"))
+        .stdout(contains("exclude missing").not());
+}
+
+#[test]
+fn doctor_marks_every_affected_composition_but_counts_a_shared_problem_once() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("home");
+    fs::create_dir_all(&root).unwrap();
+    for name in ["shared", "alpha", "beta"] {
+        fs::create_dir_all(source.join(name)).unwrap();
+        fs::write(
+            source.join(name).join("over.toml"),
+            if name == "shared" {
+                "target = '~'\n"
+            } else {
+                "target = '~'\nuses = ['shared']\n"
+            },
+        )
+        .unwrap();
+    }
+    fs::write(source.join("shared/file"), "content").unwrap();
+    command(&source, &root, "doctor")
+        .env("XDG_STATE_HOME", temp.path().join("state"))
+        .assert()
+        .success()
+        .stdout(contains("alpha: ⚠ 1 warning(s)"))
+        .stdout(contains("beta: ⚠ 1 warning(s)"))
+        .stdout(contains("shared: ⚠ 1 warning(s)"))
+        .stdout(contains("1 warning found"));
+    command(&source, &root, "doctor")
+        .args(["alpha", "--no-uses"])
+        .env("XDG_STATE_HOME", temp.path().join("state"))
+        .assert()
+        .success()
+        .stdout(contains("warning(s)").not());
+}
+
+#[rstest::rstest]
+#[case("base")]
+#[case("./base")]
+fn invalid_shared_dependencies_keep_lints_original_error_and_consumer_warnings(
+    #[case] dependency: &str,
+) {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("home");
+    fs::create_dir_all(&root).unwrap();
+    for name in ["base", "alpha", "beta"] {
+        fs::create_dir_all(source.join(name)).unwrap();
+        fs::write(
+            source.join(name).join("over.toml"),
+            if name == "base" {
+                "broken [[[".into()
+            } else {
+                format!("target = '~'\nuses = ['{dependency}']\n")
+            },
+        )
+        .unwrap();
+    }
+    command(&source, &root, "doctor")
+        .env("XDG_STATE_HOME", temp.path().join("state"))
+        .assert()
+        .code(1)
+        .stdout(contains("base: ✘ 1 error(s)"))
+        .stdout(contains("alpha: ⚠ 1 warning(s)"))
+        .stdout(contains("beta: ⚠ 1 warning(s)"))
+        .stdout(contains("1 error, 2 warnings found"));
+}
+
+#[test]
+fn doctor_inspects_a_shared_checkout_once_across_consumers() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("home");
+    let state = temp.path().join("state");
+    for name in ["base", "alpha", "beta"] {
+        fs::create_dir_all(source.join(name)).unwrap();
+        let descriptor = if name == "base" {
+            "target: '~/shared'\nmode: checkout\n".to_owned()
+        } else {
+            format!("target: '~/{name}'\nuses: [base]\n")
+        };
+        fs::write(source.join(name).join("over.yaml"), descriptor).unwrap();
+    }
+    fs::write(source.join("base/file.txt"), "original\n").unwrap();
+    fs::write(source.join(".gitattributes"), "*.txt filter=probe text\n").unwrap();
+    let repo = git2::Repository::init(&source).unwrap();
+    commit_all(&repo);
+    for name in ["alpha", "beta"] {
+        command(&source, &root, "apply")
+            .args([name, "--no-prompt"])
+            .env("XDG_STATE_HOME", &state)
+            .assert()
+            .success();
+    }
+    let calls = temp.path().join("calls");
+    repo.config()
+        .unwrap()
+        .set_str(
+            "filter.probe.clean",
+            &format!("printf x >> '{}'; cat", calls.display()),
+        )
+        .unwrap();
+    fs::write(root.join("shared/file.txt"), "edited\n").unwrap();
+    command(&source, &root, "doctor")
+        .env("XDG_STATE_HOME", &state)
+        .assert()
+        .success()
+        .stdout(contains("1 warning found"))
+        .stdout(contains("alpha: ⚠ 1 warning(s)"))
+        .stdout(contains("beta: ⚠ 1 warning(s)"));
+    assert_eq!(fs::read_to_string(calls).unwrap(), "x");
+}
+
+#[test]
+fn doctor_summarizes_mixed_deployment_and_static_health_while_status_keeps_details() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("home");
+    fs::create_dir_all(&root).unwrap();
+    for name in ["healthy", "missing", "conflict", "invalid"] {
+        fs::create_dir_all(source.join(name)).unwrap();
+        fs::write(
+            source.join(name).join("over.toml"),
+            if name == "invalid" {
+                "broken [[["
+            } else {
+                "target = '~'\n"
+            },
+        )
+        .unwrap();
+    }
+    fs::write(source.join("missing/not-deployed"), "content").unwrap();
+    fs::write(source.join("conflict/collision"), "overlay").unwrap();
+    fs::write(root.join("collision"), "user content").unwrap();
+    command(&source, &root, "doctor")
+        .arg("--verbose")
+        .env("XDG_STATE_HOME", temp.path().join("state"))
+        .assert()
+        .code(1)
+        .stdout(contains("healthy: ✔"))
+        .stdout(contains("missing: ⚠ 1 warning(s)"))
+        .stdout(contains("conflict: ✘ 1 error(s)"))
+        .stdout(contains("invalid: ✘ 1 error(s)"))
+        .stdout(contains("collision").not())
+        .stdout(contains("not-deployed").not());
+    command(&source, &root, "status")
+        .arg("conflict")
+        .assert()
+        .code(1)
+        .stdout(contains("conflict:"))
+        .stdout(contains("collision"));
+}
+
+#[test]
 fn unapplied_status_resolves_inheritance_composition_mappings_and_rule_provenance() {
     let temp = TempDir::new().unwrap();
     let source = temp.path().join("source");
@@ -203,6 +415,11 @@ fn status_checks_overlay_files_and_mount_configuration_without_reading_mount_con
     } else {
         git2::Repository::clone(upstream.to_str().unwrap(), &mounted).unwrap()
     };
+    mounted_repo
+        .config()
+        .unwrap()
+        .set_str("over.overlay", "selected")
+        .unwrap();
     fs::write(mounted.join("managed.txt"), "managed\n").unwrap();
     fs::write(
         source.join("selected/over.yaml"),
@@ -271,6 +488,15 @@ fn status_checks_overlay_files_and_mount_configuration_without_reading_mount_con
         .stdout(contains("M project/managed.txt (unstaged)"))
         .stdout(contains("repository.txt").not());
     assert_eq!(fs::read_to_string(&calls).unwrap(), "x");
+    fs::write(&calls, "").unwrap();
+    command(&source, &root, "doctor")
+        .env("XDG_STATE_HOME", &state)
+        .arg("selected")
+        .assert()
+        .success()
+        .stdout(contains("selected: ⚠ 1 warning(s)"))
+        .stdout(contains("project/managed.txt").not());
+    assert_eq!(fs::read_to_string(&calls).unwrap(), "x");
     fs::write(mounted.join("managed.txt"), "managed\n").unwrap();
     fs::remove_file(root.join("overlay.txt")).unwrap();
     command(&source, &root, "status")
@@ -289,7 +515,7 @@ fn status_checks_overlay_files_and_mount_configuration_without_reading_mount_con
         .arg("selected")
         .assert()
         .code(1)
-        .stdout(contains(format!("conflict: {}", mounted.display())))
+        .stdout(contains("config incorrect: remote.origin.url"))
         .stdout(contains("repository.txt").not());
     fs::rename(&mounted, temp.path().join("removed-mount")).unwrap();
     command(&source, &root, "status")

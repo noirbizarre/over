@@ -117,3 +117,35 @@ Repair remains limited to malformed blocks. Its regenerated content covers
 currently existing artifacts; with an empty expectation it strips corrupted
 markers without appending a block. All other repair restrictions and severity
 rules above remain in effect.
+
+## Amendment: status ownership and complete health aggregation (#248)
+
+This supersedes the presentation and runtime-scope decisions above. Lint owns
+static diagnostics; status owns detailed runtime deployment, managed-file and Git
+prerequisite diagnostics. Doctor consumes status's canonical inspection snapshot,
+including its tracked-only virtual-checkout policy and cached change details
+(#249), and reports concise per-overlay health with semantically colored identities
+and nonzero severity counts. Healthy rows use a green check; repeated command hints
+are omitted. Status/lint help and documentation direct users to detailed reports.
+It retains environment and global stale/corrupt XDG checks. Invalid overlays do
+not prevent checking valid ones. Summary rows do not inflate unique finding counts.
+
+Status's **Git configuration** section groups individual issues by owning overlay,
+shared repository and worktree. Effective ignore rules count as protection;
+missing managed blocks alone are not health failures. Explicit repository/private
+configuration is checked in its applied scope, alongside associations and all
+declared remote properties. Extra remotes are allowed. New config checks inspect
+existing deployments only; status's existing presence checks report missing ones.
+Configuration values and remote URLs remain omitted from rendered diagnostics.
+
+Status and doctor share runtime severity: missing/modified/locked entries and Git
+configuration/protection drift are warnings; broken entries, content conflicts,
+inspection failures and malformed exclusion markers are errors. Status fails for
+any attention condition; doctor fails only for errors. Lint's severity, exit policy
+and JSON format are unchanged.
+
+Apply retains its independent managed-block ownership expectations, preventing
+effective self-ignore from causing rule removal/recreation. Repair remains
+malformed-only and covers existing artifacts; contributions to shared blocks are
+aggregated across worktrees before any rewrite. The final runtime snapshot is
+collected after repair rather than inspecting checkout content twice.

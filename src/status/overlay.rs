@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow, ensure};
 
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent, Provenance};
-use crate::exec::Ctx;
+use crate::exec::{Context, Ctx};
 use crate::hooks::Hooks;
 use crate::overlays::{Overlay, Repository};
 
@@ -82,8 +82,82 @@ pub struct OverlayReport {
     pub entry_details: Vec<Vec<Field>>,
 }
 
+/// Cache only equivalent resolved claims, not overlay names: dependency targets
+/// and checkout scopes can change with the selected consumer's data context.
+#[derive(Default)]
+pub struct InspectionCache {
+    virtual_checkouts: BTreeMap<super::identity::ClaimIdentity, virtual_checkout::Inspection>,
+}
+
+/// Keep failed dependency identities for lint attribution even when no runtime
+/// snapshot can be built. This collects graph names, not a second health check.
+pub(crate) fn dependency_names(repo: &Repository, overlay: &Overlay) -> BTreeSet<String> {
+    let mut names = BTreeSet::from([overlay.name.clone()]);
+    let mut pending = overlay.uses.clone().unwrap_or_default();
+    while let Some(name) = pending.pop() {
+        // Match lint's graph identity even when the dependency cannot be loaded.
+        let name = crate::overlays::mapping::lexical(Path::new(&name))
+            .to_string_lossy()
+            .replace('\\', "/");
+        if names.insert(name.clone())
+            && let Ok(dependency) = repo.get(&name)
+        {
+            pending.extend(dependency.uses.into_iter().flatten());
+        }
+    }
+    names
+}
+
 impl OverlayReport {
+    pub fn inspect_overlay(
+        repo: &Repository,
+        root: &Path,
+        overlay: &Overlay,
+        no_uses: bool,
+    ) -> Result<Self> {
+        Self::inspect_cached(
+            repo,
+            root,
+            overlay,
+            no_uses,
+            &mut InspectionCache::default(),
+        )
+    }
+
+    pub fn inspect_cached(
+        repo: &Repository,
+        root: &Path,
+        overlay: &Overlay,
+        no_uses: bool,
+        cache: &mut InspectionCache,
+    ) -> Result<Self> {
+        let ctx = Context::builder()
+            .root(root.to_path_buf())
+            .repository(repo.clone())
+            .overlay(overlay.clone())
+            .no_uses(no_uses)
+            .build();
+        let ctx = ctx
+            .resolve_data()
+            .map_err(|_| anyhow!("cannot resolve overlay '{}'", overlay.name))?;
+        let target = overlay
+            .resolve_target(&ctx)
+            .map_err(|_| anyhow!("cannot resolve target for overlay '{}'", overlay.name))?;
+        let ctx =
+            ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
+        Self::inspect_with_cache(ctx, overlay, cache)
+            .map_err(|_| anyhow!("cannot inspect overlay '{}'", overlay.name))
+    }
+
     pub fn inspect(ctx: Ctx, overlay: &Overlay) -> Result<Self> {
+        Self::inspect_with_cache(ctx, overlay, &mut InspectionCache::default())
+    }
+
+    fn inspect_with_cache(
+        ctx: Ctx,
+        overlay: &Overlay,
+        cache: &mut InspectionCache,
+    ) -> Result<Self> {
         let mut ordered = Vec::new();
         compose(
             &ctx.repository,
@@ -109,7 +183,14 @@ impl OverlayReport {
         let mut inspections = BTreeMap::new();
         let health = DesiredTree::build(&ctx, overlay).and_then(|desired| {
             Report::build_with_inspector(&desired, |entry| {
-                let inspection = virtual_checkout::inspect_tracked(entry)?;
+                let key = super::identity::ClaimIdentity::new(entry);
+                let inspection = if let Some(inspection) = cache.virtual_checkouts.get(&key) {
+                    inspection.clone()
+                } else {
+                    let inspection = virtual_checkout::inspect_tracked(entry)?;
+                    cache.virtual_checkouts.insert(key, inspection.clone());
+                    inspection
+                };
                 let status = inspection.status.clone();
                 inspections.insert(entry.target.clone(), inspection);
                 Ok(status)

@@ -4,6 +4,11 @@ Check overlays for configuration issues without applying or repairing anything.
 Lint reads source files and relevant destination metadata to resolve ownership;
 it never changes target directories, Git data, or state, and never runs hooks.
 
+Lint owns static declarations, source content and composition diagnostics.
+[`over status`](status.md) owns detailed runtime deployment and Git prerequisite
+checks. [`over doctor`](doctor.md) combines their health summaries with global
+environment checks and directs you to the responsible command for details.
+
 A spinner on terminal stderr shows that checks are running. Diagnostics and
 `--json` output remain on stdout, with no animation in redirected stderr.
 

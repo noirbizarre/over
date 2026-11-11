@@ -30,6 +30,7 @@ pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
     Ok(inspect_with_details(entry, false)?.status)
 }
 
+#[derive(Clone)]
 pub(crate) struct Inspection {
     pub status: Status,
     pub staged: Vec<FileChange>,

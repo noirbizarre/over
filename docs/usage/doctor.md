@@ -1,8 +1,9 @@
 # `over doctor`
 
-Check the environment and overlays for issues, aggregating diagnostics that
-are each already computed by a focused, existing pass — closest to
-chezmoi's `doctor`.
+Summarize environment and overlay health. Doctor aggregates static diagnostics
+from [`over lint`](lint.md) and the same runtime inspection used by
+[`over status`](status.md), including missing deployments and managed-file problems.
+Use status for detailed runtime diagnostics and lint for declaration errors.
 
 ```text
 Usage: over doctor [OPTIONS] [NAME]
@@ -20,74 +21,74 @@ Options:
   -h, --help             Print help
 ```
 
-The report is split into four sections:
+## Report
 
 | Section | Source | What it covers |
 |---|---|---|
-| Environment | doctor itself | `git` on `PATH`, the XDG state directory is writable. |
-| Overlay configuration | `over lint` | Every overlay descriptor issue `over lint` would report. |
-| Git exclusions | Git exclusion diagnostics | `.git/info/exclude` drift for desired overlay artifacts that currently exist on disk. |
-| XDG state | doctor itself | Stale `over sync`/virtual-checkout bookkeeping records (a target that no longer exists, or an overlay that no longer resolves). |
+| Environment | doctor | Git on `PATH` and XDG state directory writability. |
+| Overlay health | lint and status | Per-overlay warning/error summaries. |
+| XDG state | doctor | Stale or corrupt sync/virtual-checkout bookkeeping. |
 
-Without `--verbose`, only findings that need attention are shown; a section
-with nothing to report prints "No issues found". `over doctor` exits
-non-zero only when a finding's severity is `Error` — a warning (drift that
-self-heals on the next `over apply`, or a stale bookkeeping record) never
-fails the process, mirroring `over lint`'s "errors fail, warnings don't"
-contract. Overlay configuration uses the same grouped overlay/file layout as
-`over lint`, with configuration warnings included once in that section.
+For example:
 
-Git exclusions are checked only for desired artifact paths that exist, including
-dangling symlinks. Unapplied files do not require exclusions. This is an existence
-check, not proof of ownership of an existing target. In contrast,
-[`over status`](status.md) and `over apply` use the full desired target set.
-Existing orphaned or malformed blocks can still be diagnosed when no artifacts
-remain in a reachable repository.
-
-Unlike [`over status`](status.md)/[`over diff`](diff.md)/[`over
-sync`](sync.md), `NAME` here only narrows the Git exclusions section to a
-single overlay's managed targets — Overlay configuration and XDG state
-always cover every overlay in the repository. A configured
-`default_overlay` does not select doctor's targets, and there is no `--all`
-flag: since only one of four sections could ever be narrowed, doctor always
-reports on everything unless you name a specific overlay. Destination rendering
-still resolves the configured default's [data context](../configuration/overlay.md#consumer-metadata-data);
-an invalid default fails data resolution. `--no-uses` skips dependency entries,
-but retains their metadata.
-
-## Example
-
-```sh
-over doctor
-over doctor --fix
+```text
+📦 Overlay health
+  workspaces/oxyde: ⚠ 2 warning(s)
 ```
 
-Start with the diagnostic report; use `--fix` for the limited repairs described
-below. For descriptor-specific static checks, use [`over lint`](lint.md); for
-the selected overlay's application state, use [`over status`](status.md).
+The summary includes missing deployments, modified files, conflicts, checkout
+state, Git prerequisites and inspection failures. Repository/worktree paths,
+individual missing exclusions and configuration keys appear in status's
+**Git configuration** section, rather than being repeated here. Use lint for static
+details. Invalid overlays do not prevent checking other discoverable overlays.
 
-### Diagnostic writes
+Overlay names use the common overlay identity color. Nonzero errors use a red
+cross and count; nonzero warnings use a yellow warning symbol and count. Zero
+buckets and trailing command hints are omitted. Healthy rows use a green check.
 
-The environment check deliberately creates the XDG state directory (including
-missing parents), then writes and removes a temporary probe file to verify
-writability. Created directories remain. Probe creation or cleanup failures
-are reported as errors; a cleanup failure can leave the probe file behind.
-This check runs even without `--fix` and is distinct from repair.
+Without `--verbose`, healthy rows are omitted; an empty section prints
+"✔ No issues found". Verbose adds healthy checks, not duplicate detailed reports.
+Several compositions can be affected by one dependency, but equivalent underlying
+issues count once in the overall warning/error totals. Overlay summary rows do
+not add findings to those totals.
 
-Bookkeeping diagnostics inspect atomic state snapshots without creating state
-files, directories, or lock files. They do not repair stale records.
+## Selection and exit status
+
+Doctor checks all runtime overlays unless `NAME` is supplied. Static lint and
+global XDG checks remain repository-wide. `default_overlay` does not narrow the
+selection; its [data context](../configuration/overlay.md#consumer-metadata-data)
+still participates in destination resolution. `--no-uses` skips dependency
+runtime entries but retains their data.
+
+Doctor exits nonzero for errors: broken deployments, content/ownership conflicts,
+failed inspection, malformed exclusion markers, lint errors or global errors.
+Missing/modified/locked entries, ahead/behind/diverged checkouts, missing or
+incorrect Git settings, missing effective exclusions, tracked conflicts and stale
+bookkeeping are warnings. Warning-only reports exit successfully, as lint does.
+Status uses the same runtime severity but exits nonzero for any attention condition.
+
+## Diagnostic writes
+
+The environment check creates the XDG state directory if needed, then writes and
+removes a probe file to verify writability, even without `--fix`. Created
+directories remain. Probe creation or cleanup failures are errors; failed cleanup
+can leave a probe behind.
+
+Runtime and bookkeeping inspection does not write target files, Git config,
+indexes or excludes, or state/lock files. It does not run hooks or fetch.
 
 ## `--fix`
 
-`--fix` repairs **only** a malformed `.git/info/exclude` block: a stray,
-unmatched `# >>> over: exclude:<name> >>>`/`# <<< over: exclude:<name> <<<`
-marker line left behind by external corruption. Unlike every other drift
-(`Missing`/`Modified`/`Orphaned`), a malformed block never self-heals on the
-next `over apply` — it stays stuck until repaired, which is why it's the
-one exclude finding severe enough to fail `over doctor` on its own.
+`--fix` repairs **only** a malformed `.git/info/exclude` block: unmatched
+`# >>> over: exclude:<name> >>>` / `# <<< over: exclude:<name> <<<` marker lines.
+These do not self-heal on apply and remain errors until repaired.
 
-Repair strips the stray marker line(s) and appends a fresh, well-formed
-block with exclusions for currently existing artifacts; if none remain, it
-removes the stray markers without adding a block. It never touches any other block,
-any hand-written content, or any of `over`'s own drifted-but-well-formed
-blocks. See [ADR-024](../adr/024-doctor-aggregates-diagnostics-and-repairs-only-its-own-corruption.md).
+Repair strips stray markers and appends a well-formed block for currently existing
+managed artifacts, including dangling symlinks. When none remain it strips the
+markers without adding a block. Contributions from linked worktrees are collected
+before repairing their shared block. Inspection then reports the repaired state.
+
+Repair never fills in ordinary missing exclusions, reconciles well-formed drift,
+changes remotes/config, modifies managed content or prunes state records.
+Handwritten content and other overlay blocks are preserved. See
+[ADR-024](../adr/024-doctor-aggregates-diagnostics-and-repairs-only-its-own-corruption.md).

@@ -1,5 +1,7 @@
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
 use clap::Args;
@@ -7,9 +9,11 @@ use dirs::home_dir;
 
 use crate::cli::CLI;
 use crate::exec::Context;
-use crate::overlays::{Overlay, Repository};
+#[cfg(test)]
+use crate::overlays::Overlay;
+use crate::overlays::Repository;
 use crate::status::Counts;
-use crate::status::overlay::{Field, OverlayReport, ResolvedConfiguration, Value};
+use crate::status::overlay::{Field, InspectionCache, OverlayReport, ResolvedConfiguration, Value};
 use crate::ui::{self, emojis, style};
 
 #[derive(Args, Debug)]
@@ -87,23 +91,22 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let mut failed = 0;
     let mut failures = Vec::new();
     let mut counts = Counts::default();
-    let mut exclude_problems = 0;
+    let mut git_problems = std::collections::BTreeSet::new();
+    let mut cache = InspectionCache::default();
     for overlay in &overlays {
         let snapshot = overlay
             .as_ref()
             .map_err(|error| anyhow!("{error}"))
-            .and_then(|overlay| inspect_overlay(&repo, &root, overlay, args.no_uses));
+            .and_then(|overlay| {
+                OverlayReport::inspect_cached(&repo, &root, overlay, args.no_uses, &mut cache)
+            });
         match snapshot {
             Ok(snapshot) => {
                 write_output(&render_overlay(&snapshot, cli.verbose))?;
                 match &snapshot.health {
                     Ok(report) => {
                         let current = report.counts();
-                        exclude_problems += report
-                            .exclude_problems()
-                            .iter()
-                            .filter(|problem| problem.needs_attention())
-                            .count();
+                        git_problems.extend(report.git_configuration().iter().cloned());
                         counts.applied += current.applied;
                         counts.locked += current.locked;
                         counts.missing += current.missing;
@@ -133,8 +136,9 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         }
     }
     if overlays.len() > 1 {
+        let git_problems = git_problems.len();
         write_output(&format!(
-            "{} {} overlays; {healthy} fully applied, {unhealthy} need attention, {failed} could not be checked\n  {counts}\n  {exclude_problems} exclude problem(s)\n  Entry counts are summed per overlay, including shared dependencies.",
+            "{} {} overlays; {healthy} fully applied, {unhealthy} need attention, {failed} could not be checked\n  {counts}\n  {git_problems} unique Git configuration problem(s)\n  Entry counts are summed per overlay, including shared dependencies.",
             style::heading("Overall:"),
             overlays.len()
         ))?;
@@ -152,28 +156,14 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn inspect_overlay(
     repo: &Repository,
     root: &Path,
     overlay: &Overlay,
     no_uses: bool,
 ) -> Result<OverlayReport> {
-    let ctx = Context::builder()
-        .root(root.to_path_buf())
-        .repository(repo.clone())
-        .overlay(overlay.clone())
-        .no_uses(no_uses)
-        .build();
-    let ctx = ctx
-        .resolve_data()
-        .map_err(|error| anyhow!("cannot resolve overlay '{}': {error}", overlay.name))?;
-    let target = overlay
-        .resolve_target(&ctx)
-        .map_err(|_| anyhow!("cannot resolve target for overlay '{}'", overlay.name))?;
-    let ctx = ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
-
-    OverlayReport::inspect(ctx, overlay)
-        .map_err(|error| anyhow!("cannot inspect overlay '{}': {error}", overlay.name))
+    OverlayReport::inspect_overlay(repo, root, overlay, no_uses)
 }
 
 fn render_configuration(
@@ -308,15 +298,23 @@ fn render_overlay(snapshot: &OverlayReport, verbose: bool) -> String {
             for (entry, details) in report.entries().iter().zip(&snapshot.entry_details) {
                 if verbose || entry.status.needs_attention() {
                     lines.push(format!("  {entry}"));
+                    if report.inspection_failed(&entry.entry.target) {
+                        lines.push("      Check failed: inspect source files, Git configuration/index and checkout association".into());
+                    }
                     for field in details {
                         render_field(field, 6, &mut lines);
                     }
                 }
             }
-            for problem in report.exclude_problems() {
-                if verbose || problem.needs_attention() {
-                    lines.extend(problem.to_string().lines().map(|line| format!("  {line}")));
-                }
+            if !report.git_configuration().is_empty() {
+                lines.push(format!(
+                    "{} {}",
+                    emojis::LINK,
+                    style::heading("Git configuration:")
+                ));
+                lines.push(crate::status::configuration::grouped(
+                    report.git_configuration(),
+                ));
             }
         }
         Err(error) => lines.push(format!("  Check failed: {error}")),

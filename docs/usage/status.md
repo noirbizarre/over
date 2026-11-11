@@ -63,8 +63,9 @@ error semantics. Nonzero reconciliation counts and entry
 labels share severity colors: applied is green, changes and missing entries
 yellow, and broken entries or conflicts red. Zero counts stay neutral.
 
-Unknown-key warnings are available through [`over lint`](lint.md) and
-[`over doctor`](doctor.md), rather than appearing before status reports.
+Unknown-key details are available through [`over lint`](lint.md);
+[`over doctor`](doctor.md) summarizes static and runtime health rather than
+duplicating status's detailed report.
 
 Use `--verbose` to expand dependency configuration, policy scopes, selectors,
 permissions and excludes in cascade order. Scopes name their declaring descriptor;
@@ -82,7 +83,7 @@ presence/counts without executing commands or consulting external providers.
 
 ## Exit status and read-only behavior
 
-- `0`: every selected overlay is fully applied, including its exclude blocks,
+- `0`: every selected overlay is fully applied, including Git prerequisites,
   or the repository has no overlays.
 - `1`: any selected overlay needs attention or cannot be checked, including
   unknown names and invalid configuration. An `Ahead` checkout also needs attention.
@@ -135,8 +136,9 @@ reflects whether it's present and its declared configuration
 (`url`/`tag`/`rev`/`remotes`/`config`) is applied. Uncommitted changes,
 local commits, untracked files, or an in-progress merge inside it never
 make it `Modified`/`Ahead`/`Behind`/`Diverged`/`Conflict` — that content
-isn't something `over` manages. If its declared configuration itself
-changes, it's reported `Conflict`. Re-running `over apply` reconciles managed
+isn't something `over` manages. Configuration drift appears as individual warnings
+in **Git configuration**, separately from content conflicts. Tag/revision drift
+retains its reconciliation conflict classification. Re-running `over apply` reconciles managed
 settings such as declared remotes and Git configuration, but does not rewrite an
 existing checkout's `origin` URL to match `url`. For origin URL drift, inspect
 the checkout and its intended repository identity, then explicitly repair it:
@@ -219,25 +221,48 @@ for the same target, source and mapping scope. Without that backup, initializati
 against current source content does not recover its previous base. Keep an
 independent copy of existing target content for manual comparison and recovery.
 
-## `.git/info/exclude` diagnostics
+## Git configuration
 
 When an overlay materializes symlinks or checkouts into a target that's
 itself inside a git repository, `over apply` keeps that repository's
 `.git/info/exclude` in sync so its own `git status` doesn't list
 overlay-managed paths as untracked (see [`over apply`](apply.md)). `over
-status` reports the state of that block, one line per (repository,
-overlay) pair, read-only — it never creates or writes to
-`.git/info/exclude`:
+status` reports actual missing protection, not whether a particular managed block
+exists. Effective global ignores, `.gitignore` and handwritten exclusions count;
+Git's ignore precedence and negations still apply. Absent artifacts need no
+exclusion; dangling symlinks do. Tracked paths are reported independently and
+are never removed from the index or hidden from `git status`.
 
-| Status | Meaning |
-|--------|---------|
-| `exclude ok` | The block already matches what `over apply` would write — nothing to do. Only shown with `--verbose`. |
-| `exclude missing` | Managed paths exist here, but no block has been written yet — run `over apply`. |
-| `exclude modified` | The block exists but its content differs from what `over apply` would write (manual edit, or drift) — re-running `over apply` reconciles it. |
-| `exclude orphaned` | The block exists but nothing is left to exclude in it (e.g. every managed path it used to cover is now tracked by git) — `over apply` will shrink or remove it. |
-| `exclude malformed` | A begin/end marker mismatch for this overlay's block — never auto-repaired; fix it by hand. |
+Issues are grouped by owning overlay, shared repository and affected worktree:
 
-A managed path that's already tracked by the repository is reported as a
-`tracked:` line underneath its group, independently of the block's own
-status above — `over` never removes a tracked path from the index or
-hides it from `git status`.
+```text
+Git configuration:
+  workspaces/oxyde
+    ~/Workspaces/oxyde/press
+      main
+        ✘ exclude missing: opencode.jsonc
+        🔒 tracked: mise.toml
+      ✘ config missing: remote.upstream.url
+```
+
+Flat worktree layouts group under the shared repository, with exclusions stored
+in `press/.git/info/exclude`, not `press/main/.git/info/exclude`. Worktree indexes,
+ignore rules and private settings are checked in their own context. Healthy
+repositories are omitted even with `--verbose`.
+
+For existing declared repositories (including root declarations), status checks
+origin and all declared remote properties, explicit local config and applicable
+`config.worktree` settings, and local/worktree `over.overlay` associations.
+Matching inherited config does not replace a missing explicitly managed scoped
+entry. Extra undeclared remotes/properties are allowed; explicit fetch refspecs
+must match their list, while additional push refspecs are allowed. Values and
+URLs are omitted because they can contain secrets. Missing deployments are
+reported by reconciliation, without fabricated missing-config entries.
+
+Missing/incorrect settings, unprotected artifacts and tracked conflicts are
+warnings. Malformed managed markers are errors; use `over doctor --fix` for that
+limited repair. Well-formed block drift alone is not unhealthy when Git already
+ignores the artifacts. Apply retains its managed-block reconciliation policy.
+The overall Git issue count deduplicates shared dependency findings; entry counts
+remain per selected overlay. Doctor consumes these same runtime findings in its
+concise health summary.

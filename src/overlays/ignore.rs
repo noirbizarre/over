@@ -13,6 +13,17 @@ pub struct SourcePolicy {
     root: PathBuf,
     overlay: Overlay,
     rules: Vec<(PathBuf, Gitignore)>,
+    rule_sources: Vec<(PathBuf, Vec<u8>)>,
+}
+
+/// Only source-selection inputs belong in inspection identities. Including the
+/// whole Overlay would pull unrelated, randomly ordered Git configuration maps in.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct SourcePolicyIdentity {
+    root: PathBuf,
+    overlay: PathBuf,
+    excludes: Vec<(PathBuf, Option<Vec<String>>)>,
+    rules: Vec<(PathBuf, Vec<u8>)>,
 }
 
 impl SourcePolicy {
@@ -36,6 +47,7 @@ impl SourcePolicy {
             root: root.to_path_buf(),
             overlay: overlay.clone(),
             rules: Vec::new(),
+            rule_sources: Vec::new(),
         };
         let mut ancestors: Vec<_> = overlay
             .root
@@ -95,8 +107,26 @@ impl SourcePolicy {
         if let Some(error) = builder.add(&path) {
             return Err(error).with_context(|| format!("invalid ignore file '{}'", path.display()));
         }
+        self.rule_sources.push((
+            path.clone(),
+            std::fs::read(&path).with_context(|| format!("failed to read '{}'", path.display()))?,
+        ));
         self.rules.push((directory.to_path_buf(), builder.build()?));
         Ok(())
+    }
+
+    pub(crate) fn identity(&self) -> SourcePolicyIdentity {
+        SourcePolicyIdentity {
+            root: self.root.clone(),
+            overlay: self.overlay.root.clone(),
+            excludes: self
+                .overlay
+                .scopes
+                .iter()
+                .map(|scope| (scope.root.clone(), scope.exclude.clone()))
+                .collect(),
+            rules: self.rule_sources.clone(),
+        }
     }
 
     pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {

@@ -11,11 +11,12 @@
 //! Virtual checkouts read their recorded association from XDG state without
 //! creating locks, migrating on disk, or persisting inspection results.
 //!
-//! Also surfaces `.git/info/exclude` drift/conflicts among the report's
-//! managed targets (#148, part of #142), via
-//! [`crate::git_exclude::diagnose`] — see [`Report::exclude_problems`].
+//! Git prerequisites use effective protection and scoped configuration findings,
+//! shared with doctor's health summary rather than managed-block bookkeeping.
 
+pub mod configuration;
 pub mod git;
+mod identity;
 pub mod overlay;
 pub(crate) mod virtual_checkout;
 
@@ -25,7 +26,6 @@ use anyhow::Result;
 
 use crate::actions::symlink::LinkType;
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent};
-use crate::git_exclude::{self, ExcludeDiagnosis};
 use crate::plan::{Operation, Plan};
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
@@ -39,8 +39,7 @@ pub enum Status {
     Locked,
     /// Target matches desired intent — nothing to do. For a declared
     /// (non-root) `git` entry (#140, ADR-021), this means the repository
-    /// is present and its declared configuration (url/tag/rev/remotes/git
-    /// config) is applied — regardless of any uncommitted changes, local
+    /// is present and its declared revision is applied — regardless of uncommitted changes, local
     /// commits, or other content a plugin manager (or the user) put there.
     Applied,
     /// Target doesn't exist yet. For a declared `git` entry, this means it
@@ -55,9 +54,8 @@ pub enum Status {
     Broken,
     /// Target exists and doesn't match desired intent, a git checkout has
     /// a merge/rebase/cherry-pick in progress, or — for a declared
-    /// (non-root) `git` entry (#140) — its declared configuration
-    /// (url/tag/rev/remotes/git config) no longer matches what's requested
-    /// ("configuration drift").
+    /// (non-root) `git` entry (#140) — its declared revision no longer matches.
+    /// Supporting Git configuration is reported separately as warning findings.
     Conflict,
     /// A git checkout is ahead of its upstream by this many commits.
     Ahead(usize),
@@ -68,11 +66,20 @@ pub enum Status {
 }
 
 impl Status {
-    fn severity(&self) -> style::Severity {
+    /// Shared runtime severity; commands retain their own exit thresholds.
+    pub fn health_severity(&self) -> Option<configuration::Severity> {
         match self {
-            Self::Applied => style::Severity::Success,
-            Self::Broken | Self::Conflict => style::Severity::Error,
-            _ => style::Severity::Warning,
+            Self::Applied => None,
+            Self::Broken | Self::Conflict => Some(configuration::Severity::Error),
+            _ => Some(configuration::Severity::Warning),
+        }
+    }
+
+    fn severity(&self) -> style::Severity {
+        match self.health_severity() {
+            None => style::Severity::Success,
+            Some(configuration::Severity::Error) => style::Severity::Error,
+            Some(configuration::Severity::Warning) => style::Severity::Warning,
         }
     }
     /// Whether this status needs attention — used by [`Report::needs_attention`]
@@ -207,12 +214,12 @@ fn count_label(count: usize, label: &str, status: Status) -> console::StyledObje
 }
 
 /// The reconciliation status of a whole [`DesiredTree`]: one
-/// [`EntryStatus`] per [`DesiredEntry`], plus any `.git/info/exclude`
-/// drift/conflicts among its managed targets (#148).
+/// [`EntryStatus`] per [`DesiredEntry`], plus structured Git prerequisites.
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     entries: Vec<EntryStatus>,
-    exclude_problems: Vec<ExcludeDiagnosis>,
+    git_configuration: Vec<configuration::Issue>,
+    inspection_failures: Vec<std::path::PathBuf>,
 }
 
 impl Report {
@@ -238,31 +245,42 @@ impl Report {
         // their existing content-discovery policy without a second status model.
         let plan = Plan::build(desired)?;
         let mut entries = Vec::with_capacity(plan.len());
+        let mut inspection_failures = Vec::new();
         for step in plan.steps() {
-            let status = match (&step.entry.intent, &step.operation) {
-                (_, Operation::NeedsUnlock) => Status::Locked,
-                (MaterializationIntent::Checkout, _) => git::inspect(&step.entry)?,
-                (
-                    MaterializationIntent::VirtualCheckout
-                    | MaterializationIntent::ScopedVirtualCheckout(_),
-                    _,
-                ) => inspect(&step.entry)?,
-                (_, Operation::Create) => Status::Missing,
-                (_, Operation::Conflict { .. }) => Status::Conflict,
-                (intent, Operation::Noop) => classify_noop(intent),
-                // A pending rule-change migration (#129, blocked or not):
-                // target exists and doesn't match desired intent — `status`
-                // has no dedicated vocabulary for "migration pending", but
-                // `Conflict` is accurate (and an improvement over silently
-                // misclassifying these as `Noop`, as happened before #129).
-                (_, Operation::Migrate { .. }) => Status::Conflict,
-                // A permission-only drift (#65): content/kind already
-                // matches, only the mode needs fixing — auto-fixable, not a
-                // real conflict, so it's reported the same way a dirty git
-                // checkout is.
-                (_, Operation::Repair { .. }) => Status::Modified,
-                (_, Operation::Deferred) => {
-                    unreachable!("only Checkout entries ever classify as Deferred")
+            let inspected = (|| -> Result<Status> {
+                Ok(match (&step.entry.intent, &step.operation) {
+                    (_, Operation::NeedsUnlock) => Status::Locked,
+                    (MaterializationIntent::Checkout, _) => git::inspect_runtime(&step.entry)?,
+                    (
+                        MaterializationIntent::VirtualCheckout
+                        | MaterializationIntent::ScopedVirtualCheckout(_),
+                        _,
+                    ) => inspect(&step.entry)?,
+                    (_, Operation::Create) => Status::Missing,
+                    (_, Operation::Conflict { .. }) => Status::Conflict,
+                    (intent, Operation::Noop) => classify_noop(intent),
+                    // A pending rule-change migration (#129, blocked or not):
+                    // target exists and doesn't match desired intent — `status`
+                    // has no dedicated vocabulary for "migration pending", but
+                    // `Conflict` is accurate (and an improvement over silently
+                    // misclassifying these as `Noop`, as happened before #129).
+                    (_, Operation::Migrate { .. }) => Status::Conflict,
+                    // A permission-only drift (#65): content/kind already
+                    // matches, only the mode needs fixing — auto-fixable, not a
+                    // real conflict, so it's reported the same way a dirty git
+                    // checkout is.
+                    (_, Operation::Repair { .. }) => Status::Modified,
+                    (_, Operation::Deferred) => {
+                        unreachable!("only Checkout entries ever classify as Deferred")
+                    }
+                })
+            })();
+            let status = match inspected {
+                Ok(status) => status,
+                Err(_) => {
+                    // Keep other entries inspectable, but never expose secret-bearing Git errors.
+                    inspection_failures.push(step.entry.target.clone());
+                    Status::Broken
                 }
             };
             entries.push(EntryStatus {
@@ -271,20 +289,10 @@ impl Report {
             });
         }
 
-        // #148: read-only exclude-block diagnostics, reusing the exact
-        // same (repo, overlay) grouping/discovery `git_exclude::reconcile`
-        // uses at apply time — never opens `.git/info/exclude` for
-        // writing.
-        let managed = git_exclude::managed_targets(desired)?;
-        let exclude_problems = if managed.is_empty() {
-            Vec::new()
-        } else {
-            git_exclude::diagnose(&managed)?
-        };
-
         Ok(Self {
             entries,
-            exclude_problems,
+            git_configuration: configuration::inspect(desired)?,
+            inspection_failures,
         })
     }
 
@@ -292,10 +300,35 @@ impl Report {
         &self.entries
     }
 
-    /// `.git/info/exclude` diagnostics for this report's managed targets
-    /// (#148) — see [`ExcludeDiagnosis`].
-    pub fn exclude_problems(&self) -> &[ExcludeDiagnosis] {
-        &self.exclude_problems
+    pub fn git_configuration(&self) -> &[configuration::Issue] {
+        &self.git_configuration
+    }
+
+    pub fn inspection_failed(&self, target: &std::path::Path) -> bool {
+        self.inspection_failures.iter().any(|path| path == target)
+    }
+
+    /// Stable issue identities let doctor count a shared dependency once while
+    /// still marking every composition that depends on it as unhealthy.
+    pub fn health_issues(&self) -> Vec<(String, configuration::Severity)> {
+        let mut issues = Vec::new();
+        for entry in self
+            .entries
+            .iter()
+            .filter(|entry| entry.status.needs_attention())
+        {
+            let Some(severity) = entry.status.health_severity() else {
+                continue;
+            };
+            let claim = identity::ClaimIdentity::new(&entry.entry);
+            issues.push((format!("{claim:?}:{:?}", entry.status), severity));
+        }
+        issues.extend(
+            self.git_configuration
+                .iter()
+                .map(|issue| (format!("{issue:?}"), issue.severity)),
+        );
+        issues
     }
 
     pub fn is_empty(&self) -> bool {
@@ -321,11 +354,11 @@ impl Report {
     }
 
     /// Whether anything in this report needs attention (everything except
-    /// `Applied`, plus any exclude-block problem). The canonical status CLI
+    /// `Applied`, plus any Git prerequisite problem). The canonical status CLI
     /// uses this to choose its exit status.
     pub fn needs_attention(&self) -> bool {
         self.entries.iter().any(|e| e.status.needs_attention())
-            || self.exclude_problems.iter().any(|p| p.needs_attention())
+            || !self.git_configuration.is_empty()
     }
 }
 
@@ -624,7 +657,8 @@ mod tests {
                     behind: 1,
                 }),
             ],
-            exclude_problems: Vec::new(),
+            git_configuration: Vec::new(),
+            inspection_failures: Vec::new(),
         };
         let counts = report.counts();
         assert_eq!(
@@ -851,7 +885,6 @@ mod tests {
     #[test]
     fn report_build_surfaces_a_missing_exclude_block_for_a_managed_target() {
         use crate::desired::Provenance;
-        use crate::git_exclude::ExcludeStatus;
 
         let td = TempDir::new().unwrap();
         git2::Repository::init(td.path()).unwrap();
@@ -873,16 +906,19 @@ mod tests {
 
         let report = Report::build(&desired).unwrap();
 
-        assert_eq!(report.exclude_problems().len(), 1);
-        assert_eq!(report.exclude_problems()[0].status, ExcludeStatus::Missing);
-        assert!(report.exclude_problems()[0].needs_attention());
+        assert_eq!(report.git_configuration().len(), 1);
+        assert!(
+            report.git_configuration()[0]
+                .message
+                .contains("exclude missing: dotfile")
+        );
         assert!(report.needs_attention());
     }
 
     #[test]
     fn report_build_reports_ok_when_the_exclude_block_already_matches() {
         use crate::desired::Provenance;
-        use crate::git_exclude::{ExcludeStatus, ManagedTarget};
+        use crate::git_exclude::{self, ManagedTarget};
 
         let td = TempDir::new().unwrap();
         git2::Repository::init(td.path()).unwrap();
@@ -912,14 +948,12 @@ mod tests {
 
         let report = Report::build(&desired).unwrap();
 
-        assert_eq!(report.exclude_problems().len(), 1);
-        assert_eq!(report.exclude_problems()[0].status, ExcludeStatus::Ok);
-        assert!(!report.exclude_problems()[0].needs_attention());
+        assert!(report.git_configuration().is_empty());
     }
 
     #[test]
     fn report_build_without_any_managed_target_has_no_exclude_problems() {
         let report = Report::build(&DesiredTree::default()).unwrap();
-        assert!(report.exclude_problems().is_empty());
+        assert!(report.git_configuration().is_empty());
     }
 }

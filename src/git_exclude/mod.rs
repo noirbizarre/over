@@ -561,12 +561,102 @@ pub fn diagnose_existing(desired: &DesiredTree) -> Result<Vec<ExcludeDiagnosis>>
         .collect()
 }
 
+/// Effective protection is distinct from ownership of an exact managed block.
+/// Keeping this separate prevents an existing block from suppressing its own
+/// reconciliation expectation and oscillating between removal and recreation.
+#[derive(Debug, Clone)]
+pub struct ProtectionDiagnosis {
+    pub overlay: String,
+    pub common_dir: PathBuf,
+    pub workdir: PathBuf,
+    pub missing: Vec<PathBuf>,
+    pub tracked: Vec<PathBuf>,
+    pub malformed: bool,
+}
+
+/// Inspect Git's actual ignore rules without requiring an over-owned rule.
+pub fn diagnose_protection(desired: &DesiredTree) -> Result<Vec<ProtectionDiagnosis>> {
+    let (repos, groups) = discover_existing_groups(desired)?;
+    let mut diagnoses = Vec::new();
+    for ((key, overlay), targets) in groups {
+        let repo = &repos[&key];
+        let expectation = compute_expectation(repo, &overlay, &targets)?;
+        let root = expectation.repo_root.canonicalize()?;
+        let mut missing = Vec::new();
+        for target in targets {
+            let canonical = canonical_parent_join(&target)?;
+            let Ok(relative) = canonical.strip_prefix(&root) else {
+                continue;
+            };
+            if expectation
+                .tracked_conflicts
+                .iter()
+                .any(|item| item.path == relative)
+            {
+                continue;
+            }
+            if !repo.is_path_ignored(relative)? {
+                missing.push(relative.to_path_buf());
+            }
+        }
+        let current = match fs::read_to_string(&expectation.exclude_path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error).context("failed to read Git exclusions"),
+        };
+        diagnoses.push(ProtectionDiagnosis {
+            overlay,
+            common_dir: repo.commondir().canonicalize()?,
+            workdir: expectation.repo_root,
+            missing,
+            tracked: expectation
+                .tracked_conflicts
+                .into_iter()
+                .map(|item| item.path)
+                .collect(),
+            malformed: matches!(
+                partial::find_block(&current, &expectation.marker),
+                BlockState::Malformed
+            ),
+        });
+    }
+    Ok(diagnoses)
+}
+
 /// Repair only malformed blocks, using the same existing-artifact expectations as diagnosis.
 pub fn repair_existing(desired: &DesiredTree) -> Result<RepairReport> {
-    let (repos, groups) = discover_existing_groups(desired)?;
+    repair_existing_batch(&[desired])
+}
+
+/// Aggregate shared worktree blocks before repairing any of their markers.
+pub fn repair_existing_batch(desired: &[&DesiredTree]) -> Result<RepairReport> {
+    let mut expectations = BTreeMap::<(PathBuf, String), GroupExpectation>::new();
+    for desired in desired {
+        let (repos, groups) = discover_existing_groups(desired)?;
+        for ((repo_key, overlay), targets) in groups {
+            let mut expectation = compute_expectation(&repos[&repo_key], &overlay, &targets)?;
+            // Alias spellings of one common directory still own a single physical block.
+            expectation.exclude_path = repos[&repo_key]
+                .commondir()
+                .canonicalize()?
+                .join("info/exclude");
+            let key = (expectation.exclude_path.clone(), overlay);
+            if let Some(existing) = expectations.get_mut(&key) {
+                // Worktrees share one block; collect every contribution before its first rewrite.
+                let lines: BTreeSet<_> = existing
+                    .expected_content
+                    .lines()
+                    .chain(expectation.expected_content.lines())
+                    .collect();
+                existing.expected_content = lines.into_iter().collect::<Vec<_>>().join("\n");
+            } else {
+                expectations.insert(key, expectation);
+            }
+        }
+    }
     let mut report = RepairReport::default();
-    for ((repo_key, overlay), targets) in groups {
-        repair_group(&repos[&repo_key], &overlay, &targets, &mut report)?;
+    for ((_, overlay), expectation) in expectations {
+        repair_expectation(expectation, &overlay, &mut report)?;
     }
     Ok(report)
 }
@@ -857,6 +947,14 @@ fn repair_group(
     report: &mut RepairReport,
 ) -> Result<()> {
     let expectation = compute_expectation(repo, overlay, targets)?;
+    repair_expectation(expectation, overlay, report)
+}
+
+fn repair_expectation(
+    expectation: GroupExpectation,
+    overlay: &str,
+    report: &mut RepairReport,
+) -> Result<()> {
     let exclude_path = &expectation.exclude_path;
 
     if !exclude_path.exists() {
