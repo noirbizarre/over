@@ -139,7 +139,13 @@ impl OverlayReport {
             .build();
         let ctx = ctx
             .resolve_data()
-            .map_err(|_| anyhow!("cannot resolve overlay '{}'", overlay.name))?;
+            // Retain the configuration entry points without quoting rendered metadata values.
+            .map_err(|_| {
+                anyhow!(
+                    "cannot resolve overlay '{}': check default_overlay and dependency metadata",
+                    overlay.name
+                )
+            })?;
         let target = overlay
             .resolve_target(&ctx)
             .map_err(|_| anyhow!("cannot resolve target for overlay '{}'", overlay.name))?;

@@ -317,7 +317,7 @@ pub fn inspect_repository(
             expected.insert(normalized_key(key), Expected::Value(value.clone()));
         }
         let private = Issue {
-            worktree: Some(target.to_path_buf()),
+            worktree: Some(target.canonicalize()?),
             ..base.clone()
         };
         compare(
@@ -338,7 +338,7 @@ pub fn inspect_repository(
         }
         let linked = Repository::open(worktree.path())?;
         let private = Issue {
-            worktree: Some(worktree.path().to_path_buf()),
+            worktree: Some(worktree.path().canonicalize()?),
             ..base.clone()
         };
         let private_config = read_config(&linked.path().join("config.worktree"))?;

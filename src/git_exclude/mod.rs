@@ -607,7 +607,9 @@ pub fn diagnose_protection(desired: &DesiredTree) -> Result<Vec<ProtectionDiagno
         diagnoses.push(ProtectionDiagnosis {
             overlay,
             common_dir: repo.commondir().canonicalize()?,
-            workdir: expectation.repo_root,
+            // Git uses ordinary Windows paths, while common-dir identity uses
+            // canonical verbatim paths; normalize both before grouping them.
+            workdir: root,
             missing,
             tracked: expectation
                 .tracked_conflicts
