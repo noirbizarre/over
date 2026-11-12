@@ -99,9 +99,9 @@ pub enum MaterializationIntent {
     /// [`crate::materialize::CheckoutMaterializer`] (#110): ensures the
     /// repository/worktree is present and configured, the same "presence"
     /// concern `actions::git::clone_repositories` already implements.
-    /// Content-level bidirectional synchronization (fetch/merge/push) is a
-    /// separate, explicit operation (`over sync`, `crate::sync`), not part
-    /// of materialization.
+    /// Manage its content with ordinary Git. The CLI's `over sync` reconciles
+    /// local virtual checkouts, not these declared repositories; the broader
+    /// [`crate::sync`] library API remains separate from materialization.
     Checkout,
     /// A subtree materialized as a virtual checkout (#141,
     /// `MaterializationKind::Checkout` in `overlays::rules`): ordinary,

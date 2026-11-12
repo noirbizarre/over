@@ -118,7 +118,7 @@ facts, before metadata composition; it cannot depend on the `data` it selects.
 | `add`, `git add`, `git mount` | Infer context, otherwise require an explicit overlay; no default fallback |
 | `log` | Infer context, otherwise source-repository history; no default selection |
 | `lint` | Check the repository; the default does not narrow it |
-| `doctor` | Check all overlay configuration and state; a name only narrows Git-exclude diagnostics |
+| `doctor` | Check all runtime overlays unless named; static lint and global checks remain repository-wide |
 
 See [contextual overlay selection](../usage/selection.md) for ranked evidence,
 Git associations, sibling files, and ambiguity errors. Ambiguity does not fall
@@ -233,13 +233,16 @@ An ordered fallback expression such as
 succeeds. Provider references use `scheme://payload`; external providers are not
 implemented yet, so those candidates are unavailable and allow fallback. Empty
 or malformed candidates reject the entire expression before any lookup. Missing
-secrets and unavailable providers allow fallback; native unlock, decryption,
-corruption and store errors stop it. The pipe is inside the argument string,
+secrets, unavailable providers, and a missing modern native unlock session allow
+fallback. Decryption, corruption, store errors, and legacy credential failures
+stop it. The pipe is inside the argument string,
 not a MiniJinja filter.
 
-Native resolution uses the active source repository and shares the invocation's
-lazy Age unlock. Set `OVER_SECRET` or allow interactive prompting; apply's
-`--no-prompt` disables prompts. Hook secrets must be valid UTF-8. Secret access
+Native resolution uses the active source repository. Modern native stores require
+the local repository key established by `over unlock`; hook lookup does not prompt
+to unlock them. Legacy per-name Age secrets share the invocation's lazy credential:
+set `OVER_SECRET` or allow interactive prompting; apply's `--no-prompt` disables
+those prompts. Hook secrets must be valid UTF-8. Secret access
 is not available in overlay destination or sidecar path templates. Prefer
 injecting secrets through `env`, for example:
 

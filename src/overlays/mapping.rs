@@ -178,6 +178,12 @@ pub(crate) fn validate_sources(overlay: &Overlay) -> Result<()> {
 
 impl ResolvedMappings {
     pub fn new(overlay: &Overlay, ctx: &exec::Context) -> Result<Self> {
+        // Both planning and clone provisioning must reject escapes before resolving destinations.
+        if let Some(repositories) = &overlay.git {
+            for key in repositories.keys() {
+                crate::actions::git::config::validate_logical_key(key)?;
+            }
+        }
         validate_sources(overlay)?;
         let prepared = ctx.prepare_overlay(overlay)?;
         let ctx = prepared.as_ref();

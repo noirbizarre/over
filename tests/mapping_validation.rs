@@ -56,6 +56,32 @@ impl Fixture {
 }
 
 #[test]
+fn invalid_git_keys_are_rejected_before_provisioning_or_configuration_changes() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.source.join("ov/over.toml"),
+        format!(
+            "target='~/base'\n[git]\n'../outside'={:?}\n",
+            fixture.source.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let config = fs::read(fixture.source.join(".git/config")).unwrap();
+    fixture
+        .command("apply")
+        .args(["ov", "--no-prompt", "--target", "home"])
+        .assert()
+        .failure()
+        .stderr(contains("invalid Git logical key"));
+    assert!(!fixture.temp.path().join("home/outside").exists());
+    assert!(!fixture.temp.path().join("home/base").exists());
+    assert_eq!(
+        fs::read(fixture.source.join(".git/config")).unwrap(),
+        config
+    );
+}
+
+#[test]
 fn relative_roots_stage_checkout_files_without_ingesting_source_edits() {
     let fixture = Fixture::new();
     fixture.apply();

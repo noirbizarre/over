@@ -156,6 +156,20 @@ impl Plan {
         &self.steps
     }
 
+    /// Preserve the build-time obstruction decision instead of probing through it again.
+    pub(crate) fn blocker_for_step(&self, index: usize) -> Option<&std::path::Path> {
+        self.blocked_by[index].as_deref()
+    }
+
+    pub(crate) fn inspectable_desired(&self) -> DesiredTree {
+        let mut index = 0;
+        self.desired.filter_entries(|_| {
+            let inspectable = self.blocker_for_step(index).is_none();
+            index += 1;
+            inspectable
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.steps.len()
     }

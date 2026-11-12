@@ -79,6 +79,18 @@ impl DesiredTree {
         &self.entries
     }
 
+    pub(crate) fn filter_entries(&self, mut keep: impl FnMut(&DesiredEntry) -> bool) -> Self {
+        Self {
+            entries: self
+                .entries
+                .iter()
+                .filter(|entry| keep(entry))
+                .cloned()
+                .collect(),
+            sources: self.sources.clone(),
+        }
+    }
+
     /// Find the outermost scaffold that must be replaced before inspecting a child.
     pub(crate) fn blocking_scaffold(&self, target: &Path) -> Result<Option<PathBuf>> {
         let ancestors: Vec<_> = target.ancestors().skip(1).collect();
@@ -382,8 +394,9 @@ fn finalize_entries(
 
 /// Git-managed paths declared via `overlay.git`: materialized by
 /// `CheckoutMaterializer` (#110), which ensures presence/configuration
-/// only — content-level bidirectional sync is `over sync` (crate::sync), a
-/// separate explicit operation. Unrelated to `MaterializationIntent::VirtualCheckout`
+/// only — manage their content with ordinary Git. The CLI's `over sync`
+/// handles local virtual checkouts; the broader library API in [`crate::sync`]
+/// is separate. Unrelated to `MaterializationIntent::VirtualCheckout`
 /// (#141, see its doc) — both can coexist at different paths within the
 /// same overlay, including when the overlay root itself resolves to a
 /// virtual checkout.

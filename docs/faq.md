@@ -179,9 +179,10 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
 
     - **Source repository:** the Git-backed home of your setup, normally
       `~/.dotfiles`. Its [root descriptor](configuration/root.md) supplies defaults.
-    - **Overlay:** a source directory containing files and an
-      [overlay descriptor](configuration/overlay.md). It groups a reusable concern
-      and controls where and how its content appears.
+    - **Overlay:** a source directory containing files, discovered through a local
+      [overlay descriptor](configuration/overlay.md) or a root `overlays` declaration.
+      Its local descriptor is optional; inherited configuration controls where and
+      how its content appears. It groups a reusable concern.
     - **Composition:** `uses` includes other overlays transitively, dependency-first,
       once per shared dependency. Each keeps its own configuration and target.
       [Inheritance](configuration/overlay.md#fields-and-inheritance) supplies

@@ -1,7 +1,20 @@
 use std::collections::HashMap;
+use std::path::{Component, Path};
 
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
+
+/// Keep logical Git keys inside the overlay namespace before target routing.
+pub(crate) fn validate_logical_key(key: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !key.is_empty()
+            && Path::new(key)
+                .components()
+                .all(|part| matches!(part, Component::Normal(_) | Component::CurDir)),
+        "invalid Git logical key '{key}': use a relative path without traversal"
+    );
+    Ok(())
+}
 
 /// Configuration for a single git repository entry in an overlay.
 ///
@@ -353,6 +366,20 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[rstest::rstest]
+    #[case(".", true)]
+    #[case("plugins/release..old", true)]
+    #[case("../outside", false)]
+    #[case("plugins/../outside", false)]
+    #[case("/outside", false)]
+    #[case("", false)]
+    fn git_logical_keys_reject_escape_components_not_dot_substrings(
+        #[case] key: &str,
+        #[case] valid: bool,
+    ) {
+        assert_eq!(super::validate_logical_key(key).is_ok(), valid);
+    }
+
     use noyalib::compat::serde_yaml as serde_yml;
     use pretty_assertions::assert_eq;
     use rstest::rstest;

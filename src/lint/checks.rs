@@ -503,14 +503,10 @@ fn check_git(overlay: &Overlay) -> Vec<Diagnostic> {
             );
         }
 
-        // Path traversal in git map key
-        if path.contains("..") {
+        if let Err(error) = crate::actions::git::config::validate_logical_key(path) {
             diagnostics.push(
-                Diagnostic::error(
-                    &overlay.name,
-                    format!("{ctx}: path contains `..` traversal"),
-                )
-                .with_hint("use a path within the overlay target directory"),
+                Diagnostic::error(&overlay.name, format!("{ctx}: {error}"))
+                    .with_hint("use a path within the overlay target directory"),
             );
         }
     }
@@ -1035,7 +1031,7 @@ url = "https://example.com/repo.git"
         assert!(
             diags
                 .iter()
-                .any(|d| d.severity == Severity::Error && d.message.contains("path contains `..`"))
+                .any(|d| d.severity == Severity::Error && d.message.contains("without traversal"))
         );
     }
 

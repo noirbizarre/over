@@ -315,10 +315,13 @@ impl Action for EnsureGitRepository {
 
 /// Checkout a specific tag or rev on a non-bare repo.
 fn checkout_ref(repo: &Repository, config: &GitRepoConfig) -> Result<()> {
+    // Ignored obstructions have no Git recovery copy and must survive reconciliation.
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.safe().overwrite_ignored(false);
     // branch is handled at clone time via RepoBuilder; tag/rev are post-clone operations
     if let Some(tag) = &config.tag {
         let (obj, reference) = repo.revparse_ext(tag)?;
-        repo.checkout_tree(&obj, None)?;
+        repo.checkout_tree(&obj, Some(&mut checkout))?;
         if let Some(reference) = reference {
             repo.set_head(
                 reference
@@ -330,7 +333,7 @@ fn checkout_ref(repo: &Repository, config: &GitRepoConfig) -> Result<()> {
         }
     } else if let Some(rev) = &config.rev {
         let obj = repo.revparse_single(rev)?;
-        repo.checkout_tree(&obj, None)?;
+        repo.checkout_tree(&obj, Some(&mut checkout))?;
         repo.set_head_detached(obj.id())?;
     }
     Ok(())
@@ -1166,6 +1169,46 @@ mod tests {
             repo.head().unwrap().peel_to_commit().unwrap().id(),
             first_commit_id
         );
+    }
+
+    #[rstest::rstest]
+    #[case(true)]
+    #[case(false)]
+    fn checkout_ref_preserves_ignored_obstructions_and_repository_state(#[case] tag: bool) {
+        let (td, repo) = create_source_repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let mut tree = repo.treebuilder(Some(&head.tree().unwrap())).unwrap();
+        tree.insert("private", repo.blob(b"incoming").unwrap(), 0o100644)
+            .unwrap();
+        let tree = repo.find_tree(tree.write().unwrap()).unwrap();
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        // Build an incoming revision without touching the current worktree or index.
+        let incoming = repo
+            .commit(None, &sig, &sig, "incoming", &tree, &[&head])
+            .unwrap();
+        repo.tag_lightweight(
+            "incoming",
+            repo.find_commit(incoming).unwrap().as_object(),
+            false,
+        )
+        .unwrap();
+        fs::write(repo.path().join("info/exclude"), "private\n").unwrap();
+        fs::write(td.path().join("private"), "irreplaceable").unwrap();
+        let index = fs::read(repo.path().join("index")).unwrap();
+        let mut config: GitRepoConfig = serde_json::from_str("\"unused\"").unwrap();
+        if tag {
+            config.tag = Some("incoming".into());
+        } else {
+            config.rev = Some(incoming.to_string());
+        }
+
+        assert!(checkout_ref(&repo, &config).is_err());
+        assert_eq!(
+            fs::read(td.path().join("private")).unwrap(),
+            b"irreplaceable"
+        );
+        assert_eq!(repo.head().unwrap().target(), Some(head.id()));
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
     }
 
     #[test]

@@ -44,8 +44,9 @@ over apply .
 over status .
 ```
 
-`.` explicitly selects the repository-root overlay. A bare `over apply` prompts
-unless a default is configured, even when only one candidate exists. Existing
+`.` explicitly selects the repository-root overlay. A bare `over apply` tries
+contextual inference, then a configured default, otherwise requires an explicit
+selection with an actionable error. It never opens an overlay chooser. Existing
 target files may conflict; inspect the preview before choosing how to handle
 them. Editing an applied symlink edits its source in `~/.dotfiles`.
 

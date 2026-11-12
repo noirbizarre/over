@@ -209,10 +209,11 @@ impl OverlayReport {
                     let mut details = explain(&entry.entry, &ordered);
                     if entry.entry.intent.is_virtual_checkout()
                         && matches!(entry.status, Status::Modified | Status::Diverged { .. } | Status::Conflict)
+                        && let Some(inspection) = inspections.get(&entry.entry.target)
                     {
                         for (label, changes) in [
-                            ("staged", &inspections[&entry.entry.target].staged),
-                            ("unstaged", &inspections[&entry.entry.target].unstaged),
+                            ("staged", &inspection.staged),
+                            ("unstaged", &inspection.unstaged),
                         ] {
                             details.extend(changes.iter().map(|change| {
                                 Field::new("", Value::Change { symbol: file_change_symbol(change.kind), path: change.path.clone(), staging: label })
