@@ -2776,7 +2776,7 @@ fn show_overlay_with_uses() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(tmp.path())
-        .args(["show", "myoverlay"])
+        .args(["show", "myoverlay", "--verbose"])
         .assert()
         .success()
         .stdout(contains("myoverlay"))
@@ -2801,7 +2801,7 @@ url = "https://github.com/user/myapp.git"
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(tmp.path())
-        .args(["show", "gitoverlay"])
+        .args(["show", "gitoverlay", "--verbose"])
         .assert()
         .code(1)
         .stdout(contains("gitoverlay"))
@@ -2886,7 +2886,7 @@ install = ["echo install"]
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(tmp.path())
-        .args(["show", "install_overlay"])
+        .args(["show", "install_overlay", "--verbose"])
         .assert()
         .success()
         .stdout(contains("install_overlay"))
@@ -3614,9 +3614,10 @@ fn virtual_checkout_status_and_diff_report_local_modification() -> TestResult {
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
-        .code(1)
-        .stdout(contains("modified"))
-        .stdout(contains("M file.txt"));
+        .success()
+        .stdout(contains("Fully applied"))
+        .stdout(contains("Changes:"))
+        .stdout(contains("M dotfiles/file.txt (unstaged)"));
 
     Command::cargo_bin("over")?
         .arg("--home")

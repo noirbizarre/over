@@ -139,7 +139,9 @@ XY<TAB>JSON(worktree)<TAB>JSON(path)<TAB>JSON(target-or-null)
   mean added, modified, deleted, and type-changed. `UU` means unresolved index
   conflict. Renames are represented as deletion plus addition.
 - Worktree and virtual target are absolute paths without home abbreviation.
-  The file path is repository-relative. The fourth column is JSON `null` for
+  The worktree identity follows Git's resolved source location, including directory
+  aliases. The file path is repository-relative and uses `/` separators on every
+  platform. The fourth column is JSON `null` for
   native worktrees, or a JSON string identifying the virtual checkout root. This
   distinguishes multiple targets backed by the same source path.
 - Paths are JSON-quoted strings, so tabs, newlines, quotes and backslashes are

@@ -48,6 +48,9 @@ pub struct Params {
 }
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
+    if cli.debug {
+        tracing::debug!(?cli, ?args, "CLI args");
+    }
     let short = args.short;
     let home = cli.resolve_home()?;
     let verbose = cli.verbose;
@@ -180,7 +183,7 @@ fn execute_blocking(home: PathBuf, verbose: bool, args: &Params) -> Result<()> {
             stdout.write_all(change.short()?.as_bytes())?;
         }
     } else {
-        write_output(&render_changes(&changes))?;
+        write_output(&render_changes(&changes)?)?;
     }
     if unhealthy + failed > 0 {
         return Err(anyhow!(
@@ -195,7 +198,9 @@ fn execute_blocking(home: PathBuf, verbose: bool, args: &Params) -> Result<()> {
     Ok(())
 }
 
-fn render_changes(changes: &std::collections::BTreeSet<crate::status::changes::Change>) -> String {
+fn render_changes(
+    changes: &std::collections::BTreeSet<crate::status::changes::Change>,
+) -> Result<String> {
     let mut lines = vec![style::heading("Changes:").to_string()];
     let mut previous = None;
     for change in changes {
@@ -218,7 +223,7 @@ fn render_changes(changes: &std::collections::BTreeSet<crate::status::changes::C
                 lines.push(format!(
                     "    {} {} ({label})",
                     state.symbol(),
-                    style::path(change.path.display())
+                    style::path(change.git_path()?)
                 ));
             }
         }
@@ -227,7 +232,7 @@ fn render_changes(changes: &std::collections::BTreeSet<crate::status::changes::C
         lines.push("  none".into());
     }
     lines.push(String::new());
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 #[cfg(test)]

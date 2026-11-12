@@ -39,6 +39,19 @@ pub struct Change {
 }
 
 impl Change {
+    /// Git paths use forward slashes, but a Unix backslash is a literal filename byte.
+    pub fn git_path(&self) -> Result<String> {
+        let path = self
+            .path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("status requires UTF-8 paths"))?;
+        Ok(if cfg!(windows) {
+            path.replace('\\', "/")
+        } else {
+            path.to_owned()
+        })
+    }
+
     pub fn xy(&self) -> String {
         [self.staged, self.unstaged]
             .into_iter()
@@ -58,7 +71,7 @@ impl Change {
             "{}\t{}\t{}\t{}\n",
             self.xy(),
             serde_json::to_string(&text(&self.worktree)?)?,
-            serde_json::to_string(&text(&self.path)?)?,
+            serde_json::to_string(&self.git_path()?)?,
             serde_json::to_string(&self.target.as_deref().map(text).transpose()?)?
         ))
     }
@@ -127,6 +140,22 @@ pub(crate) fn native_changes(
 ) -> Result<Vec<Change>> {
     let mut queries = BTreeMap::<PathBuf, std::collections::BTreeSet<PathBuf>>::new();
     let mut full_repositories = std::collections::BTreeSet::new();
+    let virtual_sources = desired
+        .entries()
+        .iter()
+        .filter_map(|entry| {
+            if entry.intent.is_virtual_checkout()
+                && let Provenance::Overlay { source, .. } = &entry.provenance
+            {
+                Some(
+                    crate::overlays::mapping::physical(source)
+                        .map(|source| (source, entry.intent.checkout_scope())),
+                )
+            } else {
+                None
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
     for source in &desired.sources {
         let repo = match git2::Repository::discover(&source.overlay.root) {
             Ok(repo) => repo,
@@ -137,6 +166,16 @@ pub(crate) fn native_changes(
             continue;
         };
         let worktree = crate::overlays::mapping::lexical(worktree);
+        // Git resolves source aliases (notably macOS /var); policy retains the declared namespace.
+        let physical_worktree = crate::overlays::mapping::physical(&worktree)?;
+        let physical_source = crate::overlays::mapping::physical(&source.overlay.root)?;
+        let managed = physical_source.strip_prefix(&physical_worktree)?;
+        let descriptors = source
+            .overlay
+            .scopes
+            .iter()
+            .map(|scope| crate::overlays::mapping::physical(&scope.descriptor))
+            .collect::<Result<std::collections::BTreeSet<_>>>()?;
         let paths = queries.entry(worktree.clone()).or_default();
         // Index paths include staged additions; HEAD additionally preserves staged deletions.
         if !cache.candidates.contains_key(&worktree) {
@@ -169,40 +208,36 @@ pub(crate) fn native_changes(
         for bytes in &cache.candidates[&worktree] {
             if std::str::from_utf8(bytes).is_err() {
                 // An unrelated non-text filename must not make a scoped status fail.
-                git::relative_index_path(bytes, source.overlay.root.strip_prefix(&worktree)?)?;
+                git::relative_index_path(bytes, managed)?;
                 continue;
             }
             let relative = Path::new(std::str::from_utf8(bytes)?);
-            let absolute = worktree.join(relative);
-            let in_source = absolute.starts_with(&source.overlay.root)
-                && !source.policy.is_ignored(&absolute, false);
-            let descriptor = source
-                .overlay
-                .scopes
-                .iter()
-                .any(|scope| scope.descriptor == absolute);
+            let absolute = physical_worktree.join(relative);
+            let in_source = relative.strip_prefix(managed).ok().is_some_and(|tail| {
+                !source
+                    .policy
+                    .is_ignored(&source.overlay.root.join(tail), false)
+            });
+            let descriptor = descriptors.contains(&absolute);
             // Ancestor ignore inputs affect this overlay even when removed from today's filesystem.
             let ignore_input = absolute
                 .file_name()
                 .is_some_and(|name| name == ".overignore")
                 && absolute
                     .parent()
-                    .is_some_and(|parent| source.overlay.root.starts_with(parent));
+                    .is_some_and(|parent| physical_source.starts_with(parent));
             if !(in_source || descriptor || ignore_input) {
                 continue;
             }
             // Virtual content compares against its target, never against source worktree bytes too.
-            if desired.entries().iter().any(|entry| {
-                if entry.intent.is_virtual_checkout()
-                    && let Provenance::Overlay { source, .. } = &entry.provenance
-                    && let Ok(path) = absolute.strip_prefix(source)
-                {
-                    entry.intent.checkout_scope().owns_source(path)
-                        && !crate::overlays::ignore::is_control_file(&absolute)
-                } else {
-                    false
-                }
-            }) {
+            let virtual_content = virtual_sources.iter().any(|(source, scope)| {
+                absolute
+                    .strip_prefix(source)
+                    .ok()
+                    .is_some_and(|path| scope.owns_source(path))
+                    && !crate::overlays::ignore::is_control_file(&absolute)
+            });
+            if virtual_content {
                 continue;
             }
             paths.insert(relative.to_path_buf());

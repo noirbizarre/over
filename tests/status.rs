@@ -18,6 +18,11 @@ fn command(source: &Path, root: &Path, verb: &str) -> Command {
     command
 }
 
+fn worktree_identity(repo: &git2::Repository) -> std::path::PathBuf {
+    // libgit2 resolves macOS temporary-directory aliases and omits a Windows verbatim prefix.
+    repo.workdir().unwrap().components().collect()
+}
+
 #[test]
 fn status_show_and_doctor_report_obstructed_scaffolds_without_panicking() {
     let temp = TempDir::new().unwrap();
@@ -677,7 +682,7 @@ impl CheckoutFixture {
     fn row(&self, xy: &str, path: &str) -> String {
         format!(
             "{xy}\t{}\t{}\t{}\n",
-            serde_json::to_string(&self.source).unwrap(),
+            serde_json::to_string(&worktree_identity(&self.repo)).unwrap(),
             serde_json::to_string(&format!("selected/{path}")).unwrap(),
             serde_json::to_string(&self.root).unwrap()
         )
@@ -811,7 +816,7 @@ fn short_status_keeps_distinct_targets_for_the_same_source_path() {
         .success()
         .stdout(format!(
             " M\t{}\t\"selected/file\"\t{}\n",
-            serde_json::to_string(&fixture.source).unwrap(),
+            serde_json::to_string(&worktree_identity(&fixture.repo)).unwrap(),
             serde_json::to_string(&other).unwrap()
         ));
 }
@@ -969,6 +974,54 @@ fn non_utf8_index_paths_only_fail_the_overlay_that_owns_them() {
         .stdout("");
 }
 
+#[cfg(unix)]
+#[test]
+fn source_aliases_preserve_git_changes_and_ignore_unrelated_non_utf8_paths() {
+    let fixture = CheckoutFixture::new();
+    let alias = fixture.temp.path().join("source-alias");
+    std::os::unix::fs::symlink(&fixture.source, &alias).unwrap();
+    let mut index = fixture.repo.index().unwrap();
+    let mut entry = index.get_path(Path::new("selected/file"), 0).unwrap();
+    entry.path = b"unrelated-\xff".to_vec();
+    index.add(&entry).unwrap();
+    index.write().unwrap();
+    fs::write(fixture.root.join("file"), "target edit\n").unwrap();
+    command(&alias, &fixture.root, "status")
+        .args(["selected", "--short"])
+        .env("XDG_STATE_HOME", fixture.temp.path().join("state"))
+        .assert()
+        .success()
+        .stdout(fixture.row(" M", "file"));
+}
+
+#[cfg(unix)]
+#[test]
+fn native_source_changes_remain_selected_through_directory_aliases() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let alias = temp.path().join("source-alias");
+    let root = temp.path().join("home");
+    fs::create_dir_all(source.join("selected")).unwrap();
+    fs::write(source.join("selected/over.yaml"), "target: '~'\n").unwrap();
+    fs::write(source.join("selected/file"), "original\n").unwrap();
+    let repo = git2::Repository::init(&source).unwrap();
+    commit_all(&repo);
+    std::os::unix::fs::symlink(&source, &alias).unwrap();
+    command(&alias, &root, "apply")
+        .args(["selected", "--no-prompt"])
+        .assert()
+        .success();
+    fs::write(source.join("selected/file"), "source edit\n").unwrap();
+    command(&alias, &root, "status")
+        .args(["selected", "--short"])
+        .assert()
+        .success()
+        .stdout(format!(
+            " M\t{}\t\"selected/file\"\tnull\n",
+            serde_json::to_string(&worktree_identity(&repo)).unwrap()
+        ));
+}
+
 #[test]
 fn short_source_status_distinguishes_index_and_worktree_changes_without_unrelated_paths() {
     let temp = TempDir::new().unwrap();
@@ -996,7 +1049,7 @@ fn short_source_status_distinguishes_index_and_worktree_changes_without_unrelate
         .success()
         .stdout(format!(
             "MM\t{}\t\"selected/file\"\tnull\n",
-            serde_json::to_string(&source).unwrap()
+            serde_json::to_string(&worktree_identity(&repo)).unwrap()
         ));
     // Structural drift still fails without putting prose on short stdout.
     fs::remove_file(root.join("file")).unwrap();
@@ -1006,6 +1059,6 @@ fn short_source_status_distinguishes_index_and_worktree_changes_without_unrelate
         .code(1)
         .stdout(format!(
             "MM\t{}\t\"selected/file\"\tnull\n",
-            serde_json::to_string(&source).unwrap()
+            serde_json::to_string(&worktree_identity(&repo)).unwrap()
         ));
 }
