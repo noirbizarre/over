@@ -233,8 +233,9 @@ An ordered fallback expression such as
 succeeds. Provider references use `scheme://payload`; external providers are not
 implemented yet, so those candidates are unavailable and allow fallback. Empty
 or malformed candidates reject the entire expression before any lookup. Missing
-secrets and unavailable providers allow fallback; native unlock, decryption,
-corruption and store errors stop it. The pipe is inside the argument string,
+secrets, unavailable providers, and a missing modern native unlock session allow
+fallback. Decryption, corruption, store errors, and legacy credential failures
+stop it. The pipe is inside the argument string,
 not a MiniJinja filter.
 
 Native resolution uses the active source repository. Modern native stores require

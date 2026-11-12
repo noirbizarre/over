@@ -121,8 +121,9 @@ Fallback chains use a pipe inside the argument, for example
 `secret("op://dev/github/token | github-token")`. Bare names address the active
 repository's native store; provider-qualified references use `scheme://payload`.
 External providers are not implemented yet and count as unavailable. Missing
-secrets and unavailable providers allow fallback. Malformed expressions, locked
-native credentials, wrong passphrases, corrupt ciphertext and store failures stop
+secrets, unavailable providers, and a missing modern native local key allow
+fallback. Malformed expressions, legacy credential failures, wrong passphrases,
+corrupt ciphertext and store failures stop
 resolution. Hook interpolation requires valid UTF-8 and preserves whitespace
 without caching plaintext values. Modern native stores require a prior
 `over unlock`; hook lookup does not prompt to acquire their local repository key.
