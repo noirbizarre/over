@@ -625,7 +625,7 @@ fn source_only_commits_to_ignored_paths_do_not_make_a_checkout_behind() {
         .assert()
         .success()
         .stdout(contains("applied"))
-        .stdout(contains("0 behind"));
+        .stdout(contains(" behind").not());
     fixture
         .command("sync")
         .args(["ov", "--no-prompt", "--target"])
