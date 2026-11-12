@@ -394,8 +394,9 @@ fn finalize_entries(
 
 /// Git-managed paths declared via `overlay.git`: materialized by
 /// `CheckoutMaterializer` (#110), which ensures presence/configuration
-/// only — content-level bidirectional sync is `over sync` (crate::sync), a
-/// separate explicit operation. Unrelated to `MaterializationIntent::VirtualCheckout`
+/// only — manage their content with ordinary Git. The CLI's `over sync`
+/// handles local virtual checkouts; the broader library API in [`crate::sync`]
+/// is separate. Unrelated to `MaterializationIntent::VirtualCheckout`
 /// (#141, see its doc) — both can coexist at different paths within the
 /// same overlay, including when the overlay root itself resolves to a
 /// virtual checkout.
