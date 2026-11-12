@@ -41,9 +41,10 @@
 //!
 //! - Presence of the git repository itself: #110's `CheckoutMaterializer`
 //!   owns classifying [`MaterializationIntent::Checkout`] entries like every
-//!   other intent, but `Overlay::apply` still clones git repositories
-//!   through the existing, separate `actions::git::clone_repositories`
-//!   *before* building the `Plan`, entirely orthogonal to this module.
+//!   other intent. `Overlay::apply` first builds a preflight plan and validates
+//!   ownership boundaries before any provisioning. After preparing authorized
+//!   scaffold replacements, it provisions repositories through the separate
+//!   `actions::git::clone_repositories`, then rebuilds the plan for execution.
 //! - `mode:`/`rules:` configuration itself — `crate::overlays::rules`.
 //!   [`Operation::Migrate`] (#129) reconciles what those rules resolve
 //!   *changing* between runs (symlink ↔ checkout, file-level ↔
