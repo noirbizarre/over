@@ -52,12 +52,12 @@ pub struct PartialConfig {
 }
 
 /// Discover every `*.partial.{toml,yaml,yml}` sidecar under `overlay_root`,
-/// returning `(stem, config)` pairs sorted by stem. Mirrors
-/// `symlink::discover_symlinks` exactly: same glob, same stem derivation,
-/// same TOML > YAML > YML precedence-with-warning on duplicates, same
-/// skip-with-warning on an empty `target` (plus, here, an empty `content`
-/// too — a managed block with nothing in it is a no-op that shouldn't
-/// exist).
+/// returning `(stem, config)` pairs sorted by stem. TOML wins over either
+/// YAML extension, with a warning on duplicates. Between `.yaml` and `.yml`,
+/// the first discovered declaration wins; traversal order is unspecified,
+/// so callers must not rely on a particular winner. Empty `target` or
+/// `content` values are skipped with a warning because an empty managed
+/// block has no useful effect.
 pub fn discover_partials(overlay_root: &Path) -> Result<Vec<(String, PartialConfig)>> {
     discover_partials_selected(overlay_root, None)
 }
