@@ -14,9 +14,10 @@
 //! Reconciliation always recomputes the expected block content from
 //! scratch from the live `DesiredTree` — no separate state file — matching
 //! `unapply`'s "never trust persisted state" philosophy. [`unreconcile`]
-//! (#147) covers the reverse: unconditionally dropping an overlay's whole
-//! block on `over unapply`, regardless of which individual entries were
-//! actually removed from disk. [`diagnose`] (#148) covers `over status`'s
+//! (#147) removes an overlay's whole block when requested by `over unapply`.
+//! Unapply retains that protection when decrypted destinations remain, so
+//! retained plaintext does not become visible to host Git discovery.
+//! [`diagnose`] (#148) covers `over status`'s
 //! read-only counterpart: it shares [`compute_expectation`] with the write
 //! path so the two can never drift apart, but never opens the exclude file
 //! for writing.
