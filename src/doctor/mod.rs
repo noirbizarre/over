@@ -86,7 +86,7 @@ impl Finding {
 
 impl std::fmt::Display for Finding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.line)
+        write!(f, "{}", crate::utils::short_paths(&self.line))
     }
 }
 

@@ -90,7 +90,11 @@ impl Diagnostic {
         };
         write!(f, "{severity_label}")?;
         if standalone {
-            write!(f, "{}", style::overlay(format!("[{}]", self.overlay)))?;
+            write!(
+                f,
+                "{}",
+                style::overlay(format!("[{}]", crate::utils::short_path(&self.overlay)))
+            )?;
         }
         write!(
             f,
@@ -110,7 +114,12 @@ impl Diagnostic {
                 f,
                 "\n  {} {}",
                 console::style("-->").dim(),
-                style::path(format!("{overlay}/{file}"))
+                // Absolute parser origins must not be prefixed with the overlay identity.
+                style::path(if std::path::Path::new(file).is_absolute() {
+                    file.to_owned()
+                } else {
+                    format!("{overlay}/{file}")
+                })
             )?;
         }
 
@@ -130,7 +139,8 @@ impl Diagnostic {
 fn highlight_inline(text: &str, colors: bool) -> String {
     // Diagnostics retain lightweight inline-code markup for machine consumers;
     // only the human renderer interprets it, including upstream parser messages.
-    text.split('`')
+    crate::utils::short_paths(text)
+        .split('`')
         .enumerate()
         .map(|(index, span)| {
             if index % 2 == 0 {
@@ -178,7 +188,7 @@ impl fmt::Display for GroupedDiagnostics<'_> {
                 writeln!(f)?;
             }
             let name = if overlay.is_empty() { "." } else { overlay };
-            writeln!(f, "{}", style::overlay(name))?;
+            writeln!(f, "{}", style::overlay(crate::utils::short_path(name)))?;
             // Option ordering places overlay-wide findings before file groups.
             for (file, diagnostics) in files {
                 let indent = if let Some(file) = file {

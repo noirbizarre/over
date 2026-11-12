@@ -41,8 +41,8 @@ pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
                 let _pause = crate::ui::progress::pause()?;
                 let prompt = format!(
                     "Set origin from {} to {}?",
-                    result.origin.as_deref().unwrap_or("<missing>"),
-                    result.canonical.as_deref().unwrap_or("<missing>")
+                    crate::utils::short_path(result.origin.as_deref().unwrap_or("<missing>")),
+                    crate::utils::short_path(result.canonical.as_deref().unwrap_or("<missing>"))
                 );
                 Confirm::with_theme(&DialogTheme::default())
                     .with_prompt(prompt)

@@ -102,7 +102,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         let report = build_overlay_diff(&repo, &root, overlay, args.no_uses, views.clone()).await?;
         let _pause = ui::progress::pause()?;
         for diagnostic in &report.diagnostics {
-            eprintln!("{diagnostic}");
+            ui::warn(diagnostic)?;
         }
         for mut comparison in report.comparisons {
             if comparison.trees.is_none() {
@@ -124,7 +124,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             if !seen.insert(key) {
                 continue;
             }
-            eprintln!(
+            ui::warn(format!(
                 "Overlay {} — repository {} — {}{}\n  scope: {}",
                 crate::ui::style::overlay(&overlay.name).for_stderr(),
                 crate::ui::style::repository(comparison.repository.display()).for_stderr(),
@@ -146,7 +146,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                         .to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
-            );
+            ))?;
             comparison.present(args.difftool).await?;
         }
     }

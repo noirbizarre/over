@@ -210,7 +210,7 @@ fn process_io(
                 output.write_all(b"00000000")?;
             }
             Err(error) => {
-                eprintln!("over: {error:#}");
+                crate::ui::warn(format!("over: {error:#}"))?;
                 write_packet(&mut output, b"status=error\n")?;
                 output.write_all(b"0000")?;
             }

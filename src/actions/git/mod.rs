@@ -175,7 +175,7 @@ impl Action for EnsureGitRepository {
         let progress = ctx.ui_progress.bar(100);
         progress.update(|pb| {
             pb.set_style(CLONE_PROGRESS_STYLE.clone());
-            pb.set_prefix(self.short_name());
+            pb.set_prefix(crate::utils::short_paths(&self.short_name()));
         });
 
         // For bare repos (worktree mode), repo_path is `path/.git` which is
@@ -821,7 +821,7 @@ impl CloneState {
                 self.progress
                     .path
                     .as_ref()
-                    .map(|s| s.to_string_lossy().into_owned())
+                    .map(|s| crate::utils::short_path(&s.to_string_lossy()))
                     .unwrap_or_default()
             ));
         }

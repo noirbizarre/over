@@ -120,6 +120,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn human_findings_abbreviate_paths_while_json_keeps_canonical_values() {
+        let home = dirs::home_dir().unwrap();
+        let descriptor = home.join("source/over.toml").display().to_string();
+        let message = format!("conflict at `{}`", home.join("target/file").display());
+        let hint = format!("edit `{descriptor}`");
+        let result = LintResult {
+            diagnostics: vec![
+                Diagnostic::warning("selected", &message)
+                    .with_file(&descriptor)
+                    .with_hint(&hint),
+            ],
+        };
+        for rendered in [
+            result.diagnostics[0].to_string(),
+            result.grouped().to_string(),
+        ] {
+            let rendered = console::strip_ansi_codes(&rendered);
+            assert!(rendered.contains("~/source/over.toml"));
+            assert!(
+                rendered.contains(
+                    &std::path::Path::new("~")
+                        .join("target/file")
+                        .display()
+                        .to_string()
+                )
+            );
+            assert!(!rendered.contains("selected/~/"));
+            assert!(!rendered.contains(&home.display().to_string()));
+        }
+        let json = serde_json::to_value(JsonReport {
+            diagnostics: &result.diagnostics,
+            error_count: 0,
+            warning_count: 1,
+        })
+        .unwrap();
+        assert_eq!(json["diagnostics"][0]["file"], descriptor);
+        assert_eq!(json["diagnostics"][0]["message"], message);
+        assert_eq!(json["diagnostics"][0]["hint"], hint);
+    }
+
+    #[test]
     fn json_report_retains_canonical_messages_and_nullable_fields() {
         let result = LintResult {
             diagnostics: vec![Diagnostic::warning(

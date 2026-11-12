@@ -508,7 +508,7 @@ mod tests {
         assert!(output.contains("\x1b[36mworkspaces/demo\x1b[0m"));
         assert!(
             output.contains(
-                &style::repository(&root.display())
+                &style::repository(root.display())
                     .force_styling(true)
                     .to_string()
             )

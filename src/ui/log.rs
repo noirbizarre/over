@@ -2,7 +2,14 @@ use console::{Term, style};
 
 use anyhow::Result;
 
+/// Write human-readable output, abbreviating path tokens at the presentation boundary.
+/// Use [`literal`] for payloads such as file previews and commit subjects.
 pub fn info(msg: impl AsRef<str>) -> Result<()> {
+    literal(crate::utils::short_paths(msg.as_ref()))
+}
+
+/// Write literal content without interpreting home-looking strings as path labels.
+pub fn literal(msg: impl AsRef<str>) -> Result<()> {
     let msg = msg.as_ref();
     let term = Term::stdout();
     super::progress::with_output(|| term.write_line(msg))?;
@@ -13,9 +20,9 @@ pub fn info(msg: impl AsRef<str>) -> Result<()> {
 /// [`info`], for user-facing warnings that aren't a full error chain (see
 /// [`display_error`] for that).
 pub fn warn(msg: impl AsRef<str>) -> Result<()> {
-    let msg = msg.as_ref();
+    let msg = crate::utils::short_paths(msg.as_ref());
     let term = Term::stderr();
-    super::progress::with_output(|| term.write_line(msg))?;
+    super::progress::with_output(|| term.write_line(&msg))?;
     Ok(())
 }
 
@@ -67,13 +74,17 @@ pub fn display_error(err: &anyhow::Error) {
             "{} {} {}",
             super::emojis::crossmark().for_stderr().bold(),
             style("error:").red().bold(),
-            top,
+            crate::utils::short_paths(&top.to_string()),
         ));
     }
 
     // Remaining causes
     for cause in chain {
-        let _ = term.write_line(&format!("  {} {}", style("caused by:").dim(), cause,));
+        let _ = term.write_line(&format!(
+            "  {} {}",
+            style("caused by:").dim(),
+            crate::utils::short_paths(&cause.to_string()),
+        ));
     }
 }
 

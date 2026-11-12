@@ -460,7 +460,7 @@ fn resolve_block_conflict(
                     BlockState::Found(x) => x,
                     _ => current,
                 };
-                ui::info(format!(
+                ui::literal(format!(
                     "{}",
                     ContentDiff::from_texts(existing, canonical_content(desired))
                 ))

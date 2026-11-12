@@ -36,6 +36,22 @@ fn assert_json(command: &mut Command, expected: Value) -> TestResult {
     Ok(())
 }
 
+#[test]
+fn exported_data_preserves_literal_home_paths() -> TestResult {
+    let repo = TempDir::new()?;
+    let path = dirs::home_dir()
+        .unwrap()
+        .join("literal/value")
+        .display()
+        .to_string();
+    descriptor(
+        repo.path(),
+        "selected",
+        &format!("data: {}", json!({"path": path})),
+    )?;
+    assert_json(command(repo.path())?.arg("selected"), json!({"path": path}))
+}
+
 #[rstest]
 #[case("host".into())]
 #[case("host-{{ machine.arch }}".into())]

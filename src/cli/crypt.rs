@@ -485,7 +485,7 @@ pub fn unlock_repository(repo: &git2::Repository, opt: &Unlock) -> Result<()> {
                     .iter()
                     .map(|(user, key, _)| format!("{user}/{key}"))
                     .collect();
-                dialoguer::Select::new()
+                dialoguer::Select::with_theme(&crate::ui::style::DialogTheme::default())
                     .with_prompt("Unlock with key")
                     .items(&labels)
                     .default(0)
@@ -497,9 +497,10 @@ pub fn unlock_repository(repo: &git2::Repository, opt: &Unlock) -> Result<()> {
                     can_prompt(),
                     "supply --identity <standard-age-identity-file>"
                 );
-                let identity: String = dialoguer::Input::new()
-                    .with_prompt("Age identity file")
-                    .interact_text()?;
+                let identity: String =
+                    dialoguer::Input::with_theme(&crate::ui::style::DialogTheme::default())
+                        .with_prompt("Age identity file")
+                        .interact_text()?;
                 access::unlock(
                     repo,
                     Some(std::path::Path::new(&identity)),
@@ -552,7 +553,7 @@ pub fn execute(cli: &super::CLI, command: &Commands) -> Result<()> {
         }
         Commands::List => {
             for finding in policy::inspect(&repo)? {
-                println!("{finding}");
+                crate::ui::info(finding.to_string())?;
             }
             Ok(())
         }
