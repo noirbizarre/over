@@ -24,8 +24,6 @@ Copyright &copy; 2026 Axel H. — MIT licensed
 # meaningfully conflict with additions here.
 nav = [
   { "Home" = "index.md" },
-  { "FAQ" = "faq.md" },
-  { "Dev Containers" = "devcontainer.md" },
   { "Configuration" = [
     { "Overview" = "configuration.md" },
     { "Root configuration" = "configuration/root.md" },
@@ -63,7 +61,9 @@ nav = [
       { "over git status" = "usage/over-git-status.md" },
     ] },
   ] },
+  { "Dev Containers" = "devcontainer.md" },
   { "Examples" = "examples.md" },
+  { "FAQ" = "faq.md" },
   { "Architecture decisions" = [
     { "Overview" = "adr/README.md" },
     { "001: Original binary layout" = "adr/001-two-binaries-one-crate.md" },
