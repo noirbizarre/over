@@ -237,9 +237,11 @@ secrets and unavailable providers allow fallback; native unlock, decryption,
 corruption and store errors stop it. The pipe is inside the argument string,
 not a MiniJinja filter.
 
-Native resolution uses the active source repository and shares the invocation's
-lazy Age unlock. Set `OVER_SECRET` or allow interactive prompting; apply's
-`--no-prompt` disables prompts. Hook secrets must be valid UTF-8. Secret access
+Native resolution uses the active source repository. Modern native stores require
+the local repository key established by `over unlock`; hook lookup does not prompt
+to unlock them. Legacy per-name Age secrets share the invocation's lazy credential:
+set `OVER_SECRET` or allow interactive prompting; apply's `--no-prompt` disables
+those prompts. Hook secrets must be valid UTF-8. Secret access
 is not available in overlay destination or sidecar path templates. Prefer
 injecting secrets through `env`, for example:
 
