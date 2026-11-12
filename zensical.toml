@@ -24,6 +24,7 @@ Copyright &copy; 2026 Axel H. — MIT licensed
 # meaningfully conflict with additions here.
 nav = [
   { "Home" = "index.md" },
+  { "FAQ" = "faq.md" },
   { "Dev Containers" = "devcontainer.md" },
   { "Configuration" = [
     { "Overview" = "configuration.md" },
