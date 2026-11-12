@@ -46,9 +46,11 @@ echo 'overlays = ["apps/*"]' > "$OVER_HOME/over.toml"
 echo 'Hello from Over!' > "$OVER_HOME/apps/hello/greeting.txt"
 ```
 
-The **root descriptor**, `$OVER_HOME/over.toml`, configures the repository. The
-**overlay descriptor**, `$OVER_HOME/apps/hello/over.toml`, configures `apps/hello`.
-`greeting.txt` is the file to apply; descriptors themselves are never deployed.
+The **root descriptor**, `$OVER_HOME/over.toml`, configures the repository and
+discovers `apps/hello` through `overlays = ["apps/*"]`. This overlay inherits root
+policy without a local descriptor. An optional **overlay descriptor** at
+`$OVER_HOME/apps/hello/over.toml` can customize it later. `greeting.txt` is the file
+to apply; descriptors themselves are never deployed.
 
 ### Preview, apply, inspect
 
