@@ -56,7 +56,7 @@ dependency's — that content belongs to a different overlay):
    in the source repository's Git index.
 2. If any file changed both locally and in the source repository, to
    different content, refuses to commit at all — resolve the conflicting
-   files manually first (`over status --verbose` lists them).
+   files manually first (`over status` lists file changes in its final Changes section).
 3. Otherwise, with something to commit, asks for a commit message
    (`--message` skips the prompt; `--no-prompt` with no `--message` falls
    back to an auto-generated one).

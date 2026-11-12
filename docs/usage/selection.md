@@ -10,14 +10,17 @@ Over checks evidence in this order, stopping at the first matching tier:
    setting. Repository-local settings apply; an enabled worktree configuration
    overrides shared settings. Global Git settings, repository names, branches,
    and remote URLs do not establish ownership.
-2. **Ownership:** the path lies within an overlay's source directory, or belongs
-   to one of its managed destinations. Checkout ownership respects exclusions;
+2. **Source context:** the path lies within exactly one discovered overlay source
+   directory. This wins even when another overlay targets the same directory,
+   allowing commands to load the source overlay without resolving unrelated targets.
+3. **Destination ownership:** the path belongs to one of its managed destinations.
+   Checkout ownership respects exclusions;
    directory scaffolding and dependency consumers are not additional owners.
-3. **Immediate siblings:** a file's parent contains managed entries from an
+4. **Immediate siblings:** a file's parent contains managed entries from an
    overlay. For a directory or the current working directory, Over examines
    immediate managed children. Configured entries count even before application
    or after deletion. Over does not search recursively or climb parent directories.
-4. **Target containment:** the path lies inside an overlay's resolved target or
+5. **Target containment:** the path lies inside an overlay's resolved target or
    [rule target](../configuration/overlay.md#overlay-rules). Paths routed away
    by rules are excluded. A unique match preserves the target rule and source
    directory correspondence, including the remaining relative suffix.

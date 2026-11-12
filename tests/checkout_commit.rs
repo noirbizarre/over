@@ -138,7 +138,7 @@ fn intent_to_add_preserves_unstaged_content_and_does_not_publish_empty_files() {
         .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("unstaged"));
     fixture
         .commit_command()
@@ -377,8 +377,8 @@ fn stale_checkpoints_recognize_raw_head_targets_and_sync_converges() {
         .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
-        .failure()
-        .stdout(contains("1 diverged"))
+        .success()
+        .stdout(contains("Fully applied"))
         .stdout(contains("⚠ conflict:").not());
     fixture
         .command("sync")

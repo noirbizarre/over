@@ -172,7 +172,7 @@ pub struct Options {
 /// Run every check and return the aggregated [`Report`].
 pub async fn check(repo: &Repository, opts: &Options) -> Result<Report> {
     // Later desired-tree and state loads must not log diagnostics already reported by lint.
-    let repo = repo.collecting_warnings();
+    let repo = repo.collecting_warnings().scoped_loading();
     let repo = &repo;
     let mut report = Report {
         environment: checks::environment_findings(),
@@ -231,8 +231,14 @@ pub async fn check(repo: &Repository, opts: &Options) -> Result<Report> {
             diagnostic.severity == lint::Severity::Error
                 && dependencies.contains(&diagnostic.overlay)
         });
-        let snapshot =
-            OverlayReport::inspect_cached(repo, &opts.root, overlay, opts.no_uses, &mut cache);
+        let snapshot = OverlayReport::inspect_mode(
+            repo,
+            &opts.root,
+            overlay,
+            opts.no_uses,
+            &mut cache,
+            crate::status::overlay::InspectionMode::Health,
+        );
         let mut owners = BTreeSet::from([overlay.name.clone()]);
         let runtime = match snapshot {
             Ok(snapshot) => {

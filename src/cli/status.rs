@@ -1,4 +1,4 @@
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ use crate::status::Counts;
 use crate::status::overlay::{Field, InspectionCache, OverlayReport, ResolvedConfiguration, Value};
 use crate::ui::{self, emojis, style};
 
-#[derive(Args, Debug)]
+#[derive(Args, Clone, Debug)]
 pub struct Params {
     #[clap(
         help = "Name of the overlay to check (infer context, then default_overlay, then all overlays)"
@@ -42,16 +42,34 @@ pub struct Params {
         help = "Check every overlay, retaining configured default_overlay data"
     )]
     all: bool,
+
+    #[clap(short = 's', long, help = "Show stable staged/unstaged file rows only")]
+    short: bool,
 }
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if cli.debug {
         tracing::debug!(?cli, ?args, "CLI args");
     }
-
+    let short = args.short;
     let home = cli.resolve_home()?;
+    let verbose = cli.verbose;
+    // Keep synchronous Git/filter/filesystem work off the async executor.
+    let output = tokio::task::spawn_blocking({
+        let args = args.clone();
+        move || execute_blocking(home, verbose, &args)
+    })
+    .await?;
+    if short {
+        std::io::stdout().flush()?;
+    }
+    output
+}
+
+fn execute_blocking(home: PathBuf, verbose: bool, args: &Params) -> Result<()> {
+    let _pause = args.short.then(ui::progress::pause).transpose()?;
     // Schema diagnostics belong to lint/doctor; status still propagates load errors.
-    let repo = Repository::new(home).collecting_warnings();
+    let repo = Repository::new(home).collecting_warnings().scoped_loading();
     let root = args
         .root
         .clone()
@@ -69,10 +87,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 .repository(repo.clone())
                 .build();
             // Drop secret-bearing parser/template causes while preserving diagnostic context.
-            match tokio::task::spawn_blocking(move || crate::selection::infer_or_default(&ctx))
-                .await?
-                .map_err(|error| anyhow!("{error}"))?
-            {
+            match crate::selection::infer_or_default(&ctx).map_err(|error| anyhow!("{error}"))? {
                 Some(overlay) => vec![Ok(overlay)],
                 None => repo
                     .inspect_overlays()
@@ -82,7 +97,9 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     };
 
     if overlays.is_empty() {
-        ui::info("No overlays found.")?;
+        if !args.short {
+            ui::info("No overlays found.")?;
+        }
         return Ok(());
     }
 
@@ -93,16 +110,31 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let mut counts = Counts::default();
     let mut git_problems = std::collections::BTreeSet::new();
     let mut cache = InspectionCache::default();
+    let mut changes = std::collections::BTreeSet::new();
     for overlay in &overlays {
         let snapshot = overlay
             .as_ref()
             .map_err(|error| anyhow!("{error}"))
             .and_then(|overlay| {
-                OverlayReport::inspect_cached(&repo, &root, overlay, args.no_uses, &mut cache)
+                OverlayReport::inspect_mode(
+                    &repo,
+                    &root,
+                    overlay,
+                    args.no_uses,
+                    &mut cache,
+                    if args.short {
+                        crate::status::overlay::InspectionMode::Short
+                    } else {
+                        crate::status::overlay::InspectionMode::Full
+                    },
+                )
             });
         match snapshot {
             Ok(snapshot) => {
-                write_output(&render_overlay(&snapshot, cli.verbose))?;
+                if !args.short {
+                    write_output(&render_overlay(&snapshot, verbose))?;
+                }
+                changes.extend(snapshot.changes);
                 match &snapshot.health {
                     Ok(report) => {
                         let current = report.counts();
@@ -129,19 +161,29 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 }
             }
             Err(error) => {
-                write_output(&format!("Check failed: {error}\n"))?;
+                if !args.short {
+                    write_output(&format!("Check failed: {error}\n"))?;
+                }
                 failures.push(error.to_string());
                 failed += 1;
             }
         }
     }
-    if overlays.len() > 1 {
+    if !args.short && overlays.len() > 1 {
         let git_problems = git_problems.len();
         write_output(&format!(
             "{} {} overlays; {healthy} fully applied, {unhealthy} need attention, {failed} could not be checked\n  {counts}\n  {git_problems} unique Git configuration problem(s)\n  Entry counts are summed per overlay, including shared dependencies.",
             style::heading("Overall:"),
             overlays.len()
         ))?;
+    }
+    if args.short {
+        let mut stdout = std::io::stdout().lock();
+        for change in &changes {
+            stdout.write_all(change.short()?.as_bytes())?;
+        }
+    } else {
+        write_output(&render_changes(&changes)?)?;
     }
     if unhealthy + failed > 0 {
         return Err(anyhow!(
@@ -154,6 +196,43 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn render_changes(
+    changes: &std::collections::BTreeSet<crate::status::changes::Change>,
+) -> Result<String> {
+    let mut lines = vec![style::heading("Changes:").to_string()];
+    let mut previous = None;
+    for change in changes {
+        let group = (&change.worktree, &change.target);
+        if previous != Some(group) {
+            let target = change
+                .target
+                .as_ref()
+                .map(|path| format!(" → {}", style::path(path.display())))
+                .unwrap_or_default();
+            lines.push(format!(
+                "  {}{target}",
+                style::path(change.worktree.display())
+            ));
+            previous = Some(group);
+        }
+        // Labels remain explicit in human output; short output combines both columns.
+        for (label, state) in [("staged", change.staged), ("unstaged", change.unstaged)] {
+            if let Some(state) = state {
+                lines.push(format!(
+                    "    {} {} ({label})",
+                    state.symbol(),
+                    style::path(change.git_path()?)
+                ));
+            }
+        }
+    }
+    if changes.is_empty() {
+        lines.push("  none".into());
+    }
+    lines.push(String::new());
+    Ok(lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -188,7 +267,20 @@ fn render_configuration(
         lines,
     );
     for field in &configuration.summary {
-        render_field(field, 2, lines);
+        if verbose
+            || matches!(
+                field.key.as_str(),
+                "description" | "effective root" | "mode" | "composition"
+            )
+        {
+            if verbose {
+                render_field(field, 2, lines);
+            } else {
+                let mut concise = field.clone();
+                concise.children.clear();
+                render_field(&concise, 2, lines);
+            }
+        }
     }
     if verbose {
         for field in &configuration.details {
@@ -217,16 +309,6 @@ fn render_field(field: &Field, indent: usize, lines: &mut Vec<String>) {
             Value::Overlay(value) => style::overlay(value).to_string(),
             Value::Repository(value) => style::repository(value).to_string(),
             Value::Mode(value) => style::mode(value).to_string(),
-            Value::Change {
-                symbol,
-                path,
-                staging,
-            } => format!(
-                "{} {} {}",
-                style::yellow(symbol),
-                style::path(path.display()),
-                style::annotation(format!("({staging})"))
-            ),
         })
         .collect::<String>();
     let values = if values.is_empty() && field.children.is_empty() && field.sequence.is_empty() {
@@ -357,6 +439,7 @@ mod tests {
             root: Some(root),
             no_uses: false,
             all: false,
+            short: false,
         }
     }
 

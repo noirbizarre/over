@@ -173,14 +173,16 @@ pub fn discover_symlinks_selected(
     let mut results: Vec<(String, SymlinkConfig)> = Vec::new();
     let mut seen_names: HashMap<String, PathBuf> = HashMap::new();
 
-    for entry in WalkDir::new(overlay_root)
-        .into_iter()
-        .filter_entry(|entry| {
-            policy.is_none_or(|policy| !policy.is_ignored(entry.path(), entry.file_type().is_dir()))
-        })
-        .filter_map(|e| e.ok())
-    {
-        let path = entry.path();
+    let paths = if let Some(policy) = policy {
+        policy.files().to_vec()
+    } else {
+        WalkDir::new(overlay_root)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .map(|entry| entry.into_path())
+            .collect()
+    };
+    for path in &paths {
         let rel = path.strip_prefix(overlay_root)?;
 
         if !glob.is_match(rel) {

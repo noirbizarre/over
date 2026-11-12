@@ -113,6 +113,15 @@ impl Plan {
     /// backend. Children blocked by a replaceable scaffold are deferred until
     /// execution can classify their actual state without following that parent.
     pub fn build(desired: &DesiredTree) -> Result<Self> {
+        Self::build_mode(desired, false)
+    }
+
+    /// Status supplies its own richer virtual inspector and never executes this plan.
+    pub(crate) fn build_reporting(desired: &DesiredTree) -> Result<Self> {
+        Self::build_mode(desired, true)
+    }
+
+    fn build_mode(desired: &DesiredTree, reporting: bool) -> Result<Self> {
         let registry = MaterializerRegistry::default();
         let mut steps = Vec::with_capacity(desired.len());
         let mut blocked_by = Vec::with_capacity(desired.len());
@@ -127,7 +136,12 @@ impl Plan {
                 });
                 continue;
             }
-            let operation = classify(desired, entry, &registry)?;
+            let operation = if reporting && entry.intent.is_virtual_checkout() {
+                // Materializer classification repeats Git/state reads and can discover untracked targets.
+                Operation::Noop
+            } else {
+                classify(desired, entry, &registry)?
+            };
             steps.push(PlanStep {
                 entry: entry.clone(),
                 operation,
@@ -137,7 +151,7 @@ impl Plan {
             .iter()
             .zip(&blocked_by)
             .map(|(step, blocker)| {
-                if blocker.is_some() {
+                if reporting || blocker.is_some() {
                     Ok(None)
                 } else {
                     crate::materialize::disposal::PathGuard::capture(&step.entry.target).map(Some)

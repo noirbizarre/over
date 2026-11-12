@@ -40,6 +40,15 @@ impl DesiredTree {
     /// reads the filesystem (to resolve `.link.*` sidecar targets and detect
     /// directory-vs-file symlink targets) and never writes anything.
     pub fn build(ctx: &exec::Context, overlay: &Overlay) -> Result<Self> {
+        Self::build_mode(ctx, overlay, false)
+    }
+
+    /// Reporting validates Git content through tracked inventories, not an unrelated source walk.
+    pub(crate) fn build_reporting(ctx: &exec::Context, overlay: &Overlay) -> Result<Self> {
+        Self::build_mode(ctx, overlay, true)
+    }
+
+    fn build_mode(ctx: &exec::Context, overlay: &Overlay, reporting: bool) -> Result<Self> {
         let mut entries = Vec::new();
         let mut visited = HashSet::new();
         let mut stack = Vec::new();
@@ -51,6 +60,7 @@ impl DesiredTree {
             &mut stack,
             &mut entries,
             &mut sources,
+            reporting,
         )?;
         // Canonical, deterministic ordering — useful for #109 diff and tests.
         entries.sort_by(|a, b| a.target.cmp(&b.target));
@@ -69,7 +79,7 @@ impl DesiredTree {
         // Stage selections are absolute; relative roots must share their namespace.
         let target = mapping::absolute(&overlay.resolve_target(ctx)?)?;
         let mut sources = Vec::new();
-        let mut entries = collect_own_entries(ctx, overlay, &target, &mut sources)?;
+        let mut entries = collect_own_entries(ctx, overlay, &target, &mut sources, false)?;
         // Same deterministic ordering as `build()`.
         entries.sort_by(|a, b| a.target.cmp(&b.target));
         Ok(Self { entries, sources })
@@ -153,6 +163,7 @@ fn build_inner(
     stack: &mut Vec<String>,
     entries: &mut Vec<DesiredEntry>,
     sources: &mut Vec<SourceSelection>,
+    reporting: bool,
 ) -> Result<()> {
     // Already fully processed via another dependency path — skip silently.
     if visited.contains(&overlay.name) {
@@ -181,14 +192,16 @@ fn build_inner(
                     .get(name)
                     .with_context(|| format!("used overlay '{}' not found", name))?;
                 let sub_ctx = ctx.with_overlay(used.clone());
-                build_inner(&sub_ctx, &used, visited, stack, entries, sources)?;
+                build_inner(&sub_ctx, &used, visited, stack, entries, sources, reporting)?;
             }
         }
     }
 
     // Preserve every claim: uses is a flat union, so traversal order must
     // never silently choose a winner for conflicting target ownership.
-    entries.extend(collect_own_entries(ctx, overlay, &target, sources)?);
+    entries.extend(collect_own_entries(
+        ctx, overlay, &target, sources, reporting,
+    )?);
 
     stack.pop();
     visited.insert(overlay.name.clone());
@@ -206,6 +219,7 @@ fn collect_own_entries(
     overlay: &Overlay,
     target: &Path,
     sources: &mut Vec<SourceSelection>,
+    reporting: bool,
 ) -> Result<Vec<DesiredEntry>> {
     // Explicit ownership wins over any overlay selected by the caller.
     let prepared = ctx
@@ -214,7 +228,7 @@ fn collect_own_entries(
     let ctx = prepared.as_ref();
     let mut entries = Vec::new();
     let routing = overlay.resolve_mappings(ctx)?;
-    let policy = Arc::new(SourcePolicy::new(&ctx.repository.root, overlay)?);
+    let policy = ctx.repository.source_policy(overlay)?;
     sources.push(SourceSelection {
         overlay: overlay.clone(),
         routing: routing.clone(),
@@ -247,7 +261,7 @@ fn collect_own_entries(
         build_symlink_sidecars(&ctx_with_target, overlay, &policy, target, &mut entries)?;
         build_partial_sidecars(&ctx_with_target, overlay, &policy, &mut entries)?;
         attach_source_policy(&mut entries, &policy);
-        finalize_entries(overlay, &routing, &mut entries)?;
+        finalize_entries(overlay, &routing, &mut entries, reporting)?;
         return Ok(entries);
     }
 
@@ -280,7 +294,7 @@ fn collect_own_entries(
     build_partial_sidecars(&ctx_with_target, overlay, &policy, &mut entries)?;
 
     attach_source_policy(&mut entries, &policy);
-    finalize_entries(overlay, &routing, &mut entries)?;
+    finalize_entries(overlay, &routing, &mut entries, reporting)?;
     Ok(entries)
 }
 
@@ -300,9 +314,11 @@ fn finalize_entries(
     overlay: &Overlay,
     routing: &ResolvedMappings,
     entries: &mut [DesiredEntry],
+    reporting: bool,
 ) -> Result<()> {
     for entry in entries.iter() {
-        if entry.intent.is_virtual_checkout()
+        if !reporting
+            && entry.intent.is_virtual_checkout()
             && let Provenance::Overlay { source, .. } = &entry.provenance
         {
             // Mapped checkouts may deliberately have no source directory until reverse add.

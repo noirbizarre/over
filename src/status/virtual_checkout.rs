@@ -27,7 +27,7 @@ use super::Status;
 /// Aggregate [`Status`] for a virtual checkout entry — see the module doc
 /// for the 3-way comparison this reduces to a single value from.
 pub(crate) fn inspect(entry: &DesiredEntry) -> Result<Status> {
-    Ok(inspect_with_details(entry, false)?.status)
+    Ok(inspect_with_details(entry, false, &mut Snapshots::default())?.status)
 }
 
 #[derive(Clone)]
@@ -35,16 +35,58 @@ pub(crate) struct Inspection {
     pub status: Status,
     pub staged: Vec<FileChange>,
     pub unstaged: Vec<FileChange>,
+    pub unmerged: Vec<PathBuf>,
 }
 
-pub(crate) fn inspect_tracked(entry: &DesiredEntry) -> Result<Inspection> {
-    // Status reports overlay ownership; destructive/sync callers retain the
-    // broader discovery in inspect so ignoring additions cannot make removal safe.
-    inspect_with_details(entry, true)
+#[derive(Default)]
+pub(crate) struct Snapshots {
+    indices: BTreeMap<PathBuf, git2::Index>,
+    state: Option<state::VirtualCheckoutState>,
 }
 
-fn inspect_with_details(entry: &DesiredEntry, tracked_only: bool) -> Result<Inspection> {
-    let Some(record) = state::record_for_blocking(&entry.target)? else {
+pub(crate) fn inspect_tracked_cached(
+    entry: &DesiredEntry,
+    snapshots: &mut Snapshots,
+) -> Result<Inspection> {
+    // Destructive/sync callers retain broader discovery in inspect; reporting
+    // must never make an untracked target addition look safe to remove.
+    inspect_with_details(entry, true, snapshots)
+}
+
+fn inspect_with_details(
+    entry: &DesiredEntry,
+    tracked_only: bool,
+    snapshots: &mut Snapshots,
+) -> Result<Inspection> {
+    if snapshots.state.is_none() {
+        snapshots.state = Some(state::state_file()?.inspect_blocking()?);
+    }
+    if tracked_only {
+        let snapshot = snapshots
+            .state
+            .as_ref()
+            .expect("state snapshot initialized above");
+        state::verify_live_target_snapshot(snapshot, entry)?;
+        let actual = crate::plan::actual::inspect(&entry.target)?;
+        let status = match actual {
+            crate::plan::actual::ActualState::Missing => Some(Status::Missing),
+            crate::plan::actual::ActualState::Directory => None,
+            _ => Some(Status::Conflict),
+        };
+        if let Some(status) = status {
+            return Ok(Inspection {
+                status,
+                staged: Vec::new(),
+                unstaged: Vec::new(),
+                unmerged: Vec::new(),
+            });
+        }
+    }
+    let Some(record) = snapshots
+        .state
+        .as_ref()
+        .and_then(|state| state.checkouts.get(&state::key_for(&entry.target)))
+    else {
         // No recorded association: `VirtualCheckoutMaterializer::classify`
         // would have produced `Create`/`Migrate` for this, never `Noop` —
         // reachable here only if the target was removed/state lost after
@@ -58,6 +100,7 @@ fn inspect_with_details(entry: &DesiredEntry, tracked_only: bool) -> Result<Insp
             },
             staged: Vec::new(),
             unstaged: Vec::new(),
+            unmerged: Vec::new(),
         });
     };
 
@@ -68,22 +111,44 @@ fn inspect_with_details(entry: &DesiredEntry, tracked_only: bool) -> Result<Insp
         );
     };
 
-    state::verify(entry, &record)?;
+    state::verify(entry, record)?;
     let scope = entry.intent.checkout_scope();
     let (repo, managed_path) = git::discover_source(source)?;
+    let key = repo.path().to_path_buf();
+    if !snapshots.indices.contains_key(&key) {
+        snapshots.indices.insert(key.clone(), repo.index()?);
+    }
+    let index_snapshot = &snapshots.indices[&key];
+    let mut unmerged = std::collections::BTreeSet::new();
+    for indexed in index_snapshot.iter() {
+        // Conflict stages belong to one Git path, not three staged file snapshots.
+        if indexed.flags & 0x3000 != 0
+            && let Some(relative) = git::relative_index_path(&indexed.path, &managed_path)?
+            && scope.owns_source(&relative)
+            && scope.owns_target(&relative)
+        {
+            unmerged.insert(relative.to_path_buf());
+        }
+    }
 
     let base_tree = git::base_tree(&repo, Some(&record.base_oid))?;
-    let base_entries = git::scoped_entries(&repo, &base_tree, &managed_path, &scope)?;
+    let base_entries =
+        git::scoped_entries_with_index(&repo, &base_tree, &managed_path, &scope, index_snapshot)?;
     let base_blobs = blob_ids(&base_entries);
 
     let head_tree = git::base_tree(&repo, None)?;
-    let head_entries = git::scoped_entries(&repo, &head_tree, &managed_path, &scope)?;
+    let head_entries = if head_tree.id() == base_tree.id() {
+        base_entries.clone()
+    } else {
+        git::scoped_entries_with_index(&repo, &head_tree, &managed_path, &scope, index_snapshot)?
+    };
     let head_blobs = blob_ids(&head_entries);
 
+    let mut converged = false;
     let (local_changes, unstaged) = if tracked_only {
-        let index = indexed_entries(&repo, &managed_path, &scope, false)?;
+        let index = indexed_entries_from(index_snapshot, &managed_path, &scope, false)?;
         // Reserved paths select target files for inspection but supply no staged baseline.
-        let owned = indexed_entries(&repo, &managed_path, &scope, true)?;
+        let owned = indexed_entries_from(index_snapshot, &managed_path, &scope, true)?;
         // The union preserves staged additions and historical deletions without
         // traversing unrelated working trees nested beneath the checkout.
         let local = git::tracked_target_entries(
@@ -92,6 +157,12 @@ fn inspect_with_details(entry: &DesiredEntry, tracked_only: bool) -> Result<Insp
             &entry.target,
             &[&base_entries, &head_entries, &owned],
         )?;
+        // Local edits are Git changes; only source updates still absent from the target need reconciliation.
+        converged = head_entries.iter().all(|(path, value)| {
+            base_entries.get(path) == Some(value) || local.get(path) == Some(value)
+        }) && base_entries
+            .keys()
+            .all(|path| head_entries.contains_key(path) || !local.contains_key(path));
         (
             git::entry_changes(&base_entries, &local),
             git::entry_changes(&index, &local),
@@ -106,33 +177,55 @@ fn inspect_with_details(entry: &DesiredEntry, tracked_only: bool) -> Result<Insp
     // Include executable-bit drift, as the previous filtered-tree comparison did.
     let source_drifted = head_entries != base_entries;
 
-    let staged = git::staged_changes(&repo, &managed_path, &scope)?;
-    let status = match (
-        local_changes.is_empty() && staged.is_empty(),
-        source_drifted,
-    ) {
-        (true, false) => Status::Applied,
-        (false, false) => Status::Modified,
-        (true, true) => {
-            // `commits_between` needs commits, not trees, to walk history.
-            let base_commit = repo.find_commit(Oid::from_str(&record.base_oid)?)?;
-            let head_commit = repo.head()?.peel_to_commit()?;
-            Status::Behind(git::commits_between(
-                &repo,
-                base_commit.id(),
-                head_commit.id(),
-            )?)
-        }
-        (false, true) => {
-            if conflicting_paths(&base_blobs, &head_blobs, &local_changes).is_empty() {
+    let staged = if tracked_only {
+        let index = indexed_entries_from(index_snapshot, &managed_path, &scope, false)?;
+        git::entry_changes(&head_entries, &index)
+    } else {
+        git::staged_changes(&repo, &managed_path, &scope)?
+    };
+    let status = if tracked_only && !unmerged.is_empty() {
+        Status::Conflict
+    } else if tracked_only && (!source_drifted || converged) {
+        Status::Applied
+    } else if tracked_only && conflicting_paths(&base_blobs, &head_blobs, &local_changes).is_empty()
+    {
+        let base_commit = repo.find_commit(Oid::from_str(&record.base_oid)?)?;
+        let head_commit = repo.head()?.peel_to_commit()?;
+        Status::Behind(git::commits_between(
+            &repo,
+            base_commit.id(),
+            head_commit.id(),
+        )?)
+    } else if tracked_only {
+        Status::Conflict
+    } else {
+        match (
+            local_changes.is_empty() && staged.is_empty(),
+            source_drifted,
+        ) {
+            (true, false) => Status::Applied,
+            (false, false) => Status::Modified,
+            (true, true) => {
+                // `commits_between` needs commits, not trees, to walk history.
                 let base_commit = repo.find_commit(Oid::from_str(&record.base_oid)?)?;
                 let head_commit = repo.head()?.peel_to_commit()?;
-                Status::Diverged {
-                    ahead: local_changes.len(),
-                    behind: git::commits_between(&repo, base_commit.id(), head_commit.id())?,
+                Status::Behind(git::commits_between(
+                    &repo,
+                    base_commit.id(),
+                    head_commit.id(),
+                )?)
+            }
+            (false, true) => {
+                if conflicting_paths(&base_blobs, &head_blobs, &local_changes).is_empty() {
+                    let base_commit = repo.find_commit(Oid::from_str(&record.base_oid)?)?;
+                    let head_commit = repo.head()?.peel_to_commit()?;
+                    Status::Diverged {
+                        ahead: local_changes.len(),
+                        behind: git::commits_between(&repo, base_commit.id(), head_commit.id())?,
+                    }
+                } else {
+                    Status::Conflict
                 }
-            } else {
-                Status::Conflict
             }
         }
     };
@@ -140,6 +233,7 @@ fn inspect_with_details(entry: &DesiredEntry, tracked_only: bool) -> Result<Insp
         status,
         staged,
         unstaged,
+        unmerged: unmerged.into_iter().collect(),
     })
 }
 
@@ -235,8 +329,20 @@ fn indexed_entries(
     scope: &crate::desired::CheckoutScope,
     include_intent_to_add: bool,
 ) -> Result<BTreeMap<PathBuf, (Oid, i32)>> {
+    indexed_entries_from(&repo.index()?, managed, scope, include_intent_to_add)
+}
+
+fn indexed_entries_from(
+    index: &git2::Index,
+    managed: &std::path::Path,
+    scope: &crate::desired::CheckoutScope,
+    include_intent_to_add: bool,
+) -> Result<BTreeMap<PathBuf, (Oid, i32)>> {
     let mut blobs = BTreeMap::new();
-    for indexed in repo.index()?.iter() {
+    for indexed in index.iter() {
+        if !include_intent_to_add && indexed.flags & 0x3000 != 0 {
+            continue;
+        }
         // Match diff's unstaged-new-file view instead of treating the placeholder as staged.
         if !include_intent_to_add
             && git2::IndexEntryExtendedFlag::from_bits_truncate(indexed.flags_extended)
@@ -244,11 +350,10 @@ fn indexed_entries(
         {
             continue;
         }
-        let path = std::path::Path::new(std::str::from_utf8(&indexed.path)?);
-        if let Ok(relative) = path.strip_prefix(managed)
-            && scope.owns_source(relative)
-            && scope.owns_target(relative)
-            && !git::is_overlay_metadata(relative)
+        if let Some(relative) = git::relative_index_path(&indexed.path, managed)?
+            && scope.owns_source(&relative)
+            && scope.owns_target(&relative)
+            && !git::is_overlay_metadata(&relative)
             && git::is_supported_mode(indexed.mode)
         {
             blobs.insert(relative.to_path_buf(), (indexed.id, indexed.mode as i32));

@@ -14,6 +14,7 @@
 //! Git prerequisites use effective protection and scoped configuration findings,
 //! shared with doctor's health summary rather than managed-block bookkeeping.
 
+pub mod changes;
 pub mod configuration;
 pub mod git;
 mod identity;
@@ -45,9 +46,9 @@ pub enum Status {
     /// Target doesn't exist yet. For a declared `git` entry, this means it
     /// still needs provisioning (#140).
     Missing,
-    /// A git checkout has uncommitted changes, or a filesystem entry's
-    /// content/kind already matches but its permission mode differs (#65,
-    /// `Operation::Repair`) — auto-fixable on the next `apply`.
+    /// A filesystem entry's permission mode differs (`Operation::Repair`).
+    /// Destructive/sync inspectors also use this for dirty content; reporting
+    /// keeps ordinary Git edits in Changes instead of reconciliation health.
     Modified,
     /// A dangling soft symlink (correctly pointed, but its source
     /// disappeared), or a checkout path that isn't a valid git repo.
@@ -141,21 +142,6 @@ impl fmt::Display for EntryStatus {
     }
 }
 
-/// One-character-ish marker for a virtual checkout's per-file change kind
-/// in `over status`'s listing — mirrors `git status --short`'s single-
-/// letter convention (`A`/`M`/`D`) rather than a full word, since these
-/// lines are already indented under a labeled aggregate status line.
-fn file_change_symbol(
-    kind: crate::materialize::virtual_checkout::git::FileChangeKind,
-) -> &'static str {
-    use crate::materialize::virtual_checkout::git::FileChangeKind;
-    match kind {
-        FileChangeKind::Added => "A",
-        FileChangeKind::Modified => "M",
-        FileChangeKind::Deleted => "D",
-    }
-}
-
 /// Per-`Status` counts of a [`Report`], in the same order `Status` is
 /// declared.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -228,16 +214,27 @@ impl Report {
     /// module instead — see `CheckoutMaterializer`/`VirtualCheckoutMaterializer`'s
     /// own docs).
     pub fn build(desired: &DesiredTree) -> Result<Self> {
-        Self::build_with_inspector(desired, virtual_checkout::inspect)
+        let mut snapshots = virtual_checkout::Snapshots::default();
+        Self::build_with_inspector(desired, |entry| {
+            Ok(virtual_checkout::inspect_tracked_cached(entry, &mut snapshots)?.status)
+        })
     }
 
     pub(crate) fn build_with_inspector(
         desired: &DesiredTree,
+        inspect: impl FnMut(&DesiredEntry) -> Result<Status>,
+    ) -> Result<Self> {
+        Self::build_reporting(desired, true, inspect)
+    }
+
+    pub(crate) fn build_reporting(
+        desired: &DesiredTree,
+        configuration: bool,
         mut inspect: impl FnMut(&DesiredEntry) -> Result<Status>,
     ) -> Result<Self> {
         // Overlay views retain the inspector's details; other consumers can keep
         // their existing content-discovery policy without a second status model.
-        let plan = Plan::build(desired)?;
+        let plan = Plan::build_reporting(desired)?;
         let mut entries = Vec::with_capacity(plan.len());
         let mut inspection_failures = Vec::new();
         for (index, step) in plan.steps().iter().enumerate() {
@@ -248,7 +245,15 @@ impl Report {
                 }
                 Ok(match (&step.entry.intent, &step.operation) {
                     (_, Operation::NeedsUnlock) => Status::Locked,
-                    (MaterializationIntent::Checkout, _) => git::inspect_runtime(&step.entry)?,
+                    (MaterializationIntent::Checkout, Operation::Migrate { .. }) => {
+                        Status::Conflict
+                    }
+                    (MaterializationIntent::Checkout, Operation::Conflict { .. })
+                        if step.entry.target.is_symlink() =>
+                    {
+                        Status::Conflict
+                    }
+                    (MaterializationIntent::Checkout, _) => git::inspect_reporting(&step.entry)?,
                     (
                         MaterializationIntent::VirtualCheckout
                         | MaterializationIntent::ScopedVirtualCheckout(_),
@@ -289,7 +294,11 @@ impl Report {
 
         Ok(Self {
             entries,
-            git_configuration: configuration::inspect(&plan.inspectable_desired())?,
+            git_configuration: if configuration {
+                configuration::inspect(&plan.inspectable_desired())?
+            } else {
+                Vec::new()
+            },
             inspection_failures,
         })
     }

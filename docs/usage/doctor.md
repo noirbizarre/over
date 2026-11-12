@@ -37,7 +37,7 @@ For example:
   workspaces/oxyde: ⚠ 2 warning(s)
 ```
 
-The summary includes missing deployments, modified files, conflicts, checkout
+The summary includes missing deployments, permission drift, conflicts, checkout
 state, Git prerequisites and inspection failures. Repository/worktree paths,
 individual missing exclusions and configuration keys appear in status's
 **Git configuration** section, rather than being repeated here. Use lint for static
@@ -52,6 +52,13 @@ Without `--verbose`, healthy rows are omitted; an empty section prints
 Several compositions can be affected by one dependency, but equivalent underlying
 issues count once in the overall warning/error totals. Overlay summary rows do
 not add findings to those totals.
+
+Ordinary staged/unstaged Git changes are not health findings. Use status's final
+**Changes** section or `over status --short` to inspect them. Doctor requests the
+shared reconciliation-only inspection without building status's configuration or
+file-change presentation. Equivalent checkout claims share target inspection and
+Git/index snapshots across compositions. Repository-wide lint, encryption and
+XDG diagnostics retain their intentional broader scope.
 
 ## Selection and exit status
 
@@ -77,7 +84,7 @@ runtime entries but retains their data.
 
 Doctor exits nonzero for errors: broken deployments, content/ownership conflicts,
 failed inspection, malformed exclusion markers, lint errors or global errors.
-Missing/modified/locked entries, ahead/behind/diverged checkouts, missing or
+Missing/permission-modified/locked entries, ahead/behind/diverged checkouts, missing or
 incorrect Git settings, missing effective exclusions, tracked conflicts and stale
 bookkeeping are warnings. Warning-only reports exit successfully, as lint does.
 Status uses the same runtime severity but exits nonzero for any attention condition.

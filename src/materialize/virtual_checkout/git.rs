@@ -87,13 +87,23 @@ pub(crate) fn scoped_entries(
     managed_path: &Path,
     scope: &CheckoutScope,
 ) -> Result<BTreeMap<PathBuf, (Oid, i32)>> {
-    for indexed in repo.index()?.iter() {
-        let path = Path::new(std::str::from_utf8(&indexed.path)?);
-        if let Ok(relative) = path.strip_prefix(managed_path)
-            && scope.owns_source(relative)
+    scoped_entries_with_index(repo, tree, managed_path, scope, &repo.index()?)
+}
+
+/// Reporting reuses a worktree's index snapshot across all checkout units.
+pub(crate) fn scoped_entries_with_index(
+    repo: &Repository,
+    tree: &Tree<'_>,
+    managed_path: &Path,
+    scope: &CheckoutScope,
+    index: &git2::Index,
+) -> Result<BTreeMap<PathBuf, (Oid, i32)>> {
+    for indexed in index.iter() {
+        if let Some(relative) = relative_index_path(&indexed.path, managed_path)?
+            && scope.owns_source(&relative)
         {
             anyhow::ensure!(
-                !crate::secrets::is_encrypted(relative),
+                !crate::secrets::is_encrypted(&relative),
                 "Age-encrypted files require ordinary file-level materialization; virtual checkouts are unsupported"
             );
         }
@@ -116,6 +126,25 @@ pub(crate) fn scoped_entries(
         );
     }
     Ok(entries)
+}
+
+/// Reject invalid names only after narrowing to the selected Git namespace.
+pub(crate) fn relative_index_path(bytes: &[u8], managed: &Path) -> Result<Option<PathBuf>> {
+    let prefix = managed
+        .to_str()
+        .context("checkout source path is not UTF-8")?;
+    #[cfg(windows)]
+    let prefix = prefix.replace('\\', "/");
+    let relative = if prefix.is_empty() {
+        Some(bytes)
+    } else {
+        bytes
+            .strip_prefix(prefix.as_bytes())
+            .and_then(|tail| tail.strip_prefix(b"/"))
+    };
+    relative
+        .map(|bytes| Ok(PathBuf::from(std::str::from_utf8(bytes)?)))
+        .transpose()
 }
 
 /// The tree to materialize/compare against: the commit at `base_oid` if
