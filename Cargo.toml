@@ -155,6 +155,13 @@ xattr = "1.6"
 [target.'cfg(windows)'.dependencies]
 # Already used by same-file; std's Windows link count is not stable.
 winapi-util = "0.1"
+# Already transitive via winapi-util; native ACL inspection avoids a shell per filter request.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Threading",
+] }
 
 [dependencies.clap]
 features = ["derive", "env", "unicode", "cargo", "color"]

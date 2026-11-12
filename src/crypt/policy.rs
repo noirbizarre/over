@@ -50,7 +50,9 @@ pub fn protected(repo: &git2::Repository, path: &Path) -> Result<bool> {
 }
 
 pub fn is_policy_extension(before: &[u8], after: &[u8]) -> bool {
-    let Some(extension) = after.strip_prefix(before) else {
+    let before = attribute_bytes(before);
+    let after = attribute_bytes(after);
+    let Some(extension) = after.strip_prefix(before.as_slice()) else {
         return false;
     };
     let Ok(extension) = std::str::from_utf8(extension) else {
@@ -69,6 +71,32 @@ pub fn is_policy_extension(before: &[u8], after: &[u8]) -> bool {
             .or_else(|| line.strip_suffix(" -filter -text"))
             .is_some_and(|pattern| serde_json::from_str::<String>(pattern).is_ok())
     })
+}
+
+fn attribute_bytes(bytes: &[u8]) -> Vec<u8> {
+    bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, byte)| {
+            if *byte == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+                None
+            } else {
+                Some(*byte)
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn bootstrap_equal(path: &Path, staged: &[u8], working: &[u8]) -> bool {
+    // CRLF and LF delimit the same Git attribute rules; substantive edits still differ.
+    if path
+        .file_name()
+        .is_some_and(|name| name == ".gitattributes")
+    {
+        attribute_bytes(staged) == attribute_bytes(working)
+    } else {
+        staged == working
+    }
 }
 
 fn tracked(repo: &git2::Repository) -> Result<Vec<PathBuf>> {
@@ -747,6 +775,8 @@ fn update_with_ingestion(
             Err(e)
         }
     })?;
+    let worktree_attributes = attributes.clone();
+    let attributes = attributes.replace("\r\n", "\n");
     let mut proposed = attributes.clone();
     if !proposed.ends_with('\n') && !proposed.is_empty() {
         proposed.push('\n');
@@ -827,7 +857,11 @@ fn update_with_ingestion(
     ] {
         if let Some(entry) = index.get_path(Path::new(path), 0) {
             ensure!(
-                repo.find_blob(entry.id)?.content() == fs::read(root.join(path))?,
+                bootstrap_equal(
+                    Path::new(path),
+                    repo.find_blob(entry.id)?.content(),
+                    &fs::read(root.join(path))?
+                ),
                 "resolve staged/worktree divergence in {path} before changing policy"
             );
         }
@@ -919,12 +953,13 @@ fn update_with_ingestion(
         proposed.as_bytes(),
     )?;
     for path in [".over/crypt/access.json", ".over/.gitattributes"] {
-        stage_blob(
-            &mut index,
-            repo,
-            Path::new(path),
-            &fs::read(root.join(path))?,
-        )?;
+        let bytes = fs::read(root.join(path))?;
+        let bytes = if path.ends_with(".gitattributes") {
+            attribute_bytes(&bytes)
+        } else {
+            bytes
+        };
+        stage_blob(&mut index, repo, Path::new(path), &bytes)?;
     }
     for path in removals {
         index.remove_path(path)?;
@@ -935,7 +970,7 @@ fn update_with_ingestion(
         "index changed during crypt preparation; retry"
     );
     ensure!(
-        fs::read_to_string(&attributes_path).unwrap_or_default() == attributes,
+        fs::read_to_string(&attributes_path).unwrap_or_default() == worktree_attributes,
         "attributes changed during crypt preparation; retry"
     );
     let mut snapshots = vec![attributes_path.clone(), repo.path().join("index")];
@@ -949,8 +984,16 @@ fn update_with_ingestion(
     snapshots.extend(removals.iter().map(|path| root.join(path)));
     snapshots.extend(working_changes.keys().cloned());
     let index_bytes = index_bytes(repo, &index)?;
+    let working_proposed = if worktree_attributes.contains("\r\n") {
+        proposed.replace('\n', "\r\n")
+    } else {
+        proposed.clone()
+    };
     let mut expected = BTreeMap::from([
-        (attributes_path.clone(), Some(proposed.as_bytes().to_vec())),
+        (
+            attributes_path.clone(),
+            Some(working_proposed.as_bytes().to_vec()),
+        ),
         (repo.path().join("index"), Some(index_bytes.clone())),
     ]);
     expected.extend(removals.iter().map(|path| (root.join(path), None)));
@@ -965,7 +1008,7 @@ fn update_with_ingestion(
         .unwrap_or_default();
     begin_commit_with_links(repo, &key, &snapshots, None, expected, expected_links)?;
     let result = (|| -> Result<()> {
-        super::transaction::worktree_write(&attributes_path, proposed.as_bytes(), None)?;
+        super::transaction::worktree_write(&attributes_path, working_proposed.as_bytes(), None)?;
         lock.replace_while_locked(&repo.path().join("index"), &index_bytes)?;
         for path in removals {
             fs::remove_file(root.join(path))?;
@@ -1051,7 +1094,11 @@ impl Refresh {
                     .is_some_and(|name| name == ".gitattributes")
                 {
                     ensure!(
-                        fs::read(root.join(path))? == repo.find_blob(entry.id)?.content(),
+                        bootstrap_equal(
+                            path,
+                            repo.find_blob(entry.id)?.content(),
+                            &fs::read(root.join(path))?
+                        ),
                         "resolve unstaged .gitattributes edits before lock/unlock"
                     );
                 }
@@ -1870,6 +1917,26 @@ pub fn migrate(repo: &git2::Repository) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attribute_line_endings_are_equivalent_but_protection_rules_are_not() {
+        let staged = b"token filter=over -text\n";
+        assert!(bootstrap_equal(
+            Path::new(".gitattributes"),
+            staged,
+            b"token filter=over -text\r\n"
+        ));
+        assert!(!bootstrap_equal(
+            Path::new(".gitattributes"),
+            staged,
+            b"token -filter -text\r\n"
+        ));
+        assert!(!bootstrap_equal(
+            Path::new(".over/crypt/access.json"),
+            b"{}\n",
+            b"{}\r\n"
+        ));
+    }
 
     fn protected_repository() -> (tempfile::TempDir, git2::Repository, format::RepositoryKey) {
         let directory = tempfile::tempdir().unwrap();

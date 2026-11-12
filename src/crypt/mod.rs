@@ -7,6 +7,8 @@ pub mod format;
 pub(crate) mod ingest;
 pub mod policy;
 pub(crate) mod transaction;
+#[cfg(windows)]
+pub(crate) mod windows;
 
 use std::fs;
 use std::io::Write;

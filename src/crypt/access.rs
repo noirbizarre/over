@@ -132,12 +132,11 @@ fn check_private(repo: &git2::Repository, path: &Path, directory: bool) -> Resul
 
 #[cfg(windows)]
 pub(crate) fn windows_acl(path: &Path, initialize: bool) -> Result<()> {
+    if !initialize {
+        return super::windows::check_acl(path);
+    }
     // Use the OS ACL implementation; readonly attributes do not provide key confidentiality.
-    let script = if initialize {
-        "$ErrorActionPreference='Stop'; $p=$env:OVER_CRYPT_ACL_PATH; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=Get-Acl -LiteralPath $p; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); foreach($r in @($acl.Access)){$acl.RemoveAccessRuleSpecific($r)}; $flags=if((Get-Item -LiteralPath $p).PSIsContainer){'ContainerInherit,ObjectInherit'}else{'None'}; $r=[System.Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl',$flags,'None','Allow'); $acl.AddAccessRule($r); Set-Acl -LiteralPath $p -AclObject $acl"
-    } else {
-        "$ErrorActionPreference='Stop'; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=Get-Acl -LiteralPath $env:OVER_CRYPT_ACL_PATH; if($acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){exit 1}; foreach($r in $acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])){if($r.AccessControlType -eq 'Allow' -and $r.IdentityReference.Value -ne $sid.Value){exit 1}}"
-    };
+    let script = "$ErrorActionPreference='Stop'; $p=$env:OVER_CRYPT_ACL_PATH; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=Get-Acl -LiteralPath $p; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); foreach($r in @($acl.Access)){$acl.RemoveAccessRuleSpecific($r)}; $flags=if((Get-Item -LiteralPath $p).PSIsContainer){'ContainerInherit,ObjectInherit'}else{'None'}; $r=[System.Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl',$flags,'None','Allow'); $acl.AddAccessRule($r); Set-Acl -LiteralPath $p -AclObject $acl";
     let result = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .env("OVER_CRYPT_ACL_PATH", path)
@@ -1155,8 +1154,8 @@ mod tests {
         fs::rename(&private, &actual).unwrap();
         let output = std::process::Command::new("cmd.exe")
             .args(["/C", "mklink", "/J"])
-            .arg(&private)
-            .arg(&actual)
+            .arg(private.to_string_lossy().replace('/', "\\"))
+            .arg(actual.to_string_lossy().replace('/', "\\"))
             .output()
             .unwrap();
         assert!(

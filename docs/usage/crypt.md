@@ -49,8 +49,9 @@ agent, keyring, session timeout, or shutdown hook. Filesystem permissions/ACLs a
 host OS/full-disk encryption protect it while the OS session is locked.
 
 On Unix the directory is private (`0700`) and the key is `0600`; unsafe owners,
-permissions, symlinks, and hard links are rejected. Windows uses private ACLs and
-requires PowerShell to establish/check them. Unlocked keys are never stored in
+permissions, symlinks, and hard links are rejected. Windows uses private ACLs,
+native owner/DACL validation, and PowerShell for initial ACL setup. Unsupported
+noncanonical ACE layouts fail closed. Unlocked keys are never stored in
 XDG caches, tracked files, logs, or process arguments.
 
 Filter configuration is published as one local update before granting new key

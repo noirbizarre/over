@@ -231,8 +231,11 @@ fn commit_blocking(
                 }
                 // Policy is inseparable from encrypted content; refuse unstaged policy edits.
                 anyhow::ensure!(
-                    std::fs::read(crate::crypt::access::root(&repo)?.join(path))?
-                        == repo.find_blob(entry.id)?.content(),
+                    crate::crypt::policy::bootstrap_equal(
+                        &relative,
+                        repo.find_blob(entry.id)?.content(),
+                        &std::fs::read(crate::crypt::access::root(&repo)?.join(path))?
+                    ),
                     "resolve unstaged crypt metadata before committing"
                 );
                 paths.push(relative);

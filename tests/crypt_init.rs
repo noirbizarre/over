@@ -498,3 +498,30 @@ fn repairing_an_existing_unlock_preserves_plaintext_working_edits() {
         b"independent working edit"
     );
 }
+
+#[test]
+fn crlf_attribute_checkouts_are_not_mistaken_for_unstaged_policy_edits() {
+    let fixture = Fixture::new(false, false);
+    fs::write(
+        fixture.directory.path().join("gitconfig"),
+        "[core]\n autocrlf = true\n",
+    )
+    .unwrap();
+    checked(run(fixture
+        .init()
+        .args(["--unlock", "--identity"])
+        .arg(&fixture.identity)));
+    let attributes = fs::read(fixture.clone.join(".gitattributes")).unwrap();
+    assert!(attributes.windows(2).any(|bytes| bytes == b"\r\n"));
+    fixture.assert_persistent_unlock();
+    checked(run(fixture
+        .over(&fixture.clone)
+        .current_dir(&fixture.clone)
+        .args(["crypt", "add", "token"])));
+    let changed = fixture.git(&fixture.clone, &["diff", "--name-only"]);
+    assert!(
+        changed.stdout.is_empty(),
+        "unexpected working changes: {}",
+        String::from_utf8_lossy(&changed.stdout)
+    );
+}
