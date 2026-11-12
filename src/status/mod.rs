@@ -240,8 +240,12 @@ impl Report {
         let plan = Plan::build(desired)?;
         let mut entries = Vec::with_capacity(plan.len());
         let mut inspection_failures = Vec::new();
-        for step in plan.steps() {
+        for (index, step) in plan.steps().iter().enumerate() {
             let inspected = (|| -> Result<Status> {
+                // No intent-specific inspector may read through a blocked ancestor.
+                if plan.blocker_for_step(index).is_some() {
+                    return Ok(Status::Conflict);
+                }
                 Ok(match (&step.entry.intent, &step.operation) {
                     (_, Operation::NeedsUnlock) => Status::Locked,
                     (MaterializationIntent::Checkout, _) => git::inspect_runtime(&step.entry)?,
@@ -265,7 +269,7 @@ impl Report {
                     // checkout is.
                     (_, Operation::Repair { .. }) => Status::Modified,
                     (_, Operation::Deferred) => {
-                        unreachable!("only Checkout entries ever classify as Deferred")
+                        anyhow::bail!("entry classification is deferred without a scaffold blocker")
                     }
                 })
             })();
@@ -285,7 +289,7 @@ impl Report {
 
         Ok(Self {
             entries,
-            git_configuration: configuration::inspect(desired)?,
+            git_configuration: configuration::inspect(&plan.inspectable_desired())?,
             inspection_failures,
         })
     }
@@ -462,6 +466,86 @@ mod tests {
         assert_eq!(report.entries()[0].status, Status::Missing);
         assert_eq!(report.counts().missing, 1);
         assert!(report.needs_attention());
+    }
+
+    #[rstest]
+    #[case(false, "file")]
+    #[case(false, "virtual")]
+    #[case(false, "git")]
+    #[case(true, "file")]
+    #[case(true, "virtual")]
+    #[case(true, "git")]
+    fn blocked_children_are_reported_without_inspecting_through_the_scaffold(
+        #[case] link: bool,
+        #[case] kind: &str,
+    ) {
+        let (td, repo) = repo_and_root();
+        td.child("ov/over.toml")
+            .write_str("target='~/blocked'")
+            .unwrap();
+        td.child("ov/nested/file").write_str("managed").unwrap();
+        td.child("home").create_dir_all().unwrap();
+        if link {
+            td.child("foreign/nested").create_dir_all().unwrap();
+            // A foreign repository must never become a diagnostic prerequisite.
+            git2::Repository::init(td.path().join("foreign/nested/file")).unwrap();
+            symlink::symlink_dir(td.path().join("foreign"), td.path().join("home/blocked"))
+                .unwrap();
+        } else {
+            td.child("home/blocked").write_str("obstruction").unwrap();
+        }
+        let overlay = repo.get("ov").unwrap();
+        let ctx = Context::builder()
+            .root(td.path().join("home"))
+            .repository(repo)
+            .build();
+        let mut entries = DesiredTree::build(&ctx, &overlay)
+            .unwrap()
+            .entries()
+            .to_vec();
+        let child = entries
+            .iter_mut()
+            .find(|entry| entry.target.ends_with("nested/file"))
+            .unwrap();
+        if kind == "virtual" {
+            child.intent = MaterializationIntent::VirtualCheckout;
+        } else if kind == "git" {
+            child.intent = MaterializationIntent::Checkout;
+            child.provenance = crate::desired::Provenance::Git {
+                overlay: "ov".into(),
+                repo_key: "nested/file".into(),
+                config: Box::new(serde_json::from_str("\"unused\"").unwrap()),
+            };
+        }
+        let mut unrelated = entries[0].clone();
+        unrelated.target = td.path().join("home/unrelated");
+        unrelated.intent = MaterializationIntent::Directory;
+        entries.push(unrelated);
+        let desired = DesiredTree::from_entries(entries);
+        let report =
+            Report::build_with_inspector(&desired, |_| panic!("blocked inspector called")).unwrap();
+        assert!(
+            report
+                .entries()
+                .iter()
+                .filter(|entry| entry.entry.target.ends_with("nested/file"))
+                .all(|entry| entry.status == Status::Conflict)
+        );
+        assert!(
+            report
+                .entries()
+                .iter()
+                .any(|entry| entry.entry.target.ends_with("unrelated")
+                    && entry.status == Status::Missing)
+        );
+        assert!(
+            report
+                .git_configuration
+                .iter()
+                .all(|issue| !issue.repository.starts_with(td.path().join("foreign")))
+        );
+        let error = crate::diff::Report::build(&desired).unwrap_err();
+        assert!(error.to_string().contains("scaffold"));
     }
 
     #[tokio::test]

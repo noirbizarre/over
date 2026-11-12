@@ -19,6 +19,31 @@ fn command(source: &Path, root: &Path, verb: &str) -> Command {
 }
 
 #[test]
+fn status_show_and_doctor_report_obstructed_scaffolds_without_panicking() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("home");
+    fs::create_dir_all(source.join("selected/nested")).unwrap();
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        source.join("selected/over.toml"),
+        "target='~/blocked'\n[[rules]]\npath='nested'\nmode='checkout'\n",
+    )
+    .unwrap();
+    fs::write(source.join("selected/nested/file"), "managed").unwrap();
+    fs::write(root.join("blocked"), "preserve").unwrap();
+    for verb in ["status", "show", "doctor"] {
+        command(&source, &root, verb)
+            .arg("selected")
+            .env("XDG_STATE_HOME", temp.path().join("state"))
+            .assert()
+            .code(1)
+            .stderr(contains("panicked").not());
+    }
+    assert_eq!(fs::read(root.join("blocked")).unwrap(), b"preserve");
+}
+
+#[test]
 fn globally_ignored_overlay_files_need_no_managed_exclusion_in_status_or_doctor() {
     let temp = TempDir::new().unwrap();
     let source = temp.path().join("source");

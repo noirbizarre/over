@@ -79,6 +79,18 @@ impl DesiredTree {
         &self.entries
     }
 
+    pub(crate) fn filter_entries(&self, mut keep: impl FnMut(&DesiredEntry) -> bool) -> Self {
+        Self {
+            entries: self
+                .entries
+                .iter()
+                .filter(|entry| keep(entry))
+                .cloned()
+                .collect(),
+            sources: self.sources.clone(),
+        }
+    }
+
     /// Find the outermost scaffold that must be replaced before inspecting a child.
     pub(crate) fn blocking_scaffold(&self, target: &Path) -> Result<Option<PathBuf>> {
         let ancestors: Vec<_> = target.ancestors().skip(1).collect();

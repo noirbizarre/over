@@ -231,7 +231,13 @@ impl Report {
     pub fn build(desired: &DesiredTree) -> Result<Self> {
         let plan = Plan::build(desired)?;
         let mut entries = Vec::with_capacity(plan.len());
-        for step in plan.steps() {
+        for (index, step) in plan.steps().iter().enumerate() {
+            if let Some(blocker) = plan.blocker_for_step(index) {
+                anyhow::bail!(
+                    "cannot inspect until scaffold '{}' is reconciled",
+                    blocker.display()
+                );
+            }
             let change = if matches!(step.entry.intent, MaterializationIntent::Checkout) {
                 classify_checkout(&step.entry)?
             } else if step.entry.intent.is_virtual_checkout() {
@@ -291,10 +297,9 @@ fn classify_fs(entry: &DesiredEntry, operation: &Operation) -> Result<Change> {
             &current.to_string(),
             &desired.to_string(),
         ))),
-        Operation::Deferred => unreachable!(
-            "only Checkout entries ever classify as Deferred, and those are \
-             routed to classify_checkout before reaching classify_fs"
-        ),
+        Operation::Deferred => {
+            anyhow::bail!("entry classification is deferred without a scaffold blocker")
+        }
     }
 }
 
