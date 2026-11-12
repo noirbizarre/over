@@ -118,7 +118,7 @@ facts, before metadata composition; it cannot depend on the `data` it selects.
 | `add`, `git add`, `git mount` | Infer context, otherwise require an explicit overlay; no default fallback |
 | `log` | Infer context, otherwise source-repository history; no default selection |
 | `lint` | Check the repository; the default does not narrow it |
-| `doctor` | Check all overlay configuration and state; a name only narrows Git-exclude diagnostics |
+| `doctor` | Check all runtime overlays unless named; static lint and global checks remain repository-wide |
 
 See [contextual overlay selection](../usage/selection.md) for ranked evidence,
 Git associations, sibling files, and ambiguity errors. Ambiguity does not fall
