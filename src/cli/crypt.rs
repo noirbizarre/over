@@ -100,16 +100,16 @@ pub fn policy_inputs(
     home: &std::path::Path,
     patterns: &[String],
 ) -> Result<(Vec<String>, std::collections::BTreeMap<PathBuf, PathBuf>)> {
-    let cwd = std::env::current_dir()?;
-    let root = access::root(repo)?;
-    if cwd.starts_with(root) {
+    let cwd = crate::overlays::mapping::physical(&std::env::current_dir()?)?;
+    let root = crate::overlays::mapping::physical(access::root(repo)?)?;
+    if cwd.starts_with(&root) {
         return Ok((
             patterns
                 .iter()
                 .map(|pattern| {
                     let absolute = crate::overlays::mapping::absolute(&cwd.join(pattern))?;
-                    Ok(absolute
-                        .strip_prefix(root)?
+                    Ok(crate::overlays::mapping::location(&absolute)?
+                        .strip_prefix(&root)?
                         .to_string_lossy()
                         .replace('\\', "/"))
                 })
@@ -123,17 +123,18 @@ pub fn policy_inputs(
     for physical in &paths {
         let mut candidates = Vec::new();
         for (target, record) in &state.checkouts {
-            let target = std::path::Path::new(target);
-            let Ok(relative) = physical.strip_prefix(target) else {
+            let target = crate::overlays::mapping::physical(std::path::Path::new(target))?;
+            let location = crate::overlays::mapping::location(physical)?;
+            let Ok(relative) = location.strip_prefix(&target) else {
                 continue;
             };
             if record.scope.owns_target(relative) && record.scope.owns_source(relative) {
                 let source = record.source_repository.as_ref().ok_or_else(|| anyhow::anyhow!("legacy virtual association lacks its source; reapply before changing crypt policy"))?;
                 ensure!(
-                    source.canonicalize()? == root.canonicalize()?,
+                    crate::overlays::mapping::physical(source)? == root,
                     "virtual checkout belongs to another source repository; select its --home explicitly"
                 );
-                crate::materialize::disposal::validate_relative_ancestors(target, physical)?;
+                crate::materialize::disposal::validate_relative_ancestors(&target, &location)?;
                 candidates.push(record.managed_path.join(relative));
             }
         }
@@ -173,7 +174,9 @@ pub fn policy_inputs(
         );
         let logical = routing.logical_path_for(&physical)?;
         let source = overlay.root.join(logical);
-        let relative = source.strip_prefix(root)?.to_path_buf();
+        let relative = crate::overlays::mapping::location(&source)?
+            .strip_prefix(&root)?
+            .to_path_buf();
         ensure!(
             inputs.insert(relative, physical).is_none(),
             "ambiguous virtual file mapping"
@@ -197,21 +200,22 @@ fn policy_repository(cli: &super::CLI, paths: &[String]) -> Result<git2::Reposit
     let mut sources = std::collections::BTreeSet::new();
     let mut mapped = 0;
     for path in paths {
-        let physical = crate::overlays::mapping::absolute(&cwd.join(path))?;
-        let owners: Vec<_> = state
-            .checkouts
-            .iter()
-            .filter(|(target, record)| {
-                physical
-                    .strip_prefix(target)
-                    .is_ok_and(|relative| record.scope.owns_target(relative))
-            })
-            .collect();
+        let physical = crate::overlays::mapping::location(&cwd.join(path))?;
+        let mut owners = Vec::new();
+        for (target, record) in &state.checkouts {
+            let target = crate::overlays::mapping::physical(std::path::Path::new(target))?;
+            if physical
+                .strip_prefix(target)
+                .is_ok_and(|relative| record.scope.owns_target(relative))
+            {
+                owners.push(record);
+            }
+        }
         ensure!(
             owners.len() <= 1,
             "ambiguous virtual checkout ownership; select and repair its source mapping before changing policy"
         );
-        if let Some((_, record)) = owners.first() {
+        if let Some(record) = owners.first() {
             sources.insert(record.source_repository.clone().ok_or_else(|| {
                 anyhow::anyhow!("legacy checkout association has no source; reapply first")
             })?);
@@ -230,17 +234,24 @@ fn policy_repository(cli: &super::CLI, paths: &[String]) -> Result<git2::Reposit
     repository(cli)
 }
 
+fn can_prompt() -> bool {
+    std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+}
+
 fn passphrase(label: &str) -> Result<age::secrecy::SecretString> {
     ensure!(
-        std::io::stderr().is_terminal(),
+        can_prompt(),
         "unlock requires a terminal credential prompt; use --identity for noninteractive access"
     );
     let _pause = crate::ui::progress::pause()?;
-    Ok(dialoguer::Password::new()
-        .with_prompt(label)
-        .interact()
-        .map_err(|_| anyhow::anyhow!("secure credential input unavailable"))?
-        .into())
+    let entered = zeroize::Zeroizing::new(
+        dialoguer::Password::new()
+            .with_prompt(label)
+            .interact()
+            .map_err(|_| anyhow::anyhow!("secure credential input unavailable"))?,
+    );
+    // Avoid shrinking/freeing an ordinary owned String while it still contains the credential.
+    Ok(age::secrecy::SecretString::new(entered.as_str().into()))
 }
 
 fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> {
@@ -266,10 +277,7 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
     } else if new_user {
         "default".to_owned()
     } else {
-        ensure!(
-            std::io::stderr().is_terminal(),
-            "supply --name for an additional key"
-        );
+        ensure!(can_prompt(), "supply --name for an additional key");
         dialoguer::Input::new()
             .with_prompt("Key name")
             .interact_text()?
@@ -310,7 +318,7 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
         password = Some(passphrase("New Age key passphrase")?);
     } else if recipient.is_none() {
         ensure!(
-            std::io::stderr().is_terminal(),
+            can_prompt(),
             "select --recipient, --identity-output or --passphrase"
         );
         let selection = dialoguer::Select::new()
@@ -415,12 +423,17 @@ pub fn unlock(cli: &super::CLI, opt: &Unlock) -> Result<()> {
 }
 
 pub fn unlock_repository(repo: &git2::Repository, opt: &Unlock) -> Result<()> {
+    // Interrupted operations and unsafe storage cannot be repaired by another password prompt.
+    {
+        let _inspection = access::guard(repo, false)?;
+    }
     if opt.identity.is_none()
         && opt.user.is_none()
         && opt.key.is_none()
         && access::local_key(repo).is_ok()
     {
-        return Ok(());
+        // Key presence avoids another credential prompt, but cannot prove filter/checkout health.
+        return policy::refresh(repo, false);
     }
     let registry = access::load(repo)?;
     let candidates: Vec<_> = registry
@@ -465,7 +478,7 @@ pub fn unlock_repository(repo: &git2::Repository, opt: &Unlock) -> Result<()> {
                 0
             } else {
                 ensure!(
-                    std::io::stderr().is_terminal(),
+                    can_prompt(),
                     "choose --identity or select --user/--key before interactive unlock"
                 );
                 let labels: Vec<_> = candidates
@@ -481,7 +494,7 @@ pub fn unlock_repository(repo: &git2::Repository, opt: &Unlock) -> Result<()> {
             let (user, name, key) = candidates[selected];
             if key.recipient.is_some() {
                 ensure!(
-                    std::io::stderr().is_terminal(),
+                    can_prompt(),
                     "supply --identity <standard-age-identity-file>"
                 );
                 let identity: String = dialoguer::Input::new()
@@ -505,7 +518,7 @@ pub fn unlock_repository(repo: &git2::Repository, opt: &Unlock) -> Result<()> {
             }
         }
     }
-    policy::refresh(repo, false)
+    Ok(())
 }
 
 pub fn lock(cli: &super::CLI) -> Result<()> {
@@ -527,7 +540,7 @@ pub fn execute(cli: &super::CLI, command: &Commands) -> Result<()> {
                 "Removing crypt protection stages plaintext for future commits. Historical ciphertext/plaintext is unchanged."
             );
             ensure!(
-                *yes || (std::io::stderr().is_terminal()
+                *yes || (can_prompt()
                     && dialoguer::Confirm::new()
                         .with_prompt("Stage plaintext and remove protection?")
                         .default(false)

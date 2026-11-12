@@ -206,11 +206,15 @@ impl Initial {
             result.insert(
                 relative.to_path_buf(),
                 Node::File(
-                    crate::crypt::policy::materialized_blob(
-                        &self.repo,
-                        &self.managed.join(path),
-                        *oid,
-                    )?,
+                    {
+                        let mut bytes = crate::crypt::policy::materialized_blob(
+                            &self.repo,
+                            &self.managed.join(path),
+                            *oid,
+                        )?;
+                        // Node owns and wipes the moved allocation; no extra plaintext copy.
+                        std::mem::take(&mut *bytes)
+                    },
                     *mode,
                 ),
             );

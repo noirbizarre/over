@@ -45,6 +45,23 @@ impl IndexLock {
         self.path.clear();
         Ok(())
     }
+
+    /// Keep cooperating Git writers excluded while a larger journaled operation finishes.
+    pub(crate) fn replace_while_locked(&mut self, index: &Path, bytes: &[u8]) -> Result<()> {
+        let parent = index.parent().context("index has no parent")?;
+        let mut prepared = tempfile::NamedTempFile::new_in(parent)?;
+        match fs::metadata(index) {
+            Ok(metadata) => prepared.as_file().set_permissions(metadata.permissions())?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+        prepared.write_all(bytes)?;
+        prepared.as_file().sync_all()?;
+        prepared.persist(index).map_err(|error| error.error)?;
+        #[cfg(unix)]
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    }
 }
 
 impl Drop for IndexLock {
@@ -76,5 +93,18 @@ mod tests {
         }
         assert!(!lock_path.exists());
         assert!(destination.is_dir());
+    }
+
+    #[test]
+    fn retained_publication_keeps_other_index_writers_out_until_completion() {
+        let directory = tempfile::tempdir().unwrap();
+        let index = directory.path().join("index");
+        fs::write(&index, b"old").unwrap();
+        let mut lock = IndexLock::acquire(&index).unwrap();
+        lock.replace_while_locked(&index, b"prepared").unwrap();
+        assert_eq!(fs::read(&index).unwrap(), b"prepared");
+        assert!(IndexLock::acquire(&index).is_err());
+        drop(lock);
+        assert!(IndexLock::acquire(&index).is_ok());
     }
 }

@@ -90,10 +90,15 @@ confirmation defaulting to No. It unwraps the repository key once, then persists
 it in private Git common administrative storage. This key survives terminal
 closure and reboot until `over lock`; filters never prompt.
 
-Noninteractive init remains locked unless explicitly requested with `--unlock`.
+Fresh noninteractive clones remain locked unless explicitly requested with `--unlock`.
 Use `--unlock --identity <standard-age-identity-file>` for noninteractive access.
-Declining unlock keeps ciphertext; secret-consuming hooks must tolerate locked
-access or fail with unlock guidance. A manual clone can be unlocked later with
+Declining unlock keeps ciphertext. If an encrypted repository declares bootstrap
+hooks, initialization stops before executing any of them and explains how to
+unlock. Retrying an existing checkout runs post-init, not post-clone; put
+repeatable setup in post-init or recover skipped post-clone steps explicitly.
+An already-unlocked checkout remains unlocked and repairs incomplete ciphertext
+refreshes without another credential prompt, preserving existing plaintext edits.
+A manual clone can be unlocked later with
 `over unlock`. Bootstrap descriptors and encryption metadata must remain readable
 while locked. See [repository encryption](crypt.md).
 

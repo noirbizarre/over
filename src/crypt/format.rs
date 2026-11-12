@@ -58,6 +58,7 @@ impl RepositoryKey {
     }
 
     pub fn encrypt(&self, plaintext: &[u8], domain: u8) -> Result<Vec<u8>> {
+        ensure!(domain <= 1, "unsupported Over ciphertext domain");
         ensure!(
             plaintext.len() <= MAX_BYTES,
             "protected content exceeds 256 MiB limit"
@@ -98,13 +99,18 @@ pub fn inspect(bytes: &[u8]) -> Result<()> {
         bytes.starts_with(MAGIC),
         "protected blob is plaintext, not Over ciphertext"
     );
-    ensure!(bytes.len() >= HEADER_LEN + 16, "truncated Over ciphertext");
-    ensure!(
-        bytes.len() <= MAX_BYTES + HEADER_LEN + 16,
-        "protected content exceeds 256 MiB limit"
-    );
+    inspect_len(bytes.len())?;
     ensure!(bytes[8] == 1, "unsupported Over ciphertext version");
     ensure!(bytes[9] <= 1, "unsupported Over ciphertext domain");
+    Ok(())
+}
+
+fn inspect_len(length: usize) -> Result<()> {
+    ensure!(length >= HEADER_LEN + 16, "truncated Over ciphertext");
+    ensure!(
+        length <= MAX_BYTES + HEADER_LEN + 16,
+        "protected content exceeds 256 MiB limit"
+    );
     Ok(())
 }
 
@@ -124,6 +130,141 @@ pub fn file_domain(bytes: &[u8]) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structural_length_bounds_include_exactly_the_header_tag_and_plaintext_limit() {
+        for length in 0..HEADER_LEN + 16 {
+            assert!(inspect_len(length).is_err());
+        }
+        for length in [HEADER_LEN + 16, MAX_BYTES + HEADER_LEN + 16] {
+            assert!(inspect_len(length).is_ok());
+        }
+        for length in [MAX_BYTES + HEADER_LEN + 17, usize::MAX] {
+            assert!(inspect_len(length).is_err());
+        }
+    }
+
+    #[test]
+    fn encryption_rejects_every_unsupported_domain() {
+        let key = RepositoryKey::decode(&[42; 96]).unwrap();
+        for domain in 2..=u8::MAX {
+            assert!(key.encrypt(b"secret", domain).is_err(), "domain {domain}");
+        }
+    }
+
+    #[test]
+    fn production_aes256_wire_bytes_match_an_independent_known_answer() {
+        let mut encoded = [0; 96];
+        encoded[16..32].copy_from_slice(&std::array::from_fn::<_, 16, _>(|i| i as u8 + 16));
+        encoded[32..].copy_from_slice(&std::array::from_fn::<_, 64, _>(|i| i as u8));
+        let key = RepositoryKey::decode(&encoded).unwrap();
+        // Generated independently with PyCryptodome AES.MODE_SIV and the full v1 header as AD.
+        let expected = "004f5645524352590100101112131415161718191a1b1c1d1e1f6a75a81bd693f9ba7fea267862df0a7fbb913381480ed95de1";
+        let encrypted = key.encrypt(b"secret\0\xff\n", 0).unwrap();
+        let actual: String = encrypted.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            key.decrypt(&encrypted, 0).unwrap().as_slice(),
+            b"secret\0\xff\n"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case(0)]
+    #[case(1)]
+    fn both_domains_authenticate_the_entire_header_tag_and_payload(#[case] domain: u8) {
+        let key = RepositoryKey::decode(&[42; 96]).unwrap();
+        let encrypted = key.encrypt(b"secret\0\xff\n", domain).unwrap();
+        assert_eq!(file_domain(&encrypted).unwrap(), domain);
+        assert_eq!(
+            key.decrypt(&encrypted, domain).unwrap().as_slice(),
+            b"secret\0\xff\n"
+        );
+        assert!(key.decrypt(&encrypted, domain ^ 1).is_err());
+        let mut changed_domain = encrypted.clone();
+        changed_domain[9] ^= 1;
+        assert_eq!(
+            key.decrypt(&changed_domain, domain ^ 1)
+                .unwrap_err()
+                .to_string(),
+            "protected content authentication failed"
+        );
+        let mut changed_generation = encrypted.clone();
+        changed_generation[10] ^= 1;
+        let mut matching_metadata_key = RepositoryKey::decode(&[42; 96]).unwrap();
+        matching_metadata_key.generation[0] ^= 1;
+        // Matching the edited public metadata must not bypass authentication of that header.
+        assert_eq!(
+            matching_metadata_key
+                .decrypt(&changed_generation, domain)
+                .unwrap_err()
+                .to_string(),
+            "protected content authentication failed"
+        );
+        for offset in 0..encrypted.len() {
+            let mut tampered = encrypted.clone();
+            tampered[offset] ^= 1;
+            assert!(key.decrypt(&tampered, domain).is_err(), "offset {offset}");
+        }
+        let mut wrong_secret = [42; 96];
+        wrong_secret[32] ^= 1;
+        // Keep public metadata identical so this must reach MAC verification.
+        assert_eq!(
+            RepositoryKey::decode(&wrong_secret)
+                .unwrap()
+                .decrypt(&encrypted, domain)
+                .unwrap_err()
+                .to_string(),
+            "protected content authentication failed"
+        );
+        let mut wrong_generation = [42; 96];
+        wrong_generation[16] ^= 1;
+        assert!(
+            RepositoryKey::decode(&wrong_generation)
+                .unwrap()
+                .decrypt(&encrypted, domain)
+                .unwrap_err()
+                .to_string()
+                .contains("different key generation")
+        );
+    }
+
+    #[test]
+    fn inspection_rejects_all_truncations_unsupported_versions_and_domains() {
+        let key = RepositoryKey::decode(&[42; 96]).unwrap();
+        let encrypted = key.encrypt(b"", 0).unwrap();
+        for length in 0..encrypted.len() {
+            assert!(inspect(&encrypted[..length]).is_err(), "length {length}");
+        }
+        for version in (0..=u8::MAX).filter(|version| *version != 1) {
+            let mut invalid = encrypted.clone();
+            invalid[8] = version;
+            assert!(inspect(&invalid).is_err(), "version {version}");
+        }
+        for domain in 2..=u8::MAX {
+            let mut invalid = encrypted.clone();
+            invalid[9] = domain;
+            assert!(inspect(&invalid).is_err(), "domain {domain}");
+        }
+        for length in 1..=MAGIC.len() {
+            assert!(recognized(&MAGIC[..length]));
+        }
+        assert!(!recognized(b""));
+        assert!(!recognized(b"ordinary\0\xff"));
+    }
+
+    #[test]
+    fn repository_key_records_require_exactly_the_metadata_and_aes256_key_bytes() {
+        for length in (0..=97).filter(|length| *length != 96) {
+            assert!(
+                RepositoryKey::decode(&vec![42; length]).is_err(),
+                "length {length}"
+            );
+        }
+        let key = RepositoryKey::decode(&[42; 96]).unwrap();
+        assert_eq!(key.encode().as_slice(), &[42; 96]);
+        assert_eq!(format!("{key:?}"), "RepositoryKey([REDACTED])");
+    }
 
     #[test]
     fn deterministic_siv_matches_the_published_rfc_5297_vector() {

@@ -87,6 +87,13 @@ pub(crate) fn canonical_entry(
     } else {
         scratch.target_blob(repo, logical, content)?
     };
+    if protected {
+        let _guard = crate::crypt::access::guard(repo, false)?;
+        // A successful configured filter is not proof that its output is ciphertext.
+        let blob = scratch.repo.find_blob(oid)?;
+        let domain = crate::crypt::format::file_domain(blob.content())?;
+        crate::crypt::access::local_key(repo)?.decrypt(blob.content(), domain)?;
+    }
     if !honors_filemode(repo)? {
         mode = expected
             .iter()
@@ -106,7 +113,10 @@ pub(crate) fn honors_filemode(repo: &git2::Repository) -> Result<bool> {
     }
 }
 
-pub(crate) fn target_content(root: &Path, relative: &Path) -> Result<Option<(Vec<u8>, i32)>> {
+pub(crate) fn target_content(
+    root: &Path,
+    relative: &Path,
+) -> Result<Option<(zeroize::Zeroizing<Vec<u8>>, i32)>> {
     ensure!(
         !crate::secrets::is_encrypted(relative),
         "encrypted virtual-checkout paths are unsupported"
@@ -146,7 +156,7 @@ pub(crate) fn target_content(root: &Path, relative: &Path) -> Result<Option<(Vec
         if path == file {
             return if metadata.is_file() {
                 Ok(Some((
-                    std::fs::read(&path)?,
+                    crate::crypt::buffer::read_file(&path)?,
                     i32::from(git::on_disk_filemode(&path)?),
                 )))
             } else {

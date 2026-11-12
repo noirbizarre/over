@@ -233,7 +233,7 @@ pub(crate) fn apply_tree_diff(
 pub(crate) struct TreeChanges {
     removed: Vec<PathBuf>,
     directories: Vec<PathBuf>,
-    writes: Vec<(PathBuf, Vec<u8>, i32)>,
+    writes: Vec<(PathBuf, zeroize::Zeroizing<Vec<u8>>, i32)>,
 }
 
 pub(crate) fn preflight_tree_changes(
@@ -1027,7 +1027,10 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
             if !entries_match(current, new) {
                 updates.push((
                     file,
-                    Some((source_worktree_blob(repo, path, entry.id)?, entry.mode)),
+                    Some((
+                        zeroize::Zeroizing::new(source_worktree_blob(repo, path, entry.id)?),
+                        entry.mode,
+                    )),
                 ));
             }
         } else {
@@ -1040,11 +1043,11 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
     let tree = repo.find_tree(builder.create_updated(repo, &head)?)?;
     crate::crypt::policy::validate_tree(repo, &tree)?;
     let signature = crate::actions::git::sync::signature(repo)?;
-    let protected_updates = updates.iter().any(|(path, _)| {
-        path.strip_prefix(workdir)
-            .ok()
-            .is_some_and(|path| crate::crypt::policy::protected(repo, path).unwrap_or(false))
-    });
+    let mut protected_updates = false;
+    for (path, _) in &updates {
+        // Attribute inspection errors must never select plaintext rollback handling.
+        protected_updates |= crate::crypt::policy::protected(repo, path.strip_prefix(workdir)?)?;
+    }
     let mut protected_files = Vec::new();
     let mut crypt_guard = None;
     if protected_updates {
@@ -1057,11 +1060,24 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
             .map(|(path, update)| {
                 (
                     path.clone(),
-                    update.as_ref().map(|(bytes, _)| bytes.clone()),
+                    update.as_ref().map(|(bytes, _)| bytes.to_vec()),
                 )
             })
             .collect();
-        crate::crypt::policy::begin_commit(
+        let mut modes: BTreeMap<PathBuf, u32> = BTreeMap::new();
+        #[cfg(unix)]
+        for (path, update) in &updates {
+            if let Some((_, mode)) = update {
+                modes.insert(
+                    path.clone(),
+                    crate::crypt::transaction::desired_mode(
+                        fs::metadata(path).ok().as_ref(),
+                        Some(*mode),
+                    ),
+                );
+            }
+        }
+        crate::crypt::policy::begin_commit_with_modes(
             repo,
             &key,
             &updates
@@ -1070,6 +1086,7 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
                 .collect::<Vec<_>>(),
             Some(committed.to_string()),
             expected,
+            modes,
         )?;
     }
     // Prepare every write on the destination filesystem before changing any
@@ -1084,14 +1101,19 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
                 protected_files.push((file, update));
                 continue;
             }
-            transaction.prepare(file.clone(), update).with_context(|| {
-                format!("failed to prepare source update for '{}'", file.display())
-            })?;
+            transaction
+                .prepare(
+                    file.clone(),
+                    update.map(|(mut bytes, mode)| (std::mem::take(&mut *bytes), mode)),
+                )
+                .with_context(|| {
+                    format!("failed to prepare source update for '{}'", file.display())
+                })?;
         }
         transaction.apply()?;
         for (file, update) in &protected_files {
-            if let Some((bytes, _)) = update {
-                crate::crypt::atomic_write(file, bytes)?;
+            if let Some((bytes, mode)) = update {
+                crate::crypt::transaction::worktree_write(file, bytes, Some(*mode))?;
             } else {
                 fs::remove_file(file)?;
             }
@@ -1108,8 +1130,13 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
     })();
     match result {
         Ok(oid) => {
-            if crypt_guard.is_some() {
-                crate::crypt::policy::finish(repo)?;
+            if crypt_guard.is_some()
+                && let Err(error) = crate::crypt::policy::finish(repo)
+            {
+                // HEAD is already authoritative; do not invite a duplicate commit on retry.
+                tracing::warn!(
+                    "commit {oid} was published, but encrypted recovery cleanup failed: {error:#}; run over crypt recover"
+                );
             }
             // Cleanup failure must not report a failed commit after HEAD moved.
             if let Err(error) = transaction.cleanup() {
@@ -1176,7 +1203,11 @@ pub(crate) fn source_worktree_blob(repo: &Repository, path: &Path, oid: Oid) -> 
 /// ACLs are inherited from the destination directory. Correct those exceptions
 /// explicitly; a best-effort `cp -p` can silently lose security metadata.
 #[cfg(target_os = "macos")]
-fn clone_macos_source(source: &Path, directory: &Path, expected: &fs::Metadata) -> Result<()> {
+pub(crate) fn clone_macos_source(
+    source: &Path,
+    directory: &Path,
+    expected: &fs::Metadata,
+) -> Result<()> {
     use std::ffi::{c_char, c_int, c_void};
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};

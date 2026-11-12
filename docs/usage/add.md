@@ -52,6 +52,12 @@ supports individual regular files, including mapped virtual destinations. Policy
 and ciphertext are staged together; subsequent `over commit` includes the
 required source policy. `--crypt` cannot be combined with `--patch`.
 
+The crypt workflow preflights checkout/source/index state before publishing and
+keeps rollback ownership through ordinary file ingestion. Independent existing
+source files require explicit resolution, including equal-byte copies with
+different metadata; `--force` does not discard them. Use `over crypt add` on the
+canonical source instead. Unrelated staged entries are preserved.
+
 Inside a virtual checkout, `over add` acts like `git add`: selected new,
 modified, or deleted files are staged in the overlay source repository's
 Git index at their reverse-mapped source paths. Target files remain ordinary

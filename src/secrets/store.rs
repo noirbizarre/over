@@ -306,10 +306,7 @@ impl SecretStore {
 
     fn write_map(&self, repo: &git2::Repository, map: &SecretMap) -> Result<()> {
         let key = crate::crypt::access::local_key(repo)?;
-        let plaintext = zeroize::Zeroizing::new(
-            serde_json::to_vec(map)
-                .map_err(|_| anyhow::anyhow!("could not serialize native secret store"))?,
-        );
+        let plaintext = crate::crypt::buffer::to_json(map)?;
         crate::crypt::atomic_write(
             &self.repository.join(".over/secrets.yaml"),
             &key.encrypt(&plaintext, 1)?,

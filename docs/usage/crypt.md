@@ -35,6 +35,13 @@ passphrase in command arguments. `--home` / `OVER_HOME` explicitly selects a
 repository; otherwise crypt/access commands discover the current Git repository,
 falling back to the usual Over home for virtual destinations.
 
+Credential prompts require terminal stdin and stderr. For scripted fresh unlock,
+supply `--identity`; Git filters and hooks never acquire credentials themselves.
+Repeating `over unlock` with an already valid local key repairs filters and
+unfinished ciphertext materialization without reauthentication. Existing
+uncommitted plaintext edits are retained; a fresh unlock refuses ambiguous
+dirty ciphertext/working-tree state before installing a key.
+
 The unlocked key is intentionally persisted under the private Git **common**
 administrative directory (`over-crypt/key`). It remains available after closing
 terminals/editors and after reboot, until explicit lock. There is no daemon,
@@ -45,6 +52,13 @@ On Unix the directory is private (`0700`) and the key is `0600`; unsafe owners,
 permissions, symlinks, and hard links are rejected. Windows uses private ACLs and
 requires PowerShell to establish/check them. Unlocked keys are never stored in
 XDG caches, tracked files, logs, or process arguments.
+
+Filter configuration is published as one local update before granting new key
+access. Failed preflight or configuration leaves the previous key state intact.
+Recognized abandoned key-write temporaries are removed under exclusive lifecycle
+ownership. On Unix, successful lock also synchronizes the administrative
+directory after key removal. Filesystem snapshots, platform durability limits,
+and physical storage erasure remain outside this guarantee.
 
 ## Policy commands
 
@@ -67,6 +81,13 @@ content addition through that same implementation. Select individual regular
 files. Virtual paths resolve to their canonical source repository/path; ambiguous
 ownership is an error. Virtual checkout commits include necessary source policy
 and access metadata alongside encrypted blobs. No per-checkout policy is created.
+
+`add --crypt` checks ownership, source drift, checkout freshness, and staged
+bootstrap metadata before publication. Ordinary move/link ingestion retains its
+encrypted rollback journal and index reservation until completion; failure
+restores policy, index, and original input inodes. Independent existing source
+files are refused even if their bytes match, because their access metadata may
+differ. Use `crypt add` for files already stored in the source repository.
 
 `crypt remove` warns and requires confirmation; `--yes` is deliberate
 noninteractive approval. It stages plaintext with the removal policy, preserves
@@ -102,6 +123,11 @@ restores clean protected working files from their index ciphertext, then deletes
 the local key. It preserves staged content rather than resetting to `HEAD`.
 Filters remain configured while locked. Unlock refreshes the linked worktrees
 together. Different access metadata must be reconciled before a common rotation.
+
+Untracked protected plaintext, policy overrides, symlinked protected ancestry,
+and unstaged protection declarations prevent lock. Representation changes retain
+executability and supported native access metadata; read-only destinations are
+not silently replaced. An inaccessible worktree blocks the common transition.
 
 Lock cannot erase plaintext deployed to virtual destinations, copies held by
 other programs, snapshots, backups, or keys already copied elsewhere. Delete does
@@ -182,6 +208,11 @@ If a process died while owning Git's `index.lock`, first verify that process has
 exited, inspect the lock, and remove only that stale lock before retrying recovery.
 Over never guesses that another Git process's lock is stale. A changed unrelated
 `HEAD` also requires inspection before rollback.
+The journal records each participating worktree's `HEAD` and the initiating
+worktree, so recovery from a sibling cannot overlook another branch advancing.
+Changed ancestry, permissions, symlinks, or ingestion inode identity cause
+refusal before rollback. Existing unrelated files and nonempty new scaffolds
+are retained.
 After a completed rotation with a stale local key, unlock through the new
 envelopes. For migration rollback after verification, use the saved Age ciphertext
 and a backed-up repository/index; do not discard new edits while restoring it.
@@ -201,7 +232,15 @@ capability. Encrypting current versions does not erase historical exposure.
 
 Payload v1 uses RustCrypto RFC 5297 AES-256-SIV, authenticates its version/domain/
 generation header, and authenticates the entire message before returning
-plaintext. Identical plaintext/key/domain produces identical bytes across
+plaintext. Identical plaintext/key/domain/generation produces identical bytes across
 invocations and machines. Equality, length, names, and Git metadata are visible;
 small changes replace the complete ciphertext. Files are processed in memory
 with a 256 MiB limit. See [ADR-028](../adr/028-repository-encryption.md).
+
+The hardened filter-input buffers, their retired growth allocations, prepared
+refresh/transaction content, and serialized secret/journal buffers are wiped when
+released. This is not complete memory
+erasure: Age 0.12's private streaming-writer chunk, terminal/runtime libraries,
+external processes, OS buffers, swap, dumps, and filesystem copies may retain
+material beyond Over's public interfaces. Publication uses private filesystem
+staging; process-kill cleanup and physical erasure are not guaranteed.
