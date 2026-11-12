@@ -29,7 +29,7 @@ struct PreparedIndex {
     changed: bool,
 }
 
-type Content = Option<(Vec<u8>, u32)>;
+type Content = Option<(zeroize::Zeroizing<Vec<u8>>, u32)>;
 
 struct TargetUpdate<'a> {
     request: &'a RestorePath,
@@ -140,7 +140,10 @@ pub(crate) fn restore_paths(
             );
             let after = selected
                 .map(|(oid, mode)| -> Result<_> {
-                    Ok((prepared.repo.find_blob(oid)?.content().to_vec(), mode))
+                    Ok((
+                        crate::crypt::policy::materialized_blob(&prepared.repo, path, oid)?,
+                        mode,
+                    ))
                 })
                 .transpose()?;
             if target != after {
@@ -153,6 +156,15 @@ pub(crate) fn restore_paths(
         }
         if options.staged && before != selected {
             if let Some((oid, mode)) = selected {
+                if crate::crypt::policy::protected(&prepared.repo, path)? {
+                    let blob = prepared.repo.find_blob(oid)?;
+                    crate::crypt::format::inspect(blob.content()).context("historical plaintext cannot be restored directly to a protected index; restore its worktree content then stage through over add")?;
+                    ensure!(
+                        blob.content()[10..crate::crypt::format::HEADER_LEN]
+                            == crate::crypt::access::load(&prepared.repo)?.generation,
+                        "historical ciphertext belongs to an old generation; recover plaintext with a historical trusted key and stage it through the current filter"
+                    );
+                }
                 let serialized = path
                     .to_str()
                     .context("source path is not UTF-8")?
@@ -268,15 +280,40 @@ pub(crate) fn restore_paths(
             None
         });
     }
-    let mut transaction = SourceTransaction::default();
+    let mut transactions = BTreeMap::new();
+    let mut transaction_for = BTreeMap::new();
+    for (path, prepared) in &indexes {
+        // Linked worktrees share one crypt guard/journal even though their indices differ.
+        let key = if crate::crypt::access::configured(&prepared.repo)? {
+            prepared.repo.commondir().to_path_buf()
+        } else {
+            path.clone()
+        };
+        transaction_for.insert(path.clone(), key.clone());
+        if let std::collections::btree_map::Entry::Vacant(entry) = transactions.entry(key) {
+            entry.insert(SourceTransaction::for_repository(&prepared.repo)?);
+        }
+    }
     let result = (|| -> Result<()> {
         for target in &targets {
-            transaction.prepare(
-                target.request.root.join(&target.request.relative),
-                target.after.clone(),
-            )?;
+            transactions
+                .get_mut(
+                    transaction_for
+                        .get(&target.request.repository)
+                        .context("missing restore transaction key")?,
+                )
+                .context("missing restore transaction")?
+                .prepare(
+                    target.request.root.join(&target.request.relative),
+                    target
+                        .after
+                        .as_ref()
+                        .map(|(bytes, mode)| (bytes.to_vec(), *mode)),
+                )?;
         }
-        transaction.apply()?;
+        for transaction in transactions.values_mut() {
+            transaction.apply()?;
+        }
         for ((prepared, lock), bytes) in indexes.values().zip(&mut locks).zip(publications) {
             if let Some(bytes) = bytes {
                 lock.publish(&prepared.path, &bytes)?;
@@ -285,12 +322,17 @@ pub(crate) fn restore_paths(
         Ok(())
     })();
     if let Err(error) = result {
-        transaction
-            .rollback()
-            .with_context(|| format!("{error:#}; target rollback also failed"))?;
+        for transaction in transactions.values_mut().rev() {
+            transaction
+                .rollback()
+                .with_context(|| format!("{error:#}; target rollback also failed"))?;
+        }
         return Err(error);
     }
-    transaction.cleanup()
+    for transaction in transactions.values() {
+        transaction.cleanup()?;
+    }
+    Ok(())
 }
 
 fn tree_entry(tree: &git2::Tree<'_>, path: &Path) -> Result<Option<(Oid, u32)>> {
@@ -339,7 +381,7 @@ fn target_content(root: &Path, relative: &Path) -> Result<Content> {
         }
         if leaf {
             return Ok(Some((
-                fs::read(&path)?,
+                crate::crypt::buffer::read_file(&path)?,
                 i32::from(git::on_disk_filemode(&path)?) as u32,
             )));
         }
@@ -472,5 +514,73 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn encrypted_linked_worktree_restores_share_one_guard_without_self_deadlocking() {
+        let fixture = Fixture::new();
+        let recipient = age::x25519::Identity::generate().to_public().to_string();
+        crate::crypt::access::add_key(
+            &fixture.repo,
+            "owner",
+            "software",
+            Some(&recipient),
+            None,
+            true,
+        )
+        .unwrap();
+        let source = fixture.repo.workdir().unwrap();
+        let mut index = fixture.repo.index().unwrap();
+        for path in [".over/.gitattributes", ".over/crypt/access.json"] {
+            index.add_path(Path::new(path)).unwrap();
+        }
+        index.write().unwrap();
+        let parent = fixture.repo.head().unwrap().peel_to_commit().unwrap();
+        let tree = fixture.repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("Restore tests", "restore@example.invalid").unwrap();
+        fixture
+            .repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "enable repository encryption",
+                &tree,
+                &[&parent],
+            )
+            .unwrap();
+        let sibling = fixture._directory.path().join("linked");
+        fixture.repo.worktree("linked", &sibling, None).unwrap();
+        let sibling_repo = Repository::open(&sibling).unwrap();
+        let second_target = fixture._directory.path().join("second-target");
+        fs::create_dir(&second_target).unwrap();
+        fs::write(second_target.join("file"), b"second edit").unwrap();
+        let first_target = fixture.request.root.join("file");
+        let second_file = second_target.join("file");
+        let second = RestorePath {
+            repository: sibling_repo.path().to_path_buf(),
+            source: PathBuf::from("file"),
+            root: second_target,
+            relative: PathBuf::from("file"),
+        };
+        let requests = vec![fixture.request, second];
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            send.send(restore_paths(
+                &requests,
+                &RestoreOptions::default(),
+                false,
+                || Ok(()),
+            ))
+            .unwrap();
+        });
+        receive
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("linked restores must not wait on a guard owned by the same operation")
+            .unwrap();
+        worker.join().unwrap();
+        assert_eq!(fs::read(first_target).unwrap(), b"indexed\n");
+        assert_eq!(fs::read(second_file).unwrap(), b"indexed\n");
+        assert!(!source.join(".git/over-crypt/transaction.json").exists());
     }
 }

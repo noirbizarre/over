@@ -155,6 +155,7 @@ fn run_with(
         &checked,
         true,
         overlay,
+        false,
         record_for,
         &canonical_source_entry,
     )?;
@@ -223,6 +224,7 @@ fn run_with(
         &checked,
         true,
         overlay,
+        false,
         record_for,
         &canonical_source_entry,
     )?;
@@ -602,6 +604,7 @@ mod tests {
             &[fixture.target.join("nested/secret")],
             dry_run,
             &fixture.overlay,
+            false,
             &|target| Ok(fixture.records.get(target).cloned()),
             &git::source_entry,
         );

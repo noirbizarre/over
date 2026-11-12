@@ -1,5 +1,11 @@
 # `over commit`
 
+For [protected virtual files](crypt.md), selected commits also include necessary
+staged canonical `.gitattributes` and access metadata. The candidate tree is
+checked against its own policy so plaintext cannot be committed beneath a
+protected attribute. Resolve unstaged policy edits before committing; unrelated
+ordinary staged paths remain outside the selected commit.
+
 Record staged changes made directly in a
 [virtual checkout](../adr/022-virtual-checkout-materialization.md) back
 into the overlay's own source repository, as a normal git commit.

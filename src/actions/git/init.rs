@@ -4,7 +4,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
-use git2::{FetchOptions, Repository, RepositoryOpenFlags, build::RepoBuilder};
+use git2::{
+    FetchOptions, Repository, RepositoryOpenFlags,
+    build::{CheckoutBuilder, RepoBuilder},
+};
 
 use crate::overlays;
 
@@ -113,10 +116,17 @@ pub fn initialize(destination: PathBuf, source: Option<&str>) -> Result<Initiali
         }
         let mut fetch = FetchOptions::new();
         fetch.remote_callbacks(super::remote_callbacks()?);
-        RepoBuilder::new()
+        let mut checkout = CheckoutBuilder::new();
+        checkout.dry_run();
+        let repo = RepoBuilder::new()
             .fetch_options(fetch)
+            .with_checkout(checkout)
             .clone(source, &destination)
             .with_context(|| format!("failed to clone into {}; any partial checkout is preserved: repair it or remove it explicitly before retrying", destination.display()))?;
+        // Install trusted local drivers before the first real checkout; locked smudge retains ciphertext.
+        crate::crypt::access::configure_filters(&repo)?;
+        crate::crypt::policy::git(&repo, &["reset", "--hard", "HEAD"])
+            .context("initial filtered checkout failed; partial checkout preserved for recovery")?;
     } else if empty {
         bail!(
             "no checkout at {}; supply a Git source: over init <SOURCE>",

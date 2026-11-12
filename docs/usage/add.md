@@ -16,7 +16,8 @@ Options:
   -n, --dry-run            Run without applying changes
   -v, --verbose            Toggle verbose output
   -f, --force              Overwrite without prompting
-  -p, --patch              Interactively stage virtual-checkout changes by hunk
+   -p, --patch              Interactively stage virtual-checkout changes by hunk
+       --crypt              Declare crypt policy and stage encrypted content
   -h, --help               Print help
 ```
 
@@ -43,6 +44,19 @@ and mapped destinations are rejected, as are base-target paths that would
 reapply somewhere else because their source prefix was mapped away.
 
 ## Virtual checkout staging
+
+Use `over add --crypt <file>...` to declare source `.gitattributes` protection
+and add content through the repository encryption filter in one workflow. It
+shares the implementation of [`over crypt add`](crypt.md), requires unlock, and
+supports individual regular files, including mapped virtual destinations. Policy
+and ciphertext are staged together; subsequent `over commit` includes the
+required source policy. `--crypt` cannot be combined with `--patch`.
+
+The crypt workflow preflights checkout/source/index state before publishing and
+keeps rollback ownership through ordinary file ingestion. Independent existing
+source files require explicit resolution, including equal-byte copies with
+different metadata; `--force` does not discard them. Use `over crypt add` on the
+canonical source instead. Unrelated staged entries are preserved.
 
 Inside a virtual checkout, `over add` acts like `git add`: selected new,
 modified, or deleted files are staged in the overlay source repository's

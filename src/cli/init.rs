@@ -17,6 +17,12 @@ pub struct Params {
     /// Set an existing checkout's canonical origin without prompting
     #[arg(long)]
     set_origin: bool,
+    /// Explicitly unlock repository encryption during initialization
+    #[arg(long)]
+    unlock: bool,
+    /// Use a standard Age identity when unlocking
+    #[arg(long, requires = "unlock")]
+    identity: Option<std::path::PathBuf>,
 }
 
 pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
@@ -52,9 +58,39 @@ pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
         .await
         .context("origin update task failed")??;
     }
+    let git = git2::Repository::open(&result.destination)?;
+    crate::crypt::access::configure_filters(&git)?;
+    if crate::crypt::access::configured(&git)? && crate::crypt::access::local_key(&git).is_ok() {
+        // A persisted key survives restart; repair any incomplete ciphertext refresh without prompting.
+        crate::crypt::policy::refresh(&git, false)?;
+    } else if crate::crypt::access::configured(&git)? {
+        let consent = params.unlock
+            || (io::stdin().is_terminal()
+                && io::stderr().is_terminal()
+                && Confirm::new()
+                    .with_prompt("Unlock repository encryption before bootstrap hooks?")
+                    .default(false)
+                    .interact()?);
+        if consent {
+            super::crypt::unlock_repository(
+                &git,
+                &super::crypt::Unlock {
+                    identity: params.identity.clone(),
+                    user: None,
+                    key: None,
+                },
+            )?;
+        }
+    }
     // Do not discover child overlays until bootstrap tools have unlocked them.
     let repository = result.repository.clone();
     let hooks = repository.hooks()?;
+    if crate::crypt::access::configured(&git)?
+        && (!hooks.post_init.is_empty() || (result.cloned && !hooks.post_clone.is_empty()))
+    {
+        // Shell hooks cannot declare all file reads; never start them against a locked ciphertext checkout.
+        crate::crypt::access::local_key(&git).context("bootstrap hooks were not run because repository encryption is locked; run over unlock, then retry over init (existing checkouts run post-init)")?;
+    }
     // Bootstrap must not discover encrypted children before unlock hooks execute.
     let templates = crate::exec::Context::builder()
         .repository(repository.clone())

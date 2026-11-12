@@ -103,6 +103,10 @@ strip = true
 # favour of the project if `git tpl update` ever touches it.
 
 [dependencies]
+aes-siv = { version = "0.7", default-features = false, features = ["alloc"] }
+# Enable wiping expanded AES schedules inside the SIV dependency as well as raw keys.
+aes = { version = "0.8", features = ["zeroize"] }
+getrandom = "0.3"
 age = { version = "0.12", default-features = false, features = ["armor"] }
 zeroize = "1"
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }
@@ -151,6 +155,13 @@ xattr = "1.6"
 [target.'cfg(windows)'.dependencies]
 # Already used by same-file; std's Windows link count is not stable.
 winapi-util = "0.1"
+# Already transitive via winapi-util; native ACL inspection avoids a shell per filter request.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Threading",
+] }
 
 [dependencies.clap]
 features = ["derive", "env", "unicode", "cargo", "color"]

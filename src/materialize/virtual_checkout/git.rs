@@ -233,7 +233,7 @@ pub(crate) fn apply_tree_diff(
 pub(crate) struct TreeChanges {
     removed: Vec<PathBuf>,
     directories: Vec<PathBuf>,
-    writes: Vec<(PathBuf, Vec<u8>, i32)>,
+    writes: Vec<(PathBuf, zeroize::Zeroizing<Vec<u8>>, i32)>,
 }
 
 pub(crate) fn preflight_tree_changes(
@@ -360,7 +360,11 @@ pub(crate) fn preflight_tree_changes(
         if from.get(path) != Some(&(*oid, *mode)) {
             // Resolve every blob before removing old leaves; corrupt/missing Git
             // objects must never leave a half-applied shape transition.
-            writes.push((path.clone(), read_blob(repo, *oid)?, *mode));
+            writes.push((
+                path.clone(),
+                crate::crypt::policy::materialized_blob(repo, &managed.join(path), *oid)?,
+                *mode,
+            ));
         }
     }
     let mut directories: Vec<_> = directories.into_iter().collect();
@@ -1023,7 +1027,10 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
             if !entries_match(current, new) {
                 updates.push((
                     file,
-                    Some((source_worktree_blob(repo, path, entry.id)?, entry.mode)),
+                    Some((
+                        zeroize::Zeroizing::new(source_worktree_blob(repo, path, entry.id)?),
+                        entry.mode,
+                    )),
                 ));
             }
         } else {
@@ -1034,17 +1041,86 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
         }
     }
     let tree = repo.find_tree(builder.create_updated(repo, &head)?)?;
+    crate::crypt::policy::validate_tree(repo, &tree)?;
     let signature = crate::actions::git::sync::signature(repo)?;
+    let mut protected_updates = false;
+    for (path, _) in &updates {
+        // Attribute inspection errors must never select plaintext rollback handling.
+        protected_updates |= crate::crypt::policy::protected(repo, path.strip_prefix(workdir)?)?;
+    }
+    let mut protected_files = Vec::new();
+    let mut crypt_guard = None;
+    if protected_updates {
+        // Create the commit object before journaling, so recovery can recognize a published HEAD.
+        let committed = repo.commit(None, &signature, &signature, message, &tree, &[&parent])?;
+        crypt_guard = Some(crate::crypt::access::guard(repo, true)?);
+        let key = crate::crypt::access::local_key(repo)?;
+        let expected = updates
+            .iter()
+            .map(|(path, update)| {
+                (
+                    path.clone(),
+                    update.as_ref().map(|(bytes, _)| bytes.to_vec()),
+                )
+            })
+            .collect();
+        #[cfg(unix)]
+        let mut modes: BTreeMap<PathBuf, u32> = BTreeMap::new();
+        #[cfg(not(unix))]
+        let modes: BTreeMap<PathBuf, u32> = BTreeMap::new();
+        #[cfg(unix)]
+        for (path, update) in &updates {
+            if let Some((_, mode)) = update {
+                modes.insert(
+                    path.clone(),
+                    crate::crypt::transaction::desired_mode(
+                        fs::metadata(path).ok().as_ref(),
+                        Some(*mode),
+                    ),
+                );
+            }
+        }
+        crate::crypt::policy::begin_commit_with_modes(
+            repo,
+            &key,
+            &updates
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect::<Vec<_>>(),
+            Some(committed.to_string()),
+            expected,
+            modes,
+        )?;
+    }
     // Prepare every write on the destination filesystem before changing any
     // source file. Backups remain available until Git accepts the HEAD update.
     let mut transaction = SourceTransaction::default();
     let result = (|| {
         for (file, update) in updates {
-            transaction.prepare(file.clone(), update).with_context(|| {
-                format!("failed to prepare source update for '{}'", file.display())
-            })?;
+            if protected_updates
+                && crate::crypt::policy::protected(repo, file.strip_prefix(workdir)?)?
+            {
+                // Protected rollback bytes live only in the encrypted journal, not adjacent backups.
+                protected_files.push((file, update));
+                continue;
+            }
+            transaction
+                .prepare(
+                    file.clone(),
+                    update.map(|(mut bytes, mode)| (std::mem::take(&mut *bytes), mode)),
+                )
+                .with_context(|| {
+                    format!("failed to prepare source update for '{}'", file.display())
+                })?;
         }
         transaction.apply()?;
+        for (file, update) in &protected_files {
+            if let Some((bytes, mode)) = update {
+                crate::crypt::transaction::worktree_write(file, bytes, Some(*mode))?;
+            } else {
+                fs::remove_file(file)?;
+            }
+        }
         repo.commit(
             Some("HEAD"),
             &signature,
@@ -1057,6 +1133,14 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
     })();
     match result {
         Ok(oid) => {
+            if crypt_guard.is_some()
+                && let Err(error) = crate::crypt::policy::finish(repo)
+            {
+                // HEAD is already authoritative; do not invite a duplicate commit on retry.
+                tracing::warn!(
+                    "commit {oid} was published, but encrypted recovery cleanup failed: {error:#}; run over crypt recover"
+                );
+            }
             // Cleanup failure must not report a failed commit after HEAD moved.
             if let Err(error) = transaction.cleanup() {
                 tracing::warn!(
@@ -1069,6 +1153,11 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
             transaction
                 .rollback()
                 .with_context(|| format!("{error:#}; source rollback also failed"))?;
+            if crypt_guard.is_some() {
+                // Release the exclusive guard before the recovery routine reacquires it.
+                drop(crypt_guard.take());
+                crate::crypt::policy::recover(repo)?;
+            }
             Err(error)
         }
     }
@@ -1117,7 +1206,11 @@ pub(crate) fn source_worktree_blob(repo: &Repository, path: &Path, oid: Oid) -> 
 /// ACLs are inherited from the destination directory. Correct those exceptions
 /// explicitly; a best-effort `cp -p` can silently lose security metadata.
 #[cfg(target_os = "macos")]
-fn clone_macos_source(source: &Path, directory: &Path, expected: &fs::Metadata) -> Result<()> {
+pub(crate) fn clone_macos_source(
+    source: &Path,
+    directory: &Path,
+    expected: &fs::Metadata,
+) -> Result<()> {
     use std::ffi::{c_char, c_int, c_void};
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -1220,6 +1313,7 @@ fn clone_macos_source(source: &Path, directory: &Path, expected: &fs::Metadata) 
 // Commit and restore share replacement/rollback semantics. Callers must validate
 // ownership and regular-file ancestors before preparing any filesystem changes.
 pub(crate) struct SourceTransaction {
+    crypt: Option<crate::crypt::transaction::FileTransaction>,
     updates: Vec<PreparedSourceUpdate>,
     created_directories: Vec<PathBuf>,
 }
@@ -1235,7 +1329,24 @@ struct PreparedSourceUpdate {
 }
 
 impl SourceTransaction {
+    pub(crate) fn for_repository(repo: &Repository) -> Result<Self> {
+        let crypt = if crate::crypt::access::configured(repo)?
+            && !crate::crypt::access::local_key_missing(repo)?
+        {
+            Some(crate::crypt::transaction::FileTransaction::new(repo))
+        } else {
+            None
+        };
+        Ok(Self {
+            crypt,
+            ..Default::default()
+        })
+    }
+
     pub(crate) fn prepare(&mut self, file: PathBuf, update: Option<(Vec<u8>, u32)>) -> Result<()> {
+        if let Some(crypt) = &mut self.crypt {
+            return crypt.prepare(file, update);
+        }
         let existing = match file.symlink_metadata() {
             Ok(metadata) => {
                 anyhow::ensure!(
@@ -1388,6 +1499,9 @@ impl SourceTransaction {
     }
 
     pub(crate) fn apply(&mut self) -> Result<()> {
+        if let Some(crypt) = &mut self.crypt {
+            return crypt.apply();
+        }
         for update in &mut self.updates {
             #[cfg(not(target_os = "linux"))]
             if update.in_place {
@@ -1419,6 +1533,9 @@ impl SourceTransaction {
     }
 
     pub(crate) fn rollback(&mut self) -> Result<()> {
+        if let Some(crypt) = &mut self.crypt {
+            return crypt.rollback();
+        }
         let mut errors = Vec::new();
         for update in self.updates.iter_mut().rev() {
             let result = (|| -> Result<()> {
@@ -1464,6 +1581,9 @@ impl SourceTransaction {
     }
 
     pub(crate) fn cleanup(&self) -> Result<()> {
+        if let Some(crypt) = &self.crypt {
+            return crypt.cleanup();
+        }
         for update in &self.updates {
             fs::remove_dir_all(&update.directory)
                 .with_context(|| format!("failed to remove '{}'", update.directory.display()))?;

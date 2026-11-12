@@ -27,7 +27,28 @@ pub async fn add(ctx: &Ctx, overlay: &Overlay, selections: &[PathBuf]) -> Result
     tokio::task::spawn_blocking(move || add_blocking(&ctx, &overlay, &selections)).await?
 }
 
-fn add_blocking(ctx: &Ctx, overlay: &Overlay, selections: &[PathBuf]) -> Result<Vec<PathBuf>> {
+pub(crate) fn add_blocking(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    selections: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
+    add_blocking_with(ctx, overlay, selections, false)
+}
+
+pub(crate) fn preflight_crypt(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    selections: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
+    add_blocking_with(ctx, overlay, selections, true)
+}
+
+fn add_blocking_with(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    selections: &[PathBuf],
+    preserve_staged: bool,
+) -> Result<Vec<PathBuf>> {
     crate::secrets::validate_ingestion(ctx, overlay, selections)?;
     let tree = DesiredTree::build_own(ctx, overlay)?;
     let entries: Vec<_> = tree
@@ -94,7 +115,7 @@ fn add_blocking(ctx: &Ctx, overlay: &Overlay, selections: &[PathBuf]) -> Result<
             remaining.insert(path.clone());
         }
     }
-    stage_entries(&entries, &selections, ctx.dry_run, overlay)?;
+    stage_entries(&entries, &selections, ctx.dry_run, overlay, preserve_staged)?;
     Ok(remaining.into_iter().collect())
 }
 
@@ -103,12 +124,14 @@ fn stage_entries(
     selections: &[PathBuf],
     dry_run: bool,
     overlay: &Overlay,
+    preserve_staged: bool,
 ) -> Result<()> {
     stage_entries_with(
         entries,
         selections,
         dry_run,
         overlay,
+        preserve_staged,
         &state::record_for_blocking,
         &snapshot::canonical_source_entry,
     )
@@ -119,12 +142,14 @@ fn stage_entries_with(
     selections: &[PathBuf],
     dry_run: bool,
     overlay: &Overlay,
+    preserve_staged: bool,
     record_for: &impl Fn(&Path) -> Result<Option<state::VirtualCheckoutRecord>>,
     source_entry: &impl Fn(&git2::Repository, &Path) -> Result<Option<(git2::Oid, i32)>>,
 ) -> Result<()> {
     // One in-memory index per repository prevents sibling units from overwriting
     // each other's changes; write only after every selected unit passes preflight.
     let mut repositories: BTreeMap<PathBuf, (git2::Repository, git2::Index)> = BTreeMap::new();
+    let mut originals = BTreeMap::new();
     for entry in entries {
         if !selections
             .iter()
@@ -144,6 +169,10 @@ fn stage_entries_with(
         let (repo, managed) = git::discover_source(source)?;
         let key = repo.path().to_path_buf();
         if !repositories.contains_key(&key) {
+            originals.insert(
+                key.clone(),
+                crate::actions::git::index::read_index(&repo.path().join("index"))?,
+            );
             let index = repo.index()?;
             ensure!(
                 !index.has_conflicts(),
@@ -213,6 +242,11 @@ fn stage_entries_with(
                 .get_path(&source_path, 0)
                 .map(|item| (item.id, item.mode as i32));
             ensure!(
+                !preserve_staged || git::entries_match(indexed_entry, head_entry),
+                "source file '{}' has staged edits; resolve them before staging the checkout",
+                worktree.display()
+            );
+            ensure!(
                 git::entries_match(worktree_entry, head_entry)
                     || git::entries_match(worktree_entry, indexed_entry),
                 "source file '{}' has unstaged edits",
@@ -270,8 +304,26 @@ fn stage_entries_with(
         }
     }
     if !dry_run {
-        for (_, (_, mut index)) in repositories {
-            index.write()?;
+        let mut prepared = Vec::new();
+        for (key, (repo, index)) in &repositories {
+            let path = repo.path().join("index");
+            let lock = crate::actions::git::index::IndexLock::acquire(&path)?;
+            ensure!(
+                crate::actions::git::index::read_index(&path)? == originals[key],
+                "source index changed during staging; retry"
+            );
+            // Serialize privately while every source index remains locked.
+            let temporary = tempfile::tempdir_in(repo.path())?;
+            let temporary_path = temporary.path().join("index");
+            let mut output = git2::Index::open(&temporary_path)?;
+            for entry in index.iter() {
+                output.add(&entry)?;
+            }
+            output.write()?;
+            prepared.push((path, lock, std::fs::read(temporary_path)?));
+        }
+        for (path, mut lock, bytes) in prepared {
+            lock.publish(&path, &bytes)?;
         }
     }
     Ok(())

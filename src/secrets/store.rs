@@ -37,6 +37,7 @@ impl SecretName {
 #[derive(Debug)]
 pub struct SecretStore {
     root: PathBuf,
+    repository: PathBuf,
     crypto: Arc<CryptoService>,
 }
 
@@ -48,6 +49,7 @@ impl SecretStore {
         );
         Ok(Self {
             root: repository.join(".over/secrets"),
+            repository: repository.to_path_buf(),
             crypto,
         })
     }
@@ -98,6 +100,14 @@ impl SecretStore {
     }
 
     pub fn check_add(&self, name: &SecretName, replace: bool) -> Result<()> {
+        if let Some(repo) = self.unified()? {
+            let _guard = crate::crypt::access::guard(&repo, false)?;
+            ensure!(
+                replace || !self.read_map(&repo)?.0.contains_key(name.as_str()),
+                "secret already exists; use --replace to replace it"
+            );
+            return Ok(());
+        }
         let path = self.path(name)?;
         ensure!(
             replace || !path.exists(),
@@ -113,6 +123,17 @@ impl SecretStore {
         replace: bool,
         prompt: bool,
     ) -> Result<()> {
+        if let Some(repo) = self.unified()? {
+            let _guard = crate::crypt::access::guard(&repo, true)?;
+            let mut map = self.read_map(&repo)?;
+            ensure!(
+                replace || !map.0.contains_key(name.as_str()),
+                "secret already exists; use --replace to replace it"
+            );
+            map.0
+                .insert(name.as_str().to_owned(), value.expose().to_vec());
+            return self.write_map(&repo, &map);
+        }
         self.check_add(name, replace)?;
         let ciphertext = self.crypto.encrypt(value.expose(), prompt)?;
         fs::create_dir_all(&self.root).context("could not create secret store")?;
@@ -141,6 +162,15 @@ impl SecretStore {
     }
 
     pub fn get(&self, name: &SecretName, prompt: bool) -> Result<SecretBytes> {
+        if let Some(repo) = self.unified()? {
+            let _guard = crate::crypt::access::guard(&repo, false)?;
+            let mut map = self.read_map(&repo)?;
+            return Ok(SecretBytes::new(
+                map.0
+                    .remove(name.as_str())
+                    .context("secret does not exist")?,
+            ));
+        }
         self.crypto.decrypt(
             &fs::read(self.path(name)?).context("could not read encrypted secret")?,
             prompt,
@@ -153,6 +183,23 @@ impl SecretStore {
         prompt: bool,
     ) -> Result<SecretBytes, super::ProviderError> {
         use super::ProviderError;
+        if let Some(repo) = self.unified().map_err(|_| ProviderError::StoreFailure)? {
+            let _guard = crate::crypt::access::guard(&repo, false)
+                .map_err(|_| ProviderError::StoreFailure)?;
+            if crate::crypt::access::local_key_missing(&repo)
+                .map_err(|_| ProviderError::StoreFailure)?
+            {
+                return Err(ProviderError::SessionUnavailable);
+            }
+            let mut map = self
+                .read_map(&repo)
+                .map_err(|_| ProviderError::DecryptionFailed)?;
+            return map
+                .0
+                .remove(name.as_str())
+                .map(SecretBytes::new)
+                .ok_or(ProviderError::Missing);
+        }
         let path = self.path(name).map_err(|_| ProviderError::StoreFailure)?;
         // Only absence at this read is recoverable; invalid layout must stop fallback.
         let ciphertext = fs::read(path).map_err(|error| {
@@ -168,6 +215,10 @@ impl SecretStore {
     }
 
     pub fn list(&self) -> Result<Vec<String>> {
+        if let Some(repo) = self.unified()? {
+            let _guard = crate::crypt::access::guard(&repo, false)?;
+            return Ok(self.read_map(&repo)?.0.keys().cloned().collect());
+        }
         self.validate()?;
         let entries = match fs::read_dir(&self.root) {
             Ok(entries) => entries,
@@ -190,10 +241,124 @@ impl SecretStore {
     }
 
     pub fn remove(&self, name: &SecretName) -> Result<()> {
+        if let Some(repo) = self.unified()? {
+            let _guard = crate::crypt::access::guard(&repo, true)?;
+            let mut map = self.read_map(&repo)?;
+            use zeroize::Zeroize;
+            map.0
+                .remove(name.as_str())
+                .context("secret does not exist")?
+                .zeroize();
+            return self.write_map(&repo, &map);
+        }
         let path = self.path(name)?;
         if !path.exists() {
             bail!("secret does not exist");
         }
         fs::remove_file(path).context("could not remove encrypted secret")
+    }
+}
+
+impl SecretStore {
+    fn unified(&self) -> Result<Option<git2::Repository>> {
+        let repo = match git2::Repository::discover(&self.repository) {
+            Ok(repo) => repo,
+            Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if !crate::crypt::access::configured(&repo)? {
+            return Ok(None);
+        }
+        ensure!(
+            self.repository.canonicalize()? == crate::crypt::access::root(&repo)?.canonicalize()?,
+            "select the source Git repository root with --home for repository-key secrets"
+        );
+        ensure!(
+            !self.root.try_exists()?,
+            "legacy secret store exists; run over crypt migrate before using repository secrets"
+        );
+        Ok(Some(repo))
+    }
+
+    fn read_map(&self, repo: &git2::Repository) -> Result<SecretMap> {
+        let key = crate::crypt::access::local_key(repo)?;
+        let path = self.repository.join(".over/secrets.yaml");
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(SecretMap::default());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        ensure!(
+            !fs::symlink_metadata(&path)?.file_type().is_symlink(),
+            "secret store must not be a symlink"
+        );
+        let plaintext = key.decrypt(&bytes, 1)?;
+        let map: SecretMap = serde_json::from_slice(&plaintext)
+            .map_err(|_| anyhow::anyhow!("invalid native secret store"))?;
+        ensure!(map.1 == 1, "unsupported native secret store version");
+        for name in map.0.keys() {
+            SecretName::parse(name)?;
+        }
+        Ok(map)
+    }
+
+    fn write_map(&self, repo: &git2::Repository, map: &SecretMap) -> Result<()> {
+        let key = crate::crypt::access::local_key(repo)?;
+        let plaintext = crate::crypt::buffer::to_json(map)?;
+        crate::crypt::atomic_write(
+            &self.repository.join(".over/secrets.yaml"),
+            &key.encrypt(&plaintext, 1)?,
+        )
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SecretMap(
+    #[serde(deserialize_with = "unique_values")] std::collections::BTreeMap<String, Vec<u8>>,
+    u32,
+);
+
+fn unique_values<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<std::collections::BTreeMap<String, Vec<u8>>, D::Error> {
+    struct UniqueValues;
+    impl<'de> serde::de::Visitor<'de> for UniqueValues {
+        type Value = std::collections::BTreeMap<String, Vec<u8>>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a map of unique native secret names")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut access: A,
+        ) -> std::result::Result<Self::Value, A::Error> {
+            let mut map = SecretMap::default();
+            while let Some((name, mut value)) = access.next_entry::<String, Vec<u8>>()? {
+                if map.0.contains_key(&name) {
+                    use zeroize::Zeroize;
+                    value.zeroize();
+                    return Err(serde::de::Error::custom("duplicate native secret name"));
+                }
+                map.0.insert(name, value);
+            }
+            Ok(std::mem::take(&mut map.0))
+        }
+    }
+    deserializer.deserialize_map(UniqueValues)
+}
+
+impl Default for SecretMap {
+    fn default() -> Self {
+        Self(Default::default(), 1)
+    }
+}
+
+impl Drop for SecretMap {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        for value in self.0.values_mut() {
+            value.zeroize();
+        }
     }
 }

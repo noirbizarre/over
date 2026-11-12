@@ -16,6 +16,12 @@ use crate::ui::style::{self, DialogTheme};
 
 #[derive(Args, Debug)]
 pub struct Params {
+    #[clap(
+        long,
+        conflicts_with = "patch",
+        help = "Declare crypt policy and stage encrypted content"
+    )]
+    crypt: bool,
     #[clap(required = true, help = "Files, directories, or glob patterns to add")]
     files: Vec<String>,
 
@@ -89,6 +95,56 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let routing = overlay.resolve_mappings(&ctx)?;
     for path in &resolved {
         routing.logical_path_for(path)?;
+    }
+
+    if args.crypt {
+        let ctx = ctx.clone();
+        let overlay = overlay.clone();
+        let resolved = resolved.clone();
+        let routing = routing.clone();
+        let dry_run = args.dry_run;
+        return tokio::task::spawn_blocking(move || -> Result<()> {
+            let mut preview = (*ctx).clone();
+            preview.dry_run = true;
+            // Validate ownership and source drift before policy can replace selected index entries.
+            let ordinary =
+                crate::stage::preflight_crypt(&std::sync::Arc::new(preview), &overlay, &resolved)?;
+            let (git, managed) =
+                crate::materialize::virtual_checkout::git::discover_source(&overlay.root)?;
+            let mut inputs = std::collections::BTreeMap::new();
+            let mut moves = std::collections::BTreeMap::new();
+            for physical in &resolved {
+                anyhow::ensure!(
+                    physical.is_file() && !physical.is_symlink(),
+                    "--crypt requires individual regular files"
+                );
+                let logical = routing.logical_path_for(physical)?;
+                // discover_source accounts for physical aliases such as macOS /var -> /private/var.
+                let path = managed.join(&logical);
+                if ordinary.contains(physical) {
+                    moves.insert(
+                        crate::crypt::access::root(&git)?.join(&path),
+                        physical.clone(),
+                    );
+                }
+                inputs.insert(path, physical.clone());
+            }
+            let mut ingestion = crate::crypt::ingest::Ingestion::prepare(&moves)?;
+            if !dry_run {
+                let patterns = inputs
+                    .keys()
+                    .map(|path| path.to_string_lossy().replace('\\', "/"))
+                    .collect::<Vec<_>>();
+                crate::crypt::policy::update_inputs_with_ingestion(
+                    &git,
+                    &patterns,
+                    &inputs,
+                    &mut ingestion,
+                )?;
+            }
+            Ok(())
+        })
+        .await?;
     }
 
     if args.patch {

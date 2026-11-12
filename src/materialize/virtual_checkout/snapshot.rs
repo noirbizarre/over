@@ -31,7 +31,22 @@ pub(crate) fn canonical_source_entry(
     // Only targets contain materializer-written raw blobs. A real worktree must
     // always be cleaned, or a non-idempotent filter can hide native Git edits.
     let scratch = crate::actions::git::diff::Scratch::new(repo)?;
-    let oid = scratch.target_blob(repo, path, &content)?;
+    // A newly protected historical plaintext blob is still an unchanged source
+    // baseline. This comparison-only exception must never be used to stage targets.
+    let legacy_baseline = if crate::crypt::policy::protected(repo, path)? {
+        let raw = git2::Oid::hash_object(git2::ObjectType::Blob, &content)?;
+        head.filter(|(oid, _)| raw == *oid)
+            .map(|(oid, _)| repo.find_blob(oid))
+            .transpose()?
+            .filter(|blob| !crate::crypt::format::recognized(blob.content()))
+    } else {
+        None
+    };
+    let oid = if let Some(blob) = legacy_baseline {
+        blob.id()
+    } else {
+        scratch.target_blob(repo, path, &content)?
+    };
     if !honors_filemode(repo)? {
         mode = head.or(indexed).map(|entry| entry.1).unwrap_or(0o100644);
     }
@@ -64,11 +79,21 @@ pub(crate) fn canonical_entry(
     expected: &[Option<(git2::Oid, i32)>],
 ) -> Result<(git2::Oid, i32)> {
     let raw = git2::Oid::hash_object(git2::ObjectType::Blob, content)?;
-    let oid = if expected.iter().flatten().any(|entry| entry.0 == raw) {
+    let protected = crate::crypt::policy::protected(repo, logical)?;
+    let oid = if (!protected || crate::crypt::format::inspect(content).is_ok())
+        && expected.iter().flatten().any(|entry| entry.0 == raw)
+    {
         raw
     } else {
         scratch.target_blob(repo, logical, content)?
     };
+    if protected {
+        let _guard = crate::crypt::access::guard(repo, false)?;
+        // A successful configured filter is not proof that its output is ciphertext.
+        let blob = scratch.repo.find_blob(oid)?;
+        let domain = crate::crypt::format::file_domain(blob.content())?;
+        crate::crypt::access::local_key(repo)?.decrypt(blob.content(), domain)?;
+    }
     if !honors_filemode(repo)? {
         mode = expected
             .iter()
@@ -88,7 +113,10 @@ pub(crate) fn honors_filemode(repo: &git2::Repository) -> Result<bool> {
     }
 }
 
-pub(crate) fn target_content(root: &Path, relative: &Path) -> Result<Option<(Vec<u8>, i32)>> {
+pub(crate) fn target_content(
+    root: &Path,
+    relative: &Path,
+) -> Result<Option<(zeroize::Zeroizing<Vec<u8>>, i32)>> {
     ensure!(
         !crate::secrets::is_encrypted(relative),
         "encrypted virtual-checkout paths are unsupported"
@@ -128,7 +156,7 @@ pub(crate) fn target_content(root: &Path, relative: &Path) -> Result<Option<(Vec
         if path == file {
             return if metadata.is_file() {
                 Ok(Some((
-                    std::fs::read(&path)?,
+                    crate::crypt::buffer::read_file(&path)?,
                     i32::from(git::on_disk_filemode(&path)?),
                 )))
             } else {

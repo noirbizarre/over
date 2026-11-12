@@ -10,6 +10,7 @@ mod apply;
 mod commit;
 pub(crate) mod common;
 mod completion;
+mod crypt;
 mod data;
 mod diff;
 mod doctor;
@@ -58,6 +59,16 @@ pub struct CLI {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    #[clap(subcommand, about = "Manage repository encryption policy")]
+    Crypt(crypt::Commands),
+    #[clap(subcommand, about = "Manage repository users and their Age keys")]
+    User(crypt::UserCommands),
+    #[clap(subcommand, about = "Manage the repository encryption key")]
+    Key(crypt::KeyCommands),
+    #[clap(about = "Unlock repository files and native secrets")]
+    Unlock(crypt::Unlock),
+    #[clap(about = "Lock repository files and native secrets")]
+    Lock,
     #[clap(subcommand, about = "Manage repository-local encrypted secrets")]
     Secret(secret::Commands),
     #[clap(
@@ -166,12 +177,18 @@ pub async fn main() -> Result<()> {
         Some(Commands::New(_)) => Some("Creating overlay"),
         Some(Commands::Diff(_)) => Some("Comparing overlay files"),
         Some(Commands::Log(_)) => Some("Reading overlay history"),
+        Some(Commands::Git(git::Commands::Filter(_) | git::Commands::FilterProcess)) => None,
         Some(Commands::Git(_)) => Some("Inspecting git overlay"),
         _ => None,
     };
     let _progress = progress_message.map(crate::ui::progress::Command::start);
 
     match args.cmd {
+        Some(Commands::Crypt(ref command)) => crypt::execute(&args, command)?,
+        Some(Commands::User(ref command)) => crypt::user(&args, command)?,
+        Some(Commands::Key(ref command)) => crypt::key(&args, command)?,
+        Some(Commands::Unlock(ref opt)) => crypt::unlock(&args, opt)?,
+        Some(Commands::Lock) => crypt::lock(&args)?,
         Some(Commands::Secret(ref command)) => secret::execute(&args, command).await?,
         Some(Commands::Init(ref opt)) => {
             init::execute(&args, opt).await?;

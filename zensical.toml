@@ -42,7 +42,8 @@ nav = [
     { "over list" = "usage/list.md" },
     { "over show (alias)" = "usage/show.md" },
     { "over data" = "usage/data.md" },
-    { "over secret / Age encryption" = "usage/secrets.md" },
+    { "Repository encryption" = "usage/crypt.md" },
+    { "Native secrets / legacy Age" = "usage/secrets.md" },
     { "over apply" = "usage/apply.md" },
     { "over lint" = "usage/lint.md" },
     { "over doctor" = "usage/doctor.md" },
@@ -91,6 +92,7 @@ nav = [
     { "025: Mappings and staging" = "adr/025-directory-mappings-and-checkout-staging.md" },
     { "026: Git-aware diff" = "adr/026-git-aware-diff-delegates-presentation-to-git.md" },
     { "027: Install hooks" = "adr/027-installation-is-an-opt-in-hook-event.md" },
+    { "028: Repository encryption" = "adr/028-repository-encryption.md" },
   ] },
 ]
 

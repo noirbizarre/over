@@ -11,6 +11,8 @@ Arguments:
 Options:
   -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
       --set-origin   Set an existing checkout's canonical origin without prompting
+      --unlock       Explicitly unlock repository encryption during initialization
+      --identity <IDENTITY>  Use a standard Age identity when unlocking
   -d, --debug        Toggle debug traces
   -v, --verbose      Toggle verbose output
   -h, --help         Print help
@@ -80,18 +82,37 @@ moved: set `OVER_HOME=~/.over` or pass `--home ~/.over` to keep using one.
 Initialization never applies overlays or runs install hooks. Finish
 with the normal `over apply [NAME]` workflow when ready.
 
+## Repository encryption
+
+Init configures repository-local Over filters before protected refresh or hooks.
+For repositories with access metadata, interactive init offers unlock with
+confirmation defaulting to No. It unwraps the repository key once, then persists
+it in private Git common administrative storage. This key survives terminal
+closure and reboot until `over lock`; filters never prompt.
+
+Fresh noninteractive clones remain locked unless explicitly requested with `--unlock`.
+Use `--unlock --identity <standard-age-identity-file>` for noninteractive access.
+Declining unlock keeps ciphertext. If an encrypted repository declares bootstrap
+hooks, initialization stops before executing any of them and explains how to
+unlock. Retrying an existing checkout runs post-init, not post-clone; put
+repeatable setup in post-init or recover skipped post-clone steps explicitly.
+An already-unlocked checkout remains unlocked and repairs incomplete ciphertext
+refreshes without another credential prompt, preserving existing plaintext edits.
+A manual clone can be unlocked later with
+`over unlock`. Bootstrap descriptors and encryption metadata must remain readable
+while locked. See [repository encryption](crypt.md).
+
 ## Lifecycle hooks
 
 Init can execute repository-provided commands: **only initialize repositories you
 trust**. Root `hooks.post-clone` runs after a fresh clone is validated and its
 canonical origin configured; root `hooks.post-init` then runs on both fresh and
-existing checkouts. Both run before child overlay descriptors are needed. For
-example, keep the root descriptor plaintext and configure:
+existing checkouts. Both run before child overlay descriptors are needed. Native
+encryption unlock is integrated directly and does not require a hook. For
+example, keep the root descriptor plaintext and configure repeatable setup:
 
 ```yaml
 hooks:
-  post-clone:
-    - git-crypt unlock
   post-init:
     - ./scripts/ensure-local-setup
 ```
