@@ -209,9 +209,8 @@ fn doctor_inspects_a_shared_checkout_once_across_consumers() {
         .env("XDG_STATE_HOME", &state)
         .assert()
         .success()
-        .stdout(contains("1 warning found"))
-        .stdout(contains("alpha: ⚠ 1 warning(s)"))
-        .stdout(contains("beta: ⚠ 1 warning(s)"));
+        .stdout(contains("No issues found"))
+        .stdout(contains("warning(s)").not());
     assert_eq!(fs::read_to_string(calls).unwrap(), "x");
 }
 
@@ -509,8 +508,8 @@ fn status_checks_overlay_files_and_mount_configuration_without_reading_mount_con
         .env("XDG_STATE_HOME", &state)
         .arg("selected")
         .assert()
-        .code(1)
-        .stdout(contains("M project/managed.txt (unstaged)"))
+        .success()
+        .stdout(contains("M selected/project/managed.txt (unstaged)"))
         .stdout(contains("repository.txt").not());
     assert_eq!(fs::read_to_string(&calls).unwrap(), "x");
     fs::write(&calls, "").unwrap();
@@ -519,7 +518,7 @@ fn status_checks_overlay_files_and_mount_configuration_without_reading_mount_con
         .arg("selected")
         .assert()
         .success()
-        .stdout(contains("selected: ⚠ 1 warning(s)"))
+        .stdout(contains("warning(s)").not())
         .stdout(contains("project/managed.txt").not());
     assert_eq!(fs::read_to_string(&calls).unwrap(), "x");
     fs::write(mounted.join("managed.txt"), "managed\n").unwrap();
@@ -528,8 +527,8 @@ fn status_checks_overlay_files_and_mount_configuration_without_reading_mount_con
         .env("XDG_STATE_HOME", &state)
         .arg("selected")
         .assert()
-        .code(1)
-        .stdout(contains("D overlay.txt (unstaged)"));
+        .success()
+        .stdout(contains("D selected/overlay.txt (unstaged)"));
     fs::write(root.join("overlay.txt"), "overlay\n").unwrap();
 
     mounted_repo
@@ -613,15 +612,400 @@ fn index_only_overlay_additions_remain_visible_after_target_discovery_is_disable
         .env("XDG_STATE_HOME", &state)
         .arg("selected")
         .assert()
-        .code(1)
-        .stdout(contains("A new (staged)"))
+        .success()
+        .stdout(contains("A selected/new (staged)"))
         .stdout(contains("new (unstaged)").not());
     fs::write(root.join("new"), "edited after staging\n").unwrap();
     command(&source, &root, "status")
         .env("XDG_STATE_HOME", &state)
         .arg("selected")
         .assert()
+        .success()
+        .stdout(contains("A selected/new (staged)"))
+        .stdout(contains("M selected/new (unstaged)"));
+}
+
+struct CheckoutFixture {
+    temp: TempDir,
+    source: std::path::PathBuf,
+    root: std::path::PathBuf,
+    repo: git2::Repository,
+}
+
+impl CheckoutFixture {
+    fn new() -> Self {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let root = temp.path().join("home");
+        fs::create_dir_all(source.join("selected")).unwrap();
+        fs::write(
+            source.join("selected/over.yaml"),
+            "target: '~'\nmode: checkout\n",
+        )
+        .unwrap();
+        fs::write(source.join("selected/file"), "original\n").unwrap();
+        let repo = git2::Repository::init(&source).unwrap();
+        commit_all(&repo);
+        let fixture = Self {
+            temp,
+            source,
+            root,
+            repo,
+        };
+        fixture
+            .command("apply")
+            .args(["selected", "--no-prompt"])
+            .assert()
+            .success();
+        fixture
+    }
+
+    fn command(&self, verb: &str) -> Command {
+        let mut cmd = command(&self.source, &self.root, verb);
+        cmd.env("XDG_STATE_HOME", self.temp.path().join("state"));
+        cmd
+    }
+
+    fn stage(&self, name: &str) {
+        self.command("add")
+            .args(["--overlay", "selected"])
+            .arg(self.root.join(name))
+            .assert()
+            .success();
+    }
+
+    fn row(&self, xy: &str, path: &str) -> String {
+        format!(
+            "{xy}\t{}\t{}\t{}\n",
+            serde_json::to_string(&self.source).unwrap(),
+            serde_json::to_string(&format!("selected/{path}")).unwrap(),
+            serde_json::to_string(&self.root).unwrap()
+        )
+    }
+}
+
+#[test]
+fn adding_a_file_reports_staging_only_in_the_final_changes_section() {
+    let fixture = CheckoutFixture::new();
+    fs::write(fixture.root.join("new file"), "added\n").unwrap();
+    fixture.stage("new file");
+    let output = fixture
+        .command("status")
+        .arg("selected")
+        .assert()
+        .success()
+        .stdout(contains("Fully applied"))
+        .stdout(contains("Needs attention").not())
+        .stdout(contains("A selected/new file (staged)"))
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).unwrap();
+    let (health, changes) = output.split_once("Changes:").unwrap();
+    assert!(!health.contains("(staged)"));
+    assert!(!changes.contains("Reconciliation:"));
+    for verb in ["status", "show"] {
+        fixture
+            .command(verb)
+            .args(["selected", "--short", "--verbose"])
+            .env("CLICOLOR_FORCE", "1")
+            .assert()
+            .success()
+            .stdout(fixture.row("A ", "new file"))
+            .stderr("");
+    }
+    fixture
+        .command("doctor")
+        .arg("selected")
+        .assert()
+        .success()
+        .stdout(contains("warning(s)").not());
+}
+
+#[test]
+fn short_status_preserves_staged_and_further_unstaged_snapshots() {
+    let fixture = CheckoutFixture::new();
+    fixture
+        .command("status")
+        .args(["selected", "-s"])
+        .assert()
+        .success()
+        .stdout("");
+    fs::write(fixture.root.join("file"), "staged\n").unwrap();
+    fixture.stage("file");
+    fixture
+        .command("status")
+        .args(["selected", "-s"])
+        .assert()
+        .success()
+        .stdout(fixture.row("M ", "file"));
+    fs::write(fixture.root.join("file"), "edited again\n").unwrap();
+    fixture
+        .command("status")
+        .args(["selected", "-s"])
+        .assert()
+        .success()
+        .stdout(fixture.row("MM", "file"));
+    fs::remove_file(fixture.root.join("file")).unwrap();
+    fixture
+        .command("status")
+        .args(["selected", "-s"])
+        .assert()
+        .success()
+        .stdout(fixture.row("MD", "file"));
+    fixture.stage("file");
+    fixture
+        .command("status")
+        .args(["selected", "-s"])
+        .assert()
+        .success()
+        .stdout(fixture.row("D ", "file"));
+}
+
+#[test]
+fn intent_to_add_is_only_an_unstaged_addition() {
+    let fixture = CheckoutFixture::new();
+    fs::write(fixture.root.join("reserved"), "new\n").unwrap();
+    fs::write(fixture.source.join("selected/reserved"), "new\n").unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&fixture.source)
+            .args(["add", "--intent-to-add", "selected/reserved"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    fixture
+        .command("status")
+        .args(["selected", "-s"])
+        .assert()
+        .success()
+        .stdout(fixture.row(" A", "reserved"));
+}
+
+#[test]
+fn short_status_keeps_distinct_targets_for_the_same_source_path() {
+    let fixture = CheckoutFixture::new();
+    // Independent invocations may materialize the same source into different target roots.
+    // Use separate state homes so the live-target guard does not reinterpret an existing association.
+    let other = fixture.temp.path().join("other");
+    command(&fixture.source, &other, "apply")
+        .args(["selected", "--no-prompt"])
+        .env("XDG_STATE_HOME", fixture.temp.path().join("other-state"))
+        .assert()
+        .success();
+    fs::write(fixture.root.join("file"), "first\n").unwrap();
+    fs::write(other.join("file"), "second\n").unwrap();
+    fixture
+        .command("status")
+        .args(["selected", "-s"])
+        .assert()
+        .success()
+        .stdout(fixture.row(" M", "file"));
+    command(&fixture.source, &other, "status")
+        .args(["selected", "-s"])
+        .env("XDG_STATE_HOME", fixture.temp.path().join("other-state"))
+        .assert()
+        .success()
+        .stdout(format!(
+            " M\t{}\t\"selected/file\"\t{}\n",
+            serde_json::to_string(&fixture.source).unwrap(),
+            serde_json::to_string(&other).unwrap()
+        ));
+}
+
+#[test]
+fn source_updates_remain_actionable_independently_of_staging() {
+    let fixture = CheckoutFixture::new();
+    fs::write(fixture.source.join("selected/file"), "upstream\n").unwrap();
+    let mut index = fixture.repo.index().unwrap();
+    index.add_path(Path::new("selected/file")).unwrap();
+    let tree = fixture.repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let parent = fixture.repo.head().unwrap().peel_to_commit().unwrap();
+    let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+    fixture
+        .repo
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "advance",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+    index.write().unwrap();
+    fixture
+        .command("status")
+        .arg("selected")
+        .assert()
         .code(1)
-        .stdout(contains("A new (staged)"))
-        .stdout(contains("M new (unstaged)"));
+        .stdout(contains("behind:"))
+        .stdout(contains("Changes:"));
+    fs::write(fixture.root.join("file"), "independent\n").unwrap();
+    fixture
+        .command("status")
+        .arg("selected")
+        .assert()
+        .code(1)
+        .stdout(contains("conflict:"));
+    // Converged bytes need no content reconciliation even while the recorded base is older.
+    fs::write(fixture.root.join("file"), "upstream\n").unwrap();
+    fixture
+        .command("status")
+        .args(["selected", "-s"])
+        .assert()
+        .success()
+        .stdout("");
+}
+
+#[test]
+fn all_overlay_changes_follow_the_overall_summary_without_duplicating_dependencies() {
+    let fixture = CheckoutFixture::new();
+    for name in ["alpha", "beta"] {
+        fs::create_dir_all(fixture.source.join(name)).unwrap();
+        fs::write(
+            fixture.source.join(name).join("over.yaml"),
+            format!("target: '~/{name}'\nuses: [selected]\n"),
+        )
+        .unwrap();
+        fixture
+            .command("apply")
+            .args([name, "--no-prompt"])
+            .assert()
+            .success();
+    }
+    fs::write(fixture.root.join("file"), "edited\n").unwrap();
+    let output = fixture
+        .command("status")
+        .arg("--all")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.find("Overall:").unwrap() < output.find("Changes:").unwrap());
+    assert_eq!(output.matches("M selected/file (unstaged)").count(), 1);
+    fixture
+        .command("status")
+        .args(["--all", "-s"])
+        .assert()
+        .success()
+        .stdout(fixture.row(" M", "file"));
+}
+
+#[cfg(unix)]
+#[test]
+fn short_status_escapes_control_characters_in_git_paths() {
+    let fixture = CheckoutFixture::new();
+    let name = "space tab\tquote\"line\n";
+    fs::write(fixture.root.join(name), "added\n").unwrap();
+    fixture.stage(name);
+    fixture
+        .command("status")
+        .args(["selected", "-s"])
+        .assert()
+        .success()
+        .stdout(fixture.row("A ", name));
+}
+
+#[test]
+fn source_context_avoids_unrelated_overlay_resolution_and_administration_discovery() {
+    let fixture = CheckoutFixture::new();
+    for number in 0..100 {
+        let dir = fixture.source.join(format!("unrelated-{number}"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("over.yaml"),
+            "target: '{{ env.OVER_STATUS_MISSING }}'\nunknown_key: true\n",
+        )
+        .unwrap();
+    }
+    fs::create_dir_all(fixture.source.join(".git/unrelated")).unwrap();
+    fs::write(fixture.source.join(".git/unrelated/over.yaml"), "[broken").unwrap();
+    for number in 0..100 {
+        let dir = fixture.root.join(format!("untracked-{number}"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("file"), "unrelated\n").unwrap();
+    }
+    fixture
+        .command("status")
+        .current_dir(fixture.source.join("selected"))
+        .arg("-s")
+        .assert()
+        .success()
+        .stdout("")
+        .stderr("");
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_index_paths_only_fail_the_overlay_that_owns_them() {
+    let fixture = CheckoutFixture::new();
+    let mut index = fixture.repo.index().unwrap();
+    let mut entry = index.get_path(Path::new("selected/file"), 0).unwrap();
+    entry.path = b"unrelated-\xff".to_vec();
+    index.add(&entry).unwrap();
+    index.write().unwrap();
+    for short in [false, true] {
+        let mut command = fixture.command("status");
+        command.arg("selected");
+        if short {
+            command.arg("--short");
+        }
+        command.assert().success();
+    }
+    entry.path = b"selected/invalid-\xff".to_vec();
+    index.add(&entry).unwrap();
+    index.write().unwrap();
+    fixture
+        .command("status")
+        .args(["selected", "--short"])
+        .assert()
+        .failure()
+        .stdout("");
+}
+
+#[test]
+fn short_source_status_distinguishes_index_and_worktree_changes_without_unrelated_paths() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("home");
+    fs::create_dir_all(source.join("selected")).unwrap();
+    fs::write(source.join("selected/over.yaml"), "target: '~'\n").unwrap();
+    fs::write(source.join("selected/file"), "original\n").unwrap();
+    fs::write(source.join("unrelated"), "original\n").unwrap();
+    let repo = git2::Repository::init(&source).unwrap();
+    commit_all(&repo);
+    command(&source, &root, "apply")
+        .args(["selected", "--no-prompt"])
+        .assert()
+        .success();
+    fs::write(source.join("selected/file"), "staged\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("selected/file")).unwrap();
+    index.write().unwrap();
+    fs::write(source.join("selected/file"), "edited again\n").unwrap();
+    fs::write(source.join("unrelated"), "unrelated\n").unwrap();
+    command(&source, &root, "status")
+        .args(["selected", "-s"])
+        .assert()
+        .success()
+        .stdout(format!(
+            "MM\t{}\t\"selected/file\"\tnull\n",
+            serde_json::to_string(&source).unwrap()
+        ));
+    // Structural drift still fails without putting prose on short stdout.
+    fs::remove_file(root.join("file")).unwrap();
+    command(&source, &root, "status")
+        .args(["selected", "-s"])
+        .assert()
+        .code(1)
+        .stdout(format!(
+            "MM\t{}\t\"selected/file\"\tnull\n",
+            serde_json::to_string(&source).unwrap()
+        ));
 }

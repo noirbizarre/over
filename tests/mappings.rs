@@ -467,7 +467,7 @@ fn mapped_checkout_add_stages_snapshots_and_commit_preserves_unstaged_edits() {
         .args(["workspace/client", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("file (staged)"))
         .stdout(contains("file (unstaged)"));
     fixture

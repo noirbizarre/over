@@ -14,6 +14,7 @@ pub struct SourcePolicy {
     overlay: Overlay,
     rules: Vec<(PathBuf, Gitignore)>,
     rule_sources: Vec<(PathBuf, Vec<u8>)>,
+    files: Vec<PathBuf>,
 }
 
 /// Only source-selection inputs belong in inspection identities. Including the
@@ -48,6 +49,7 @@ impl SourcePolicy {
             overlay: overlay.clone(),
             rules: Vec::new(),
             rule_sources: Vec::new(),
+            files: Vec::new(),
         };
         let mut ancestors: Vec<_> = overlay
             .root
@@ -80,9 +82,16 @@ impl SourcePolicy {
                 } else {
                     policy.load(entry.path())?;
                 }
+            } else if !policy.is_ignored(entry.path(), false) {
+                // Sidecars share this discovery; separate walkers multiplied source traversal costs.
+                policy.files.push(entry.path().to_path_buf());
             }
         }
         Ok(policy)
+    }
+
+    pub(crate) fn files(&self) -> &[PathBuf] {
+        &self.files
     }
 
     fn load(&mut self, directory: &Path) -> Result<()> {

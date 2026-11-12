@@ -237,12 +237,11 @@ pub fn managed_targets(desired: &DesiredTree) -> Result<Vec<ManagedTarget>> {
             // Newly added checkout files belong to the source index before HEAD;
             // keep host Git from staging the same content in another repository.
             for indexed in repo.index()?.iter() {
-                let path = Path::new(std::str::from_utf8(&indexed.path)?);
-                if let Ok(relative) = path.strip_prefix(&managed)
-                    && scope.owns_source(relative)
-                    && scope.owns_target(relative)
+                if let Some(relative) = git::relative_index_path(&indexed.path, &managed)?
+                    && scope.owns_source(&relative)
+                    && scope.owns_target(&relative)
                     && git::is_supported_mode(indexed.mode)
-                    && !git::is_overlay_metadata(relative)
+                    && !git::is_overlay_metadata(&relative)
                 {
                     paths.insert(relative.to_path_buf());
                 }

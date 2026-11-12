@@ -65,6 +65,28 @@ fn a_unique_target_or_source_context_selects_its_overlay(#[case] path: &str) {
     assert_eq!(fixture.infer(&[path]).unwrap().as_deref(), Some("one"));
 }
 
+#[test]
+fn source_context_outranks_another_overlays_target_without_resolving_it() {
+    let fixture = Fixture::new();
+    fixture.overlay("one", "target = '~/one'");
+    fixture.overlay(
+        "two",
+        &format!(
+            "target = '{}'\nmode = 'checkout'",
+            fixture.path("repo/one").display()
+        ),
+    );
+    assert_eq!(
+        fixture.infer(&["repo/one"]).unwrap().as_deref(),
+        Some("one")
+    );
+    fixture.overlay("two", "target = '{{ env.OVER_UNRELATED_TARGET }}'");
+    assert_eq!(
+        fixture.infer(&["repo/one"]).unwrap().as_deref(),
+        Some("one")
+    );
+}
+
 #[rstest]
 #[case("home/file")]
 #[case("home/new-file")]

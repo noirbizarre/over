@@ -25,7 +25,7 @@ workflows.
 | [`over apply`](apply.md) | Apply a given overlay |
 | [`over lint`](lint.md) | Check overlays for configuration issues |
 | [`over doctor`](doctor.md) | Check the environment and overlays for issues |
-| [`over status`](status.md) | Inspect resolved configuration and reconciliation health |
+| [`over status`](status.md) | Inspect reconciliation health and staged/unstaged Git changes; `--short` prints file rows |
 | [`over show`](show.md) | Compatibility alias for `over status` |
 | [`over diff`](diff.md) | Show Git changes for managed overlay paths, with staged and difftool views |
 | [`over unapply`](unapply.md) | Remove a given overlay's own entries from the target |
@@ -82,7 +82,7 @@ Resolution priority is `--target`, then `OVER_TARGET`, then your home directory.
 This does not select the source repository. Consult each page's syntax for supported flags.
 
 An explicit overlay name selects that overlay. Otherwise commands first try
-[contextual overlay selection](selection.md): Git associations, ownership,
+[contextual overlay selection](selection.md): Git associations, source context, destination ownership,
 managed siblings, then target containment. Context precedes a configured default;
 ambiguous contexts require an explicit overlay. Status/diff/sync retain their
 all-overlay fallback outside an inferable/default context (`--all` forces all).

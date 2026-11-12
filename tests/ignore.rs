@@ -506,7 +506,7 @@ fn migrating_a_legacy_symlink_directory_to_checkout_preserves_newly_ignored_link
 }
 
 #[test]
-fn removing_an_ignore_rule_resumes_conflict_checks_for_preserved_content() {
+fn removing_an_ignore_rule_reports_preserved_content_without_weakening_sync_safety() {
     let fixture = Fixture::new("mode = 'checkout'\n");
     write(&fixture.source, ".overignore", "secret\n");
     write(&fixture.source, "ov/secret", "source secret");
@@ -520,7 +520,7 @@ fn removing_an_ignore_rule_resumes_conflict_checks_for_preserved_content() {
         .args(["ov", "--verbose", "--target"])
         .arg(&fixture.home)
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("secret"));
     fixture
         .command("sync")

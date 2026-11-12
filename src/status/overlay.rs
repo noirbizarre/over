@@ -10,7 +10,7 @@ use crate::exec::{Context, Ctx};
 use crate::hooks::Hooks;
 use crate::overlays::{Overlay, Repository};
 
-use super::{Report, Status, file_change_symbol, virtual_checkout};
+use super::{Report, changes, virtual_checkout};
 
 /// Values are allowlisted summaries, never serialized configuration or scripts.
 #[derive(Debug, Clone)]
@@ -30,11 +30,6 @@ pub enum Value {
     Overlay(String),
     Repository(String),
     Mode(String),
-    Change {
-        symbol: &'static str,
-        path: PathBuf,
-        staging: &'static str,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +75,7 @@ pub struct OverlayReport {
     pub dependencies: Vec<ResolvedConfiguration>,
     pub health: Result<Report>,
     pub entry_details: Vec<Vec<Field>>,
+    pub changes: Vec<changes::Change>,
 }
 
 /// Cache only equivalent resolved claims, not overlay names: dependency targets
@@ -87,6 +83,8 @@ pub struct OverlayReport {
 #[derive(Default)]
 pub struct InspectionCache {
     virtual_checkouts: BTreeMap<super::identity::ClaimIdentity, virtual_checkout::Inspection>,
+    snapshots: virtual_checkout::Snapshots,
+    native: changes::NativeCache,
 }
 
 /// Keep failed dependency identities for lint attribution even when no runtime
@@ -131,6 +129,17 @@ impl OverlayReport {
         no_uses: bool,
         cache: &mut InspectionCache,
     ) -> Result<Self> {
+        Self::inspect_mode(repo, root, overlay, no_uses, cache, InspectionMode::Full)
+    }
+
+    pub(crate) fn inspect_mode(
+        repo: &Repository,
+        root: &Path,
+        overlay: &Overlay,
+        no_uses: bool,
+        cache: &mut InspectionCache,
+        mode: InspectionMode,
+    ) -> Result<Self> {
         let ctx = Context::builder()
             .root(root.to_path_buf())
             .repository(repo.clone())
@@ -151,18 +160,24 @@ impl OverlayReport {
             .map_err(|_| anyhow!("cannot resolve target for overlay '{}'", overlay.name))?;
         let ctx =
             ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
-        Self::inspect_with_cache(ctx, overlay, cache)
+        Self::inspect_with_cache(ctx, overlay, cache, mode)
             .map_err(|_| anyhow!("cannot inspect overlay '{}'", overlay.name))
     }
 
     pub fn inspect(ctx: Ctx, overlay: &Overlay) -> Result<Self> {
-        Self::inspect_with_cache(ctx, overlay, &mut InspectionCache::default())
+        Self::inspect_with_cache(
+            ctx,
+            overlay,
+            &mut InspectionCache::default(),
+            InspectionMode::Full,
+        )
     }
 
     fn inspect_with_cache(
         ctx: Ctx,
         overlay: &Overlay,
         cache: &mut InspectionCache,
+        mode: InspectionMode,
     ) -> Result<Self> {
         let mut ordered = Vec::new();
         compose(
@@ -174,31 +189,50 @@ impl OverlayReport {
         )?;
         let mut configurations = ordered
             .iter()
-            .map(|item| configuration(&ctx, item))
+            .map(|item| {
+                if mode == InspectionMode::Full {
+                    configuration(&ctx, item)
+                } else {
+                    Ok(ResolvedConfiguration {
+                        name: item.name.clone(),
+                        source: item.root.clone(),
+                        target: PathBuf::new(),
+                        summary: Vec::new(),
+                        details: Vec::new(),
+                    })
+                }
+            })
             .collect::<Result<Vec<_>>>()?;
         let mut configuration = configurations
             .pop()
             .ok_or_else(|| anyhow!("overlay composition is empty"))?;
-        configuration.summary.push(Field::list(
-            "composition",
-            ctx.no_uses
-                .then(|| "dependency operations skipped; data retained".into()),
-            ordered.iter().map(|item| item.name.clone()).collect(),
-        ));
-        // Reuse inspection results for details rather than cleaning every dirty file twice.
-        let mut inspections = BTreeMap::new();
-        let health = DesiredTree::build(&ctx, overlay).and_then(|desired| {
-            Report::build_with_inspector(&desired, |entry| {
+        if mode == InspectionMode::Full {
+            configuration.summary.push(Field::list(
+                "composition",
+                ctx.no_uses
+                    .then(|| "dependency operations skipped; data retained".into()),
+                ordered.iter().map(|item| item.name.clone()).collect(),
+            ));
+        }
+        let mut changes = Vec::new();
+        let health = DesiredTree::build_reporting(&ctx, overlay).and_then(|desired| {
+            if mode != InspectionMode::Health {
+                changes.extend(changes::native_changes(&desired, &mut cache.native)?);
+            }
+            Report::build_reporting(&desired, mode != InspectionMode::Short, |entry| {
                 let key = super::identity::ClaimIdentity::new(entry);
                 let inspection = if let Some(inspection) = cache.virtual_checkouts.get(&key) {
                     inspection.clone()
                 } else {
-                    let inspection = virtual_checkout::inspect_tracked(entry)?;
+                    let inspection =
+                        virtual_checkout::inspect_tracked_cached(entry, &mut cache.snapshots)?;
                     cache.virtual_checkouts.insert(key, inspection.clone());
                     inspection
                 };
                 let status = inspection.status.clone();
-                inspections.insert(entry.target.clone(), inspection);
+                if mode != InspectionMode::Health {
+                    changes.extend(changes::virtual_changes(entry, &inspection)?);
+                }
                 Ok(status)
             })
         });
@@ -206,20 +240,7 @@ impl OverlayReport {
         let health = health
             .inspect(|report| {
                 for entry in report.entries() {
-                    let mut details = explain(&entry.entry, &ordered);
-                    if entry.entry.intent.is_virtual_checkout()
-                        && matches!(entry.status, Status::Modified | Status::Diverged { .. } | Status::Conflict)
-                        && let Some(inspection) = inspections.get(&entry.entry.target)
-                    {
-                        for (label, changes) in [
-                            ("staged", &inspection.staged),
-                            ("unstaged", &inspection.unstaged),
-                        ] {
-                            details.extend(changes.iter().map(|change| {
-                                Field::new("", Value::Change { symbol: file_change_symbol(change.kind), path: change.path.clone(), staging: label })
-                            }));
-                        }
-                    }
+                    let details = if mode == InspectionMode::Full { explain(&entry.entry, &ordered) } else { Vec::new() };
                     entry_details.push(details);
                 }
             })
@@ -230,8 +251,17 @@ impl OverlayReport {
             dependencies: configurations,
             health,
             entry_details,
+            changes,
         })
     }
+}
+
+/// Health and short consumers avoid preparing presentation data they never use.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InspectionMode {
+    Full,
+    Health,
+    Short,
 }
 
 fn compose(

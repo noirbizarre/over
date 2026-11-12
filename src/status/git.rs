@@ -96,6 +96,43 @@ pub(crate) fn inspect_runtime(entry: &DesiredEntry) -> Result<Status> {
     }
 }
 
+/// Reporting checks provisioning and operations, leaving ordinary dirt to Changes.
+pub(crate) fn inspect_reporting(entry: &DesiredEntry) -> Result<Status> {
+    let Provenance::Git {
+        config, repo_key, ..
+    } = &entry.provenance
+    else {
+        unreachable!()
+    };
+    let presence = inspect_declared(&entry.target, config)?;
+    if presence != Status::Applied || repo_key != ROOT_PATH {
+        return Ok(presence);
+    }
+    let inspect = |path: &Path| -> Result<Status> {
+        let repo = Repository::open(path)?;
+        if repo.state() != RepositoryState::Clean {
+            return Ok(Status::Conflict);
+        }
+        Ok(match ahead_behind(&repo)? {
+            None | Some((0, 0)) => Status::Applied,
+            Some((ahead, 0)) => Status::Ahead(ahead),
+            Some((0, behind)) => Status::Behind(behind),
+            Some((ahead, behind)) => Status::Diverged { ahead, behind },
+        })
+    };
+    if config.worktree || config.worktrees.is_some() {
+        let repo = Repository::open_bare(entry.target.join(".git"))?;
+        let mut status = Status::Applied;
+        for name in repo.worktrees()?.iter() {
+            let name = name?.ok_or_else(|| anyhow::anyhow!("worktree name is not UTF-8"))?;
+            status = merge(status, inspect(&entry.target.join(name))?);
+        }
+        Ok(status)
+    } else {
+        inspect(&entry.target)
+    }
+}
+
 /// Full git working-tree content status (dirty/ahead/behind/diverged/
 /// merge-in-progress), computed purely from the checkout's own upstream
 /// tracking branch — exactly what this module always computed before

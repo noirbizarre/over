@@ -42,6 +42,7 @@ pub fn infer_selection(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Inferr
             .collect::<Result<_>>()?
     };
     let mut candidates = None;
+    let mut locations = None;
     let mut selected = BTreeMap::new();
     let mut resolved_paths = Vec::new();
     for path in &paths {
@@ -52,11 +53,48 @@ pub fn infer_selection(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Inferr
             selected.insert(overlay.name.clone(), overlay);
             continue;
         }
+        if locations.is_none() {
+            locations = Some(ctx.repository.overlay_dirs(true)?);
+        }
+        let directories = locations.as_ref().expect("locations initialized above");
+        let sources = directories
+            .iter()
+            .map(|directory| Ok((directory, paths_inside_source(path, directory)?)))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .filter_map(|(directory, owns)| owns.then_some(directory))
+            .collect::<Vec<_>>();
+        ensure!(
+            sources.len() <= 1,
+            "ambiguous source overlay for '{}'; specify NAME or --overlay NAME explicitly",
+            path.display()
+        );
+        if let Some(directory) = sources.first() {
+            // Source context is authoritative: resolving unrelated targets here defeats lazy loading.
+            let name = directory
+                .strip_prefix(&ctx.repository.root)?
+                .to_string_lossy();
+            let overlay = (|| -> Result<_> {
+                let overlay = ctx.repository.get(&name)?;
+                let own_ctx = ctx.with_overlay(overlay.clone()).resolve_data()?;
+                overlay.resolve_mappings(&own_ctx)?;
+                Ok(overlay)
+            })()
+            .with_context(|| {
+                format!("cannot resolve overlay '{name}' owning {}", path.display())
+            })?;
+            selected.insert(overlay.name.clone(), overlay);
+            continue;
+        }
         if candidates.is_none() {
             let mut prepared = Vec::new();
-            for directory in ctx.repository.overlay_dirs(true)? {
+            for directory in directories {
                 let candidate = (|| -> Result<_> {
-                    let overlay = Overlay::new(&ctx.repository, &directory)?;
+                    let overlay = ctx.repository.get(
+                        &directory
+                            .strip_prefix(&ctx.repository.root)?
+                            .to_string_lossy(),
+                    )?;
                     let ctx = ctx.with_overlay(overlay.clone()).resolve_data()?;
                     Ok(Candidate {
                         overlay: overlay.clone(),
@@ -70,13 +108,13 @@ pub fn infer_selection(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Inferr
                     Err(error) => {
                         // An unrelated machine-specific target must not block local inference.
                         for path in &paths {
-                            if paths_inside_source(path, &directory)? {
+                            if paths_inside_source(path, directory)? {
                                 return Err(error).with_context(|| {
                                     format!(
                                         "cannot resolve overlay '{}' owning {}",
                                         directory
                                             .strip_prefix(&ctx.repository.root)
-                                            .unwrap_or(&directory)
+                                            .unwrap_or(directory)
                                             .display(),
                                         path.display()
                                     )

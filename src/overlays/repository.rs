@@ -1,4 +1,6 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use config::{Config, File, Source, ValueKind};
 use globset::GlobBuilder;
@@ -12,14 +14,21 @@ use super::overlay::Overlay;
 use super::{BASENAME, EXTENSIONS, Format, GLOB_PATTERN};
 use crate::exec;
 
+type SharedCache<T> = Arc<Mutex<BTreeMap<PathBuf, T>>>;
+
 /// Manage all overlays
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Repository {
     /// Repository root directory
     pub root: PathBuf,
-    // Repeated dependency/root loads share warnings without caching configuration values.
+    // Warning attribution is shared independently of the optional read-only load cache.
     #[serde(skip)]
     pub(crate) warnings: super::schema::Reporter,
+    // Opt-in snapshots belong to one read-only command, never to mutable library consumers.
+    #[serde(skip)]
+    loaded: Option<SharedCache<Overlay>>,
+    #[serde(skip)]
+    policies: Option<SharedCache<Arc<super::ignore::SourcePolicy>>>,
 }
 
 impl std::fmt::Display for Repository {
@@ -33,6 +42,8 @@ impl Repository {
         Self {
             root,
             warnings: super::schema::Reporter::default(),
+            loaded: None,
+            policies: None,
         }
     }
 
@@ -40,7 +51,37 @@ impl Repository {
         Self {
             root: self.root.clone(),
             warnings: super::schema::Reporter::collecting(),
+            loaded: self.loaded.clone(),
+            policies: self.policies.clone(),
         }
+    }
+
+    pub(crate) fn scoped_loading(mut self) -> Self {
+        self.loaded = Some(Arc::new(Mutex::new(BTreeMap::new())));
+        self.policies = Some(Arc::new(Mutex::new(BTreeMap::new())));
+        self
+    }
+
+    pub(crate) fn source_policy(
+        &self,
+        overlay: &Overlay,
+    ) -> Result<Arc<super::ignore::SourcePolicy>> {
+        if let Some(cache) = &self.policies
+            && let Some(policy) = cache
+                .lock()
+                .map_err(|_| anyhow::anyhow!("source policy cache poisoned"))?
+                .get(&overlay.root)
+        {
+            return Ok(policy.clone());
+        }
+        let policy = Arc::new(super::ignore::SourcePolicy::new(&self.root, overlay)?);
+        if let Some(cache) = &self.policies {
+            cache
+                .lock()
+                .map_err(|_| anyhow::anyhow!("source policy cache poisoned"))?
+                .insert(overlay.root.clone(), policy.clone());
+        }
+        Ok(policy)
     }
 
     /// Read the literal canonical Git remote from the root descriptor only.
@@ -96,7 +137,8 @@ impl Repository {
         let dirs = self.overlay_dirs(strict)?;
         let mut overlays = Vec::new();
         for dir in dirs {
-            match Overlay::new(self, &dir)
+            match self
+                .get(&dir.strip_prefix(&self.root)?.to_string_lossy())
                 .with_context(|| format!("failed to load overlay at {}", dir.display()))
             {
                 Ok(overlay) => overlays.push(Ok(overlay)),
@@ -121,6 +163,10 @@ impl Repository {
 
         let entries = WalkDir::new(&self.root)
             .into_iter()
+            // Administration can contain whole worktrees; filtering afterward still walks them.
+            .filter_entry(|entry| {
+                entry.depth() == 0 || (entry.file_name() != ".git" && entry.file_name() != ".over")
+            })
             .filter_map(|entry| match entry {
                 Ok(entry) => Some(Ok(entry)),
                 Err(error) if strict => Some(Err(error)),
@@ -167,6 +213,7 @@ impl Repository {
     /// Get an overlay by its name/relative path
     pub fn get(&self, name: &str) -> Result<Overlay> {
         let root = self.root.join(name);
+        let root = super::mapping::lexical(&root);
         anyhow::ensure!(
             !root.starts_with(self.root.join(".over")),
             ".over is reserved repository administration"
@@ -178,8 +225,22 @@ impl Repository {
                 root.display()
             );
         }
+        if let Some(cache) = &self.loaded
+            && let Some(overlay) = cache
+                .lock()
+                .map_err(|_| anyhow::anyhow!("overlay cache poisoned"))?
+                .get(&root)
+        {
+            return Ok(overlay.clone());
+        }
         let overlay = Overlay::new(self, &root)
             .with_context(|| format!("failed to load overlay '{}'", name))?;
+        if let Some(cache) = &self.loaded {
+            cache
+                .lock()
+                .map_err(|_| anyhow::anyhow!("overlay cache poisoned"))?
+                .insert(root, overlay.clone());
+        }
         Ok(overlay)
     }
 

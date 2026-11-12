@@ -1,6 +1,6 @@
 # `over status`
 
-Inspect resolved overlay configuration and reconciliation health, even before
+Inspect reconciliation health and staged/unstaged Git changes, even before
 the overlay has ever been applied. `over show` is a compatibility alias with
 the same options, output, and exit status.
 
@@ -16,6 +16,7 @@ Options:
   -d, --debug            Toggle debug traces
       --no-uses          Skip dependency operations, retaining dependency data
   -a, --all              Check every overlay, retaining configured default_overlay data
+  -s, --short            Show stable staged/unstaged file rows only
   -v, --verbose          Toggle verbose output
   -h, --help             Print help
 ```
@@ -35,6 +36,7 @@ its own metadata separately. `--no-uses` skips dependency entries, not their dat
 over status hosts/laptop
 over status hosts/laptop --verbose
 over status --all
+over status --short
 ```
 
 Use verbose output to trace inherited values and individual entries. For actual
@@ -45,7 +47,8 @@ host layout used here.
 ## Resolved configuration
 
 Each overlay has separate **Configuration** and **Reconciliation** sections.
-Configuration includes the source root, resolved target and its origin,
+Default configuration shows source, target, mode and composition. Verbose
+configuration includes the source root, resolved target and its origin,
 dependencies in composition order, target rules with resolved destinations,
 materialization baseline and rule count, declared Git destinations, and
 lifecycle-hook counts including install. These describe intent even when targets are missing.
@@ -60,7 +63,7 @@ Overlay names and spinners are cyan; paths and Git repository identities are blu
 Headings and keys are bold white. Other text uses the default foreground, with
 dimmed scope annotations. Green, yellow and red are reserved for success, warning and
 error semantics. Nonzero reconciliation counts and entry
-labels share severity colors: applied is green, changes and missing entries
+labels share severity colors: applied is green, permission drift and missing entries
 yellow, and broken entries or conflicts red. Only nonzero categories are shown;
 an empty reconciliation summary reads `no entries`.
 
@@ -102,8 +105,65 @@ association metadata is read as a snapshot; older state schemas migrate only in
 memory. `NO_COLOR` and redirected stdout produce readable output without ANSI
 color escapes, even if color is otherwise forced.
 
-Use [`over diff`](diff.md) for changes and content diffs; status explains the
-resolved configuration and whether it is healthy.
+Ordinary staged or unstaged changes do not make an overlay unhealthy and do not
+change its exit status. Use [`over diff`](diff.md) for content diffs.
+
+## Changes
+
+One **Changes** section appears last, after all reconciliation reports, Git
+configuration findings and the overall summary. Files are grouped by source or
+native Git worktree, with a destination for virtual checkouts. Paths are relative
+to that worktree. Each change is labeled `(staged)` or `(unstaged)`; editing a file
+again after staging shows both states. A file successfully added with `over add`
+appears here as staged, without a reconciliation warning.
+
+Changes includes selected overlays' tracked/staged source files (including
+consumed descriptors and sidecars), operational dependencies, virtual checkout
+targets and declared root Git checkouts. Metadata-only default overlays, external
+link referent repositories and opaque non-root declared repositories do not add
+their own file changes. Untracked, unstaged files are omitted.
+
+### Stable short format
+
+`over status -s` / `--short` prints only changed-file rows, sorted by worktree,
+virtual target and repository-relative path. `--verbose` does not expand it.
+Each row has four tab-separated columns and ends with a newline:
+
+```text
+XY<TAB>JSON(worktree)<TAB>JSON(path)<TAB>JSON(target-or-null)
+```
+
+- `X` compares HEAD to index (staged); `Y` compares index to working content
+  (unstaged). Working content is the materialized target for a virtual checkout.
+- Each column is one character: ASCII space means unchanged; `A`, `M`, `D`, `T`
+  mean added, modified, deleted, and type-changed. `UU` means unresolved index
+  conflict. Renames are represented as deletion plus addition.
+- Worktree and virtual target are absolute paths without home abbreviation.
+  The file path is repository-relative. The fourth column is JSON `null` for
+  native worktrees, or a JSON string identifying the virtual checkout root. This
+  distinguishes multiple targets backed by the same source path.
+- Paths are JSON-quoted strings, so tabs, newlines, quotes and backslashes are
+  escaped. Selected non-UTF-8 Git paths fail inspection rather than being rendered
+  lossily. There are no ANSI codes, headings, summaries, or blank separator lines.
+- Empty changes produce empty stdout. Diagnostics go to stderr. Ordinary changes
+  succeed; structural/association/content reconciliation or inspection failures
+  still fail. Short mode skips Git prerequisite diagnostics and verbose
+  configuration preparation, so it does not certify those settings as healthy.
+
+For example, `MM` identifies a file modified in the index and edited again in the
+working content; `A` followed by a space identifies a staged addition with no
+further edits.
+
+### Inspection scope
+
+Explicit selection, Git associations and source context load only the selected
+overlay and necessary dependency/default metadata. Target-only inference may
+resolve other candidates to detect ambiguity; `--all` intentionally selects all.
+Read-only command caches share parsed overlays, source-policy/control-file
+inventories, Git indexes and equivalent checkout inspections. Selected filesystem
+inputs still require discovery for ignore rules, sidecars and non-Git-managed
+materialization; status does not recursively inspect opaque managed repositories
+or discover unrelated untracked target files.
 
 ## Reconciliation states
 
@@ -114,7 +174,7 @@ desired-state selection but presents Git changes independently of health:
 |--------|---------|
 | `Applied` | Target matches desired intent — nothing to do. |
 | `Missing` | Target doesn't exist yet. |
-| `Modified` | A checkout has local/staged changes, or a managed file's permissions need repair. |
+| `Modified` | A managed file's permissions need repair. Ordinary Git edits are listed under Changes. |
 | `Broken` | A dangling soft symlink, or a checkout path that isn't a valid git repo. |
 | `Conflict` | Target exists and doesn't match desired intent, or a git checkout has a merge/rebase/cherry-pick in progress. |
 | `Ahead` | A git checkout is ahead of its upstream. |
@@ -129,8 +189,8 @@ Without `--verbose`, only entries other than `Applied` are printed; pass
 
 A `git` entry declared at the overlay's own root (`git = "<url>"`, or a
 `"."` key) is a real checkout: its status reflects the checkout's own
-working-tree/upstream state (dirty, ahead, behind, diverged, merge in
-progress), same as any other git repository you work in directly.
+upstream/operation state (ahead, behind, diverged, merge in progress).
+Its tracked staged/unstaged files appear separately in Changes.
 
 Any other `git` entry (declared at a subpath, e.g. a plugin manager's
 clone) is a **declared, provisioned resource** instead: its status only
@@ -175,17 +235,14 @@ select target additions for the overlay; `over diff` can preview them.
 
 | Status | Meaning |
 |--------|---------|
-| `Applied` | No local edits, and the source repository hasn't moved since the checkout was last materialized/synced/committed. |
-| `Modified` | Local or staged changes exist, and the managed source content hasn't moved. Select changes with `over add`, then run `over commit`. |
-| `Behind` | The source repository has new commits touching the managed path; nothing local to lose — `over sync` fast-forwards it automatically. |
-| `Diverged` | Local edits and source-side changes coexist. `over sync` advances non-conflicting source paths and preserves independent local/index edits; then stage and commit the remaining edits. |
+| `Applied` | No pending source content update; ordinary local/staged edits may still appear in Changes. A target already converged to source HEAD also needs no content reconciliation. |
+| `Behind` | Source updates still need synchronization. `over sync` advances non-conflicting source paths while preserving independent local/index edits. |
 | `Conflict` | The *same* file changed both locally and in the source repository, to different content — resolve manually, then re-run. |
 | `Missing` / `Broken` | Target or recorded association is missing. Apply can create a missing target; see lost-association guidance below for existing files. |
 
-Actionable modified, diverged, or conflicting virtual checkouts also list specific
-added/modified/deleted files underneath their aggregate status line.
-Files are labeled `(staged)` or `(unstaged)`; a file edited again after
-staging can appear in both lists. Mapped checkout units are inspected
+Specific added/modified/deleted files appear in the final Changes section,
+independently of checkout health. Select edits with `over add`, then run
+`over commit`. Mapped checkout units are inspected
 independently, so changes confined to a mapped sibling do not make the
 residual checkout behind.
 
