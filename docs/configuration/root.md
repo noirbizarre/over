@@ -5,6 +5,9 @@ by overlays. The default location is `~/.dotfiles/over.toml`; `over.yaml` and
 `over.yml` are also supported. `--home` or `OVER_HOME` selects another repository.
 Keep one descriptor per directory.
 
+See the unified [Configuration reference](reference.md) for all attributes,
+their types and defaults, and their availability in root and overlay descriptors.
+
 ```yaml
 # ~/.dotfiles/over.yaml
 format: yaml

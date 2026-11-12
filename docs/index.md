@@ -43,8 +43,7 @@ export OVER_HOME="$(mktemp -d)"
 export OVER_TARGET="$(mktemp -d)"
 mkdir -p "$OVER_HOME/apps/hello"
 git init "$OVER_HOME"
-echo 'format = "toml"' > "$OVER_HOME/over.toml"
-echo 'target = "~"' > "$OVER_HOME/apps/hello/over.toml"
+echo 'overlays = ["apps/*"]' > "$OVER_HOME/over.toml"
 echo 'Hello from Over!' > "$OVER_HOME/apps/hello/greeting.txt"
 ```
 

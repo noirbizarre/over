@@ -8,6 +8,7 @@ that inheritance chain.
 
 | Reference | When to use it |
 | --- | --- |
+| [Configuration reference](configuration/reference.md) | Every attribute, its type and default, and whether it is available in root, overlay, or both scopes |
 | [Root configuration](configuration/root.md) | Repository preferences, overlay discovery, default selection, and lifecycle hooks |
 | [Overlay configuration](configuration/overlay.md) | Targets, composition, inheritance, mappings, metadata, and sidecars |
 | [Materialization](configuration/materialization.md) | File/directory symlinks, editable checkouts, precedence, and lifecycle |

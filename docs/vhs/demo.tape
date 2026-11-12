@@ -4,7 +4,7 @@ Output docs/images/demo.gif
 Set Shell "bash"
 # Keep emoji coverage when overriding VHS's default font fallback chain.
 Set FontFamily "JetBrains Mono, Symbols Nerd Font"
-Set FontSize 22
+Set FontSize 20
 Set Width 1000
 Set Height 620
 Set Padding 20
@@ -39,15 +39,7 @@ Enter
 # Heredocs avoid VHS interpreting printf's escape sequences as keystrokes.
 Type `cat > "$OVER_HOME/over.toml" <<'CFG'`
 Enter
-Type 'format = "toml"'
-Enter
-Type 'target = "~"'
-Enter
-Type "CFG"
-Enter
-Type `cat > "$OVER_HOME/apps/git/over.toml" <<'CFG'`
-Enter
-Type 'target = "~"'
+Type 'overlays = ["apps/*", "hosts/*"]'
 Enter
 Type "CFG"
 Enter
@@ -62,8 +54,6 @@ Enter
 Type "CFG"
 Enter
 Type `cat > "$OVER_HOME/hosts/demo/over.toml" <<'CFG'`
-Enter
-Type 'target = "~"'
 Enter
 Type 'uses = ["apps/git"]'
 Enter
@@ -89,15 +79,18 @@ Wait /\~\$$/
 Sleep 3s
 
 # Start a fresh scene so the preview and application both fit at readable size.
-Ctrl+l
 Type "over apply hosts/demo --dry-run"
 Enter
 Wait /\~\$$/
 Sleep 4s
 
 # Keep the final result visible without scrolling away the applied summary.
-Ctrl+l
 Type "over apply hosts/demo"
+Enter
+Wait /\~\$$/
+Sleep 4s
+
+Type "over status hosts/demo"
 Enter
 Wait /\~\$$/
 Sleep 4s
