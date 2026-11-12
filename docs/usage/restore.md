@@ -56,6 +56,13 @@ Restore never creates a commit, moves a ref, writes source working-tree files, o
 advances the checkout's recorded base. Unrelated staged entries and target edits
 are preserved. Source working-tree edits do not prevent restore.
 
+For [natively protected paths](crypt.md), direct restoration into the index accepts
+only ciphertext from the current encryption generation. Historical plaintext and
+old-generation ciphertext are rejected, even when `REV` is otherwise valid.
+Restore historical plaintext into the worktree, then use `over add` to stage it
+under the current protection policy. Recovering old-generation ciphertext first
+requires that generation's trusted key; the current key alone cannot decrypt it.
+
 ## Select files and an overlay
 
 Supply one or more literal file paths, relative to the current directory or
@@ -121,8 +128,10 @@ over restore --overlay workspace/client --dry-run /etc/client/config.toml
 Restore operates on whole files. Interactive `-p`/`--patch` restoration is deferred
 to a follow-up sharing the existing partial-staging engine.
 
-As with virtual-checkout materialization, worktree writes use stored blob content;
-restore does not introduce Git checkout smudge-filter or line-ending conversion.
+Ordinary worktree writes use stored blob content; restore does not introduce Git
+checkout smudge-filter or line-ending conversion. Over's native encryption is an
+exception: protected blobs undergo its materialization transform, producing
+decrypted worktree content with the matching local repository key.
 
 Existing files retain private access permissions and native metadata. On Linux,
 shared hard links are detached using a metadata-preserving replacement. On macOS,
