@@ -7,8 +7,10 @@
 //! - `config_dir` (`$XDG_CONFIG_HOME/over`) — reserved for future user
 //!   configuration; nothing reads or writes it yet.
 //! - `state_dir` (`$XDG_STATE_HOME/over`) — persistent operational metadata
-//!   (see [`state`]). Deleting it should only lose recoverable checkpoints,
-//!   never authoritative data.
+//!   (see [`state`]). Deleting it preserves target files but can permanently
+//!   lose virtual-checkout comparison bases and ownership scope. Recovery of
+//!   those associations requires a matching backup; reinitialization against
+//!   current source content cannot reconstruct their historical base.
 //! - `cache_dir` (`$XDG_CACHE_HOME/over`) — disposable derived data. Nothing
 //!   may depend on its presence: deleting it must always be harmless.
 //!
