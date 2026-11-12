@@ -277,7 +277,9 @@ pub(crate) fn select_commit(ctx: &Context, name: Option<&str>) -> Result<Overlay
     if let Some(name) = name {
         return ctx.repository.get(name);
     }
-    let cwd = ctx.absolute_path(Path::new("."))?;
+    // macOS /var aliases and symlinked collections must share cwd's physical namespace.
+    let cwd = mapping::physical(&ctx.absolute_path(Path::new("."))?)?;
+    let collection = mapping::physical(&ctx.repository.root)?;
     if let Some(name) = git_association(&cwd)? {
         return ctx.repository.get(&name);
     }
@@ -288,11 +290,12 @@ pub(crate) fn select_commit(ctx: &Context, name: Option<&str>) -> Result<Overlay
         let source = record
             .source_repository
             .as_ref()
-            .map(|root| root.join(&record.managed_path));
+            .map(|root| mapping::physical(&root.join(&record.managed_path)))
+            .transpose()?;
         // A record from another collection is not evidence for a same-named overlay here.
         if source
             .as_ref()
-            .is_some_and(|source| !source.starts_with(&ctx.repository.root))
+            .is_some_and(|source| !source.starts_with(&collection))
         {
             continue;
         }
@@ -321,18 +324,16 @@ pub(crate) fn select_commit(ctx: &Context, name: Option<&str>) -> Result<Overlay
     // Descriptor probing is bounded by cwd depth, not by repository size.
     for directory in cwd
         .ancestors()
-        .take_while(|directory| directory.starts_with(&ctx.repository.root))
+        .take_while(|directory| directory.starts_with(&collection))
     {
-        if directory != ctx.repository.root
+        if directory != collection
             && crate::overlays::EXTENSIONS
                 .iter()
                 .any(|ext| directory.join(format!("over.{ext}")).is_file())
         {
-            return ctx.repository.get(
-                &directory
-                    .strip_prefix(&ctx.repository.root)?
-                    .to_string_lossy(),
-            );
+            return ctx
+                .repository
+                .get(&directory.strip_prefix(&collection)?.to_string_lossy());
         }
     }
     if let Some(overlay) = ctx.repository.default_overlay(ctx)? {

@@ -192,6 +192,39 @@ fn path_operands_commit_only_staged_snapshots_and_preserve_other_changes(
     );
 }
 
+#[rstest]
+#[case(false, false)]
+#[case(true, false)]
+#[case(false, true)]
+fn commit_inference_uses_the_same_namespace_for_aliased_collections_and_cwd(
+    #[case] target_context: bool,
+    #[case] remove_association: bool,
+) {
+    let fixture = Fixture::new();
+    fixture.apply();
+    let alias = fixture.temp.path().join("source-alias");
+    symlink(&fixture.source, &alias).unwrap();
+    if remove_association {
+        // Descriptor-based source inference must also work before a checkout is associated.
+        fs::remove_file(fixture.temp.path().join("state/over/virtual_checkout.toml")).unwrap();
+    }
+    Command::cargo_bin("over")
+        .unwrap()
+        .env("XDG_STATE_HOME", fixture.temp.path().join("state"))
+        .current_dir(if target_context {
+            fixture.target.clone()
+        } else {
+            fixture.source.join("ov")
+        })
+        .arg("--home")
+        .arg(alias)
+        .args(["commit", "--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("nothing to commit"));
+}
+
 #[test]
 fn commit_ignores_unrelated_overlays_and_untracked_repository_trees() {
     let fixture = Fixture::new();
