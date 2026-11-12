@@ -1187,10 +1187,10 @@ mod tests {
     ) {
         let (td, repo) = setup_repo();
         td.child("over.toml")
-            .write_str("overlays = [{path = 'missing'}, {path = 'optional/*'}]")
+            .write_str("overlays = ['missing', 'optional/*']")
             .unwrap();
         td.child("child/over.toml")
-            .write_str("overlays = [{path = 'nested-missing'}]")
+            .write_str("overlays = ['nested-missing']")
             .unwrap();
         let result = match include_uses {
             Some(include_uses) => lint_overlay(&repo, "child", include_uses).unwrap(),
@@ -1259,9 +1259,7 @@ mod tests {
         // `over lint` were blind to it, this cycle/reference check would
         // never run and no diagnostic would be produced.
         td.child("over.toml")
-            .write_str(
-                "target = \"~\"\nuses = [\"nonexistent\"]\n\n[[overlays]]\npath = \"hosts/*\"",
-            )
+            .write_str("target = \"~\"\nuses = [\"nonexistent\"]\noverlays = ['hosts/*']")
             .unwrap();
         td.child("hosts/laptop").create_dir_all().unwrap();
 

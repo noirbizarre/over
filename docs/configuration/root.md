@@ -11,7 +11,7 @@ format: yaml
 default_overlay: hosts/laptop
 target: "~"
 overlays:
-  - path: apps/*
+  - 'apps/*'
 ```
 
 `format`, `repository`, `sync`, `default_overlay`, and `overlays` are root-only settings.
@@ -136,8 +136,14 @@ without giving each one its own descriptor:
 # ~/.dotfiles/over.yaml
 target: "~"
 overlays:
-  - path: apps/*
-  - path: hosts/laptop
+  - 'apps/*'
+  - hosts/laptop
+```
+
+`overlays` is a list of strings, each a literal path or glob pattern. In TOML:
+
+```toml
+overlays = ['apps/*', 'hosts/laptop']
 ```
 
 Literal paths and globs are repository-root-relative. Only existing directories

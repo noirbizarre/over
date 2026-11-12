@@ -20,17 +20,11 @@ pub(super) fn check(repo: &Repository) -> Vec<Diagnostic> {
     let file = descriptor.file_name().unwrap_or_default().to_string_lossy();
     let mut diagnostics = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
-        let ValueKind::Table(table) = &entry.kind else {
+        let ValueKind::String(path) = &entry.kind else {
             continue;
         };
-        let Some(path) = table.get("path") else {
-            continue;
-        };
-        let Ok(path) = path.clone().into_string() else {
-            continue;
-        };
-        let declaration = format!("`overlays[{}].path` ({path:?})", index + 1);
-        if let Some(diagnostic) = check_path(repo, &path, &declaration) {
+        let declaration = format!("`overlays[{}]` ({path:?})", index + 1);
+        if let Some(diagnostic) = check_path(repo, path, &declaration) {
             diagnostics.push(diagnostic.with_file(file.as_ref()));
         }
     }
@@ -126,7 +120,7 @@ mod tests {
         fs::write(temp.path().join("files/plain"), "content").unwrap();
         fs::write(
             temp.path().join("over.toml"),
-            format!("overlays = [{{ path = '{path}' }}]"),
+            format!("overlays = ['{path}']"),
         )
         .unwrap();
         let diagnostics = check(&Repository::new(temp.path().to_path_buf()));
@@ -135,16 +129,16 @@ mod tests {
         if let Some(diagnostic) = diagnostics.first() {
             assert_eq!(diagnostic.overlay, "");
             assert_eq!(diagnostic.file.as_deref(), Some("over.toml"));
-            assert!(diagnostic.message.contains("overlays[1].path"));
+            assert!(diagnostic.message.contains("overlays[1]"));
             assert!(diagnostic.message.contains(path));
             assert!(diagnostic.hint.is_some());
         }
     }
 
     #[rstest]
-    #[case("over.toml", "overlays = [{path = 'missing'}]")]
-    #[case("over.yaml", "overlays:\n  - path: missing\n")]
-    #[case("over.yml", "overlays:\n  - path: missing\n")]
+    #[case("over.toml", "overlays = ['missing']")]
+    #[case("over.yaml", "overlays:\n  - missing\n")]
+    #[case("over.yml", "overlays:\n  - missing\n")]
     fn findings_identify_the_selected_source_descriptor(#[case] file: &str, #[case] content: &str) {
         let temp = TempDir::new().unwrap();
         fs::write(temp.path().join(file), content).unwrap();
@@ -172,13 +166,13 @@ mod tests {
         fs::create_dir(temp.path().join("shared")).unwrap();
         fs::write(
             temp.path().join("over.toml"),
-            "overlays = [{path = 'shared'}, {path = 'missing'}]",
+            "overlays = ['shared', 'missing']",
         )
         .unwrap();
         let root = temp.path().strip_prefix(cwd).unwrap().to_path_buf();
         let diagnostics = check(&Repository::new(root));
         assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0].message.contains("overlays[2].path"));
+        assert!(diagnostics[0].message.contains("overlays[2]"));
         assert_eq!(diagnostics[0].severity, Severity::Error);
     }
 
@@ -187,17 +181,13 @@ mod tests {
         let temp = TempDir::new().unwrap();
         fs::write(
             temp.path().join("over.yaml"),
-            "repository: false\noverlays:\n  - path: missing\n  - false\n  - path: '[oops'\n  - path: missing\n  - path: 'optional/*'\n",
+            "repository: false\noverlays:\n  - missing\n  - false\n  - '[oops'\n  - missing\n  - 'optional/*'\n  - 42\n  - path: legacy\n",
         )
         .unwrap();
         let diagnostics = check(&Repository::new(temp.path().to_path_buf()));
         assert_eq!(diagnostics.len(), 4);
         for (diagnostic, index) in diagnostics.iter().zip([1, 3, 4, 5]) {
-            assert!(
-                diagnostic
-                    .message
-                    .contains(&format!("overlays[{index}].path"))
-            );
+            assert!(diagnostic.message.contains(&format!("overlays[{index}]")));
         }
         assert_eq!(diagnostics[0].severity, Severity::Error);
         assert_eq!(diagnostics[1].severity, Severity::Error);

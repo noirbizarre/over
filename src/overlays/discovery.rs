@@ -6,20 +6,6 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-
-/// A single root-level overlay/workspace declaration. `path` is a glob
-/// pattern (e.g. `hosts/*`) or a literal path, relative to the repository
-/// root. Only the repository root's own descriptor's `overlays:` key is
-/// read — a directory matched this way cannot itself declare further
-/// `overlays:` entries (ADR-018: no recursive/nested expansion).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-pub struct OverlayDeclaration {
-    pub path: String,
-}
-
 /// Expand root-declared paths/globs into concrete directories that exist
 /// on disk. Uses the filesystem-expanding `glob` crate rather than
 /// `globset` (which only tests an already-known path against a pattern,
@@ -30,19 +16,19 @@ pub struct OverlayDeclaration {
 /// separately so runtime discovery stays tolerant.
 pub(super) fn resolve_declared_dirs(
     repo_root: &Path,
-    declarations: &[OverlayDeclaration],
+    declarations: &[String],
     warnings: &super::schema::Reporter,
 ) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for decl in declarations {
-        let pattern = repo_root.join(&decl.path);
+        let pattern = repo_root.join(decl);
         let Some(pattern_str) = pattern.to_str() else {
             continue;
         };
         let Ok(paths) = glob::glob(pattern_str) else {
             // Lint diagnoses invalid declarations itself; runtime discovery still warns.
             if !warnings.is_collecting() {
-                tracing::warn!("invalid overlays declaration pattern '{}'", decl.path);
+                tracing::warn!("invalid overlays declaration pattern '{}'", decl);
             }
             continue;
         };
@@ -69,8 +55,7 @@ mod tests {
     fn broken_declarations_do_not_hide_valid_overlay_directories() {
         let tmp = TempDir::new().unwrap();
         fs::create_dir(tmp.path().join("shared")).unwrap();
-        let declarations = ["hosts/[", "optional/*", "missing", "shared"]
-            .map(|path| OverlayDeclaration { path: path.into() });
+        let declarations = ["hosts/[", "optional/*", "missing", "shared"].map(String::from);
         assert_eq!(
             resolve_declared_dirs(tmp.path(), &declarations, &Default::default()),
             vec![tmp.path().join("shared")]
@@ -82,13 +67,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         fs::create_dir_all(tmp.path().join("shared")).unwrap();
 
-        let dirs = resolve_declared_dirs(
-            tmp.path(),
-            &[OverlayDeclaration {
-                path: "shared".to_string(),
-            }],
-            &Default::default(),
-        );
+        let dirs = resolve_declared_dirs(tmp.path(), &["shared".to_string()], &Default::default());
 
         assert_eq!(dirs, vec![tmp.path().join("shared")]);
     }
@@ -99,13 +78,8 @@ mod tests {
         fs::create_dir_all(tmp.path().join("hosts/laptop")).unwrap();
         fs::create_dir_all(tmp.path().join("hosts/desktop")).unwrap();
 
-        let mut dirs = resolve_declared_dirs(
-            tmp.path(),
-            &[OverlayDeclaration {
-                path: "hosts/*".to_string(),
-            }],
-            &Default::default(),
-        );
+        let mut dirs =
+            resolve_declared_dirs(tmp.path(), &["hosts/*".to_string()], &Default::default());
         dirs.sort();
 
         assert_eq!(
@@ -123,13 +97,7 @@ mod tests {
         fs::create_dir_all(tmp.path().join("hosts")).unwrap();
         fs::write(tmp.path().join("hosts/README.md"), "not a dir").unwrap();
 
-        let dirs = resolve_declared_dirs(
-            tmp.path(),
-            &[OverlayDeclaration {
-                path: "hosts/*".to_string(),
-            }],
-            &Default::default(),
-        );
+        let dirs = resolve_declared_dirs(tmp.path(), &["hosts/*".to_string()], &Default::default());
 
         assert!(dirs.is_empty());
     }
@@ -140,9 +108,7 @@ mod tests {
 
         let dirs = resolve_declared_dirs(
             tmp.path(),
-            &[OverlayDeclaration {
-                path: "nonexistent/*".to_string(),
-            }],
+            &["nonexistent/*".to_string()],
             &Default::default(),
         );
 
@@ -154,13 +120,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         // `glob::Pattern` rejects unmatched brackets.
-        let dirs = resolve_declared_dirs(
-            tmp.path(),
-            &[OverlayDeclaration {
-                path: "hosts/[".to_string(),
-            }],
-            &Default::default(),
-        );
+        let dirs = resolve_declared_dirs(tmp.path(), &["hosts/[".to_string()], &Default::default());
 
         assert!(dirs.is_empty());
     }
