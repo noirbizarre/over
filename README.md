@@ -146,17 +146,13 @@ file content and arbitrary configuration strings are not automatically templated
 
 ## Why Over?
 
-| | Over | GNU Stow | chezmoi | yadm |
-| --- | --- | --- | --- | --- |
-| Unit of management | directory with cascading configuration (overlay) | plain directory ("package") | single Git repo | single Git repo (bare) |
-| Composition | `uses` (overlay graph) | — | `.chezmoiexternal` (flat includes) | — |
-| Path templating | MiniJinja | — | Go `text/template` | Go `text/template` (via alt files) |
-| Installation commands | opted-in `hooks.install`, with platform conditions | — | run scripts (`run_once_*`) | — |
-| Materialization | file/directory links, virtual checkout, managed blocks, declared Git repos | symlink only | render + copy, or symlink | symlink |
+Over brings files and Git repositories together as reusable workspace overlays.
+Compose shared concerns into a workstation, choose links or virtual checkouts for
+its files, and keep the setup in Git. One overlay is enough to start.
 
-Each overlay is an independently configured concern that can be composed into
-others and declare installation hooks for the tools it needs. Git versions the source repository;
-an overlay does not need its own repository.
+The [FAQ](docs/faq.md) explains the project's origins and core concepts, with a
+[comparison of alternatives](docs/faq.md#alternatives) covering scope, integrations,
+current capabilities, and trade-offs.
 
 ## Usage
 
@@ -177,6 +173,7 @@ see the [Git command group](docs/usage/git.md).
 ## Documentation
 
 - [Getting started](https://noirbizarre.github.io/over/#getting-started)
+- [FAQ](docs/faq.md): motivation, concepts, and alternatives
 - [Examples](docs/examples.md)
 - [Configuration](docs/configuration.md): separate root, overlay, materialization,
   and install-hook references

@@ -6,6 +6,9 @@ Over manages files as **overlays**: directories in a Git-backed source repositor
 whose contents are applied to a **target** directory. Descriptors configure where
 files go and how they appear there. By default, Over links individual files.
 
+Wondering why Over exists or whether it fits your workspace? Read the [FAQ](faq.md),
+including its [comparison with other tools](faq.md#alternatives).
+
 <p align="center">
   <img src="images/demo.gif" alt="Over composing, previewing, and applying dotfile overlays">
 </p>
@@ -78,6 +81,9 @@ unset OVER_HOME OVER_TARGET
 When you already have an Over repository, [`over init`](usage/init.md) clones or
 validates it; applying remains a separate step. To keep a new setup, create its
 files under `~/.dotfiles` and version them with Git.
+
+For the bigger picture, the [FAQ](faq.md) explains overlays, composed workstations,
+and how Over fits alongside Git and other tools.
 
 ## Examples
 
