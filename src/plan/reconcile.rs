@@ -403,24 +403,27 @@ impl fmt::Display for Plan {
             .filter(|step| matches!(step.operation, Operation::NeedsUnlock))
             .count();
 
-        writeln!(
-            f,
-            "{} {} to create, {} unchanged, {} conflict(s), {} to migrate, \
-             {} migration(s) blocked, {} to repair, {} deferred{}",
-            style::white_b("Plan:"),
-            create,
-            noop,
-            conflicts,
-            migrate,
-            blocked,
-            repair,
-            deferred,
-            if locked > 0 {
-                format!(", {locked} locked")
-            } else {
-                String::new()
-            },
-        )?;
+        let categories = [
+            (create, "to create", None),
+            (noop, "unchanged", Some(style::Severity::Success)),
+            (conflicts, "conflict(s)", Some(style::Severity::Error)),
+            (migrate, "to migrate", None),
+            (
+                blocked,
+                "migration(s) blocked",
+                Some(style::Severity::Error),
+            ),
+            (repair, "to repair", Some(style::Severity::Warning)),
+            (deferred, "deferred", Some(style::Severity::Warning)),
+            (locked, "locked", Some(style::Severity::Warning)),
+        ]
+        .into_iter()
+        .filter(|(count, _, _)| *count > 0)
+        .map(|(count, label, severity)| plan_count_label(count, label, severity).to_string())
+        .collect::<Vec<_>>();
+        if !categories.is_empty() {
+            writeln!(f, "{} {}", style::heading("Plan:"), categories.join(", "))?;
+        }
         for (index, step) in self
             .steps
             .iter()
@@ -439,6 +442,19 @@ impl fmt::Display for Plan {
             }
         }
         Ok(())
+    }
+}
+
+fn plan_count_label(
+    count: usize,
+    label: &str,
+    severity: Option<style::Severity>,
+) -> console::StyledObject<String> {
+    let label = format!("{count} {label}");
+    // Pending actions are neutral: planning work does not mean it has succeeded.
+    match severity {
+        Some(severity) => style::severity(label, severity),
+        None => style::mode(label),
     }
 }
 
@@ -495,6 +511,84 @@ mod tests {
         let td = TempDir::new().unwrap();
         let repo = Repository::new(td.path().to_path_buf());
         (td, repo)
+    }
+
+    #[rstest]
+    #[case(vec![], "")]
+    #[case(vec![Operation::Noop], "Plan: 1 unchanged")]
+    #[case(
+        vec![Operation::NeedsUnlock, Operation::Noop, Operation::Create,
+            Operation::Conflict { current: crate::plan::ActualState::File },
+            Operation::Create, Operation::Deferred],
+        "Plan: 2 to create, 1 unchanged, 1 conflict(s), 1 deferred, 1 locked"
+    )]
+    fn plan_summaries_only_include_positive_counts_in_category_order(
+        #[case] operations: Vec<Operation>,
+        #[case] expected: &str,
+    ) {
+        let steps: Vec<_> = operations
+            .into_iter()
+            .map(|operation| PlanStep {
+                entry: DesiredEntry {
+                    target: PathBuf::from("/target"),
+                    provenance: Provenance::Overlay {
+                        overlay: "ov".into(),
+                        source: PathBuf::from("/source"),
+                    },
+                    intent: MaterializationIntent::Directory,
+                    permissions: None,
+                },
+                operation,
+            })
+            .collect();
+        let plan = Plan {
+            blocked_by: vec![None; steps.len()],
+            steps,
+            ..Plan::default()
+        };
+        let output = plan.to_string();
+        let plain = console::strip_ansi_codes(&output);
+        assert_eq!(plain.lines().next().unwrap_or_default(), expected);
+        if expected.is_empty() {
+            assert!(plain.is_empty());
+        } else if expected.contains("conflict(s)") {
+            assert!(plain.contains("✘ conflict: expected directory"));
+        }
+    }
+
+    #[rstest]
+    #[case(
+        "unchanged",
+        Some(style::Severity::Success),
+        "\x1b[32m1 unchanged\x1b[0m"
+    )]
+    #[case(
+        "conflict(s)",
+        Some(style::Severity::Error),
+        "\x1b[31m1 conflict(s)\x1b[0m"
+    )]
+    #[case(
+        "migration(s) blocked",
+        Some(style::Severity::Error),
+        "\x1b[31m1 migration(s) blocked\x1b[0m"
+    )]
+    #[case(
+        "to repair",
+        Some(style::Severity::Warning),
+        "\x1b[33m1 to repair\x1b[0m"
+    )]
+    #[case("to create", None, "1 to create")]
+    fn plan_count_phrases_use_semantic_colors(
+        #[case] label: &str,
+        #[case] severity: Option<style::Severity>,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(
+            plan_count_label(1, label, severity)
+                .force_styling(true)
+                .to_string(),
+            expected
+        );
     }
 
     #[rstest]

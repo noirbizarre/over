@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tempfile::TempDir;
 
@@ -954,7 +955,8 @@ fn mappings_partition_an_enclosing_subtree_checkout() {
         .arg(&fixture.home)
         .assert()
         .success()
-        .stdout(contains("0 modified"));
+        .stdout(contains("applied"))
+        .stdout(contains(" modified").not());
 }
 
 #[test]
@@ -1190,7 +1192,8 @@ fn mapped_sidecars_are_independent_of_their_enclosing_checkout() {
         .arg(&fixture.home)
         .assert()
         .success()
-        .stdout(contains("0 modified"));
+        .stdout(contains("applied"))
+        .stdout(contains(" modified").not());
 }
 
 #[test]

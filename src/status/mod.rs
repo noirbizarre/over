@@ -173,44 +173,38 @@ pub struct Counts {
 
 impl fmt::Display for Counts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}, {}, {}, {}, {}, {}, {}, {}",
-            count_label(self.applied, "applied", Status::Applied),
-            count_label(self.missing, "missing", Status::Missing),
-            count_label(self.modified, "modified", Status::Modified),
-            count_label(self.broken, "broken", Status::Broken),
-            count_label(self.conflict, "conflict(s)", Status::Conflict),
-            count_label(self.ahead, "ahead", Status::Ahead(0)),
-            count_label(self.behind, "behind", Status::Behind(0)),
-            count_label(
+        let categories = [
+            (self.applied, "applied", Status::Applied),
+            (self.missing, "missing", Status::Missing),
+            (self.modified, "modified", Status::Modified),
+            (self.broken, "broken", Status::Broken),
+            (self.conflict, "conflict(s)", Status::Conflict),
+            (self.ahead, "ahead", Status::Ahead(0)),
+            (self.behind, "behind", Status::Behind(0)),
+            (
                 self.diverged,
                 "diverged",
                 Status::Diverged {
                     ahead: 0,
-                    behind: 0
-                }
+                    behind: 0,
+                },
             ),
-        )?;
-        if self.locked > 0 {
-            write!(
-                f,
-                ", {}",
-                count_label(self.locked, "locked", Status::Locked)
-            )?;
+            (self.locked, "locked", Status::Locked),
+        ]
+        .into_iter()
+        .filter(|(count, _, _)| *count > 0)
+        .map(|(count, label, status)| count_label(count, label, status).to_string())
+        .collect::<Vec<_>>();
+        if categories.is_empty() {
+            return f.write_str("no entries");
         }
-        Ok(())
+        f.write_str(&categories.join(", "))
     }
 }
 
 fn count_label(count: usize, label: &str, status: Status) -> console::StyledObject<String> {
     let text = format!("{count} {label}");
-    // Zero buckets carry no severity, making actual problems stand out.
-    if count == 0 {
-        console::style(text)
-    } else {
-        style::severity(text, status.severity())
-    }
+    style::severity(text, status.severity())
 }
 
 /// The reconciliation status of a whole [`DesiredTree`]: one
@@ -861,23 +855,29 @@ mod tests {
     #[case(Status::Conflict, "conflict(s)", 31)]
     #[case(Status::Broken, "broken", 31)]
     #[case(Status::Applied, "applied", 32)]
-    fn nonzero_counts_use_the_entry_severity_and_zero_counts_stay_neutral(
+    fn nonzero_counts_use_the_entry_severity(
         #[case] status: Status,
         #[case] label: &str,
         #[case] color: u8,
     ) {
         assert_eq!(
-            count_label(1, label, status.clone())
+            count_label(1, label, status)
                 .force_styling(true)
                 .to_string(),
             format!("\x1b[{color}m1 {label}\x1b[0m"),
         );
-        assert_eq!(
-            count_label(0, label, status)
-                .force_styling(true)
-                .to_string(),
-            format!("0 {label}")
-        );
+    }
+
+    #[rstest::rstest]
+    #[case(Counts::default(), "no entries")]
+    #[case(Counts { applied: 2, ..Counts::default() }, "2 applied")]
+    #[case(Counts { broken: 1, conflict: 2, locked: 3, ..Counts::default() }, "1 broken, 2 conflict(s), 3 locked")]
+    fn reconciliation_counts_omit_zero_categories_without_dangling_separators(
+        #[case] counts: Counts,
+        #[case] expected: &str,
+    ) {
+        let output = counts.to_string();
+        assert_eq!(console::strip_ansi_codes(&output), expected);
     }
 
     // ── exclude_problems: #148 ──────────────────────────────────────────

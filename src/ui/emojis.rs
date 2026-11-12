@@ -20,6 +20,7 @@ pub static DIRECTORY: Emoji<'_, '_> = Emoji("📁", "");
 pub static LINK: Emoji<'_, '_> = Emoji("🔗", "");
 pub static PACKAGE: Emoji<'_, '_> = Emoji("📦", "");
 pub static RECYCLE: Emoji<'_, '_> = Emoji("♻️", "");
+pub static TRAFFIC_LIGHT: Emoji<'_, '_> = Emoji("🚦", "");
 pub static TOOLS: Emoji<'_, '_> = Emoji("🛠️", "");
 pub static THREAD: Emoji<'_, '_> = Emoji("🧵", "");
 pub static GREEN_CIRCLE: Emoji<'_, '_> = Emoji("🟢", "");

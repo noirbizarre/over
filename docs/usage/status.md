@@ -55,13 +55,14 @@ composition retains dependency-first evaluation order. Git declarations show
 configuration and contributing scope on indented lines. Entry provenance uses
 separate overlay, source, scope and mode lines.
 
-The headings are 📦 **Overlay**, 🛠️ **Configuration** and ♻️ **Reconciliation**.
+The headings are 📦 **Overlay**, 🛠️ **Configuration** and 🚦 **Reconciliation**.
 Overlay names and spinners are cyan; paths and Git repository identities are blue.
 Headings and keys are bold white. Other text uses the default foreground, with
 dimmed scope annotations. Green, yellow and red are reserved for success, warning and
 error semantics. Nonzero reconciliation counts and entry
 labels share severity colors: applied is green, changes and missing entries
-yellow, and broken entries or conflicts red. Zero counts stay neutral.
+yellow, and broken entries or conflicts red. Only nonzero categories are shown;
+an empty reconciliation summary reads `no entries`.
 
 Unknown-key details are available through [`over lint`](lint.md);
 [`over doctor`](doctor.md) summarizes static and runtime health rather than
@@ -80,6 +81,7 @@ are summarized by default and expanded with `--verbose`.
 Scripts, consumer data values, remote URLs and arbitrary Git
 configuration values are omitted. Hooks, including install, are described by
 presence/counts without executing commands or consulting external providers.
+Only positive hook-event counts are shown; scopes with no hooks are omitted.
 
 ## Exit status and read-only behavior
 

@@ -274,7 +274,7 @@ fn origin_value(overlay: &Overlay, key: &str) -> Value {
     )
 }
 
-fn hook_summary(hooks: &Hooks) -> Field {
+fn hook_summary(hooks: &Hooks) -> Option<Field> {
     let mut field = Field::new("hooks", Value::Text(String::new()));
     field.children = [
         ("post-clone", hooks.post_clone.len()),
@@ -283,9 +283,11 @@ fn hook_summary(hooks: &Hooks) -> Field {
         ("install", hooks.install.len()),
     ]
     .into_iter()
+    .filter(|(_, count)| *count > 0)
     .map(|(key, count)| Field::new(key, Value::Text(count.to_string())))
     .collect();
-    field
+    // An empty parent would otherwise render as `hooks: none`.
+    (!field.children.is_empty()).then_some(field)
 }
 
 fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> {
@@ -490,14 +492,12 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
             }
         }
     }
-    summary.push(
-        hook_summary(&overlay.hooks)
-            .annotated(format!("overlay local: {}", overlay.root.display())),
-    );
-    summary.push(
-        hook_summary(&ctx.repository.hooks()?)
-            .annotated(format!("repository: {}", ctx.repository.root.display())),
-    );
+    if let Some(field) = hook_summary(&overlay.hooks) {
+        summary.push(field.annotated(format!("overlay local: {}", overlay.root.display())));
+    }
+    if let Some(field) = hook_summary(&ctx.repository.hooks()?) {
+        summary.push(field.annotated(format!("repository: {}", ctx.repository.root.display())));
+    }
     Ok(ResolvedConfiguration {
         name: overlay.name.clone(),
         source: overlay.root.clone(),

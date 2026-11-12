@@ -88,7 +88,11 @@ impl fmt::Display for PlanStep {
 
         match (&self.entry.intent, &self.operation) {
             (_, Operation::NeedsUnlock) => {
-                write!(f, "locked: {target} (set OVER_SECRET to verify)")
+                write!(
+                    f,
+                    "{} {target} (set OVER_SECRET to verify)",
+                    style::severity("locked:", style::Severity::Warning)
+                )
             }
             (MaterializationIntent::EncryptedFile(_), operation) => write!(
                 f,
@@ -112,8 +116,8 @@ impl fmt::Display for PlanStep {
             (MaterializationIntent::Directory, Operation::Conflict { current }) => write!(
                 f,
                 "{} {} expected directory at {}, found {}",
-                emojis::warning(),
-                style::yellow("conflict:"),
+                emojis::crossmark(),
+                style::severity("conflict:", style::Severity::Error),
                 target,
                 current,
             ),
@@ -149,8 +153,8 @@ impl fmt::Display for PlanStep {
             ) => write!(
                 f,
                 "{} {} {} already exists ({}), overlay expects a link to {}",
-                emojis::warning(),
-                style::yellow("conflict:"),
+                emojis::crossmark(),
+                style::severity("conflict:", style::Severity::Error),
                 target,
                 current,
                 short_path(&source.to_string_lossy()),
@@ -178,8 +182,8 @@ impl fmt::Display for PlanStep {
             (MaterializationIntent::Checkout, Operation::Conflict { current }) => write!(
                 f,
                 "{} {} {} ({})",
-                emojis::warning(),
-                style::yellow("conflict:"),
+                emojis::crossmark(),
+                style::severity("conflict:", style::Severity::Error),
                 target,
                 current,
             ),
@@ -219,8 +223,8 @@ impl fmt::Display for PlanStep {
             ) => write!(
                 f,
                 "{} {} {} ({})",
-                emojis::warning(),
-                style::yellow("conflict:"),
+                emojis::crossmark(),
+                style::severity("conflict:", style::Severity::Error),
                 target,
                 current,
             ),
@@ -250,8 +254,8 @@ impl fmt::Display for PlanStep {
                 write!(
                     f,
                     "{} {} block '{}' in {} doesn't match ({})",
-                    emojis::warning(),
-                    style::yellow("conflict:"),
+                    emojis::crossmark(),
+                    style::severity("conflict:", style::Severity::Error),
                     marker,
                     target,
                     current,
@@ -288,8 +292,8 @@ impl fmt::Display for PlanStep {
             ) => write!(
                 f,
                 "{} {} {} ({} -> {}, {})",
-                emojis::warning(),
-                style::yellow("migrate blocked:"),
+                emojis::crossmark(),
+                style::severity("migrate blocked:", style::Severity::Error),
                 target,
                 intent_label(from),
                 intent_label(to),
@@ -298,12 +302,18 @@ impl fmt::Display for PlanStep {
             // Every intent has a registered `Materializer` since #110; no
             // step should ever classify as `Deferred` anymore — unreachable
             // in practice, but a clear fallback beats a silently wrong line.
-            (_, Operation::Deferred) => write!(f, "{} deferred: {}", emojis::warning(), target),
+            (_, Operation::Deferred) => write!(
+                f,
+                "{} {} {}",
+                emojis::warning(),
+                style::severity("deferred:", style::Severity::Warning),
+                target
+            ),
             (_, Operation::Repair { current, desired }) => write!(
                 f,
                 "{} {} {} ({} -> {})",
                 emojis::LOCK,
-                style::yellow("repair permissions:"),
+                style::severity("repair permissions:", style::Severity::Warning),
                 target,
                 current,
                 desired,

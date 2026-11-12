@@ -229,12 +229,32 @@ fn subcommand_debug_output_logs_command_name(
 }
 
 #[test]
-fn apply_overlay_dry_run() -> TestResult {
+fn apply_dry_run_only_reports_nonzero_plan_categories_without_creating_targets() -> TestResult {
     let repo = setup_overlay_repo();
+    fs::write(repo.path().join("dev/file"), "managed")?;
+    let target = TempDir::new()?;
     let mut cmd = Command::cargo_bin("over")?;
     cmd.arg("--home").arg(repo.path());
-    cmd.args(["apply", "dev", "--dry-run"]);
-    cmd.assert().success();
+    cmd.args(["apply", "dev", "--dry-run", "--target"])
+        .arg(target.path());
+    let output = cmd.assert().success().get_output().stdout.clone();
+    let text = String::from_utf8(output)?;
+    let summary = text
+        .lines()
+        .find(|line| line.starts_with("Plan:"))
+        .expect("dry-run plan summary");
+    assert!(summary.contains("to create"), "{summary}");
+    for category in [
+        "conflict(s)",
+        "to migrate",
+        "migration(s) blocked",
+        "to repair",
+        "deferred",
+        "locked",
+    ] {
+        assert!(!summary.contains(category), "{summary}");
+    }
+    assert_eq!(fs::read_dir(target.path())?.count(), 0);
     Ok(())
 }
 
