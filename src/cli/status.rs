@@ -374,7 +374,7 @@ fn render_overlay(snapshot: &OverlayReport, verbose: bool) -> String {
     match &snapshot.health {
         Ok(report) => {
             lines.push(format!(
-                "  {} —\n  {}",
+                "  {}: {}",
                 if report.needs_attention() {
                     style::yellow("Needs attention").to_string()
                 } else {
