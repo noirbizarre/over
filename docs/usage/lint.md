@@ -42,7 +42,7 @@ usable overlay directories produce warnings, so intentionally optional patterns
 do not fail lint. Files and the `.over` administration directory do not count as
 overlay matches. Paths resolve relative to the source repository root, regardless
 of `--target`. Findings identify the root descriptor, the exact path or pattern,
-and its one-based `overlays[N].path` entry, with a hint for fixing it.
+and its one-based `overlays[N]` entry, with a hint for fixing it.
 
 Destinations resolve using the current machine, consumer metadata, and your home
 directory as `~`. Use `--target` or `OVER_TARGET` to inspect a different deployment root; `--home`

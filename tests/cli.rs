@@ -506,16 +506,12 @@ fn add_nonexistent_file_fails() -> TestResult {
 // ── lint integration tests ──────────────────────────────────────────────
 
 #[rstest::rstest]
-#[case("[{path = 'shared'}]", 0, 0)]
-#[case("[{path = 'hosts/*'}]", 0, 0)]
-#[case("[{path = 'hosts/['}]", 1, 0)]
-#[case("[{path = 'missing'}]", 1, 0)]
-#[case("[{path = 'optional/*'}]", 0, 1)]
-#[case(
-    "[{path = 'missing'}, {path = 'hosts/['}, {path = 'optional/*'}]",
-    2,
-    1
-)]
+#[case("['shared']", 0, 0)]
+#[case("['hosts/*']", 0, 0)]
+#[case("['hosts/[']", 1, 0)]
+#[case("['missing']", 1, 0)]
+#[case("['optional/*']", 0, 1)]
+#[case("['missing', 'hosts/[', 'optional/*']", 2, 1)]
 fn lint_root_declarations_agree_in_human_and_json_output(
     #[case] declarations: &str,
     #[case] errors: usize,
@@ -894,10 +890,7 @@ fn doctor_summarizes_lint_and_runtime_health_without_duplicate_diagnostics() -> 
     "this is not valid toml [[[",
     "ignoring unreadable repository root config"
 )]
-#[case::invalid_declaration(
-    "overlays = [{path = 'hosts/['}]",
-    "invalid overlays declaration pattern"
-)]
+#[case::invalid_declaration("overlays = ['hosts/[']", "invalid overlays declaration pattern")]
 fn doctor_keeps_discovery_errors_in_the_configuration_section(
     #[case] descriptor: &str,
     #[case] runtime_warning: &str,

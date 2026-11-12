@@ -211,7 +211,7 @@ fn invalid_root_configuration_never_rewrites_origin(#[case] config: &str) {
 #[test]
 fn root_declared_overlays_do_not_need_local_descriptors_and_nested_remotes_are_ignored() {
     let tmp = TempDir::new().unwrap();
-    let repo = source(tmp.path(), "over.yaml", "overlays:\n  - path: 'apps/*'\n");
+    let repo = source(tmp.path(), "over.yaml", "overlays:\n  - 'apps/*'\n");
     fs::create_dir_all(tmp.path().join("apps/plain")).unwrap();
     fs::create_dir_all(tmp.path().join("apps/nested")).unwrap();
     fs::write(

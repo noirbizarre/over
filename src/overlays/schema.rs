@@ -28,7 +28,6 @@ pub(super) const EVENTS: &[&str] = &["install", "post-clone", "post-init", "post
 pub(super) const HOOK_FIELDS: &[&str] = &["command", "env", "cwd", "when"];
 pub(super) const SYNC_FIELDS: &[&str] = &["pull", "push"];
 pub(super) const RULE_FIELDS: &[&str] = &["path", "mode", "permissions", "target"];
-pub(super) const DECLARATION_FIELDS: &[&str] = &["path"];
 pub(super) const WORKTREE_FIELDS: &[&str] = &["branch", "config"];
 pub(super) const REPO_FIELDS: &[&str] = &[
     "url",
@@ -127,18 +126,6 @@ pub(crate) fn normalize(values: &mut Map<String, Value>, file: &Path) -> Vec<War
                         table,
                         RULE_FIELDS,
                         &format!("rules[{}]", index + 1),
-                        false,
-                        file,
-                        &mut warnings,
-                    );
-                }
-            }),
-            "overlays" => entries(value, |value, index| {
-                if let ValueKind::Table(table) = &mut value.kind {
-                    fields(
-                        table,
-                        DECLARATION_FIELDS,
-                        &format!("overlays[{}]", index + 1),
                         false,
                         file,
                         &mut warnings,
@@ -309,7 +296,6 @@ mod tests {
     #[case("extra: {arbitrary: [1, 2]}", "`extra`")]
     #[case("rules: [{path: config, mode: checkout, extra: 1}]", "rules[1]")]
     #[case("rules: [{path: config, target: '~', extra: 1}]", "rules[1]")]
-    #[case("overlays: [{path: hosts, extra: 1}]", "overlays[1]")]
     #[case("git: {url: source, extra: 1}", "in git")]
     #[case("git: {vendor: {url: source, extra: 1}}", "git.vendor")]
     #[case(

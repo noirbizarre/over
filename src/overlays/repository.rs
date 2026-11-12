@@ -7,7 +7,7 @@ use walkdir::WalkDir;
 
 use anyhow::{Context as _, Result, bail};
 
-use super::discovery::{OverlayDeclaration, resolve_declared_dirs};
+use super::discovery::resolve_declared_dirs;
 use super::overlay::Overlay;
 use super::{BASENAME, EXTENSIONS, Format, GLOB_PATTERN};
 use crate::exec;
@@ -265,6 +265,24 @@ impl Repository {
     fn root_config(&self) -> Result<RootConfig> {
         let (values, _) = self.root_source()?;
         let basename = self.root.join(BASENAME);
+        if let Some(value) = values.get("overlays") {
+            let ValueKind::Array(entries) = &value.kind else {
+                bail!(
+                    "`overlays` must be a list of strings in {}",
+                    basename.display()
+                );
+            };
+            // Reject scalars that config would otherwise coerce into path strings.
+            for (index, entry) in entries.iter().enumerate() {
+                if !matches!(entry.kind, ValueKind::String(_)) {
+                    bail!(
+                        "`overlays[{}]` must be a path or glob string in {}",
+                        index + 1,
+                        basename.display()
+                    );
+                }
+            }
+        }
         // config can coerce scalar values into strings; a remote must be literal text.
         if let Some(value) = values.get("repository") {
             let ValueKind::String(remote) = &value.kind else {
@@ -318,7 +336,7 @@ pub(super) struct RootConfig {
     /// Preferred format for descriptors written by over new: toml or yaml.
     format: Option<Format>,
     /// Directories or glob patterns declaring overlays without local descriptors.
-    overlays: Option<Vec<OverlayDeclaration>>,
+    overlays: Option<Vec<String>>,
     /// Repository-relative overlay selected when no explicit selection is supplied.
     default_overlay: Option<String>,
     /// Canonical literal Git remote; SCP-style remotes and local paths are supported.
@@ -560,12 +578,53 @@ mod tests {
         assert_eq!(overlays[0].name, "parent/child");
     }
 
+    #[rstest::rstest]
+    #[case("toml")]
+    #[case("yaml")]
+    #[case("yml")]
+    fn overlay_declarations_accept_only_lists_of_literal_strings(#[case] extension: &str) {
+        let tmp = TempDir::new().unwrap();
+        let descriptor = tmp.path().join(format!("over.{extension}"));
+        let repo = Repository::new(tmp.path().to_path_buf());
+        for entries in ["[]", "['shared', 'hosts/*']"] {
+            let source = if extension == "toml" {
+                format!("overlays = {entries}")
+            } else {
+                format!("overlays: {entries}")
+            };
+            fs::write(&descriptor, source).unwrap();
+            assert!(repo.root_config().is_ok());
+        }
+        let legacy = if extension == "toml" {
+            "[{path = 'shared'}]"
+        } else {
+            "[{path: shared}]"
+        };
+        for entries in [
+            "'shared'",
+            "false",
+            "[false]",
+            "[42]",
+            "['shared', false]",
+            legacy,
+        ] {
+            let source = if extension == "toml" {
+                format!("overlays = {entries}")
+            } else {
+                format!("overlays: {entries}")
+            };
+            fs::write(&descriptor, source).unwrap();
+            let error = repo.root_config().unwrap_err().to_string();
+            assert!(error.contains("overlays"), "{error}");
+        }
+    }
+
     #[test]
     fn overlays_discovers_root_declared_directory_without_local_descriptor() {
         let tmp = TempDir::new().unwrap();
         fs::write(
             tmp.path().join("over.toml"),
-            "target = \"~\"\n\n[[overlays]]\npath = \"hosts/*\"",
+            "target = \"~\"\noverlays = ['hosts/*']",
         )
         .unwrap();
         // No `over.*` at all in `hosts/laptop` — must still be discovered
@@ -584,7 +643,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         fs::write(
             tmp.path().join("over.toml"),
-            "target = \"~\"\n\n[[overlays]]\npath = \"shared\"",
+            "target = \"~\"\noverlays = ['shared']",
         )
         .unwrap();
         // Also has its own local descriptor — matched by both mechanisms.
@@ -697,7 +756,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         fs::write(
             tmp.path().join("over.toml"),
-            "target = \"~\"\n\n[[overlays]]\npath = \"nonexistent/*\"",
+            "target = \"~\"\noverlays = ['nonexistent/*']",
         )
         .unwrap();
         // A legitimate sibling overlay so this test isn't tripped up by

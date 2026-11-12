@@ -27,7 +27,6 @@ pub mod rules;
 pub(crate) mod schema;
 
 pub use data::{DataMap, DataValue};
-pub use discovery::OverlayDeclaration;
 pub use overlay::Overlay;
 pub use permissions::FileMode;
 pub use repository::{Repository, SyncConfig};

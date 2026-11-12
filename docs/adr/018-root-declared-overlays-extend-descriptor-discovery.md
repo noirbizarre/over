@@ -12,17 +12,18 @@ every *ancestor* level except the overlay's own directory
 (`.required(dir == root)`).
 
 \#113 asks for a repository root that can declare overlays/workspaces
-directly, e.g. `overlays: [{ path: "hosts/*" }]`, so a directory doesn't
+directly, e.g. `overlays: ["hosts/*"]`, so a directory doesn't
 need its own descriptor purely to exist as an overlay.
 
 ## Decision
 
-Add `OverlayDeclaration { path: String }` (`src/overlays/discovery.rs`),
-read once from the repository root's own descriptor via a new
+Represent declarations as a list of strings, read once from the repository
+root's own descriptor via a
 `RootConfig { format, overlays }` struct (`src/overlays/repository.rs`) —
 the same one-shot, non-cascading read `preferred_format()` already used
-for `format`, now shared between both fields. `path` is a glob pattern or
-literal path, relative to the repository root.
+for `format`, now shared between both fields. Each string is a glob pattern or
+literal path, relative to the repository root. The earlier per-entry `path`
+object syntax is no longer accepted.
 
 `resolve_declared_dirs` expands declarations into concrete directories
 using the `glob` crate, not `globset`: `globset` only tests an

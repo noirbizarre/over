@@ -239,10 +239,6 @@ mod tests {
             ("/definitions/SyncConfig", schema::SYNC_FIELDS),
             ("/definitions/Rule", schema::RULE_FIELDS),
             (
-                "/definitions/OverlayDeclaration",
-                schema::DECLARATION_FIELDS,
-            ),
-            (
                 "/definitions/WorktreeEntry/anyOf/1",
                 schema::WORKTREE_FIELDS,
             ),
@@ -295,7 +291,8 @@ mod tests {
     #[case(json!({"repository":"git@example.com:dotfiles.git"}))]
     #[case(json!({"sync":{"pull":true}}))]
     #[case(json!({"default_overlay":"hosts/laptop"}))]
-    #[case(json!({"overlays":[{"path":"apps/*"}]}))]
+    #[case(json!({"overlays":["apps/*", "hosts/laptop"]}))]
+    #[case(json!({"overlays":[]}))]
     fn repository_preferences_are_valid_only_at_the_root(#[case] value: Value) {
         assert!(VALIDATORS["config.json"].is_valid(&value));
         assert!(!VALIDATORS["overlay.json"].is_valid(&value));
@@ -364,6 +361,11 @@ mod tests {
     #[case(json!({"sync":{"pull":"yes"}}))]
     #[case(json!({"sync":{"extra":true}}))]
     #[case(json!({"overlays":[{}]}))]
+    #[case(json!({"overlays":[{"path":"apps/*"}]}))]
+    #[case(json!({"overlays":["shared", {"path":"apps/*"}]}))]
+    #[case(json!({"overlays":[true]}))]
+    #[case(json!({"overlays":[42]}))]
+    #[case(json!({"overlays":"apps/*"}))]
     #[case(json!({"overlays":[{"path":"apps/*", "extra":true}]}))]
     fn malformed_root_preferences_are_rejected(#[case] value: Value) {
         assert!(!VALIDATORS["config.json"].is_valid(&value));
@@ -394,12 +396,12 @@ mod tests {
     fn parsed_descriptors_validate_and_load_with_the_same_meaning(#[case] extension: &str) {
         let (root, child) = if extension == "toml" {
             (
-                "format = 'yaml'\ntarget = '~/shared'\n[[overlays]]\npath = 'app'\n[sync]\npull = false\n",
+                "format = 'yaml'\ntarget = '~/shared'\noverlays = ['app']\n[sync]\npull = false\n",
                 "exclude = ['*.tmp']\n[git.vendor]\nurl = '../source'\n[hooks]\npost-apply = ['echo ready']\n",
             )
         } else {
             (
-                "format: yaml\ntarget: '~/shared'\noverlays: [{path: app}]\nsync: {pull: false}\n",
+                "format: yaml\ntarget: '~/shared'\noverlays: [app]\nsync: {pull: false}\n",
                 "exclude: ['*.tmp']\ngit: {vendor: {url: ../source}}\nhooks: {post-apply: ['echo ready']}\n",
             )
         };
