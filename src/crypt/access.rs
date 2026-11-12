@@ -683,7 +683,10 @@ pub fn configure_filters(repo: &git2::Repository) -> Result<()> {
     // Keep the copy beside the real config so relative include paths keep meaning.
     let mut copy = tempfile::NamedTempFile::new_in(repo.commondir())?;
     copy.write_all(&fs::read(&path)?)?;
-    let mut config = git2::Config::open(copy.path())?;
+    // libgit2 replaces this path through its own lockfile; Windows cannot replace
+    // the destination while NamedTempFile still holds its open handle.
+    let copy = copy.into_temp_path();
+    let mut config = git2::Config::open(&copy)?;
     for (name, command) in &commands {
         config.set_str(name, command)?;
     }
@@ -700,7 +703,7 @@ pub fn configure_filters(repo: &git2::Repository) -> Result<()> {
         "included Git config disables required encryption filters"
     );
     drop(config);
-    lock.publish(&path, &fs::read(copy.path())?)?;
+    lock.publish(&path, &fs::read(&copy)?)?;
     #[cfg(unix)]
     File::open(repo.commondir())?.sync_all()?;
     Ok(())
