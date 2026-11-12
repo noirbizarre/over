@@ -193,7 +193,10 @@ impl FileTransaction {
                 )
             })
             .collect();
+        #[cfg(unix)]
         let mut modes: BTreeMap<PathBuf, u32> = BTreeMap::new();
+        #[cfg(not(unix))]
+        let modes: BTreeMap<PathBuf, u32> = BTreeMap::new();
         #[cfg(unix)]
         for (path, update) in &self.updates {
             self.ancestry[path].verify()?;

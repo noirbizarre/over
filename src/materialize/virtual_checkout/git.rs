@@ -1064,7 +1064,10 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
                 )
             })
             .collect();
+        #[cfg(unix)]
         let mut modes: BTreeMap<PathBuf, u32> = BTreeMap::new();
+        #[cfg(not(unix))]
+        let modes: BTreeMap<PathBuf, u32> = BTreeMap::new();
         #[cfg(unix)]
         for (path, update) in &updates {
             if let Some((_, mode)) = update {
