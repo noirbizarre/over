@@ -66,7 +66,7 @@ missing literal path can select a deleted tracked file.
 
 ```sh
 over add --overlay workspace/client /etc/client/config.toml
-over commit workspace/client --message "Update client configuration"
+over commit --overlay workspace/client --message "Update client configuration"
 ```
 
 Staging records a snapshot. Further edits stay unstaged, and `over commit`

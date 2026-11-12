@@ -100,7 +100,7 @@ the source and target are separate snapshots:
 1. Edit ordinary target files.
 2. [`over add --overlay NAME PATH`](../usage/add.md) stages selected target
    snapshots in the source index.
-3. [`over commit NAME`](../usage/commit.md) commits staged changes only; later
+3. [`over commit --overlay NAME`](../usage/commit.md) commits staged changes only; later
    unstaged target edits remain outside that commit.
 4. [`over sync NAME`](../usage/sync.md#virtual-checkouts-mode-checkout)
    reconciles source advancement and target changes locally. Applying an existing

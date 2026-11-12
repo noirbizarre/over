@@ -27,7 +27,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow};
-use dialoguer::{Confirm, Input};
+use dialoguer::Confirm;
 use git2::{Repository, RepositoryState};
 
 use crate::actions::git::config::ROOT_PATH;
@@ -673,10 +673,7 @@ async fn commit_virtual_checkout_interactively(
         });
     }
 
-    let message = Input::<String>::with_theme(&DialogTheme::default())
-        .with_prompt("Commit message")
-        .allow_empty(true)
-        .interact_text()
+    let message = crate::ui::message_input("Commit message")
         .map_err(|e| anyhow!("commit message prompt failed: {}", e))?;
     drop(pause);
     let message = if message.trim().is_empty() {
@@ -685,7 +682,15 @@ async fn commit_virtual_checkout_interactively(
         Some(message)
     };
 
-    match commit::commit(entry, &CommitOptions { message }).await? {
+    match commit::commit(
+        entry,
+        &CommitOptions {
+            message,
+            ..Default::default()
+        },
+    )
+    .await?
+    {
         CommitOutcome::Committed { files, .. } => Ok(SyncOutcome::Committed { path, files }),
         // Raced with something else changing the checkout between
         // `inspect` above and now — report accurately rather than

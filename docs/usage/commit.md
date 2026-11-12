@@ -11,12 +11,13 @@ Record staged changes made directly in a
 into the overlay's own source repository, as a normal git commit.
 
 ```text
-Usage: over commit [OPTIONS] [NAME]
+Usage: over commit [OPTIONS] [PATH]...
 
 Arguments:
-  [NAME]  Name of the overlay to commit (otherwise infer context, then use default_overlay)
+  [PATH]...  Commit staged paths (defaults to all owned staged changes)
 
 Options:
+      --overlay <NAME>    Select the overlay explicitly
   -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME=]
   -r, --target <TARGET>    Set the target directory (defaults to ~) [env: OVER_TARGET=]
   -d, --debug              Toggle debug traces
@@ -26,13 +27,26 @@ Options:
   -h, --help               Print help
 ```
 
-When `NAME` is omitted, [infer from context](selection.md), then use the
-repository's configured `default_overlay`. Missing or ambiguous selection
-requires an explicit name.
+When `--overlay` is omitted, infer the current overlay from its source descriptor,
+Git association, or recorded checkout, then use the repository's configured
+`default_overlay`. Missing or ambiguous selection requires `--overlay NAME`.
+Commit does not discover every overlay to infer ownership.
 
-An explicit `NAME` retains the configured default's
+An explicit `--overlay NAME` retains the configured default's
 [data context](../configuration/overlay.md#consumer-metadata-data) for path rendering.
 Only the selected overlay's own checkout entries are committed.
+
+Path operands filter **staged snapshots**, including staged additions and
+deletions. They never stage current file contents. Without operands, all owned
+staged changes are committed. Directory operands select staged descendants;
+shell-expanded glob matches are accepted as multiple paths. Quoted wildcard
+expressions are not expanded by `over commit`.
+
+Relative paths resolve from the current directory when it is inside the selected
+overlay's source or checkout target. Otherwise, including when selecting another
+overlay with `--overlay`, they resolve from that overlay's source root. Absolute
+source and target paths are also accepted. Unrelated untracked directories and
+other overlays are not scanned.
 
 ## Example
 
@@ -41,7 +55,8 @@ After editing a file in an applied [virtual checkout](../configuration/materiali
 ```sh
 over add --overlay workspace/client ~/.config/client/settings.json
 over diff workspace/client --staged
-over commit workspace/client --message "Update client settings"
+over commit --overlay workspace/client --message "Update client settings" \
+  ~/.config/client/settings.json
 ```
 
 See the [complete checkout example](../examples.md#edit-ordinary-files-with-checkout)
@@ -54,7 +69,7 @@ dependency's — that content belongs to a different overlay):
 
 1. Selects the added/modified/deleted files staged with [`over add`](add.md)
    in the source repository's Git index.
-2. If any file changed both locally and in the source repository, to
+2. If a selected file changed both locally and in the source repository, to
    different content, refuses to commit at all — resolve the conflicting
    files manually first (`over status` lists file changes in its final Changes section).
 3. Otherwise, with something to commit, asks for a commit message
@@ -101,7 +116,7 @@ to a remote like any other commit.
   acts on virtual checkout entries, and refuses outright
   (`overlay is not checkout-materialized`) if the named overlay has none.
 - Silently pick a side for a file that changed both locally and upstream —
-  every conflicting path blocks the whole commit until resolved manually.
+  every selected conflicting path blocks the commit until resolved manually.
 - Touch anything outside the managed path in the source repository.
 
 See [ADR-022](../adr/022-virtual-checkout-materialization.md) for the full
