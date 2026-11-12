@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use git2::{Repository, Signature};
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use rstest::rstest;
 use serde_json::json;
@@ -594,6 +595,10 @@ fn status_and_show_report_sections_without_exposing_or_executing_secret_values()
             .code(1)
             .stdout(contains("install: 1"))
             .stdout(contains("post-apply: 1"))
+            .stdout(contains("post-clone: 0").not())
+            .stdout(contains("post-init: 0").not())
+            .stdout(contains("post-apply: 0").not())
+            .stdout(contains("install: 0").not())
             .stdout(contains("git: plugin"))
             .get_output()
             .clone();
@@ -627,6 +632,57 @@ fn status_and_show_report_sections_without_exposing_or_executing_secret_values()
         .clone();
     assert!(!String::from_utf8_lossy(&output.stdout).contains("INVALID_SECRET"));
     assert!(!String::from_utf8_lossy(&output.stderr).contains("INVALID_SECRET"));
+}
+
+#[rstest]
+#[case(false, false)]
+#[case(true, false)]
+#[case(false, true)]
+#[case(true, true)]
+fn status_and_show_omit_empty_hook_scopes_and_zero_event_counts(
+    #[case] root_hooks: bool,
+    #[case] local_hooks: bool,
+) {
+    let fixture = Fixture::new();
+    // A false condition is still a configured hook; reporting must not evaluate it.
+    let hooks =
+        json!({"post-apply": [{"command": "echo unexpected >> \"$HOOK_TRACE\"", "when": "false"}]});
+    fixture.config(
+        "over.yaml",
+        json!({"target": "~", "hooks": if root_hooks { hooks.clone() } else { json!({}) }}),
+    );
+    fixture.config(
+        "selected/over.yaml",
+        json!({"hooks": if local_hooks { hooks } else { json!({}) }}),
+    );
+    for verb in ["status", "show"] {
+        let output = fixture
+            .command()
+            .args([verb, "selected", "--verbose", "--target"])
+            .arg(&fixture.target)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let text = String::from_utf8(output).unwrap();
+        assert_eq!(
+            text.contains("hooks (overlay local:"),
+            local_hooks,
+            "{text}"
+        );
+        assert_eq!(text.contains("hooks (repository:"), root_hooks, "{text}");
+        assert_eq!(
+            text.matches("post-apply: 1").count(),
+            usize::from(root_hooks) + usize::from(local_hooks),
+            "{text}"
+        );
+        for event in ["post-clone", "post-init", "install"] {
+            assert!(!text.contains(&format!("{event}: 0")), "{text}");
+        }
+        assert!(!text.contains("hooks: none"), "{text}");
+    }
+    assert_eq!(fixture.trace(), "");
 }
 
 #[test]

@@ -281,7 +281,7 @@ fn render_overlay(snapshot: &OverlayReport, verbose: bool) -> String {
     }
     lines.push(format!(
         "{} {}",
-        emojis::RECYCLE,
+        emojis::TRAFFIC_LIGHT,
         style::heading("Reconciliation:")
     ));
     match &snapshot.health {
@@ -369,7 +369,7 @@ mod tests {
         let plain = console::strip_ansi_codes(&before);
         assert!(plain.starts_with(&format!("{} Overlay ov\n", emojis::PACKAGE)));
         assert!(plain.contains(&format!("{} Configuration:", emojis::TOOLS)));
-        assert!(plain.contains(&format!("{} Reconciliation:", emojis::RECYCLE)));
+        assert!(plain.contains(&format!("{} Reconciliation:", emojis::TRAFFIC_LIGHT)));
         tmp.close().unwrap();
         assert_eq!(render_overlay(&snapshot, true), before);
     }

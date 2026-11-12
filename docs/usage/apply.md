@@ -68,6 +68,10 @@ over status hosts/laptop
 ```
 
 Use the preview to inspect conflicts and planned changes before applying.
+The `Plan:` summary includes only positive-count categories and is omitted for an
+empty plan. Unchanged entries are green, conflicts and blocked migrations red,
+and repairs, deferred entries and locked entries yellow; pending creates and
+migrations use the default foreground.
 See [Examples](../examples.md#compose-a-host) for the corresponding composition
 and [`over unapply`](unapply.md) for reversing a selected overlay's own entries.
 

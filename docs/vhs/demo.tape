@@ -78,24 +78,18 @@ Enter
 Wait /\~\$$/
 Sleep 3s
 
-# Start a fresh scene so the preview and application both fit at readable size.
-Type "over apply hosts/demo --dry-run"
-Enter
-Wait /\~\$$/
-Sleep 4s
-
 # Keep the final result visible without scrolling away the applied summary.
 Type "over apply hosts/demo"
 Enter
 Wait /\~\$$/
 Sleep 4s
 
-Type "over status hosts/demo"
+Type "cat ~/.gitconfig"
 Enter
 Wait /\~\$$/
 Sleep 4s
 
-Type "cat ~/.gitconfig"
+Type "over status hosts/demo"
 Enter
 Wait /\~\$$/
 Sleep 5s
