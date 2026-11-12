@@ -49,20 +49,13 @@ yay -S over-bin   # prebuilt binary
 yay -S over
 ```
 
-### cargo-binstall
-
-`over` isn't published to crates.io, so a plain `cargo install over` won't
-work — but prebuilt binaries are available through
-[`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall):
-
-```sh
-cargo binstall over
-```
-
 ### Download a binary
 
 Download a binary for your platform from the
 [latest release](https://github.com/noirbizarre/over/releases/latest).
+
+`over` is not published to crates.io. Use a package-manager channel above or a
+release download rather than `cargo install over` or `cargo binstall over`.
 
 **Release artifacts:**
 

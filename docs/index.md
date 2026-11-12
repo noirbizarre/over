@@ -22,7 +22,6 @@ Choose one installation channel:
 ```sh
 brew install noirbizarre/tap/over   # Homebrew (macOS/Linux)
 paru -S over-bin                    # Arch Linux AUR (prebuilt)
-cargo binstall over                 # Prebuilt binaries, not cargo install
 ```
 
 Or download a binary from the
