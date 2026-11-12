@@ -223,6 +223,7 @@ fn a_virtual_crypt_commit_includes_canonical_policy_and_ciphertext(#[case] direc
             "--home",
             root.path().to_str().unwrap(),
             "commit",
+            "--overlay",
             "ov",
             "--no-prompt",
             "--message",

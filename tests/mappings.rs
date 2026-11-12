@@ -15,6 +15,74 @@ struct Fixture {
     config: PathBuf,
 }
 
+#[cfg(unix)]
+#[rstest::rstest]
+#[case("source_directory", true, true, true)]
+#[case("target_directory", true, false, true)]
+#[case("mapped_context", false, true, false)]
+#[case("mapped_alias", false, true, false)]
+fn commit_path_prefixes_respect_mapped_source_and_target_namespaces(
+    #[case] selection: &str,
+    #[case] main: bool,
+    #[case] etc: bool,
+    #[case] config: bool,
+) {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    for directory in [
+        fixture.base.join("main"),
+        fixture.etc.clone(),
+        fixture.config.clone(),
+    ] {
+        fs::write(directory.join("file"), "selected").unwrap();
+    }
+    fixture.add(&[&fixture.base, &fixture.etc], false);
+    let mut command = fixture.command("commit");
+    command
+        .args(["--target"])
+        .arg(&fixture.home)
+        .args(["-m", "focused"]);
+    match selection {
+        "source_directory" => {
+            command
+                .args(["--overlay", "workspace/client"])
+                .arg(fixture.source.join("workspace/client"));
+        }
+        "target_directory" => {
+            command
+                .args(["--overlay", "workspace/client"])
+                .arg(&fixture.base);
+        }
+        "mapped_context" => {
+            command.current_dir(&fixture.etc).arg("file");
+        }
+        _ => {
+            let alias = fixture.temp.path().join("alias");
+            std::os::unix::fs::symlink(fixture.etc.parent().unwrap(), &alias).unwrap();
+            command
+                .args(["--overlay", "workspace/client"])
+                .arg(alias.join("client/file"));
+        }
+    }
+    command.assert().success();
+    let repo = fixture.repo();
+    let head = repo.head().unwrap().peel_to_tree().unwrap();
+    for (name, changed) in [("main", main), ("etc", etc), ("config", config)] {
+        let path = PathBuf::from("workspace/client").join(name).join("file");
+        let committed = repo.find_blob(head.get_path(&path).unwrap().id()).unwrap();
+        assert_eq!(
+            committed.content(),
+            if changed {
+                b"selected".to_vec()
+            } else {
+                format!("{name}\n").into_bytes()
+            }
+        );
+        let indexed = repo.index().unwrap().get_path(&path, 0).unwrap();
+        assert_eq!(repo.find_blob(indexed.id).unwrap().content(), b"selected");
+    }
+}
+
 #[test]
 fn patch_preview_reverse_routes_mapped_paths_without_changing_either_worktree() {
     let fixture = Fixture::new(true);
@@ -204,6 +272,7 @@ impl Fixture {
     fn commit(&self) {
         self.command("commit")
             .args([
+                "--overlay",
                 "workspace/client",
                 "--no-prompt",
                 "--message",

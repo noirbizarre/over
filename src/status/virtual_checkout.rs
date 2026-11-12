@@ -242,7 +242,8 @@ fn inspect_with_details(
 /// blocks the whole command when any selected checkout has conflicting paths,
 /// preventing a partial commit across the selection. Empty whenever [`inspect`]
 /// wouldn't report [`Status::Conflict`].
-pub(crate) fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
+#[cfg(test)]
+fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
     let Some(record) = state::record_for_blocking(&entry.target)? else {
         return Ok(Vec::new());
     };
@@ -271,6 +272,40 @@ pub(crate) fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
     )?);
 
     Ok(conflicting_paths(&base_blobs, &head_blobs, &local_changes))
+}
+
+/// Commit only needs known selected paths; reconciliation's untracked walk is unnecessary.
+pub(crate) fn commit_conflicts(entry: &DesiredEntry, paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let Some(record) = state::record_for_blocking(&entry.target)? else {
+        return Ok(Vec::new());
+    };
+    let Provenance::Overlay { source, .. } = &entry.provenance else {
+        unreachable!()
+    };
+    let (repo, managed) = git::discover_source(source)?;
+    let scope = entry.intent.checkout_scope();
+    let base = git::base_tree(&repo, Some(&record.base_oid))?;
+    let head = git::base_tree(&repo, None)?;
+    let mut base_entries = git::scoped_entries(&repo, &base, &managed, &scope)?;
+    let mut head_entries = git::scoped_entries(&repo, &head, &managed, &scope)?;
+    base_entries.retain(|path, _| crate::commit::selects(entry, path, paths));
+    head_entries.retain(|path, _| crate::commit::selects(entry, path, paths));
+    // When source has not moved, no target file can be a three-way conflict.
+    if base_entries == head_entries {
+        return Ok(Vec::new());
+    }
+    state::verify(entry, &record)?;
+    let target = git::tracked_target_entries(
+        &repo,
+        &managed,
+        &entry.target,
+        &[&base_entries, &head_entries],
+    )?;
+    Ok(conflicting_paths(
+        &blob_ids(&base_entries),
+        &blob_ids(&head_entries),
+        &git::entry_changes(&base_entries, &target),
+    ))
 }
 
 /// Per-file changes between a virtual checkout's `base_oid` and the

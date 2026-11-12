@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
+use rstest::rstest;
 use tempfile::TempDir;
 
 struct Fixture {
@@ -90,8 +91,15 @@ impl Fixture {
 
     fn commit_command(&self) -> Command {
         let mut cmd = self.command("commit");
-        cmd.args(["ov", "--no-prompt", "--message", "selected", "--target"])
-            .arg(&self.home);
+        cmd.args([
+            "--overlay",
+            "ov",
+            "--no-prompt",
+            "--message",
+            "selected",
+            "--target",
+        ])
+        .arg(&self.home);
         cmd
     }
 }
@@ -112,6 +120,270 @@ fn commit_index(repo: &git2::Repository) {
         &parents,
     )
     .unwrap();
+}
+
+#[rstest]
+#[case("outside", true, "--message")]
+#[case("source", false, "-m")]
+#[case("target", false, "--message")]
+#[case("nested_source", false, "-m")]
+#[case("nested_target", false, "-m")]
+fn path_operands_commit_only_staged_snapshots_and_preserve_other_changes(
+    #[case] context: &str,
+    #[case] explicit: bool,
+    #[case] message_flag: &str,
+) {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.source.join("ov/nested")).unwrap();
+    fs::write(fixture.source.join("ov/nested/second"), "second original").unwrap();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("ov/nested/second")).unwrap();
+    index.write().unwrap();
+    commit_index(&repo);
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "first staged").unwrap();
+    fs::write(fixture.target.join("nested/second"), "second staged").unwrap();
+    fixture.add();
+    fs::write(fixture.target.join("nested/second"), "second unstaged").unwrap();
+
+    let (cwd, operand) = match context {
+        "source" => (fixture.source.join("ov"), "nested/second"),
+        "target" => (fixture.target.clone(), "nested/second"),
+        "nested_source" => (fixture.source.join("ov/nested"), "second"),
+        "nested_target" => (fixture.target.join("nested"), "second"),
+        _ => (fixture.temp.path().to_path_buf(), "nested/second"),
+    };
+    let mut command = fixture.command("commit");
+    command.current_dir(cwd);
+    if explicit {
+        command.args(["--overlay", "ov"]);
+    }
+    command
+        .args([message_flag, "focused", "--target"])
+        .arg(&fixture.home)
+        .arg(operand)
+        .assert()
+        .success();
+    let head = repo.head().unwrap().peel_to_tree().unwrap();
+    let blob = |path: &str| {
+        repo.find_blob(head.get_path(Path::new(path)).unwrap().id())
+            .unwrap()
+            .content()
+            .to_vec()
+    };
+    assert_eq!(blob("ov/file"), b"original");
+    assert_eq!(blob("ov/nested/second"), b"second staged");
+    assert_eq!(
+        fs::read(fixture.target.join("nested/second")).unwrap(),
+        b"second unstaged"
+    );
+    let mut index = repo.index().unwrap();
+    index.read(true).unwrap();
+    assert_ne!(
+        index.get_path(Path::new("ov/file"), 0).unwrap().id,
+        head.get_path(Path::new("ov/file")).unwrap().id()
+    );
+    // Advancing the whole-unit checkpoint must still allow a second focused commit.
+    fixture.commit_command().arg("file").assert().success();
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"first staged"
+    );
+}
+
+#[rstest]
+#[case(false, false)]
+#[case(true, false)]
+#[case(false, true)]
+fn commit_inference_uses_the_same_namespace_for_aliased_collections_and_cwd(
+    #[case] target_context: bool,
+    #[case] remove_association: bool,
+) {
+    let fixture = Fixture::new();
+    fixture.apply();
+    let alias = fixture.temp.path().join("source-alias");
+    symlink(&fixture.source, &alias).unwrap();
+    if remove_association {
+        // Descriptor-based source inference must also work before a checkout is associated.
+        fs::remove_file(fixture.temp.path().join("state/over/virtual_checkout.toml")).unwrap();
+    }
+    Command::cargo_bin("over")
+        .unwrap()
+        .env("XDG_STATE_HOME", fixture.temp.path().join("state"))
+        .current_dir(if target_context {
+            fixture.target.clone()
+        } else {
+            fixture.source.join("ov")
+        })
+        .arg("--home")
+        .arg(alias)
+        .args(["commit", "--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stdout(contains("nothing to commit"));
+}
+
+#[test]
+fn commit_ignores_unrelated_overlays_and_untracked_repository_trees() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "staged").unwrap();
+    fixture.add();
+    fs::write(fixture.source.join("over.yaml"), "default_overlay: host\n").unwrap();
+    fs::create_dir(fixture.source.join("host")).unwrap();
+    // Default metadata may be necessary, but its schema warnings are not this overlay's warnings.
+    fs::write(
+        fixture.source.join("host/over.yaml"),
+        "unrelated_key: true\n",
+    )
+    .unwrap();
+    for index in 0..100 {
+        let unrelated = fixture.source.join(format!("unrelated-{index}"));
+        fs::create_dir(&unrelated).unwrap();
+        fs::write(unrelated.join("over.yaml"), "[invalid YAML").unwrap();
+        for root in [fixture.source.join("ov"), fixture.target.clone()] {
+            let untracked = root.join(format!("untracked-{index}"));
+            fs::create_dir(&untracked).unwrap();
+            // An eager ignore/diagnostic walk would parse these invalid rule bytes.
+            fs::write(untracked.join(".overignore"), [0xff]).unwrap();
+            fs::write(untracked.join("secret.age"), "unrelated encrypted data").unwrap();
+        }
+    }
+    fixture
+        .command("commit")
+        .current_dir(&fixture.target)
+        .args(["-m", "focused", "file", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .success()
+        .stderr(contains("WARN").not().and(contains("unrelated-").not()));
+}
+
+#[test]
+fn a_missing_directory_operand_selects_staged_deletions_without_walking_it() {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.source.join("ov/deleted")).unwrap();
+    fs::write(fixture.source.join("ov/deleted/file"), "delete me").unwrap();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("ov/deleted/file")).unwrap();
+    index.write().unwrap();
+    commit_index(&repo);
+    fixture.apply();
+    fs::remove_dir_all(fixture.target.join("deleted")).unwrap();
+    fixture.add();
+    fixture
+        .commit_command()
+        .args(["deleted", "deleted/file"])
+        .assert()
+        .success();
+    assert!(
+        repo.head()
+            .unwrap()
+            .peel_to_tree()
+            .unwrap()
+            .get_path(Path::new("ov/deleted/file"))
+            .is_err()
+    );
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn unselected_unsupported_changes_or_index_conflicts_do_not_block_selected_paths(
+    #[case] conflict: bool,
+) {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "selected").unwrap();
+    fixture.add();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let mut index = repo.index().unwrap();
+    let mut other = index.get_path(Path::new("ov/link"), 0).unwrap();
+    other.id = repo.blob(b"unrelated symlink target").unwrap();
+    if conflict {
+        index.remove_path(Path::new("ov/link")).unwrap();
+        for stage in 1..=3 {
+            other.flags = (other.flags & !0x3000) | (stage << 12);
+            index.add(&other).unwrap();
+        }
+    } else {
+        index.add(&other).unwrap();
+    }
+    index.write().unwrap();
+    let before = fs::read(repo.path().join("index")).unwrap();
+    fixture.commit_command().arg("file").assert().success();
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), before);
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"selected"
+    );
+    assert_eq!(
+        fs::read_link(fixture.source.join("ov/link")).unwrap(),
+        Path::new("file")
+    );
+}
+
+#[test]
+fn a_partial_commit_cannot_hide_unselected_source_advancement_in_its_checkpoint() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    fs::write(fixture.source.join("ov/advanced"), "source advanced").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("ov/advanced")).unwrap();
+    index.write().unwrap();
+    commit_index(&repo);
+    fs::write(fixture.target.join("file"), "selected").unwrap();
+    // External Git can stage despite over add's source-advancement guard.
+    let selected = index.get_path(Path::new("ov/file"), 0).unwrap();
+    index.add_frombuffer(&selected, b"selected").unwrap();
+    index.write().unwrap();
+    let head = repo.head().unwrap().target();
+    let before = fs::read(repo.path().join("index")).unwrap();
+    fixture
+        .commit_command()
+        .arg("file")
+        .assert()
+        .failure()
+        .stderr(contains("sync before committing"));
+    assert_eq!(repo.head().unwrap().target(), head);
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), before);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn interactive_message_input_starts_below_the_question_and_records_edited_text() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "selected").unwrap();
+    fixture.add();
+    // A real PTY exercises dialoguer's redraw/cursor handling, not just theme strings.
+    let output = Command::new("script")
+        .args(["--quiet", "--return", "--echo", "never", "--command",
+            "exec \"$OVER_TEST_BINARY\" --home \"$OVER_TEST_SOURCE\" commit --overlay ov --target \"$OVER_TEST_HOME\" file", "/dev/null"])
+        .env("OVER_TEST_BINARY", assert_cmd::cargo::cargo_bin("over"))
+        .env("OVER_TEST_SOURCE", &fixture.source)
+        .env("OVER_TEST_HOME", &fixture.home)
+        .env("XDG_STATE_HOME", fixture.temp.path().join("state"))
+        .env("NO_COLOR", "1")
+        .env("TERM", "dumb")
+        .write_stdin(b"focusex\x7fd\n")
+        .timeout(std::time::Duration::from_secs(10))
+        .output().unwrap();
+    let transcript = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{transcript}");
+    let question = transcript.split_once("Commit message for ").unwrap().1;
+    let (heading, input) = question.split_once('\n').unwrap();
+    assert!(!heading.contains("focused"), "{transcript}");
+    assert!(input.starts_with("› "), "{transcript}");
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    assert_eq!(
+        repo.head().unwrap().peel_to_commit().unwrap().message(),
+        Ok("focused")
+    );
 }
 
 #[test]

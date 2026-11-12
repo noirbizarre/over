@@ -893,27 +893,39 @@ pub(crate) fn staged_changes(
     managed: &Path,
     scope: &CheckoutScope,
 ) -> Result<Vec<FileChange>> {
+    staged_changes_selected(repo, managed, scope, &|_| true)
+}
+
+pub(crate) fn staged_changes_selected(
+    repo: &Repository,
+    managed: &Path,
+    scope: &CheckoutScope,
+    selected: &impl Fn(&Path) -> bool,
+) -> Result<Vec<FileChange>> {
     let head = base_tree(repo, None)?;
-    let head_entries = scoped_entries(repo, &head, managed, scope)?;
+    let mut head_entries = scoped_entries(repo, &head, managed, scope)?;
+    head_entries.retain(|path, _| selected(path));
     let index = repo.index()?;
-    anyhow::ensure!(
-        !index.has_conflicts(),
-        "source index has unresolved conflicts"
-    );
     let mut staged = BTreeMap::new();
     for entry in index.iter() {
         // A reserved path has no staged content and must not publish its empty blob.
         if IndexEntryExtendedFlag::from_bits_truncate(entry.flags_extended).is_intent_to_add() {
             continue;
         }
-        let path = Path::new(std::str::from_utf8(&entry.path)?);
-        if let Ok(relative) = path.strip_prefix(managed)
-            && scope.owns_source(relative)
-            && scope.owns_target(relative)
-            && !is_overlay_metadata(relative)
-            && is_supported_mode(entry.mode)
+        if let Some(relative) = relative_index_path(&entry.path, managed)?
+            && selected(&relative)
+            && scope.owns_source(&relative)
+            && scope.owns_target(&relative)
+            && !is_overlay_metadata(&relative)
         {
-            staged.insert(relative.to_path_buf(), (entry.id, entry.mode as i32));
+            anyhow::ensure!(
+                entry.flags & 0x3000 == 0,
+                "source index has unresolved conflicts at '{}'",
+                relative.display()
+            );
+            if is_supported_mode(entry.mode) {
+                staged.insert(relative.to_path_buf(), (entry.id, entry.mode as i32));
+            }
         }
     }
     let paths: std::collections::BTreeSet<_> = head_entries.keys().chain(staged.keys()).collect();
@@ -942,10 +954,11 @@ pub(crate) fn is_supported_mode(mode: u32) -> bool {
 
 /// Unsupported entries may coexist with checkout content, but their staged
 /// changes must not disappear silently when the user asks to commit this unit.
-pub(crate) fn ensure_supported_staged(
+pub(crate) fn ensure_supported_staged_selected(
     repo: &Repository,
     managed: &Path,
     scope: &CheckoutScope,
+    selected: &impl Fn(&Path) -> bool,
 ) -> Result<()> {
     let head = base_tree(repo, None)?;
     let index = repo.index()?;
@@ -963,6 +976,9 @@ pub(crate) fn ensure_supported_staged(
         TreeWalkResult::Ok
     })?;
     for entry in index.iter().filter(|entry| !is_supported_mode(entry.mode)) {
+        if relative_index_path(&entry.path, managed)?.is_none_or(|relative| !selected(&relative)) {
+            continue;
+        }
         let path = PathBuf::from(std::str::from_utf8(&entry.path)?);
         unsupported.entry(path.clone()).or_insert_with(|| {
             head.get_path(&path)
@@ -977,6 +993,7 @@ pub(crate) fn ensure_supported_staged(
                 .get_path(&path, 0)
                 .is_some_and(|entry| entry.mode == 0o160000);
         if let Ok(relative) = path.strip_prefix(managed)
+            && selected(relative)
             && scope.owns_source_kind(relative, is_dir)
             && scope.owns_target_kind(relative, is_dir)
             && !is_overlay_metadata(relative)
@@ -1022,10 +1039,14 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
     let parent = repo.head()?.peel_to_commit()?;
     let head = parent.tree()?;
     let index = repo.index()?;
-    anyhow::ensure!(
-        !index.has_conflicts(),
-        "source index has unresolved conflicts"
-    );
+    for entry in index.iter().filter(|entry| entry.flags & 0x3000 != 0) {
+        // Selected paths are already UTF-8; invalid unrelated names cannot match them.
+        let path = std::str::from_utf8(&entry.path).ok().map(Path::new);
+        anyhow::ensure!(
+            !path.is_some_and(|path| paths.iter().any(|selected| selected == path)),
+            "source index has unresolved conflicts at a selected path"
+        );
+    }
     let workdir = repo.workdir().context("source has no working directory")?;
     let mut updates = Vec::new();
     let mut builder = git2::build::TreeUpdateBuilder::new();

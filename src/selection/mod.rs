@@ -272,6 +272,76 @@ fn git_association(path: &Path) -> Result<Option<String>> {
     }
 }
 
+/// Commit already-associated checkouts without discovering every overlay's contents.
+pub(crate) fn select_commit(ctx: &Context, name: Option<&str>) -> Result<Overlay> {
+    if let Some(name) = name {
+        return ctx.repository.get(name);
+    }
+    // macOS /var aliases and symlinked collections must share cwd's physical namespace.
+    let cwd = mapping::physical(&ctx.absolute_path(Path::new("."))?)?;
+    let collection = mapping::physical(&ctx.repository.root)?;
+    if let Some(name) = git_association(&cwd)? {
+        return ctx.repository.get(&name);
+    }
+    let state = crate::materialize::virtual_checkout::state::state_file()?.inspect_blocking()?;
+    let mut sources = std::collections::BTreeSet::new();
+    let mut targets = std::collections::BTreeSet::new();
+    for (target, record) in &state.checkouts {
+        let source = record
+            .source_repository
+            .as_ref()
+            .map(|root| mapping::physical(&root.join(&record.managed_path)))
+            .transpose()?;
+        // A record from another collection is not evidence for a same-named overlay here.
+        if source
+            .as_ref()
+            .is_some_and(|source| !source.starts_with(&collection))
+        {
+            continue;
+        }
+        let target_owned = cwd
+            .strip_prefix(target)
+            .is_ok_and(|relative| record.scope.owns_target_kind(relative, true));
+        if target_owned {
+            targets.insert(record.overlay.clone());
+        }
+        if source.as_ref().is_some_and(|source| {
+            cwd.strip_prefix(source)
+                .is_ok_and(|relative| record.scope.owns_source_kind(relative, true))
+        }) {
+            sources.insert(record.overlay.clone());
+        }
+    }
+    // Source context remains authoritative even when another overlay targets that directory.
+    let names = if sources.is_empty() { targets } else { sources };
+    ensure!(
+        names.len() <= 1,
+        "ambiguous overlay; specify --overlay NAME explicitly"
+    );
+    if let Some(name) = names.into_iter().next() {
+        return ctx.repository.get(&name);
+    }
+    // Descriptor probing is bounded by cwd depth, not by repository size.
+    for directory in cwd
+        .ancestors()
+        .take_while(|directory| directory.starts_with(&collection))
+    {
+        if directory != collection
+            && crate::overlays::EXTENSIONS
+                .iter()
+                .any(|ext| directory.join(format!("over.{ext}")).is_file())
+        {
+            return ctx
+                .repository
+                .get(&directory.strip_prefix(&collection)?.to_string_lossy());
+        }
+    }
+    if let Some(overlay) = ctx.repository.default_overlay(ctx)? {
+        return Ok(overlay);
+    }
+    bail!("cannot infer an overlay; specify --overlay NAME or configure default_overlay")
+}
+
 /// Select explicitly, then contextually, then optionally by configured default.
 pub fn select(
     ctx: &Context,

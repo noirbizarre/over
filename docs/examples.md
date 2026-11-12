@@ -241,7 +241,7 @@ After editing `~/.config/client/settings.json`:
 over diff workspace/client
 over add --overlay workspace/client ~/.config/client/settings.json
 over diff workspace/client --staged
-over commit workspace/client -m "Update client settings"
+over commit --overlay workspace/client -m "Update client settings"
 over sync workspace/client --dry-run
 ```
 

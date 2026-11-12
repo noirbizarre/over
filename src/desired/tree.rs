@@ -89,6 +89,167 @@ impl DesiredTree {
         &self.entries
     }
 
+    /// Reconstruct checkout ownership from Git names, never from untracked directories.
+    pub(crate) fn build_commit(ctx: &exec::Context, overlay: &Overlay) -> Result<Self> {
+        let (repo, managed) =
+            crate::materialize::virtual_checkout::git::discover_source(&overlay.root)?;
+        let head = repo.head()?.peel_to_tree()?;
+        let mut paths = std::collections::BTreeSet::new();
+        let mut control_candidates = std::collections::BTreeSet::new();
+        head.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
+            if entry.kind() != Some(git2::ObjectType::Tree)
+                && let Ok(name) = entry.name()
+                && let Ok(relative) = Path::new(root).join(name).strip_prefix(&managed)
+            {
+                paths.insert(overlay.root.join(relative));
+            }
+            git2::TreeWalkResult::Ok
+        })?;
+        for entry in repo.index()?.iter() {
+            if let Some(relative) = crate::materialize::virtual_checkout::git::relative_index_path(
+                &entry.path,
+                &managed,
+            )? {
+                if head
+                    .get_path(&managed.join(&relative))
+                    .ok()
+                    .map(|old| (old.id(), old.filemode() as u32))
+                    != Some((entry.id, entry.mode))
+                {
+                    control_candidates.insert(overlay.root.join(&relative));
+                }
+                paths.insert(overlay.root.join(relative));
+            }
+        }
+        let state =
+            crate::materialize::virtual_checkout::state::state_file()?.inspect_blocking()?;
+        for record in state
+            .checkouts
+            .values()
+            .filter(|record| record.overlay == overlay.name)
+        {
+            // State is shared across collections; same-named overlays are not the same source.
+            if let Some(recorded) = &record.source_repository
+                && mapping::physical(recorded)?
+                    != mapping::physical(
+                        repo.workdir().context("source has no working directory")?,
+                    )?
+            {
+                continue;
+            }
+            if let Ok(relative) = record.managed_path.strip_prefix(&managed) {
+                // Keep empty/deleted checkout roots discoverable without inspecting their children.
+                paths.insert(overlay.root.join(relative).join(".over-commit-inventory"));
+                control_candidates.insert(overlay.root.join(relative));
+            }
+        }
+        let routing = overlay.resolve_mappings(ctx)?;
+        for boundary in routing.boundaries.keys() {
+            paths.insert(overlay.root.join(boundary).join(".over-commit-inventory"));
+            control_candidates.insert(overlay.root.join(boundary));
+        }
+        // Relevant new control files can change ownership before they are themselves staged.
+        let candidates: std::collections::BTreeSet<_> = control_candidates
+            .iter()
+            .flat_map(|path| {
+                path.ancestors()
+                    .take_while(|path| *path != overlay.root && path.starts_with(&overlay.root))
+            })
+            .collect();
+        for candidate in candidates {
+            for extension in crate::overlays::EXTENSIONS {
+                for kind in ["link", "partial"] {
+                    let mut name = candidate.as_os_str().to_os_string();
+                    name.push(format!(".{kind}.{extension}"));
+                    let sidecar = PathBuf::from(name);
+                    match sidecar.symlink_metadata() {
+                        Ok(_) => {
+                            paths.insert(sidecar);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+            }
+        }
+        let paths: Vec<_> = paths.into_iter().collect();
+        let policy = Arc::new(SourcePolicy::for_inventory(
+            &ctx.repository.root,
+            overlay,
+            &paths,
+        )?);
+        let mut directories = std::collections::BTreeSet::from([PathBuf::new()]);
+        for path in &paths {
+            for parent in path.strip_prefix(&overlay.root)?.ancestors().skip(1) {
+                directories.insert(parent.to_path_buf());
+            }
+        }
+        let mut entries = Vec::new();
+        let mut terminal = Vec::<PathBuf>::new();
+        for directory in directories {
+            let boundary = routing
+                .boundaries
+                .keys()
+                .filter(|boundary| directory.starts_with(boundary))
+                .max_by_key(|boundary| boundary.components().count());
+            if terminal.iter().any(|parent| {
+                directory.starts_with(parent)
+                    && boundary
+                        .is_none_or(|boundary| !boundary.starts_with(parent) || boundary == parent)
+            }) {
+                continue;
+            }
+            let source = overlay.root.join(&directory);
+            if !policy.includes(&source, true) {
+                continue;
+            }
+            let intent = match overlay.materialization_for(&directory) {
+                MaterializationKind::Checkout => checkout_intent(&routing, &directory),
+                MaterializationKind::SymlinkDirectory => MaterializationIntent::SymlinkDirectory {
+                    source: source.clone(),
+                    link_type: symlink::LinkType::Soft,
+                },
+                MaterializationKind::Symlink => continue,
+            };
+            terminal.push(directory.clone());
+            entries.push(DesiredEntry {
+                target: routing.target_for(&directory),
+                provenance: Provenance::Overlay {
+                    overlay: overlay.name.clone(),
+                    source,
+                },
+                intent,
+                permissions: None,
+            });
+        }
+        build_git_entries(overlay, &routing, &mut entries);
+        build_symlink_sidecars(
+            ctx,
+            overlay,
+            &policy,
+            &overlay.resolve_target(ctx)?,
+            &mut entries,
+            true,
+        )?;
+        build_partial_sidecars(ctx, overlay, &policy, &mut entries)?;
+        attach_source_policy(&mut entries, &policy);
+        finalize_entries(overlay, &routing, &mut entries, true)?;
+        entries.retain(|entry| entry.intent.is_virtual_checkout());
+        for entry in &entries {
+            crate::materialize::virtual_checkout::state::verify_live_target_snapshot(
+                &state, entry,
+            )?;
+        }
+        Ok(Self {
+            entries,
+            sources: vec![SourceSelection {
+                overlay: overlay.clone(),
+                routing,
+                policy,
+            }],
+        })
+    }
+
     pub(crate) fn filter_entries(&self, mut keep: impl FnMut(&DesiredEntry) -> bool) -> Self {
         Self {
             entries: self
@@ -258,7 +419,14 @@ fn collect_own_entries(
         build_git_entries(overlay, &routing, &mut entries);
         let ctx_with_target =
             ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
-        build_symlink_sidecars(&ctx_with_target, overlay, &policy, target, &mut entries)?;
+        build_symlink_sidecars(
+            &ctx_with_target,
+            overlay,
+            &policy,
+            target,
+            &mut entries,
+            false,
+        )?;
         build_partial_sidecars(&ctx_with_target, overlay, &policy, &mut entries)?;
         attach_source_policy(&mut entries, &policy);
         finalize_entries(overlay, &routing, &mut entries, reporting)?;
@@ -290,7 +458,14 @@ fn collect_own_entries(
     // support as before #13.
     let ctx_with_target =
         ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
-    build_symlink_sidecars(&ctx_with_target, overlay, &policy, target, &mut entries)?;
+    build_symlink_sidecars(
+        &ctx_with_target,
+        overlay,
+        &policy,
+        target,
+        &mut entries,
+        false,
+    )?;
     build_partial_sidecars(&ctx_with_target, overlay, &policy, &mut entries)?;
 
     attach_source_policy(&mut entries, &policy);
@@ -641,6 +816,7 @@ fn build_symlink_sidecars(
     policy: &SourcePolicy,
     _target: &Path,
     entries: &mut Vec<DesiredEntry>,
+    inventory_only: bool,
 ) -> Result<()> {
     let symlinks = symlink::discover_symlinks_selected(&overlay.root, Some(policy))?;
     let routing = overlay.resolve_mappings(ctx)?;
@@ -660,9 +836,12 @@ fn build_symlink_sidecars(
             resolved: resolved.clone(),
         };
         let intent = if is_dir {
-            crate::secrets::reject_encrypted_directory(&resolved)?;
-            if resolved.starts_with(&overlay.root) {
-                policy.validate_directory_link(&resolved, &resolved)?;
+            // Commit needs ownership holes, not validation of unrelated link contents.
+            if !inventory_only {
+                crate::secrets::reject_encrypted_directory(&resolved)?;
+                if resolved.starts_with(&overlay.root) {
+                    policy.validate_directory_link(&resolved, &resolved)?;
+                }
             }
             MaterializationIntent::SymlinkDirectory {
                 source: resolved,

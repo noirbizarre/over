@@ -181,10 +181,13 @@ fn broken_host_configuration_fails_data_resolution_with_explicit_targets(
     let target = TempDir::new()?;
     descriptor(repo.path(), "", "default_overlay: nonexistent")?;
     descriptor(repo.path(), "selected", "data: {}")?;
-    Command::cargo_bin("over")?
-        .arg("--home")
-        .arg(repo.path())
-        .args([verb, selection, "--target"])
+    let mut command = Command::cargo_bin("over")?;
+    command.arg("--home").arg(repo.path()).arg(verb);
+    if verb == "commit" {
+        command.arg("--overlay");
+    }
+    command
+        .args([selection, "--target"])
         .arg(target.path())
         .assert()
         .failure()

@@ -2,26 +2,30 @@ use std::path::PathBuf;
 
 use anyhow::{Result, anyhow, bail};
 use clap::Args;
-use dialoguer::Input;
 use dirs::home_dir;
 
 use crate::cli::CLI;
-use crate::cli::common::select_overlay;
 use crate::commit::{self, CommitOptions, CommitOutcome};
 use crate::desired::DesiredTree;
 use crate::exec::Context;
 use crate::overlays::Repository;
 use crate::ui;
-use crate::ui::style::DialogTheme;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
 #[derive(Args, Debug)]
 pub struct Params {
     #[clap(
-        help = "Name of the overlay to commit (otherwise infer context, then use default_overlay)"
+        long = "overlay",
+        help = "Select the overlay (otherwise infer context, then use default_overlay)"
     )]
     name: Option<String>,
+
+    #[clap(
+        value_name = "PATH",
+        help = "Commit staged paths (defaults to all owned staged changes)"
+    )]
+    paths: Vec<PathBuf>,
 
     #[clap(
         short = 'r',
@@ -48,7 +52,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
 
     let home = cli.resolve_home()?;
-    let repo = Repository::new(home);
+    let repo = Repository::new(home).collecting_warnings().scoped_loading();
     let root = args
         .root
         .clone()
@@ -65,9 +69,10 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let selection_ctx = ctx.clone();
     let name = args.name.clone();
-    let overlay =
-        tokio::task::spawn_blocking(move || select_overlay(&selection_ctx, name.as_deref()))
-            .await??;
+    let overlay = tokio::task::spawn_blocking(move || {
+        crate::selection::select_commit(&selection_ctx, name.as_deref())
+    })
+    .await??;
     if cli.debug {
         tracing::debug!(?overlay, "resolved overlay");
     }
@@ -79,7 +84,32 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     // This overlay's own entries only — never a `uses` dependency's: that
     // content belongs to a different overlay (and possibly a different
     // source repository entirely), which the user didn't name here.
-    let desired = DesiredTree::build_own(&ctx, &overlay)?;
+    let prepared_ctx = ctx.clone();
+    let prepared_overlay = overlay.clone();
+    let desired = tokio::task::spawn_blocking(move || {
+        DesiredTree::build_commit(&prepared_ctx, &prepared_overlay)
+    })
+    .await??;
+    // Metadata inheritance may load dependencies, but their diagnostics belong to their own commands.
+    for warning in ctx
+        .repository
+        .warnings
+        .warnings()
+        .into_iter()
+        .filter(|warning| {
+            warning
+                .file
+                .parent()
+                .is_some_and(|directory| overlay.root.starts_with(directory))
+        })
+    {
+        tracing::warn!(
+            "{}: {}; {}",
+            warning.file.display(),
+            warning.message,
+            warning.hint
+        );
+    }
     let checkout_entries: Vec<_> = desired
         .entries()
         .iter()
@@ -106,26 +136,92 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let mut needs_attention = false;
     let owned_entries: Vec<_> = checkout_entries.into_iter().cloned().collect();
+    let cwd = ctx.absolute_path(std::path::Path::new("."))?;
+    let physical_source = crate::overlays::mapping::physical(&overlay.root)?;
+    let routing = overlay.resolve_mappings(&ctx)?;
+    let contextual = cwd.starts_with(&overlay.root)
+        || cwd.starts_with(&physical_source)
+        || !matches!(
+            routing.reverse(&cwd)?,
+            crate::overlays::mapping::ReverseResolution::Absent
+        );
+    let anchor = if contextual { &cwd } else { &overlay.root };
+    let paths = args
+        .paths
+        .iter()
+        .map(|path| -> Result<_> {
+            let path = crate::overlays::mapping::absolute(&anchor.join(path))?;
+            if path.starts_with(&overlay.root) {
+                return Ok(path);
+            }
+            let location = crate::overlays::mapping::location(&path)?;
+            if let Ok(relative) = location.strip_prefix(&physical_source) {
+                return Ok(overlay.root.join(relative));
+            }
+            match routing.reverse(&path)? {
+                crate::overlays::mapping::ReverseResolution::Unique(found) => {
+                    Ok(routing.target_for(&found.source))
+                }
+                crate::overlays::mapping::ReverseResolution::Ambiguous(_) => {
+                    routing.logical_path_for(&path)?;
+                    unreachable!("ambiguous reverse routing returns an error")
+                }
+                crate::overlays::mapping::ReverseResolution::Absent => Ok(path),
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for path in &paths {
+        if !path.starts_with(&overlay.root)
+            && !owned_entries
+                .iter()
+                .any(|entry| path.starts_with(&entry.target) || entry.target.starts_with(path))
+        {
+            bail!(
+                "path '{}' is outside overlay '{}'",
+                path.display(),
+                overlay.name
+            );
+        }
+    }
+    let mut options = CommitOptions {
+        paths,
+        ..Default::default()
+    };
     // Only bother asking for a message once we know there's actually
     // something to commit — never prompt for a no-op.
-    let pending = owned_entries
-        .iter()
-        .map(crate::status::virtual_checkout::staged_changes)
-        .collect::<Result<Vec<_>>>()?;
-    let conflicting_files = owned_entries
-        .iter()
-        .map(crate::status::virtual_checkout::conflicts)
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+    let preflight_entries = owned_entries.clone();
+    let preflight_options = options.clone();
+    let (pending, conflicting_files, snapshot) =
+        tokio::task::spawn_blocking(move || -> Result<_> {
+            let snapshot = commit::snapshot(&preflight_entries)?;
+            let pending = commit::pending(&preflight_entries, &preflight_options)?;
+            let conflicts = preflight_entries
+                .iter()
+                .map(|entry| {
+                    crate::status::virtual_checkout::commit_conflicts(
+                        entry,
+                        &preflight_options.paths,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            anyhow::ensure!(
+                commit::snapshot(&preflight_entries)? == snapshot,
+                "source HEAD or index changed while preparing the commit; retry the command"
+            );
+            Ok((pending, conflicts, snapshot))
+        })
+        .await??;
     let outcome = if !conflicting_files.is_empty() {
         CommitOutcome::Blocked { conflicting_files }
-    } else if pending.iter().all(Vec::is_empty) {
+    } else if !pending {
         CommitOutcome::NothingToCommit
     } else {
         let message = resolve_message(args, &target)?;
-        commit::commit_entries(&owned_entries, &CommitOptions { message }).await?
+        options.message = message;
+        commit::commit_entries_checked(&owned_entries, &options, Some(snapshot)).await?
     };
     ui::info(format!(
         "  {} {}",
@@ -158,14 +254,11 @@ fn resolve_message(args: &Params, target: &std::path::Path) -> Result<Option<Str
     if args.no_prompt {
         return Ok(None);
     }
-    let input = Input::<String>::with_theme(&DialogTheme::default())
-        .with_prompt(format!(
-            "Commit message for {}",
-            short_path(&target.to_string_lossy())
-        ))
-        .allow_empty(true)
-        .interact_text()
-        .map_err(|e| anyhow!("commit message prompt cancelled: {}", e))?;
+    let input = ui::message_input(&format!(
+        "Commit message for {}",
+        short_path(&target.to_string_lossy())
+    ))
+    .map_err(|e| anyhow!("commit message prompt cancelled: {}", e))?;
     Ok(if input.trim().is_empty() {
         None
     } else {
@@ -181,6 +274,36 @@ mod tests {
     use clap::Parser;
     use git2::Signature;
     use std::fs;
+
+    #[test]
+    fn commit_paths_are_never_interpreted_as_overlay_names() {
+        let cli = CLI::try_parse_from([
+            "over",
+            "commit",
+            "--overlay",
+            "work",
+            "-m",
+            "message",
+            "one",
+            "two",
+            "--",
+            "-three",
+        ])
+        .unwrap();
+        let Some(crate::cli::Commands::Commit(args)) = cli.cmd else {
+            panic!("expected commit");
+        };
+        assert_eq!(args.name.as_deref(), Some("work"));
+        assert_eq!(args.message.as_deref(), Some("message"));
+        assert_eq!(
+            args.paths,
+            [
+                PathBuf::from("one"),
+                PathBuf::from("two"),
+                PathBuf::from("-three")
+            ]
+        );
+    }
 
     fn make_cli(home: PathBuf) -> CLI {
         CLI::parse_from(vec!["over", "--home", home.to_str().unwrap()])
@@ -209,6 +332,7 @@ mod tests {
     fn params(name: Option<&str>, root: PathBuf, message: Option<&str>) -> Params {
         Params {
             name: name.map(String::from),
+            paths: Vec::new(),
             root: Some(root),
             message: message.map(String::from),
             no_prompt: message.is_none(),

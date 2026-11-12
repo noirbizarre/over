@@ -369,7 +369,14 @@ fn checkout_workflows_preserve_newly_ignored_files_and_staged_changes(
     fixture.add(&fixture.home.join("target")).assert().success();
     fixture
         .command("commit")
-        .args(["ov", "--no-prompt", "--message", "selected", "--target"])
+        .args([
+            "--overlay",
+            "ov",
+            "--no-prompt",
+            "--message",
+            "selected",
+            "--target",
+        ])
         .arg(&fixture.home)
         .assert()
         .success();

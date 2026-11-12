@@ -357,6 +357,7 @@ fn protected_executable_commits_and_restore_preserve_native_access_policy() {
         "--home",
         root,
         "commit",
+        "--overlay",
         "ov",
         "--target",
         target.to_str().unwrap(),

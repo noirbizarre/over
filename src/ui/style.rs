@@ -274,12 +274,12 @@ impl Theme for DialogTheme {
         match default {
             Some(default) => write!(
                 f,
-                "{} {}",
+                "{} {} ",
                 self.hint_style
                     .apply_to(format!("({})", crate::utils::short_paths(default))),
                 self.prompt_suffix,
             ),
-            None => write!(f, "{}", self.prompt_suffix),
+            None => write!(f, "{} ", self.prompt_suffix),
         }
     }
 

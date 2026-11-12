@@ -28,6 +28,59 @@ pub(crate) struct SourcePolicyIdentity {
 }
 
 impl SourcePolicy {
+    /// Load only rule files on known Git paths, without discovering untracked trees.
+    pub(crate) fn for_inventory(root: &Path, overlay: &Overlay, paths: &[PathBuf]) -> Result<Self> {
+        ensure!(
+            overlay.root.starts_with(root),
+            "overlay is outside the Over repository"
+        );
+        ensure!(
+            !overlay.root.starts_with(root.join(".over")),
+            ".over is reserved repository administration"
+        );
+        if root.join(".over").exists() {
+            ensure!(
+                !super::mapping::physical(&overlay.root)?
+                    .starts_with(super::mapping::physical(&root.join(".over"))?),
+                ".over is reserved repository administration"
+            );
+        }
+        let mut policy = Self {
+            root: root.to_path_buf(),
+            overlay: overlay.clone(),
+            rules: Vec::new(),
+            rule_sources: Vec::new(),
+            files: Vec::new(),
+        };
+        let mut directories = std::collections::BTreeSet::new();
+        for path in paths.iter().chain(std::iter::once(&overlay.root)) {
+            for directory in path.ancestors().skip(usize::from(path != &overlay.root)) {
+                if directory.starts_with(root) {
+                    directories.insert(directory.to_path_buf());
+                }
+            }
+        }
+        // Parents sort before children, so excluded subtrees cannot reopen themselves.
+        for directory in directories {
+            if !policy.is_ignored(&directory, true) {
+                policy.load(&directory)?;
+            }
+        }
+        for path in paths.iter().filter(|path| is_control_file(path)) {
+            if policy.is_ignored(path, false) {
+                continue;
+            }
+            // Git remembers deleted sidecars; only current declarations define today's layout.
+            match path.symlink_metadata() {
+                Ok(metadata) if !metadata.is_dir() => policy.files.push(path.clone()),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(policy)
+    }
+
     pub fn new(root: &Path, overlay: &Overlay) -> Result<Self> {
         ensure!(
             !overlay.root.starts_with(root.join(".over")),
@@ -233,6 +286,42 @@ mod tests {
         let path = root.join(path);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn git_inventory_loads_relevant_ignore_ancestors_but_not_deleted_sidecars() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        write(root, ".overignore", "*.pem\n");
+        write(root, "ov/nested/.overignore", "!keep.pem\n");
+        write(
+            root,
+            "ov/unrelated/.overignore",
+            "[invalid rule bytes are never read",
+        );
+        let overlay = Repository::new(root.to_path_buf()).get("ov").unwrap();
+        let policy = SourcePolicy::for_inventory(
+            root,
+            &overlay,
+            &[
+                root.join("ov/nested/keep.pem"),
+                root.join("ov/nested/deleted.link.yaml"),
+            ],
+        )
+        .unwrap();
+        assert!(!policy.is_ignored(&root.join("ov/nested/keep.pem"), false));
+        assert!(policy.is_ignored(&root.join("ov/nested/other.pem"), false));
+        assert!(
+            !policy
+                .files()
+                .contains(&root.join("ov/nested/deleted.link.yaml"))
+        );
+        assert!(
+            policy
+                .rule_sources
+                .iter()
+                .all(|(path, _)| !path.starts_with(root.join("ov/unrelated")))
+        );
     }
 
     #[rstest]

@@ -3668,6 +3668,7 @@ fn virtual_checkout_commit_records_a_commit_in_the_source_repository() -> TestRe
         .arg(&canonical_tmp)
         .args([
             "commit",
+            "--overlay",
             "dotfiles",
             "--no-prompt",
             "--message",

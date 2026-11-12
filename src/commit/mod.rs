@@ -32,6 +32,61 @@ pub struct CommitOptions {
     /// [`default_message`]) — callers wanting an interactive prompt (the
     /// CLI, `over sync`) collect it themselves before constructing this.
     pub message: Option<String>,
+    /// Absolute source or target prefixes; empty selects all owned staged paths.
+    pub paths: Vec<PathBuf>,
+}
+
+pub(crate) fn selects(entry: &DesiredEntry, path: &std::path::Path, paths: &[PathBuf]) -> bool {
+    let Provenance::Overlay { source, .. } = &entry.provenance else {
+        return false;
+    };
+    paths.is_empty()
+        || paths.iter().any(|prefix| {
+            source.join(path).starts_with(prefix) || entry.target.join(path).starts_with(prefix)
+        })
+}
+
+/// Preflight uses the same path filter as execution, so no-op selections never prompt.
+pub(crate) fn pending(entries: &[DesiredEntry], opts: &CommitOptions) -> Result<bool> {
+    let mut pending = false;
+    for entry in entries {
+        let Provenance::Overlay { source, .. } = &entry.provenance else {
+            continue;
+        };
+        let (repo, managed) = git::discover_source(source)?;
+        let scope = entry.intent.checkout_scope();
+        let selected = |path: &std::path::Path| selects(entry, path, &opts.paths);
+        git::ensure_supported_staged_selected(&repo, &managed, &scope, &selected)?;
+        pending |= !git::staged_changes_selected(&repo, &managed, &scope, &selected)?.is_empty();
+    }
+    Ok(pending)
+}
+
+/// Capture publication inputs before prompting; never publish a silently changed index.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Snapshot {
+    repositories: std::collections::BTreeMap<PathBuf, (git2::Oid, Vec<u8>)>,
+}
+
+pub(crate) fn snapshot(entries: &[DesiredEntry]) -> Result<Snapshot> {
+    let mut snapshots = std::collections::BTreeMap::new();
+    for entry in entries {
+        let Provenance::Overlay { source, .. } = &entry.provenance else {
+            continue;
+        };
+        let (repo, _) = git::discover_source(source)?;
+        let index_path = repo.path().join("index");
+        snapshots.insert(
+            index_path.clone(),
+            (
+                repo.head()?.peel_to_commit()?.id(),
+                std::fs::read(index_path)?,
+            ),
+        );
+    }
+    Ok(Snapshot {
+        repositories: snapshots,
+    })
 }
 
 /// What happened when committing a single entry.
@@ -118,10 +173,26 @@ pub async fn commit_entries(
     entries: &[DesiredEntry],
     opts: &CommitOptions,
 ) -> Result<CommitOutcome> {
+    commit_entries_checked(entries, opts, None).await
+}
+
+pub(crate) async fn commit_entries_checked(
+    entries: &[DesiredEntry],
+    opts: &CommitOptions,
+    expected: Option<Snapshot>,
+) -> Result<CommitOutcome> {
     let entries = entries.to_vec();
     let opts = opts.clone();
-    let (outcome, persist) =
-        tokio::task::spawn_blocking(move || commit_blocking(&entries, &opts)).await??;
+    let (outcome, persist) = tokio::task::spawn_blocking(move || {
+        if let Some(expected) = expected {
+            anyhow::ensure!(
+                snapshot(&entries)? == expected,
+                "source HEAD or index changed while preparing the commit; retry the command"
+            );
+        }
+        commit_blocking(&entries, &opts)
+    })
+    .await??;
     for (target, record) in persist {
         state::persist(&target, record).await.with_context(|| {
             format!("{outcome}; commit/source update succeeded but checkpoint persistence failed at '{}'; inspect HEAD and checkout status before retrying", target.display())
@@ -143,18 +214,11 @@ fn commit_blocking(
     let mut changes = Vec::new();
     let mut records = Vec::new();
     for entry in entries {
-        let conflicting_files = status::virtual_checkout::conflicts(entry)?;
+        let conflicting_files = status::virtual_checkout::commit_conflicts(entry, &opts.paths)?;
         if !conflicting_files.is_empty() {
             return Ok((CommitOutcome::Blocked { conflicting_files }, Vec::new()));
         }
 
-        let Some(record) = state::record_for_blocking(&entry.target)? else {
-            anyhow::bail!(
-                "no virtual checkout association recorded for '{}' — was it materialized by \
-             `over apply`?",
-                entry.target.display(),
-            );
-        };
         let Provenance::Overlay { source, .. } = &entry.provenance else {
             unreachable!(
                 "VirtualCheckout entries only ever carry Provenance::Overlay \
@@ -163,18 +227,26 @@ fn commit_blocking(
         };
 
         let (repo, managed_path) = git::discover_source(source)?;
-        state::verify(entry, &record)?;
         let scope = entry.intent.checkout_scope();
-        git::ensure_supported_staged(&repo, &managed_path, &scope)?;
-        let file_changes = git::staged_changes(&repo, &managed_path, &scope)?;
+        let selected = |path: &std::path::Path| selects(entry, path, &opts.paths);
+        git::ensure_supported_staged_selected(&repo, &managed_path, &scope, &selected)?;
+        let file_changes = git::staged_changes_selected(&repo, &managed_path, &scope, &selected)?;
         if file_changes.is_empty() {
             continue;
         }
+        let Some(record) = state::record_for_blocking(&entry.target)? else {
+            anyhow::bail!(
+                "no virtual checkout association recorded for '{}' — was it materialized by `over apply`?",
+                entry.target.display(),
+            );
+        };
+        state::verify(entry, &record)?;
         let base = git::base_tree(&repo, Some(&record.base_oid))?;
         let head = git::base_tree(&repo, None)?;
         anyhow::ensure!(
-            git::scoped_subtree(&repo, &base, &managed_path, &scope)?.id()
-                == git::scoped_subtree(&repo, &head, &managed_path, &scope)?.id(),
+            // A whole-unit checkpoint must not absorb unselected, unsynchronized source changes.
+            git::scoped_entries(&repo, &base, &managed_path, &scope)?
+                == git::scoped_entries(&repo, &head, &managed_path, &scope)?,
             "checkout '{}' is behind its source; sync before committing",
             entry.target.display()
         );
@@ -278,6 +350,38 @@ mod tests {
     use assert_fs::prelude::*;
     use git2::Signature;
     use std::fs;
+
+    #[tokio::test]
+    async fn changing_the_index_after_preflight_requires_preparing_a_new_commit() {
+        let _xdg = isolate_xdg_state();
+        let source = TempDir::new().unwrap();
+        source.child("a.txt").write_str("original").unwrap();
+        let repo = init_committed_repo(source.path());
+        let target = TempDir::new().unwrap();
+        materialize_and_record(source.path(), target.path()).await;
+        let entries = [entry(target.path().into(), source.path().into())];
+        let mut index = repo.index().unwrap();
+        let selected = index.get_path(std::path::Path::new("a.txt"), 0).unwrap();
+        index
+            .add_frombuffer(&selected, b"first staged snapshot")
+            .unwrap();
+        index.write().unwrap();
+        let expected = snapshot(&entries).unwrap();
+        index
+            .add_frombuffer(&selected, b"changed while prompting")
+            .unwrap();
+        index.write().unwrap();
+        let head = repo.head().unwrap().target();
+        let error = commit_entries_checked(&entries, &CommitOptions::default(), Some(expected))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("HEAD or index changed"),
+            "{error:#}"
+        );
+        assert_eq!(repo.head().unwrap().target(), head);
+        assert_eq!(fs::read(source.path().join("a.txt")).unwrap(), b"original");
+    }
 
     /// Points `$XDG_STATE_HOME` at a fresh, writable temp dir for the
     /// duration of the returned guard's lifetime — `commit()` reads/writes
@@ -409,6 +513,7 @@ mod tests {
             &e,
             &CommitOptions {
                 message: Some("update a.txt".to_string()),
+                ..Default::default()
             },
         )
         .await
@@ -465,6 +570,7 @@ mod tests {
             &entry(target.path().into(), td.path().into()),
             &CommitOptions {
                 message: Some("selected update".into()),
+                ..Default::default()
             },
         )
         .await;
