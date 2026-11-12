@@ -9,6 +9,230 @@ use tempfile::TempDir;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[cfg(unix)]
+#[rstest]
+#[case::top_level(vec!["--help"])]
+#[case::subcommand(vec!["status", "--help"])]
+#[case::implicit_help(vec![])]
+fn help_abbreviates_environment_paths_without_changing_their_values(
+    #[case] args: Vec<&str>,
+) -> TestResult {
+    let home = TempDir::new()?;
+    Command::cargo_bin("over")?
+        .env("HOME", home.path())
+        .env("OVER_HOME", home.path().join("source"))
+        .env("NO_COLOR", "1")
+        .args(args)
+        .assert()
+        .success()
+        .stdout(contains("OVER_HOME=~/source"))
+        .stdout(contains(home.path().display().to_string()).not());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn argument_errors_abbreviate_paths_and_keep_the_parser_exit_code() -> TestResult {
+    let home = TempDir::new()?;
+    let argument = home.path().join("unexpected");
+    Command::cargo_bin("over")?
+        .env("HOME", home.path())
+        .env("NO_COLOR", "1")
+        .arg("init")
+        .arg("source")
+        .arg(&argument)
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(contains("~/unexpected"))
+        .stderr(contains(home.path().display().to_string()).not());
+    Ok(())
+}
+
+// Unix home discovery honors child HOME; Windows uses the account's known folder.
+#[cfg(unix)]
+#[rstest]
+#[case::inside_home("home/target", "~/target")]
+#[case::outside_home("elsewhere", "")]
+#[case::similar_prefix("home-other/target", "")]
+#[case::space_in_sibling_name("home backup/target", "")]
+fn human_reports_shorten_only_paths_inside_the_user_home(
+    #[case] target_relative: &str,
+    #[case] abbreviated: &str,
+) -> TestResult {
+    let temp = TempDir::new()?;
+    let home = temp.path().join("home");
+    let source = home.join("source");
+    let target = temp.path().join(target_relative);
+    fs::create_dir_all(source.join("selected"))?;
+    fs::create_dir_all(&target)?;
+    fs::write(source.join("selected/over.toml"), "target = '~'\n")?;
+    fs::write(source.join("selected/file"), "content")?;
+    let expected_target = if abbreviated.is_empty() {
+        target.display().to_string()
+    } else {
+        abbreviated.to_owned()
+    };
+    let command = |verb: &str| -> Result<Command, Box<dyn Error>> {
+        let mut command = Command::cargo_bin("over")?;
+        command
+            .env("HOME", &home)
+            .env("NO_COLOR", "1")
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("XDG_CACHE_HOME", home.join("cache"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", home.join(".gitconfig"))
+            .arg("--home")
+            .arg(&source)
+            .args(["--verbose", verb, "selected", "--target"])
+            .arg(&target);
+        Ok(command)
+    };
+    command("status")?
+        .assert()
+        .code(1)
+        .stdout(contains("~/source/selected"))
+        .stdout(contains(&expected_target))
+        .stdout(contains(format!("{}/", home.display())).not());
+    command("doctor")?
+        .assert()
+        .success()
+        .stdout(contains("~/state/over"))
+        .stdout(contains(format!("{}/", home.display())).not());
+    command("apply")?
+        .arg("--debug")
+        .assert()
+        .success()
+        .stdout(contains(&expected_target))
+        .stdout(contains(format!("{}/", home.display())).not())
+        .stderr(contains("~/source"))
+        .stderr(contains(format!("{}/", home.display())).not());
+    // The display transformation must not redirect deployment to a literal `~` directory.
+    assert_eq!(
+        fs::read_link(target.join("file"))?,
+        source.join("selected/file")
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn lint_json_retains_paths_that_human_diagnostics_abbreviate() -> TestResult {
+    let home = TempDir::new()?;
+    let source = home.path().join("source");
+    fs::create_dir_all(source.join("broken"))?;
+    fs::write(
+        source.join("broken/over.toml"),
+        "[[rules]]\npath = 'file'\nmode = 'checkout'\n",
+    )?;
+    fs::write(source.join("broken/file"), "content")?;
+    let command = || -> Result<Command, Box<dyn Error>> {
+        let mut command = Command::cargo_bin("over")?;
+        command
+            .env("HOME", home.path())
+            .env("NO_COLOR", "1")
+            .arg("--home")
+            .arg(&source)
+            .args(["lint", "broken"]);
+        Ok(command)
+    };
+    command()?
+        .assert()
+        .failure()
+        .stdout(contains("~/source/broken"))
+        .stdout(contains(home.path().display().to_string()).not());
+    let output = command()?
+        .arg("--json")
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output)?;
+    assert!(
+        json["diagnostics"]
+            .to_string()
+            .contains(&source.display().to_string())
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn command_errors_and_debug_logs_shorten_paths_without_changing_error_causes() -> TestResult {
+    let home = TempDir::new()?;
+    let source = home.path().join("missing");
+    Command::cargo_bin("over")?
+        .env("HOME", home.path())
+        .env("NO_COLOR", "1")
+        .arg("--home")
+        .arg(&source)
+        .args(["--debug", "init"])
+        .assert()
+        .failure()
+        .stderr(contains("~/missing"))
+        .stderr(contains(home.path().display().to_string()).not());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn generated_descriptors_keep_literal_paths_beneath_the_user_home() -> TestResult {
+    let home = TempDir::new()?;
+    let source = home.path().join("source");
+    fs::create_dir_all(&source)?;
+    let target = home.path().join("literal-target");
+    Command::cargo_bin("over")?
+        .env("HOME", home.path())
+        .env("NO_COLOR", "1")
+        .arg("--home")
+        .arg(&source)
+        .args(["new", "selected", "--dry-run"])
+        .arg(&target)
+        .assert()
+        .success()
+        .stdout(contains(format!("target = \"{}\"", target.display())))
+        .stdout(contains("~/literal-target"));
+    assert!(!source.join("selected").exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn repository_summaries_shorten_paths_while_history_keeps_commit_subjects() -> TestResult {
+    let home = TempDir::new()?;
+    let source = home.path().join("source");
+    let repo = git2::Repository::init(&source)?;
+    fs::write(source.join("over.toml"), "mode = 'checkout'\n")?;
+    fs::write(source.join("file"), "content")?;
+    let mut index = repo.index()?;
+    index.add_path(Path::new("file"))?;
+    let tree = repo.find_tree(index.write_tree()?)?;
+    let signature = git2::Signature::now("Test", "test@example.com")?;
+    let subject = format!("Record {}", home.path().join("literal/subject").display());
+    repo.commit(Some("HEAD"), &signature, &signature, &subject, &tree, &[])?;
+    let command = |verb: &str| -> Result<Command, Box<dyn Error>> {
+        let mut command = Command::cargo_bin("over")?;
+        command
+            .current_dir(home.path())
+            .env("HOME", home.path())
+            .env("NO_COLOR", "1")
+            .arg("--home")
+            .arg(&source)
+            .arg(verb);
+        Ok(command)
+    };
+    command("init")?
+        .assert()
+        .success()
+        .stdout(contains("Validated existing Over repository at ~/source"));
+    command("log")?
+        .assert()
+        .success()
+        .stdout(contains(&subject));
+    Ok(())
+}
+
 #[rstest]
 #[case("add")]
 #[case("apply")]

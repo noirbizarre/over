@@ -10,6 +10,26 @@ struct Fixture {
     target: PathBuf,
 }
 
+#[test]
+fn patch_previews_preserve_literal_home_paths_in_changed_content() {
+    let fixture = Fixture::new();
+    let content = format!(
+        "{}\n",
+        dirs::home_dir().unwrap().join("literal/content").display()
+    );
+    fs::write(fixture.target.join("file"), &content).unwrap();
+    let output = checked(
+        fixture
+            .command()
+            .args(["add", "--overlay", "ov", "--patch", "--dry-run", "--target"])
+            .arg(&fixture.target)
+            .arg(fixture.target.join("file"))
+            .output()
+            .unwrap(),
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains(&content));
+}
+
 impl Fixture {
     fn new() -> Self {
         Self::with_worktree(false)

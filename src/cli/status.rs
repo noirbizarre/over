@@ -201,7 +201,12 @@ fn render_field(field: &Field, indent: usize, lines: &mut Vec<String>) {
     let annotation = field
         .annotation
         .as_ref()
-        .map(|value| format!(" {}", style::annotation(format!("({value})"))))
+        .map(|value| {
+            format!(
+                " {}",
+                style::annotation(format!("({})", crate::utils::short_paths(value)))
+            )
+        })
         .unwrap_or_default();
     let values = field
         .values

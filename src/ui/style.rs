@@ -57,14 +57,14 @@ pub fn heading<D>(value: D) -> StyledObject<D> {
 pub fn key<D>(value: D) -> StyledObject<D> {
     style(value).white().bold()
 }
-pub fn path<D>(value: D) -> StyledObject<D> {
-    style(value).blue()
+pub fn path<D: fmt::Display>(value: D) -> StyledObject<String> {
+    style(crate::utils::short_path(&value.to_string())).blue()
 }
 pub fn overlay<D>(value: D) -> StyledObject<D> {
     cyan(value)
 }
-pub fn repository<D>(value: D) -> StyledObject<D> {
-    style(value).blue()
+pub fn repository<D: fmt::Display>(value: D) -> StyledObject<String> {
+    style(crate::utils::short_path(&value.to_string())).blue()
 }
 pub fn mode<D>(value: D) -> StyledObject<D> {
     style(value)
@@ -153,7 +153,8 @@ impl Theme for DialogTheme {
                 f,
                 "{} {} ",
                 self.prompt_prefix,
-                self.prompt_style.apply_to(prompt)
+                self.prompt_style
+                    .apply_to(crate::utils::short_paths(prompt))
             )?;
         }
 
@@ -194,7 +195,13 @@ impl Theme for DialogTheme {
         let style = &self.values_style;
 
         if !prompt.is_empty() {
-            write!(f, "{} {} ", prefix, self.prompt_style.apply_to(prompt))?;
+            write!(
+                f,
+                "{} {} ",
+                prefix,
+                self.prompt_style
+                    .apply_to(crate::utils::short_paths(prompt))
+            )?;
         }
 
         match selection {
@@ -214,7 +221,8 @@ impl Theme for DialogTheme {
                 f,
                 "{} {} ",
                 self.prompt_prefix,
-                self.prompt_style.apply_to(prompt)
+                self.prompt_style
+                    .apply_to(crate::utils::short_paths(prompt))
             )?;
         }
 
@@ -233,7 +241,8 @@ impl Theme for DialogTheme {
                 f,
                 "{} {} ",
                 self.success_prefix,
-                self.prompt_style.apply_to(prompt)
+                self.prompt_style
+                    .apply_to(crate::utils::short_paths(prompt))
             )?;
         }
 
@@ -241,7 +250,7 @@ impl Theme for DialogTheme {
             f,
             "{} {}",
             self.success_suffix,
-            self.values_style.apply_to(sel)
+            self.values_style.apply_to(crate::utils::short_paths(sel))
         )
     }
 
@@ -257,7 +266,8 @@ impl Theme for DialogTheme {
                 f,
                 "{} {} ",
                 self.prompt_prefix,
-                self.prompt_style.apply_to(prompt),
+                self.prompt_style
+                    .apply_to(crate::utils::short_paths(prompt)),
             )?;
         }
 
@@ -265,7 +275,8 @@ impl Theme for DialogTheme {
             Some(default) => write!(
                 f,
                 "{} {}",
-                self.hint_style.apply_to(format!("({})", default)),
+                self.hint_style
+                    .apply_to(format!("({})", crate::utils::short_paths(default))),
                 self.prompt_suffix,
             ),
             None => write!(f, "{}", self.prompt_suffix),
@@ -284,7 +295,8 @@ impl Theme for DialogTheme {
                 f,
                 "{} {} ",
                 self.success_prefix,
-                self.prompt_style.apply_to(prompt)
+                self.prompt_style
+                    .apply_to(crate::utils::short_paths(prompt))
             )?;
         }
 
@@ -292,7 +304,7 @@ impl Theme for DialogTheme {
             f,
             "{} {}",
             self.success_suffix,
-            self.values_style.apply_to(sel)
+            self.values_style.apply_to(crate::utils::short_paths(sel))
         )
     }
 
@@ -303,7 +315,8 @@ impl Theme for DialogTheme {
                 f,
                 "{} {} ",
                 self.prompt_prefix,
-                self.prompt_style.apply_to(prompt),
+                self.prompt_style
+                    .apply_to(crate::utils::short_paths(prompt)),
             )?;
         }
 
@@ -322,7 +335,8 @@ impl Theme for DialogTheme {
                 f,
                 "{} {} ",
                 self.success_prefix,
-                self.prompt_style.apply_to(prompt)
+                self.prompt_style
+                    .apply_to(crate::utils::short_paths(prompt))
             )?;
         }
 
@@ -330,7 +344,8 @@ impl Theme for DialogTheme {
             f,
             "{} {}",
             self.success_suffix,
-            self.values_style.apply_to(selections.join(", "))
+            self.values_style
+                .apply_to(crate::utils::short_paths(&selections.join(", ")))
         )
     }
 
@@ -341,6 +356,7 @@ impl Theme for DialogTheme {
         text: &str,
         active: bool,
     ) -> fmt::Result {
+        let text = crate::utils::short_paths(text);
         let details = if active {
             (
                 &self.active_item_prefix,
@@ -369,6 +385,28 @@ pub fn clap_styles() -> styling::Styles {
 mod tests {
     use super::*;
     use std::fmt::Write;
+
+    #[test]
+    fn prompt_labels_and_defaults_abbreviate_home_without_mutating_input() {
+        let home = dirs::home_dir().unwrap();
+        let path = home.join("file").display().to_string();
+        let prompt = format!("Target for {path}");
+        let theme = DialogTheme::default();
+        let mut rendered = String::new();
+        theme
+            .format_input_prompt(&mut rendered, &prompt, Some(&path))
+            .unwrap();
+        let rendered = console::strip_ansi_codes(&rendered);
+        let shortened = std::path::Path::new("~").join("file").display().to_string();
+        assert!(rendered.contains(&format!("Target for {shortened}")));
+        assert!(rendered.contains(&format!("({shortened})")));
+        assert_eq!(path, home.join("file").display().to_string());
+        let mut selected = String::new();
+        theme
+            .format_select_prompt_item(&mut selected, &path, true)
+            .unwrap();
+        assert!(console::strip_ansi_codes(&selected).contains(&shortened));
+    }
 
     #[test]
     fn identities_and_severities_use_their_semantic_foreground_colors() {

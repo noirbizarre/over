@@ -130,7 +130,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             style::heading("Descriptor content (dry-run):")
         ))
         .ok();
-        ui::info(&content).ok();
+        ui::literal(&content).ok();
     } else {
         fs::write(&descriptor, &content)?;
     }

@@ -8,6 +8,27 @@ use tempfile::TempDir;
 const VALUE: &[u8] = b"secret-value-sentinel\0\n";
 const PASSPHRASE: &str = "secret-passphrase-sentinel";
 
+#[test]
+fn secret_plaintext_preserves_literal_home_paths_and_binary_bytes() {
+    let repo = TempDir::new().unwrap();
+    let path = dirs::home_dir()
+        .unwrap()
+        .join("literal/secret")
+        .display()
+        .to_string();
+    let value = format!("{path}\0\n").into_bytes();
+    command(repo.path())
+        .args(["add", "path"])
+        .write_stdin(value.clone())
+        .assert()
+        .success();
+    command(repo.path())
+        .args(["get", "path"])
+        .assert()
+        .success()
+        .stdout(value);
+}
+
 fn command(home: &Path) -> Command {
     let mut command = Command::cargo_bin("over").unwrap();
     command

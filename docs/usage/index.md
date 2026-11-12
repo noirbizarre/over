@@ -55,6 +55,13 @@ Long-running commands show a spinner on terminal stderr. Progress pauses for
 prompts, hooks, and external tools; reports and warnings remain above it.
 Redirected stderr contains no progress animation, and JSON reports stay on stdout.
 
+Human-readable path labels and diagnostics abbreviate your user home directory
+as `~` across commands, including when output is redirected. Paths outside your
+home stay unchanged. This is only a display convention: JSON values, file and
+patch contents, generated configuration, secrets, and external-tool output keep
+their original values. The displayed `~` refers to your user home, independently
+of the repository and target options below.
+
 Every `over` subcommand, including the `git` group, accepts `-H`/`--home`
 (or the `OVER_HOME` environment variable) to point at the overlays root, and
 `-d`/`--debug`, `-v`/`--verbose` for diagnostics.

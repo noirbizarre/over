@@ -77,7 +77,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     ))?;
 
     for entry in entries {
-        ui::info(format!("  {}", entry.render(colors)))?;
+        // Commit subjects are content, even when they contain absolute paths.
+        ui::literal(format!("  {}", entry.render(colors)))?;
     }
 
     Ok(())

@@ -75,7 +75,9 @@ impl Progress {
             .map(|(_, message)| message.as_str())
             .collect::<Vec<_>>()
             .join(" · ");
-        self.0.spinner.set_message(message);
+        self.0
+            .spinner
+            .set_message(crate::utils::short_paths(&message));
     }
 
     pub(crate) fn bar(&self, length: u64) -> Bar {
@@ -283,7 +285,8 @@ impl Write for TraceWriter {
         if !self.0.is_empty() {
             with_output(|| -> io::Result<()> {
                 let mut stderr = io::stderr().lock();
-                stderr.write_all(&self.0)?;
+                let message = crate::utils::short_paths(&String::from_utf8_lossy(&self.0));
+                stderr.write_all(message.as_bytes())?;
                 stderr.flush()
             })?;
             self.0.clear();
@@ -341,6 +344,30 @@ mod tests {
         fn flush(&self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn phase_messages_abbreviate_home_paths_without_changing_stored_messages() {
+        let home = dirs::home_dir().unwrap();
+        let progress = Progress::default();
+        let message = format!("Applying {}", home.join("overlay").display());
+        let phase = progress.phase(message.clone());
+        assert_eq!(
+            progress.0.spinner.message(),
+            format!("Applying ~{}overlay", std::path::MAIN_SEPARATOR)
+        );
+        assert!(
+            progress
+                .0
+                .state
+                .lock()
+                .unwrap()
+                .phases
+                .iter()
+                .any(|(_, value)| value == &message)
+        );
+        phase.set_message(format!("Checking {}", home.display()));
+        assert_eq!(progress.0.spinner.message(), "Checking ~");
     }
 
     #[test]

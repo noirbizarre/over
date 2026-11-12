@@ -1127,10 +1127,10 @@ impl Refresh {
                 let blob = blob.context("missing protected blob")?;
                 if !format::recognized(blob.content()) && !locking {
                     // Historical plaintext must stay recoverable; do not implicitly restage or replace it.
-                    eprintln!(
+                    crate::ui::warn(format!(
                         "over: historical protected plaintext at {}; run over doctor before staging",
                         path.display()
-                    );
+                    ))?;
                     continue;
                 }
                 format::inspect(blob.content())?;

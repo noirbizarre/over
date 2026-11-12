@@ -22,10 +22,13 @@ pub fn resolve_home(explicit: Option<&PathBuf>) -> Result<PathBuf> {
 
 // Shorten a path by replacing the home directory with ~
 pub fn short_path(path: &str) -> String {
-    let Some(home) = home_dir() else {
+    short_path_in(path, home_dir().as_deref())
+}
+
+fn short_path_in(path: &str, home: Option<&Path>) -> String {
+    let Some(home_path) = home else {
         return path.to_string();
     };
-    let home_path = home.as_path();
     let p = Path::new(path);
     if let Ok(suffix) = p.strip_prefix(home_path) {
         if suffix.as_os_str().is_empty() {
@@ -36,6 +39,85 @@ pub fn short_path(path: &str) -> String {
     } else {
         path.to_string()
     }
+}
+
+/// Abbreviate path tokens in human diagnostics, never stored values or literal content.
+/// Use [`short_path`] for complete paths: whitespace can also belong to a sibling name.
+pub fn short_paths(text: &str) -> String {
+    short_paths_in(text, home_dir().as_deref())
+}
+
+fn short_paths_in(text: &str, home: Option<&Path>) -> String {
+    let Some(home) = home else {
+        return text.to_owned();
+    };
+    // A trailing separator in HOME must not consume the separator of a displayed child.
+    let display = home.to_string_lossy();
+    let plain = if home.parent().is_some() {
+        display.trim_end_matches(std::path::is_separator)
+    } else {
+        &display
+    };
+    let mut result = abbreviate_tokens(text, plain);
+    // Debug fields escape Windows separators and quotes, unlike Path::display().
+    let debug = format!("{plain:?}");
+    let escaped = &debug[1..debug.len() - 1];
+    if escaped != plain {
+        result = abbreviate_tokens(&result, escaped);
+    }
+    result
+}
+
+fn abbreviate_tokens(text: &str, home: &str) -> String {
+    if home.is_empty() {
+        return text.to_owned();
+    }
+    let mut result = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (start, _) in text.match_indices(home) {
+        let end = start + home.len();
+        let mut before = &text[..start];
+        // Styling must not hide the token boundary, or colored paths stay absolute.
+        while before.ends_with('m') {
+            let Some(escape) = before.rfind("\x1b[") else {
+                break;
+            };
+            if !before[escape + 2..before.len() - 1]
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == ';')
+            {
+                break;
+            }
+            before = &before[..escape];
+        }
+        let leading = before.chars().next_back().is_none_or(|c| {
+            c.is_whitespace() || matches!(c, '\'' | '"' | '`' | '(' | '[' | '{' | '=')
+        });
+        let mut suffix = text[end..].chars();
+        let trailing = suffix.next().is_none_or(|c| {
+            c == '/' || (cfg!(windows) && c == '\\')
+                // A space may continue a sibling's name, rather than end the home path.
+                || (c.is_whitespace() && (c == '\n' || c == '\r' || suffix.as_str().trim().is_empty()))
+                || (matches!(c, '\'' | '"' | '`' | ')' | ']' | '}' | ',' | ';' | ':' | '\x1b')
+                    // Punctuation inside a sibling name is not a path-component boundary.
+                    && (c == '\x1b' || suffix.next().is_none_or(|next| {
+                        next.is_whitespace() || matches!(next, '\'' | '"' | '`' | ')' | ']' | '}' | ',' | ';' | ':' | '\x1b')
+                    })))
+        });
+        // An absolute-looking query parameter is still part of a remote URL.
+        let in_url = before
+            .split_whitespace()
+            .next_back()
+            .is_some_and(|token| token.contains("://"));
+        // Both boundaries matter: neither /backup/home/user nor /home/user-other is home.
+        if leading && trailing && !in_url {
+            result.push_str(&text[copied..start]);
+            result.push('~');
+            copied = end;
+        }
+    }
+    result.push_str(&text[copied..]);
+    result
 }
 
 /// Parse a single `KEY=value` line from `/etc/os-release`-formatted content,
@@ -94,6 +176,109 @@ mod tests {
     fn home() -> String {
         let h = home_dir().unwrap();
         h.to_str().unwrap().to_string()
+    }
+
+    #[rstest]
+    #[case("/home/alice", "~")]
+    #[case("/home/alice/.config", "~/.config")]
+    #[case("/home/alice-other/file", "/home/alice-other/file")]
+    #[case("/backup/home/alice/file", "/backup/home/alice/file")]
+    #[case("/tmp/file", "/tmp/file")]
+    #[case("relative/file", "relative/file")]
+    #[case("~/file", "~/file")]
+    #[case("", "")]
+    fn only_paths_with_the_home_component_prefix_are_abbreviated(
+        #[case] input: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(
+            short_path_in(input, Some(Path::new("/home/alice"))),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case(
+        "source '/home/alice/a' (referent: /home/alice/b)",
+        "source '~/a' (referent: ~/b)"
+    )]
+    #[case("`/home/alice`\n  /home/alice/文 件", "`~`\n  ~/文 件")]
+    #[case("\x1b[34m/home/alice/a\x1b[0m", "\x1b[34m~/a\x1b[0m")]
+    #[case("path=\"/home/alice/a\"", "path=\"~/a\"")]
+    #[case("path: /home/alice backup/file", "path: /home/alice backup/file")]
+    #[case("path: '/home/alice backup/file'", "path: '/home/alice backup/file'")]
+    #[case("/home/alice backup", "/home/alice backup")]
+    #[case("path: /home/alice\n", "path: ~\n")]
+    #[case("at /home/alice: missing", "at ~: missing")]
+    #[case(
+        "/home/alice,backup/a /home/alice:backup/a",
+        "/home/alice,backup/a /home/alice:backup/a"
+    )]
+    #[case(
+        "https://example.com/?path=/home/alice/a",
+        "https://example.com/?path=/home/alice/a"
+    )]
+    #[case(
+        "/home/alice-other /backup/home/alice/a",
+        "/home/alice-other /backup/home/alice/a"
+    )]
+    #[case(
+        "https://example.com/home/alice/a file:///home/alice/a host:/home/alice/a",
+        "https://example.com/home/alice/a file:///home/alice/a host:/home/alice/a"
+    )]
+    fn diagnostic_paths_are_abbreviated_without_rewriting_other_tokens(
+        #[case] input: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(
+            short_paths_in(input, Some(Path::new("/home/alice"))),
+            expected
+        );
+    }
+
+    #[test]
+    fn an_unknown_home_preserves_paths_and_diagnostics() {
+        assert_eq!(short_path_in("/home/alice/a", None), "/home/alice/a");
+        assert_eq!(short_paths_in("at /home/alice/a", None), "at /home/alice/a");
+    }
+
+    #[test]
+    fn home_names_with_spaces_and_unicode_are_matched_as_a_whole() {
+        assert_eq!(
+            short_paths_in("at '/home/文 件/a'", Some(Path::new("/home/文 件"))),
+            "at '~/a'"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_and_debug_escaped_windows_paths_are_abbreviated() {
+        let home = Path::new(r"C:\Users\alice");
+        assert_eq!(
+            short_paths_in(r"at C:\Users\alice\a", Some(home)),
+            r"at ~\a"
+        );
+        assert_eq!(
+            short_paths_in(r#"path="C:\\Users\\alice\\a""#, Some(home)),
+            r#"path="~\\a""#
+        );
+    }
+
+    #[test]
+    fn a_home_with_a_trailing_separator_keeps_the_child_separator() {
+        assert_eq!(
+            short_paths_in("at /home/alice/a", Some(Path::new("/home/alice/"))),
+            "at ~/a"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_backslash_in_a_unix_sibling_name_is_not_a_separator() {
+        assert_eq!(
+            short_paths_in(r"/home/alice\other/a", Some(Path::new("/home/alice"))),
+            r"/home/alice\other/a"
+        );
     }
 
     #[rstest]

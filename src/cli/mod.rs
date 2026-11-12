@@ -159,7 +159,14 @@ impl CLI {
 }
 
 pub async fn main() -> Result<()> {
-    let args = CLI::parse();
+    let args = match CLI::try_parse() {
+        Ok(args) => args,
+        Err(error) => {
+            // Clap's automatic exit bypasses our presentation boundary, including env paths in help.
+            print_parser_message(&error.render(), error.use_stderr())?;
+            std::process::exit(error.exit_code());
+        }
+    };
 
     crate::ui::init_tracing(args.verbose, args.debug);
 
@@ -245,9 +252,31 @@ pub async fn main() -> Result<()> {
         }
         None => {
             use clap::CommandFactory;
-            CLI::command().print_help()?;
+            print_parser_message(&CLI::command().render_help(), false)?;
         }
     }
+    Ok(())
+}
+
+fn print_parser_message(message: &clap::builder::StyledStr, stderr: bool) -> Result<()> {
+    let colors = if stderr {
+        console::colors_enabled_stderr()
+    } else {
+        console::colors_enabled()
+    };
+    let rendered = if colors {
+        message.ansi().to_string()
+    } else {
+        message.to_string()
+    };
+    let rendered = crate::utils::short_paths(&rendered);
+    let term = if stderr {
+        console::Term::stderr()
+    } else {
+        console::Term::stdout()
+    };
+    // Clap supplies its own trailing newline; write_str preserves its output layout.
+    term.write_str(&rendered)?;
     Ok(())
 }
 
