@@ -5,6 +5,9 @@ repository-root, intermediate, and local descriptors. It need not be a separate
 Git repository. Use a local `over.toml`, `over.yaml`, or `over.yml` to override
 inherited policy. Root-declared overlays may omit a local descriptor entirely.
 
+See the unified [Configuration reference](reference.md) for all attributes,
+their types and defaults, and their availability in root and overlay descriptors.
+
 ```yaml
 # ~/.dotfiles/hosts/laptop/over.yaml
 description: Laptop configuration

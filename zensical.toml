@@ -26,6 +26,7 @@ nav = [
   { "Home" = "index.md" },
   { "Configuration" = [
     { "Overview" = "configuration.md" },
+    { "Configuration reference" = "configuration/reference.md" },
     { "Root configuration" = "configuration/root.md" },
     { "Overlay configuration" = "configuration/overlay.md" },
     { "Materialization" = "configuration/materialization.md" },
