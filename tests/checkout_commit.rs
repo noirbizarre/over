@@ -115,7 +115,7 @@ fn commit_index(repo: &git2::Repository) {
 }
 
 #[test]
-fn full_staging_status_diff_commit_and_sync_share_clean_filters_and_ignored_modes() {
+fn full_staging_status_diff_commit_sync_and_unapply_share_clean_filters_and_ignored_modes() {
     let fixture = Fixture::new();
     let repo = git2::Repository::open(&fixture.source).unwrap();
     repo.config()
@@ -232,6 +232,13 @@ fn full_staging_status_diff_commit_and_sync_share_clean_filters_and_ignored_mode
         .assert()
         .success()
         .stdout(contains("fast-forwarded"));
+    // Canonical equivalence must survive execution-time teardown revalidation too.
+    fs::write(fixture.target.join("file"), "upstream\r\n").unwrap();
+    fs::set_permissions(
+        fixture.target.join("file"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
     fixture
         .command("status")
         .args(["ov", "--verbose", "--target"])
@@ -239,6 +246,17 @@ fn full_staging_status_diff_commit_and_sync_share_clean_filters_and_ignored_mode
         .assert()
         .success()
         .stdout(contains("applied"));
+    fixture
+        .command("unapply")
+        .args(["ov", "--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .success();
+    assert!(!fixture.target.join("file").exists());
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"upstream\r\n"
+    );
 }
 
 #[test]

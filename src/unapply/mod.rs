@@ -621,17 +621,10 @@ async fn remove_virtual_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
         let (repo, managed) = git::discover_source(source)?;
         let base = git::base_tree(&repo, Some(&record.base_oid))?;
         let scope = removal_entry.intent.checkout_scope();
-        let tree = git::scoped_subtree(&repo, &base, &managed, &scope)?;
-        let tracked = git::tracked_blobs(&tree)?;
-        for (path, expected) in git::tracked_entries(&tree)? {
-            anyhow::ensure!(
-                git::entries_match(git::target_entry(&target, &path)?, Some(expected)),
-                "checkout mode/content changed at '{}'",
-                target.join(path).display()
-            );
-        }
+        let tracked = git::scoped_entries(&repo, &base, &managed, &scope)?;
+        // Revalidate in the same Git-content domain as status, including ignored modes.
         anyhow::ensure!(
-            git::diff_scoped_target(&target, &tracked, &scope)?.is_empty(),
+            git::diff_canonical_target(&repo, &managed, &target, &tracked, &scope)?.is_empty(),
             "checkout changed while removing '{}'",
             target.display()
         );

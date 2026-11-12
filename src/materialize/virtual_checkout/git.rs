@@ -449,10 +449,6 @@ pub(crate) fn source_entry(repo: &Repository, relative: &Path) -> Result<Option<
     file_entry(root, relative, "source")
 }
 
-pub(crate) fn target_entry(root: &Path, relative: &Path) -> Result<Option<(Oid, i32)>> {
-    file_entry(root, relative, "target")
-}
-
 pub(crate) fn entries_match(left: Option<(Oid, i32)>, right: Option<(Oid, i32)>) -> bool {
     // Non-Unix targets cannot represent Git's executable bit. Comparing it
     // there would permanently block an otherwise identical checkout file.
@@ -541,7 +537,8 @@ pub(crate) fn diff_target_against_tree(
     diff_scoped_target(target, tracked, &CheckoutScope::default())
 }
 
-pub(crate) fn diff_scoped_target(
+#[cfg(test)]
+fn diff_scoped_target(
     target: &Path,
     tracked: &BTreeMap<PathBuf, Oid>,
     scope: &CheckoutScope,
