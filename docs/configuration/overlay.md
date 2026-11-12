@@ -519,8 +519,9 @@ such as `{{ data.hardware.gpu }}`. Metadata is read-only and strings inside it
 are not recursively templated. File bodies and partial content remain literal.
 `default_overlay` is resolved before this composition and cannot depend on it.
 
-[`over data`](../usage/data.md) exports compact JSON, preserving types and nulls,
-with diagnostics on stderr:
+[`over data`](../usage/data.md) exports JSON, preserving types and nulls, with
+diagnostics on stderr. Terminal output is pretty-printed; piped or redirected
+output is compact and uncolored:
 
 ```sh
 over data                # Configured default context
