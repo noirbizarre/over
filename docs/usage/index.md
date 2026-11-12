@@ -65,6 +65,11 @@ stored at `~/.over` are not moved automatically: set `OVER_HOME=~/.over` or use
 `--home ~/.over` to continue using them. `over init` without a source validates
 the resolved location, regardless of the current working directory.
 
+[Crypt and access commands](crypt.md) are an exception: without `--home` or
+`OVER_HOME`, they discover the current Git repository, falling back to the usual
+Over home for virtual destinations. [`over secret`](secrets.md) instead uses the
+home-based native store selection regardless of the current Git repository.
+
 Commands that support `-r`/`--target` use it as the destination meaning of `~`.
 Resolution priority is `--target`, then `OVER_TARGET`, then your home directory.
 This does not select the source repository. Consult each page's syntax for supported flags.
