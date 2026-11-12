@@ -67,7 +67,8 @@ report it as applied, and reading the target prints `Hello from Over!`.
 selects the **target** directory, just like `--target`, changing what `~` means
 in destinations. Explicit flags take precedence over these environment variables.
 Without these overrides, the defaults are `~/.dotfiles` and your home directory.
-Explicit `apps/hello` selection avoids an interactive overlay prompt.
+Explicit `apps/hello` selection avoids contextual inference and missing-selection
+errors; overlay selection does not open an interactive chooser.
 
 To reverse this example, run:
 
