@@ -115,6 +115,71 @@ fn commit_index(repo: &git2::Repository) {
 }
 
 #[test]
+fn intent_to_add_preserves_unstaged_content_and_does_not_publish_empty_files() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    fs::write(fixture.source.join("ov/new"), "").unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .current_dir(&fixture.source)
+            .args(["add", "-N", "ov/new"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(fixture.target.join("new"), "unstaged target\n").unwrap();
+    let head = repo.head().unwrap().target().unwrap();
+    let index = fs::read(repo.path().join("index")).unwrap();
+    let state_path = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let state = fs::read(&state_path).unwrap();
+    fixture
+        .command("status")
+        .args(["ov", "--verbose", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .code(1)
+        .stdout(contains("unstaged"));
+    fixture
+        .commit_command()
+        .assert()
+        .success()
+        .stdout(contains("nothing to commit"));
+    assert_eq!(repo.head().unwrap().target(), Some(head));
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+    assert_eq!(fs::read(&state_path).unwrap(), state);
+
+    // An independent staged edit may commit without consuming the reserved path.
+    fs::write(fixture.target.join("file"), "selected").unwrap();
+    fixture
+        .command("add")
+        .args(["--overlay", "ov", "--target"])
+        .arg(&fixture.home)
+        .arg(fixture.target.join("file"))
+        .assert()
+        .success();
+    fixture.commit_command().assert().success();
+    let tree = repo.head().unwrap().peel_to_tree().unwrap();
+    assert!(tree.get_path(Path::new("ov/new")).is_err());
+    assert_eq!(fs::read(fixture.source.join("ov/new")).unwrap(), b"");
+    assert_eq!(
+        fs::read(fixture.target.join("new")).unwrap(),
+        b"unstaged target\n"
+    );
+    let mut index = repo.index().unwrap();
+    index.read(true).unwrap();
+    assert!(
+        git2::IndexEntryExtendedFlag::from_bits_truncate(
+            index
+                .get_path(Path::new("ov/new"), 0)
+                .unwrap()
+                .flags_extended
+        )
+        .is_intent_to_add()
+    );
+}
+
+#[test]
 fn full_staging_status_diff_commit_sync_and_unapply_share_clean_filters_and_ignored_modes() {
     let fixture = Fixture::new();
     let repo = git2::Repository::open(&fixture.source).unwrap();

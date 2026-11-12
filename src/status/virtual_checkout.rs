@@ -81,14 +81,16 @@ fn inspect_with_details(entry: &DesiredEntry, tracked_only: bool) -> Result<Insp
     let head_blobs = blob_ids(&head_entries);
 
     let (local_changes, unstaged) = if tracked_only {
-        let index = indexed_entries(&repo, &managed_path, &scope)?;
+        let index = indexed_entries(&repo, &managed_path, &scope, false)?;
+        // Reserved paths select target files for inspection but supply no staged baseline.
+        let owned = indexed_entries(&repo, &managed_path, &scope, true)?;
         // The union preserves staged additions and historical deletions without
         // traversing unrelated working trees nested beneath the checkout.
         let local = git::tracked_target_entries(
             &repo,
             &managed_path,
             &entry.target,
-            &[&base_entries, &head_entries, &index],
+            &[&base_entries, &head_entries, &owned],
         )?;
         (
             git::entry_changes(&base_entries, &local),
@@ -223,7 +225,7 @@ pub(crate) fn unstaged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> 
     };
     let (repo, managed) = git::discover_source(source)?;
     let scope = entry.intent.checkout_scope();
-    let blobs = indexed_entries(&repo, &managed, &scope)?;
+    let blobs = indexed_entries(&repo, &managed, &scope, false)?;
     git::diff_canonical_target(&repo, &managed, &entry.target, &blobs, &scope)
 }
 
@@ -231,9 +233,17 @@ fn indexed_entries(
     repo: &git2::Repository,
     managed: &std::path::Path,
     scope: &crate::desired::CheckoutScope,
+    include_intent_to_add: bool,
 ) -> Result<BTreeMap<PathBuf, (Oid, i32)>> {
     let mut blobs = BTreeMap::new();
     for indexed in repo.index()?.iter() {
+        // Match diff's unstaged-new-file view instead of treating the placeholder as staged.
+        if !include_intent_to_add
+            && git2::IndexEntryExtendedFlag::from_bits_truncate(indexed.flags_extended)
+                .is_intent_to_add()
+        {
+            continue;
+        }
         let path = std::path::Path::new(std::str::from_utf8(&indexed.path)?);
         if let Ok(relative) = path.strip_prefix(managed)
             && scope.owns_source(relative)

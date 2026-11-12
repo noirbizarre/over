@@ -18,7 +18,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow};
-use git2::{ObjectType, Oid, Repository, Tree, TreeWalkMode, TreeWalkResult};
+use git2::{
+    IndexEntryExtendedFlag, ObjectType, Oid, Repository, Tree, TreeWalkMode, TreeWalkResult,
+};
 
 use crate::desired::CheckoutScope;
 
@@ -871,6 +873,10 @@ pub(crate) fn staged_changes(
     );
     let mut staged = BTreeMap::new();
     for entry in index.iter() {
+        // A reserved path has no staged content and must not publish its empty blob.
+        if IndexEntryExtendedFlag::from_bits_truncate(entry.flags_extended).is_intent_to_add() {
+            continue;
+        }
         let path = Path::new(std::str::from_utf8(&entry.path)?);
         if let Ok(relative) = path.strip_prefix(managed)
             && scope.owns_source(relative)
@@ -1002,6 +1008,13 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
             .ok()
             .map(|entry| (entry.id(), entry.filemode()));
         let staged = index.get_path(path, 0);
+        anyhow::ensure!(
+            !staged.as_ref().is_some_and(|entry| {
+                IndexEntryExtendedFlag::from_bits_truncate(entry.flags_extended).is_intent_to_add()
+            }),
+            "'{}' is intent-to-add; stage or unstage it before committing",
+            path.display()
+        );
         let new = staged.as_ref().map(|entry| (entry.id, entry.mode as i32));
         let file = workdir.join(path);
         let current = super::snapshot::canonical_source_entry(repo, path)?;
@@ -1692,6 +1705,36 @@ mod tests {
                 .unwrap();
         }
         repo
+    }
+
+    #[test]
+    fn committing_an_explicit_intent_to_add_path_fails_before_any_publication() {
+        let source = TempDir::new().unwrap();
+        let repo = init_committed_repo(source.path());
+        source.child("new").write_str("").unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(source.path())
+                .args(["add", "-N", "new"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        // Native Git changed the index outside libgit2's cached handle.
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        let head = repo.head().unwrap().target();
+        let index = fs::read(repo.path().join("index")).unwrap();
+        assert!(
+            staged_changes(&repo, Path::new(""), &CheckoutScope::default())
+                .unwrap()
+                .is_empty()
+        );
+        let error = commit_staged(&repo, &[PathBuf::from("new")], "must not publish").unwrap_err();
+        assert!(error.to_string().contains("intent-to-add"));
+        assert_eq!(repo.head().unwrap().target(), head);
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+        assert_eq!(fs::read(source.path().join("new")).unwrap(), b"");
     }
 
     #[cfg(target_os = "linux")]
