@@ -4,6 +4,179 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/noirbizarre/over/compare/0.1.0..0.2.0) - 2026-11-12
+
+### 💫 Features
+
+- **add** Support interactive partial staging - ([7b4f965](https://github.com/noirbizarre/over/commit/7b4f965b6ea4740ae054b7585ca33dc336d29a5b))
+- **cli**  🚨 **breaking** Rename --root to --target and support OVER_TARGET ([#232](https://github.com/noirbizarre/over/issues/232)) - ([65adb6b](https://github.com/noirbizarre/over/commit/65adb6b1c67f1fc4b45331a2f3a0ba4e644dc0b0))
+- **cli** Expose resolved overlay data as JSON ([#187](https://github.com/noirbizarre/over/issues/187)) - ([413c54c](https://github.com/noirbizarre/over/commit/413c54c8ca2925dd67a4684f2e162d297041bc2d))
+- **crypt** Unify repository encryption and native secrets ([#255](https://github.com/noirbizarre/over/issues/255)) - ([95ebe8f](https://github.com/noirbizarre/over/commit/95ebe8f11028bda1dc0a17580b64fd0951161605))
+- **devcontainer** Streamline the Over feature and align releases ([#230](https://github.com/noirbizarre/over/issues/230)) - ([85dc557](https://github.com/noirbizarre/over/commit/85dc55734dd9c24695036bcf72e0225a57eb6bff))
+- **devcontainer** Streamline the Over feature and align releases - ([30578bd](https://github.com/noirbizarre/over/commit/30578bdb5f245df8e701cef589e69c6541e2e2bf))
+- **diff**  🚨 **breaking** Make overlay diffs Git-aware ([#202](https://github.com/noirbizarre/over/issues/202)) - ([35fd2bc](https://github.com/noirbizarre/over/commit/35fd2bc859470049c3959ac9c78246a62c583343))
+- **exec** Expose shared machine and paths context ([#218](https://github.com/noirbizarre/over/issues/218)) - ([ffff4a9](https://github.com/noirbizarre/over/commit/ffff4a95314bd5df8fd9ec87bd09f5d3333b8b8a))
+- **hooks** Support structured templated lifecycle hooks - ([d133f3a](https://github.com/noirbizarre/over/commit/d133f3a22b7d377cbee52c5936079d92a8a415d4))
+- **hooks** Add repository and overlay lifecycle hooks ([#188](https://github.com/noirbizarre/over/issues/188)) - ([a7850a6](https://github.com/noirbizarre/over/commit/a7850a6ced7496edb3a7b97d1cb0ef3088866db5))
+- **init**  🚨 **breaking** Bootstrap repositories with a canonical Git remote ([#186](https://github.com/noirbizarre/over/issues/186)) - ([a36cb66](https://github.com/noirbizarre/over/commit/a36cb664eda1a43fe82258966247c54611ad96f6))
+- **lint** Validate root overlay declarations ([#236](https://github.com/noirbizarre/over/issues/236)) - ([21d7313](https://github.com/noirbizarre/over/commit/21d731379e19d96681e9ca46028807eec467950b))
+- **lint** Group findings by file and add JSON output ([#225](https://github.com/noirbizarre/over/issues/225)) - ([6dbacdd](https://github.com/noirbizarre/over/commit/6dbacdd688a624d497589ab6a774da00abee9fcd))
+- **lint** Group diagnostics by overlay and warn transitive consumers ([#221](https://github.com/noirbizarre/over/issues/221)) - ([52cb00a](https://github.com/noirbizarre/over/commit/52cb00a96a3fcaf4abafa891667f75089fa120cb))
+- **lint** Detect conflicting target ownership in composed overlays - ([2bc3054](https://github.com/noirbizarre/over/commit/2bc3054dc187ce6dcc2f5d25e832c6a2ae89956a))
+- **lint** Support linting a named overlay and its uses ([#189](https://github.com/noirbizarre/over/issues/189)) - ([eed3740](https://github.com/noirbizarre/over/commit/eed374079b8fe0674b8fa9c0e982d0aa0288776f))
+- **log** Add styled history and Git revision ranges ([#198](https://github.com/noirbizarre/over/issues/198)) - ([89b5707](https://github.com/noirbizarre/over/commit/89b5707ca918249818fefb1ff1241b4fdf09bcdf))
+- **overlays**  🚨 **breaking** Simplify declarations to path strings ([#258](https://github.com/noirbizarre/over/issues/258)) - ([ed614c2](https://github.com/noirbizarre/over/commit/ed614c2f5aa84058cf06a3d4d1ac955e51d86aa3))
+- **overlays** Unify ordered cascading path rules ([#254](https://github.com/noirbizarre/over/issues/254)) - ([08847f8](https://github.com/noirbizarre/over/commit/08847f8811753da2f6c8e30cbff194dae83253a0))
+- **overlays** Infer overlay selection from context ([#233](https://github.com/noirbizarre/over/issues/233)) - ([9c29c5f](https://github.com/noirbizarre/over/commit/9c29c5f9192cab77283bc30ac2d3ec4ccc3f1609))
+- **overlays** Simplify scoped mode and permission rules ([#199](https://github.com/noirbizarre/over/issues/199)) - ([bd2b8b9](https://github.com/noirbizarre/over/commit/bd2b8b92a4c232e1e93b505327e09a7a8f9fcfb8))
+- **overlays** Support hierarchical .overignore files ([#181](https://github.com/noirbizarre/over/issues/181)) - ([8461cb4](https://github.com/noirbizarre/over/commit/8461cb4c8d6f23196aac30bca2a1388665b884a4))
+- **overlays** Expose resolved data in execution contexts ([#182](https://github.com/noirbizarre/over/issues/182)) - ([9cea06e](https://github.com/noirbizarre/over/commit/9cea06edc131d547cf6542585628028844f62b9f))
+- **overlays**  🚨 **breaking** Add directory mappings and checkout staging ([#176](https://github.com/noirbizarre/over/issues/176)) - ([5446810](https://github.com/noirbizarre/over/commit/54468104e3e4456415eae9b50b99bfdeba8b024f))
+- **restore** Restore selected virtual-checkout files ([#210](https://github.com/noirbizarre/over/issues/210)) - ([5b9aa41](https://github.com/noirbizarre/over/commit/5b9aa41e395890df60bd37075ab67c4789c0e3c1))
+- **schema** Publish root and overlay configuration schemas ([#240](https://github.com/noirbizarre/over/issues/240)) - ([8df7fad](https://github.com/noirbizarre/over/commit/8df7fadcd9390f5c0abc71fc8b89383f27359052))
+- **secrets** Add provider-neutral resolution and hook interpolation ([#219](https://github.com/noirbizarre/over/issues/219)) - ([22e0017](https://github.com/noirbizarre/over/commit/22e0017c2055f6e2dbb5f73fee64e9add07a612e))
+- **secrets** Add Age encryption and repository-local secret store ([#217](https://github.com/noirbizarre/over/issues/217)) - ([4225406](https://github.com/noirbizarre/over/commit/4225406042664979438b0142fa5d54e1adbe0a5d))
+- **status**  🚨 **breaking** Consolidate resolved overlay inspection - ([e51edfe](https://github.com/noirbizarre/over/commit/e51edfe1ce75e269404552901bf7802af2f23b7d))
+- **sync** Optionally pull and push the Over source repository ([#237](https://github.com/noirbizarre/over/issues/237)) - ([c874059](https://github.com/noirbizarre/over/commit/c874059a1569870b6c5f2e9055447e19f3e59ace))
+- **ui** Add shared spinners and overlay apply progress ([#241](https://github.com/noirbizarre/over/issues/241)) - ([35dd2a2](https://github.com/noirbizarre/over/commit/35dd2a2eca3a12c482ea79cdeb3702b8bb745ab1))
+
+### 🐛 Bug Fixes
+
+- **add** Canonicalize full-file checkout staging - ([23ae17a](https://github.com/noirbizarre/over/commit/23ae17a81d26a1342dd3da9631ae6b1453a6d3e7))
+- **add** Reject symlink ancestors before full-file staging - ([2261b67](https://github.com/noirbizarre/over/commit/2261b67ed37098dc694a29f265d525c6dc16b73d))
+- **add** Preserve imported symlink referents across sidecar encoding - ([b23bf53](https://github.com/noirbizarre/over/commit/b23bf53cd084928a82258b23f792b3e794c55214))
+- **add** Reject ignored symlink ingestion before prompting - ([417d114](https://github.com/noirbizarre/over/commit/417d11465c328ee8cec35b1f675e398d4086d9ce))
+- **apply** Preflight composed ownership before side effects - ([5db6551](https://github.com/noirbizarre/over/commit/5db65514d8120ef826d1c08c3de9f8e7a385e723))
+- **checkout** Initialize virtual checkouts in existing directories ([#243](https://github.com/noirbizarre/over/issues/243)) - ([57fe5d2](https://github.com/noirbizarre/over/commit/57fe5d25359223caec1a54fb6c16732a7be1adc5))
+- **checkout** Recognize raw HEAD content with stale checkpoints - ([aafb072](https://github.com/noirbizarre/over/commit/aafb072441fe040848b904f10bff4dfceb6fcde1))
+- **checkout** Share canonical Git snapshots across comparisons - ([60f2b20](https://github.com/noirbizarre/over/commit/60f2b20a8530cee05f5b970fadbe61bb478ae1e6))
+- **ci** Ignore generated release files in prek ([#203](https://github.com/noirbizarre/over/issues/203)) - ([8043bc8](https://github.com/noirbizarre/over/commit/8043bc837e5f907af7636a1d01edfa49bb42fd0d))
+- **cli** Reject missing overlay selection with no-prompt - ([1435164](https://github.com/noirbizarre/over/commit/1435164d99f7b333aee419620b27c103df68b8ca))
+- **commit** Exclude intent-to-add placeholders from staged content - ([3636ca4](https://github.com/noirbizarre/over/commit/3636ca449cb0437237b757ad119c1401e4228e15))
+- **commit** Publish filtered source worktree content - ([311923f](https://github.com/noirbizarre/over/commit/311923f7b77bd406fcd01f2947ecce5e2953f6f9))
+- **commit** Preserve native source metadata through transactions - ([2770da1](https://github.com/noirbizarre/over/commit/2770da13589d4395d36e5b703316fc70cbf735eb))
+- **config** Warn and ignore unknown overlay keys ([#222](https://github.com/noirbizarre/over/issues/222)) - ([aaf09cf](https://github.com/noirbizarre/over/commit/aaf09cf9813534bc3a66c403e80987ed638da8b9))
+- **desired** Preserve compatible partial claims with mappings - ([bfbf55f](https://github.com/noirbizarre/over/commit/bfbf55f6e663e0924b5f7136018990877c021464))
+- **devcontainer** Make feature installation and lifecycle reliable ([#226](https://github.com/noirbizarre/over/issues/226)) - ([55638e3](https://github.com/noirbizarre/over/commit/55638e3771002143d85bc2e8837c5448f1930106))
+- **devcontainer** Align dotfiles home default - ([ea6547c](https://github.com/noirbizarre/over/commit/ea6547cc5b7d53f3fc33461ed3c0a87dd3f78297))
+- **diff** Report missing hard-link sources without aborting - ([07ecc51](https://github.com/noirbizarre/over/commit/07ecc51c011f7f2854d7d38de0576d126ab0f240))
+- **diff** Recognize hard-link identity in link diagnostics - ([eb7c3a8](https://github.com/noirbizarre/over/commit/eb7c3a88afb3a14b79552de8c11c8a0e9e4c7292))
+- **doctor** Group lint diagnostics and check existing exclusions ([#247](https://github.com/noirbizarre/over/issues/247)) - ([395c352](https://github.com/noirbizarre/over/commit/395c352ec8b4fe8fb431183ff7057c4189d6f138))
+- **doctor** Inspect state without creating diagnostic locks - ([2995e0e](https://github.com/noirbizarre/over/commit/2995e0e927b0d28be5337888668d584a9f18d425))
+- **git** Preserve ignored files during revision checkout - ([4b85dac](https://github.com/noirbizarre/over/commit/4b85dac91816662d00eb4ce094b2433111685529))
+- **git** Reconcile explicit fetch refspecs on existing remotes - ([5d3bd5c](https://github.com/noirbizarre/over/commit/5d3bd5c0eb184988450eeab66f3063edd2b73e52))
+- **git** Keep add preview overlay selection read-only - ([763ea8f](https://github.com/noirbizarre/over/commit/763ea8f5600e9e2806cae3f3ab58a5210dce2604))
+- **install** Preserve per-descriptor manager eligibility - ([9ef07b7](https://github.com/noirbizarre/over/commit/9ef07b7cd50ad3a6bd9da6418454c9549a527ac4))
+- **install** Resolve cargo home paths against execution root - ([5ade8f8](https://github.com/noirbizarre/over/commit/5ade8f83ec7e9f980b73771176e9889937107e06))
+- **install** Discover managers in dependency-only compositions - ([3583ac9](https://github.com/noirbizarre/over/commit/3583ac95266199a91f31c456a3a87a6ed2dfdda1))
+- **install** Honor no-uses during package collection - ([a0d827b](https://github.com/noirbizarre/over/commit/a0d827b8121b0e80556a6c4fb3625da371bc6157))
+- **new** Construct prospective overlays for ingestion previews - ([d9935c2](https://github.com/noirbizarre/over/commit/d9935c2b99ec052711c3682ddb3984801ab4b829))
+- **overlays** Validate Git logical keys before routing - ([23c1e78](https://github.com/noirbizarre/over/commit/23c1e782a326ac7d8c1eefa4694001aaee1378a7))
+- **ownership** Prune ignored checkout source subtrees - ([40f1abb](https://github.com/noirbizarre/over/commit/40f1abb13239f04d86d13b04cf178059e4f597db))
+- **ownership** Resolve replaced scaffolds prospectively - ([3c42946](https://github.com/noirbizarre/over/commit/3c42946c8f5658757d0bf4c1c97fe0e8d3059527))
+- **partial** Canonicalize optional terminal newline comparisons - ([c01bc1b](https://github.com/noirbizarre/over/commit/c01bc1bec94c5935d5e27300647bfae7a25c0455))
+- **paths** Share template namespaces across desired path resolution - ([80b9cde](https://github.com/noirbizarre/over/commit/80b9cde5aff0ef5f828d81cce4a2036fcff2a850))
+- **plan** Reject file ancestors consistently on Windows - ([952bed4](https://github.com/noirbizarre/over/commit/952bed4887fe0820cdee038648cf923c1df153bc))
+- **plan** Defer children until scaffold replacement is authorized - ([ca302c0](https://github.com/noirbizarre/over/commit/ca302c07b77ecc167e5bb61f502ee1d9a8a7b9a0))
+- **restore** Preserve native metadata when detaching macOS hard links - ([f084dc4](https://github.com/noirbizarre/over/commit/f084dc4275d054ddfb149ea28e83bae7b673f525))
+- **safety** Strengthen destructive-operation safeguards ([#211](https://github.com/noirbizarre/over/issues/211)) - ([6203e59](https://github.com/noirbizarre/over/commit/6203e595127119a35d548868a8f7d0450da7a3a6))
+- **selection** Reserve Git administration boundaries - ([35d53e0](https://github.com/noirbizarre/over/commit/35d53e00e0c0adac83ef16ae0c9e935e2820bf53))
+- **status** Report blocked scaffold children without inspecting them - ([01a8367](https://github.com/noirbizarre/over/commit/01a836746a78f19b7c64b25eaf60061e699bac2c))
+- **status** Centralize Git diagnostics and summarize doctor health ([#251](https://github.com/noirbizarre/over/issues/251)) - ([6af8c11](https://github.com/noirbizarre/over/commit/6af8c11e98d0ca6c8ce823534c7f0bf491df11d0))
+- **status** Limit inspection to overlay files and improve report readability ([#249](https://github.com/noirbizarre/over/issues/249)) - ([de16bbe](https://github.com/noirbizarre/over/commit/de16bbe53436a1ed93df8ee64f5f5db082d17134))
+- **sync** Preflight and order virtual checkout shape transitions - ([4af85f6](https://github.com/noirbizarre/over/commit/4af85f65a0ac362c82b0e65fea0d8d1c68ef67e6))
+- **sync** Short-circuit abort for virtual checkout units - ([51dc74a](https://github.com/noirbizarre/over/commit/51dc74a626634c8f004719fbae17d43a3ddd80a9))
+- **ui** Shorten home paths across all commands ([#263](https://github.com/noirbizarre/over/issues/263)) - ([ff0be47](https://github.com/noirbizarre/over/commit/ff0be47e5bf1936b22e9cbea71bd1d2de1c15070))
+- **ui** Simplify reconciliation and hook summaries ([#260](https://github.com/noirbizarre/over/issues/260)) - ([c13cbdd](https://github.com/noirbizarre/over/commit/c13cbdd9c32d33f64242f2bc673d111daa3079fd))
+- **ui** Apply semantic colors consistently across CLI output ([#250](https://github.com/noirbizarre/over/issues/250)) - ([fc9df75](https://github.com/noirbizarre/over/commit/fc9df755b291559e52e2185bba593fa6047c9b72))
+- **ui** Use theme-colored text glyphs for status indicators ([#242](https://github.com/noirbizarre/over/issues/242)) - ([4e7ab72](https://github.com/noirbizarre/over/commit/4e7ab729e239c45d44f87c1246dbc9fa07873039))
+- **unapply** Revalidate checkout content using canonical Git semantics - ([7076ca3](https://github.com/noirbizarre/over/commit/7076ca30746fbdd25177548dbc50b0577bb278aa))
+- Reconcile overlay safety and documentation consistency ([#262](https://github.com/noirbizarre/over/issues/262)) - ([2921da8](https://github.com/noirbizarre/over/commit/2921da8cb77aefaf0cf710445788db5d68bd5cb0))
+- Align overlay workflows, safety boundaries, and documented behavior ([#213](https://github.com/noirbizarre/over/issues/213)) - ([7fa675f](https://github.com/noirbizarre/over/commit/7fa675ffaaad964dbfe7651d9fe9d6a3a4035804))
+
+### 🔨 Refactor
+
+- **git** Remove unused stateful overlay selection helper - ([94deabf](https://github.com/noirbizarre/over/commit/94deabf275741d5988af704a47108ce31f3a8e02))
+- **install**  🚨 **breaking** Replace package installation with lifecycle hooks ([#220](https://github.com/noirbizarre/over/issues/220)) - ([91e1d3e](https://github.com/noirbizarre/over/commit/91e1d3e5aea6ab60808cbca786c665f3b658abf1))
+- **json** Standardize CLI output with console-json ([#238](https://github.com/noirbizarre/over/issues/238)) - ([94b86a4](https://github.com/noirbizarre/over/commit/94b86a4612773392e22e8404b9cefb9a50a1a794))
+
+### 📚 Documentation
+
+- **agents** Clarify inward dependency boundaries - ([6540ef7](https://github.com/noirbizarre/over/commit/6540ef7723fb21cd0b81b17f4314e25c8793040d))
+- **agents** Describe current diff module responsibilities - ([69854a3](https://github.com/noirbizarre/over/commit/69854a360f1bc5305a0315766d3f85884730fbdb))
+- **checkout** Correct lost association recovery guidance - ([87d4af2](https://github.com/noirbizarre/over/commit/87d4af2ca051ac9b20a953435a9b22f23b7d1a67))
+- **cli** Qualify crypt and access repository discovery - ([db316ab](https://github.com/noirbizarre/over/commit/db316ab71629349cc1812f0f52d75cb6b1c89eb6))
+- **data** Clarify terminal and piped JSON formatting - ([7b0a5fd](https://github.com/noirbizarre/over/commit/7b0a5fd68486a4cfe63499d2b44baac48e538bcc))
+- **demo** Refresh the overlay workflow recording ([#239](https://github.com/noirbizarre/over/issues/239)) - ([a2f6490](https://github.com/noirbizarre/over/commit/a2f6490b6c97e52e612232bcc0015269ff3b5802))
+- **desired** Correct declared repository synchronization guidance - ([7bbdf6b](https://github.com/noirbizarre/over/commit/7bbdf6bf0a9b07009b0a60e17c0f9b86ada662f5))
+- **doctor** Correct named runtime inspection scope - ([2237fa7](https://github.com/noirbizarre/over/commit/2237fa7fa3a31239128ba50f0037389e2deda3a6))
+- **faq** Explain Over's origins and compare alternatives ([#256](https://github.com/noirbizarre/over/issues/256)) - ([1e4c11f](https://github.com/noirbizarre/over/commit/1e4c11f84dfb294654a6f14e4583cf76472d17f0))
+- **git** Clarify retained plaintext exclusion safeguards - ([3a49ad7](https://github.com/noirbizarre/over/commit/3a49ad76a65ec2caa3172d0ab44456ecea2485ba))
+- **install** Remove unsupported registry-based binstall instructions - ([5bce987](https://github.com/noirbizarre/over/commit/5bce9872171066413a676945dfae676f1ce372a1))
+- **overlays** Clarify optional local descriptors in getting started - ([844d653](https://github.com/noirbizarre/over/commit/844d653b9e3f17704492a535141283fb430cb840))
+- **partial** Correct sidecar duplicate precedence contract - ([47db72e](https://github.com/noirbizarre/over/commit/47db72ec48a99fdc8f5f9a0f127ea2ae2c888f24))
+- **plan** Describe preflight before repository provisioning - ([84aa766](https://github.com/noirbizarre/over/commit/84aa7660aee391766fe4590507a6ef8b755103e4))
+- **readme** Match supported platforms to release artifacts - ([90ace31](https://github.com/noirbizarre/over/commit/90ace31c29345cfbb7ced128bee5f04e99cefe64))
+- **restore** Explain protected content and historical index restrictions - ([37fb04b](https://github.com/noirbizarre/over/commit/37fb04bfed038f2eba214415c7e08bc0e54150d5))
+- **secrets** Clarify recoverable native session fallback - ([0336882](https://github.com/noirbizarre/over/commit/03368822217fb3de0cd98cece99bee0be8fff283))
+- **secrets** Distinguish native unlock from legacy credentials - ([a8f089d](https://github.com/noirbizarre/over/commit/a8f089d9a5b11316fb4cafcd4bd49afb0e7b4d9a))
+- **selection** Remove obsolete overlay chooser examples - ([ea634cd](https://github.com/noirbizarre/over/commit/ea634cdf7bb5434df76fae89adf38df657031a65))
+- **selection** Qualify explicit sidecar referent protection - ([0bfcc63](https://github.com/noirbizarre/over/commit/0bfcc63a4f3fe123c2c58f586b5dc3aabcd2289c))
+- **selection** Explain reserved Git administration paths - ([a0829c3](https://github.com/noirbizarre/over/commit/a0829c3ae7b442be3ccff7bd54fad3e591d5526e))
+- **status** Clarify commit conflict and staging contracts - ([df75f8f](https://github.com/noirbizarre/over/commit/df75f8f2049537ecbb8a9df0f0b2fe8efbc4c28a))
+- **status** Explain manual origin URL repair - ([fdb4396](https://github.com/noirbizarre/over/commit/fdb4396576335b18d8ef828d39985da18b620418))
+- **sync** Clarify hard-reset abort semantics - ([e8f4869](https://github.com/noirbizarre/over/commit/e8f4869299a631a0a1050b9adae877ec6b2512e4))
+- **tooling** Correct Clippy validation guidance - ([42c9e93](https://github.com/noirbizarre/over/commit/42c9e93b2bb573aefce7e92420b7415a22bef9ee))
+- **unapply** Describe retained directory reporting - ([f1923eb](https://github.com/noirbizarre/over/commit/f1923eb440b29d56f9dc2aea668cf1f3b843e529))
+- **xdg** Clarify unrecoverable checkout association state - ([c8de191](https://github.com/noirbizarre/over/commit/c8de19145e4e3d09779a2c256729980b2676a254))
+- L add unified configuration reference and small changes ([#259](https://github.com/noirbizarre/over/issues/259)) - ([1f360d0](https://github.com/noirbizarre/over/commit/1f360d0d7822de93ab81a5b757affee200bf4c90))
+- Simplify the getting-started walkthrough ([#224](https://github.com/noirbizarre/over/issues/224)) - ([91625dc](https://github.com/noirbizarre/over/commit/91625dcc20f42a3d53b7bf85b6fcc99208da08b1))
+- Restructure user guide and reference documentation ([#207](https://github.com/noirbizarre/over/issues/207)) - ([877794f](https://github.com/noirbizarre/over/commit/877794f78a310c02b80093694ceb06686afaf475))
+- Correct virtual checkout link after main sync - ([dbd6f19](https://github.com/noirbizarre/over/commit/dbd6f19de2b57839edfe0a92b807d2b9d88e5039))
+
+### 🧪 Tests
+
+- **checkout** Scope Unix snapshot fixtures to Unix - ([bf2c450](https://github.com/noirbizarre/over/commit/bf2c450acd96f6732051e20adc8967893058cd07))
+- **install** Normalize expected descriptor paths on Windows - ([5a2a36b](https://github.com/noirbizarre/over/commit/5a2a36ba27625571b039e25fec48988c793dc115))
+
+### 🏗️ Build
+
+- **deps** Update mise.lock - ([f1beb51](https://github.com/noirbizarre/over/commit/f1beb5168fa8bdcd733c670073c9e5d440aed65a))
+- **deps** Bump minijinja ([#177](https://github.com/noirbizarre/over/issues/177)) - ([d32a148](https://github.com/noirbizarre/over/commit/d32a1487fada60df1e672feb0def8fa24de69457))
+- **deps** Bump the rust-dependencies group with 4 updates ([#175](https://github.com/noirbizarre/over/issues/175)) - ([4c7d98f](https://github.com/noirbizarre/over/commit/4c7d98f6bfcf302a43b7d3b8439ca376b7d59786))
+- **deps** Bump the rust-dependencies group with 2 updates ([#171](https://github.com/noirbizarre/over/issues/171)) - ([382d7bc](https://github.com/noirbizarre/over/commit/382d7bc8cf963b56327001fb908f137ce5edcbda))
+- **deps** Bump rstest from 0.27.0 to 0.28.0 ([#172](https://github.com/noirbizarre/over/issues/172)) - ([0315aa2](https://github.com/noirbizarre/over/commit/0315aa2ff5c789adb606877d30d92c88d5ddda44))
+- **deps** Bump noyalib from 0.0.57 to 0.0.58 ([#173](https://github.com/noirbizarre/over/issues/173)) - ([0205549](https://github.com/noirbizarre/over/commit/0205549b9d68d8137af32c5480144f80da167162))
+
+### 🔧 CI
+
+- **coverage** Make diagnostic coverage uploads debug-only and best-effort ([#208](https://github.com/noirbizarre/over/issues/208)) - ([c5cb709](https://github.com/noirbizarre/over/commit/c5cb70961e7aea8962ae63e4c78c85388850608d))
+- **devcontainer** Rename Dev Container and Docker workflows - ([c2e90ce](https://github.com/noirbizarre/over/commit/c2e90ce6a540d1105681df7693ffccc2e456ac90))
+- Distinguish documentation build and publication jobs ([#229](https://github.com/noirbizarre/over/issues/229)) - ([606c278](https://github.com/noirbizarre/over/commit/606c2783983019b9db45aa8404f95719703aad12))
+- Restore main CI after overlay feature merges ([#185](https://github.com/noirbizarre/over/issues/185)) - ([4fff023](https://github.com/noirbizarre/over/commit/4fff023cb0977dac12ad0abfc03ece2e48a45bee))
+
+### 🧹 Chores
+
+- **lint** Remove obsolete markdownlint configuration - ([196d020](https://github.com/noirbizarre/over/commit/196d0205d1c3b774afeb3b44354d580c801b1dc9))
+- **template** Merge documentation job names update - ([e31078b](https://github.com/noirbizarre/over/commit/e31078b3eb8d4a12cc06ad2c81c629d12471c2bb))
+- **template** Merge upstream tools markers and documentation job names - ([886206d](https://github.com/noirbizarre/over/commit/886206d26ef8ffd992b7fe41956d393f5c3b2a64))
+- **template** Sync with latest rust.tpl ([#200](https://github.com/noirbizarre/over/issues/200)) - ([109f9f2](https://github.com/noirbizarre/over/commit/109f9f2880981533d3db09413eb7c82e1962f52d))
+- **template** Sync with main before submission - ([8e435cf](https://github.com/noirbizarre/over/commit/8e435cf3a1ce14c0fd59b72ec310028a6c831d87))
+- **template** Finalize tool lock and documentation checks - ([325f8a4](https://github.com/noirbizarre/over/commit/325f8a49afbf497420e7e7dfd9d3d8395e57c1d4))
+- **template** Merge latest rust.tpl updates - ([3f0ddbc](https://github.com/noirbizarre/over/commit/3f0ddbc148a57ee1df79c69793cb7a59c79c7ce6))
+- Merge main into documentation job names branch - ([2ab2774](https://github.com/noirbizarre/over/commit/2ab2774f0f05a443157ccbd4d7991c6b30105c0d))
+
+### Tpl
+
+- Render rust at main - ([6a51b16](https://github.com/noirbizarre/over/commit/6a51b16b597ecaededfb153bc5f25a1540d7e11a))
+- Render rust at main - ([7fa1a34](https://github.com/noirbizarre/over/commit/7fa1a341e7f70bf70fad70e0372511b28250ab14))
+- Render rust at main - ([00aca87](https://github.com/noirbizarre/over/commit/00aca87d00c3fbc43ecc07d8e344653697501bf9))
+- Render rust at main - ([854b0ac](https://github.com/noirbizarre/over/commit/854b0ac0f8a75be79fb619efc0df2f07a7e42014))
+- Render rust at main - ([86c59e9](https://github.com/noirbizarre/over/commit/86c59e9a5515313d7ad200f0e0bdc24390c50ddb))
+- Render rust at main - ([7de2b79](https://github.com/noirbizarre/over/commit/7de2b79902f8d7217162c5292bfc7e70a26c1884))
+- Render rust at main - ([f565d94](https://github.com/noirbizarre/over/commit/f565d94fb70e1d29f490709a0591643419c563d1))
+- Render rust at main - ([bb180d6](https://github.com/noirbizarre/over/commit/bb180d634fd91e884674a35d5afffbf43bc55a00))
+
 ## 0.1.0 - 2026-10-22
 
 ### 💫 Features
@@ -22,10 +195,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **git** Exclude overlay-managed paths from target repo's git status on apply ([#151](https://github.com/noirbizarre/over/issues/151)) - ([4468abd](https://github.com/noirbizarre/over/commit/4468abd28ad4363d2f98a83311d983647655dbc9))
 - **git** Add per-worktree config support - ([7fc33f9](https://github.com/noirbizarre/over/commit/7fc33f9c8f56d78cba7081435f71de8a0fb514fe))
 - **git** Advanced git config - ([4bf119d](https://github.com/noirbizarre/over/commit/4bf119dcdc4ac573d6029ffd660b087703b6ace1))
-- **git-over** Initial `git-over` implementation - ([2fb3d2c](https://github.com/noirbizarre/over/commit/2fb3d2cd2f008b10433b72fe608d5f126118810a))
+- **git-over** Inital `git-over` implementation - ([2fb3d2c](https://github.com/noirbizarre/over/commit/2fb3d2cd2f008b10433b72fe608d5f126118810a))
 - **help** Add colors to help - ([61004e7](https://github.com/noirbizarre/over/commit/61004e72ad383b0f5e78798e5d4f237758cbc3be))
 - **install** Parse config - ([ede64a8](https://github.com/noirbizarre/over/commit/ede64a8b527a86a5fbdea0bfba46c93ffad21deb))
-- **link** Basic complicit and overwriting handling - ([540d20e](https://github.com/noirbizarre/over/commit/540d20e83b6e9ce66320cfdf0bd14c5d47d6def1))
+- **link** Basic complict and overwriting handling - ([540d20e](https://github.com/noirbizarre/over/commit/540d20e83b6e9ce66320cfdf0bd14c5d47d6def1))
 - **lint** Show precise diagnostics with file locations and key suggestions ([#47](https://github.com/noirbizarre/over/issues/47)) - ([957803e](https://github.com/noirbizarre/over/commit/957803ee4963273a201ab1920b342b49fc2e1229))
 - **lint** Add a `over lint` command - ([faf4851](https://github.com/noirbizarre/over/commit/faf4851a3234f36c0440d12d210b01b71e84434b))
 - **list** Implement --tree view for overlay listing ([#72](https://github.com/noirbizarre/over/issues/72)) - ([0996a8b](https://github.com/noirbizarre/over/commit/0996a8bf64f819681b1d88a07358f67296bb3b63))
@@ -124,7 +297,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **doctor** Explain why default_overlay/--all don't apply to over doctor - ([95adf35](https://github.com/noirbizarre/over/commit/95adf35be4fe4d16a2302839e12ba735ceca94bf))
 - **exec** Document the Ctx/&Ctx/&Context parameter convention - ([d17dbdc](https://github.com/noirbizarre/over/commit/d17dbdc4edfd20e8ae3bcb0fc137b736a66512fd))
 - **install-config** Fix broken archlinux Platform Sections example - ([e2e4c01](https://github.com/noirbizarre/over/commit/e2e4c01abb2e47443603646dc6e54c6567da4c2f))
-- **logo** Add an initial logo ([#44](https://github.com/noirbizarre/over/issues/44)) - ([c75d38e](https://github.com/noirbizarre/over/commit/c75d38e849e87b5d5e8d2fe82881410231269eab))
+- **logo** Add an inital logo ([#44](https://github.com/noirbizarre/over/issues/44)) - ([c75d38e](https://github.com/noirbizarre/over/commit/c75d38e849e87b5d5e8d2fe82881410231269eab))
 - **overlays** Fix Repository::get doc comment terminology - ([47547d7](https://github.com/noirbizarre/over/commit/47547d725ef4b3dacbd92f8b93fc33f16623f3f3))
 - **plan** Align Operation::Deferred doc with its own Display impl - ([15bb102](https://github.com/noirbizarre/over/commit/15bb102b30b61b94244c8bc36f9d41070bf24055))
 - **readme** List over diff, sync, and unapply commands - ([a9a426e](https://github.com/noirbizarre/over/commit/a9a426e0029218b22c607b4ff3abfc5225bdef5d))
@@ -277,6 +450,3 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Install - ([c2e3fa6](https://github.com/noirbizarre/over/commit/c2e3fa6adc9b2450aafad1cdb444439052282f01))
 - Install - ([9a8a600](https://github.com/noirbizarre/over/commit/9a8a6007b83a2ccc5f84d6b5f937709364bba4f4))
 
-## ❤️ New Contributors
-
-* @noirbizarre made their first contribution in [#162](https://github.com/noirbizarre/over/pull/162)
