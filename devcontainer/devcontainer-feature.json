@@ -1,6 +1,6 @@
 {
     "id": "over",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "name": "Over",
     "description": "Apply dotfiles overlays using over, a git-based files overlay manager",
     "documentationURL": "https://noirbizarre.github.io/over/devcontainer/",
@@ -31,7 +31,7 @@
         "version": {
             "type": "string",
             "description": "Version (tag) of the over Docker image to install from",
-            "default": "0.2.0"
+            "default": "0.2.1"
         }
     },
     "postCreateCommand": "/usr/local/share/over/setup.sh",

@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1](https://github.com/noirbizarre/over/compare/0.2.0..0.2.1) - 2026-11-13
+
+### 🐛 Bug Fixes
+
+- **commit** Scope staged commits to requested paths ([#269](https://github.com/noirbizarre/over/issues/269)) - ([916f338](https://github.com/noirbizarre/over/commit/916f338267b952ccf4fdd23b9d28ca250cde4492))
+- **status** Keep reconciliation summaries on one line ([#270](https://github.com/noirbizarre/over/issues/270)) - ([0d920a7](https://github.com/noirbizarre/over/commit/0d920a79f7a74c11240260f87f4da20908160875))
+- **status** Separate Git changes from reconciliation ([#267](https://github.com/noirbizarre/over/issues/267)) - ([296331e](https://github.com/noirbizarre/over/commit/296331e65fa5971fdd13ece3e145564d5054bc52))
+
 ## [0.2.0](https://github.com/noirbizarre/over/compare/0.1.0..0.2.0) - 2026-11-12
 
 ### 💫 Features
