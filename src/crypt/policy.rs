@@ -615,6 +615,10 @@ fn stage_blob(
     path: &Path,
     bytes: &[u8],
 ) -> Result<()> {
+    let serialized = path.to_str().context("crypt requires UTF-8 paths")?;
+    // Raw IndexEntry paths bypass git2's Path conversion and always use Git separators.
+    #[cfg(windows)]
+    let serialized = serialized.replace('\\', "/");
     let mut entry = index.get_path(path, 0).unwrap_or(git2::IndexEntry {
         ctime: git2::IndexTime::new(0, 0),
         mtime: git2::IndexTime::new(0, 0),
@@ -627,11 +631,7 @@ fn stage_blob(
         id: git2::Oid::ZERO_SHA1,
         flags: 0,
         flags_extended: 0,
-        path: path
-            .to_str()
-            .context("crypt requires UTF-8 paths")?
-            .as_bytes()
-            .to_vec(),
+        path: serialized.as_bytes().to_vec(),
     });
     ensure!(
         matches!(entry.mode, 0o100644 | 0o100755),
@@ -1917,6 +1917,18 @@ pub fn migrate(repo: &git2::Repository) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newly_staged_native_paths_use_git_separators_in_the_index_and_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(temp.path()).unwrap();
+        let mut index = repo.index().unwrap();
+        let path = PathBuf::from("nested").join("token");
+        stage_blob(&mut index, &repo, &path, b"canonical blob").unwrap();
+        assert_eq!(index.get(0).unwrap().path, b"nested/token");
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        assert!(tree.get_path(Path::new("nested/token")).is_ok());
+    }
 
     #[test]
     fn attribute_line_endings_are_equivalent_but_protection_rules_are_not() {

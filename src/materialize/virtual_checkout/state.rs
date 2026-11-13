@@ -154,15 +154,13 @@ pub(crate) fn state_file() -> Result<StateFile<VirtualCheckoutState>> {
 /// on the literal string `"."`, silently reading/overwriting each
 /// other's association — observed directly, not just theoretical.
 ///
-/// Falls back to an absolute (but not symlink-resolved) path if
-/// canonicalization fails — every call site here only ever looks this up
-/// for a target that has just been materialized (so it exists), but
-/// there's no reason to make this key computation itself fallible for a
-/// clearly non-fatal, best-effort concern.
+/// Missing destinations retain the canonical spelling of their existing ancestor,
+/// including Windows verbatim prefixes used by legacy records. Fall back to an
+/// absolute path if ancestors cannot be resolved; operational guards report the error.
 pub(crate) fn key_for(target: &Path) -> String {
     // Reservations precede directory creation; resolve existing ancestors too so
     // initialization and final publication cannot acquire different alias keys.
-    let resolved = crate::overlays::mapping::physical(target).unwrap_or_else(|_| {
+    let resolved = canonical_target(target).unwrap_or_else(|_| {
         if target.is_absolute() {
             target.to_path_buf()
         } else {
@@ -172,6 +170,27 @@ pub(crate) fn key_for(target: &Path) -> String {
         }
     });
     resolved.to_string_lossy().to_string()
+}
+
+fn canonical_target(target: &Path) -> Result<PathBuf> {
+    let resolved = crate::overlays::mapping::physical(target)?;
+    for ancestor in resolved.ancestors() {
+        match ancestor.canonicalize() {
+            Ok(canonical) => {
+                let suffix = resolved.strip_prefix(ancestor)?;
+                // Keep std's Windows canonical prefix, and avoid adding a trailing
+                // separator to existing destinations when the suffix is empty.
+                return Ok(if suffix.as_os_str().is_empty() {
+                    canonical
+                } else {
+                    canonical.join(suffix)
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("target '{}' has no canonical ancestor", target.display())
 }
 
 /// Legacy keys remain paths; projection keys encode a tuple without delimiter ambiguity.
@@ -536,6 +555,16 @@ async fn remove_key_in(state_file: &StateFile<VirtualCheckoutState>, key: String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creating_a_reserved_destination_preserves_its_canonical_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("missing").join("target");
+        let reserved = key_for(&target);
+        std::fs::create_dir_all(&target).unwrap();
+        assert_eq!(reserved, key_for(&target));
+        assert_eq!(reserved, target.canonicalize().unwrap().to_string_lossy());
+    }
 
     #[tokio::test]
     async fn live_source_associations_distinguish_repositories_and_ignore_removed_targets() {
