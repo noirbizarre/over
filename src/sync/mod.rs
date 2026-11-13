@@ -718,18 +718,28 @@ async fn commit_virtual_checkout_interactively(
 /// of source updates. Explicit blob writes also avoid libgit2 checkout's unreliable
 /// existing-file comparison when redirected to a different target directory.
 async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
+    let _ownership = if dry_run {
+        None
+    } else {
+        Some(tokio::task::spawn_blocking(vc_state::mutation_guard).await??)
+    };
+    vc_state::validate_claims(&vc_state::state_file()?.inspect_blocking()?, entry)?;
     let Provenance::Overlay { source, .. } = &entry.provenance else {
         unreachable!(
             "VirtualCheckout entries only ever carry Provenance::Overlay \
              (see desired::tree::{{collect_own_entries,walk_overlay_tree}})"
         );
     };
-    let Some(mut record) = vc_state::record_for(&entry.target).await? else {
+    let Some(mut record) = vc_state::record_for_entry(entry)? else {
         anyhow::bail!(
             "no virtual checkout association recorded for '{}' — run `over apply` first",
             entry.target.display(),
         );
     };
+    anyhow::ensure!(
+        !record.initializing,
+        "checkout initialization was interrupted; rerun over apply before syncing"
+    );
 
     let target = entry.target.clone();
     let source = source.clone();
@@ -821,6 +831,7 @@ async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Resu
 
     if !dry_run {
         record.base_oid = new_base_oid;
+        record.scope = entry.intent.checkout_scope();
         vc_state::persist(&entry.target, record).await?;
     }
     Ok(())

@@ -394,6 +394,9 @@ removes only the block, preserving unrelated content. Use
 
 Use `git` to provision real repositories, such as a plugin checkout. This is
 different from `mode: checkout`, which exposes the overlay source's own files.
+Fresh virtual checkouts project individual owned files, so applications can share
+home and fragment directories without claiming every descendant. See
+[flat application composition](materialization.md#compose-flat-application-overlays).
 
 ```yaml
 # ~/.dotfiles/apps/tmux/over.yaml

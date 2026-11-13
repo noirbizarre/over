@@ -86,6 +86,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     // Build execution context with the overlay's target as root
     let ctx = Context::builder()
+        .acquire_checkout_paths(args.overlay.is_some())
         .dry_run(args.dry_run)
         .debug(cli.debug)
         .verbose(cli.verbose)

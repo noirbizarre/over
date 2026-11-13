@@ -520,7 +520,8 @@ fn virtual_unapply_cleans_the_original_association_through_an_ancestor_alias() {
         .arg("--no-prompt")
         .assert()
         .success();
-    assert!(!fixture.target().exists());
+    assert!(fixture.target().is_dir());
+    assert!(!fixture.target().join("file").exists());
     assert!(!fs::read_to_string(state).unwrap().contains(&key));
     assert_eq!(fs::read(source.path().join("index")).unwrap(), index);
 }

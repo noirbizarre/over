@@ -22,7 +22,7 @@ Options:
 ```
 
 Without `--overlay`, [infer from the input paths](selection.md). Managed siblings
-can identify an overlay for a new file. Ambiguous or missing context requires an
+can identify an overlay for a new symlink-managed file. Ambiguous or missing context requires an
 explicit overlay; `default_overlay` does not select an ingestion destination.
 
 For symlink materialization, files are moved into the overlay and replaced
@@ -63,6 +63,16 @@ modified, or deleted files are staged in the overlay source repository's
 Git index at their reverse-mapped source paths. Target files remain ordinary
 files. A directory selection includes tracked deletions beneath it; a
 missing literal path can select a deleted tracked file.
+
+Fresh virtual checkouts share directories and own individual projected files.
+Acquiring a new destination file requires `--overlay NAME`, even when neighboring
+files identify an application. Recursive selections stage known owned files and,
+with an explicit overlay, acquire eligible unowned files. They skip files owned by
+other overlays; directly naming another owner's file fails. New files remain ordinary
+files and are staged at their canonical source paths, including with `--crypt`.
+Unstaging or resetting an acquired file does not release its ownership. Unapply
+the association when removing its ownership. Existing exclusive checkout deployments
+retain their previous addition-discovery behavior.
 
 ```sh
 over add --overlay workspace/client /etc/client/config.toml
@@ -109,7 +119,9 @@ not supported in patch mode.
 
 Patch mode only stages virtual-checkout paths owned by the selected overlay.
 Directory selections skip other materializations; explicitly selecting an
-unmanaged file fails. No files are moved or replaced with symlinks.
+unmanaged file requires explicit overlay selection to acquire it. No files are moved
+or replaced with symlinks. Explicit acquisition reserves ownership even if a later
+patch session is cancelled; cancelling changes no staged snapshots.
 `--force` does not accept choices automatically. Interactive selection needs
 a terminal; `--patch --dry-run` displays candidate changes without prompting
 or updating the index.

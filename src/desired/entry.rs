@@ -6,11 +6,15 @@ use crate::actions::symlink::LinkType;
 use crate::overlays::FileMode;
 use crate::overlays::ignore::SourcePolicy;
 
-/// Ownership holes in an otherwise contiguous virtual checkout.
+/// Source routing holes and optional positive destination-leaf ownership.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct CheckoutScope {
     pub source_excludes: Vec<PathBuf>,
     pub target_excludes: Vec<PathBuf>,
+    /// Positive leaf ownership for fresh checkouts; absence preserves legacy exclusivity.
+    /// Box the inventory header to keep intents and paired migration operations compact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection: Option<Box<std::collections::BTreeSet<PathBuf>>>,
     /// Current source selection is runtime policy, never persisted ownership.
     #[serde(skip)]
     pub source_policy: Option<(PathBuf, Arc<SourcePolicy>)>,
@@ -21,6 +25,7 @@ impl PartialEq for CheckoutScope {
         // Editing ignore rules must not invalidate an existing checkout association.
         self.source_excludes == other.source_excludes
             && self.target_excludes == other.target_excludes
+            && self.projection.is_some() == other.projection.is_some()
     }
 }
 
@@ -45,6 +50,17 @@ impl CheckoutScope {
 
     pub fn owns_target_kind(&self, path: &Path, is_dir: bool) -> bool {
         self.selects(path, is_dir)
+            && self.projection.as_ref().is_none_or(|paths| {
+                if is_dir {
+                    // Ordered prefixes avoid scanning the inventory for every shared directory.
+                    paths
+                        .range(path.to_path_buf()..)
+                        .next()
+                        .is_some_and(|leaf| leaf.starts_with(path))
+                } else {
+                    paths.contains(path)
+                }
+            })
             && !self
                 .target_excludes
                 .iter()
@@ -115,8 +131,8 @@ pub enum MaterializationIntent {
     /// the overlay's own repository, never via a real git index at the
     /// target.
     VirtualCheckout,
-    /// A checkout partitioned around independently routed directories. The
-    /// unscoped variant remains useful for ordinary indivisible checkouts.
+    /// A checkout with routing policy and, for fresh deployments, projected leaves.
+    /// The unscoped variant retains legacy exclusive ownership.
     ScopedVirtualCheckout(CheckoutScope),
     /// A managed block injected into an existing (possibly foreign) file,
     /// delimited by marker lines unique to `marker` (#66). The first intent

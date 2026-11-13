@@ -219,7 +219,7 @@ fn virtual_checkout_migration(entry: &DesiredEntry) -> Result<Option<Operation>>
     let Some(record) = state::record_for_blocking(&entry.target)? else {
         return Ok(None);
     };
-    if !record.scope.target_excludes.is_empty() {
+    if record.scope.projection.is_some() || !record.scope.target_excludes.is_empty() {
         return Ok(Some(Operation::Migrate {
             from: MaterializationIntent::ScopedVirtualCheckout(record.scope),
             to: entry.intent.clone(),

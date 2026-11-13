@@ -518,6 +518,9 @@ fn finalize_entries(
         }
     }
     if !overlay.has_target_rules() {
+        for entry in entries {
+            crate::materialize::virtual_checkout::state::resolve_projection(entry, !reporting)?;
+        }
         return Ok(());
     }
     let independent: Vec<_> = entries
@@ -566,6 +569,9 @@ fn finalize_entries(
                 );
             }
         }
+    }
+    for entry in entries.iter_mut() {
+        crate::materialize::virtual_checkout::state::resolve_projection(entry, !reporting)?;
     }
     for (index, entry) in entries.iter().enumerate() {
         for other in &entries[index + 1..] {
@@ -892,6 +898,7 @@ fn checkout_intent(routing: &ResolvedMappings, logical: &Path) -> Materializatio
             source_excludes,
             target_excludes,
             source_policy: None,
+            projection: None,
         })
     }
 }

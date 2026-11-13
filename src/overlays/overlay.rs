@@ -361,9 +361,49 @@ impl Overlay {
     }
 
     pub async fn apply(&self, ctx: &Ctx) -> Result<()> {
+        let mut desired = DesiredTree::build(ctx, self)?;
+        let has_virtual_checkouts = desired
+            .entries()
+            .iter()
+            .any(|entry| entry.intent.is_virtual_checkout());
+        let ownership = if ctx.dry_run || !has_virtual_checkouts {
+            None
+        } else {
+            Some(
+                tokio::task::spawn_blocking(
+                    crate::materialize::virtual_checkout::state::mutation_guard,
+                )
+                .await??,
+            )
+        };
+        if ownership.is_some() {
+            // Waiting for another mutation may have changed effective persisted ownership.
+            desired = DesiredTree::build(ctx, self)?;
+        }
         // A flat union has no winner: reject every claim before any participant writes.
-        let desired = DesiredTree::build(ctx, self)?;
         desired.validate_ownership()?;
+        if has_virtual_checkouts {
+            let checkout_state =
+                crate::materialize::virtual_checkout::state::state_file()?.inspect_blocking()?;
+            for entry in desired
+                .entries()
+                .iter()
+                .filter(|entry| entry.intent.is_virtual_checkout())
+            {
+                crate::materialize::virtual_checkout::state::validate_claims(
+                    &checkout_state,
+                    entry,
+                )?;
+                if let Some(record) =
+                    crate::materialize::virtual_checkout::state::record_in_snapshot(
+                        &checkout_state,
+                        entry,
+                    )?
+                {
+                    crate::materialize::virtual_checkout::state::verify(entry, &record)?;
+                }
+            }
+        }
         crate::materialize::encrypted::prepare(&desired, ctx).await?;
         let mut visited = HashSet::new();
         let mut stack = Vec::new();
@@ -383,6 +423,7 @@ impl Overlay {
             overlay.apply_own(&overlay_ctx).await?;
             applied.push((overlay, overlay.resolve_target(&overlay_ctx)?));
         }
+        drop(ownership);
         if ctx.dry_run || !hooks_enabled || crate::hooks::nested() {
             return Ok(());
         }

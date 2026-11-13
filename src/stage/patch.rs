@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::{Context as _, Result, ensure};
 use git2::{IndexEntryExtendedFlag, Repository};
@@ -47,13 +49,25 @@ pub(crate) fn run(
     select: impl FnMut(&Unit, bool) -> Result<Decision>,
 ) -> Result<()> {
     crate::secrets::validate_ingestion(ctx, overlay, selections)?;
-    run_with(
-        ctx,
-        overlay,
-        selections,
-        select,
-        &state::record_for_blocking,
-    )
+    let _ownership = if ctx.dry_run {
+        None
+    } else {
+        Some(state::mutation_guard()?)
+    };
+    let tree = DesiredTree::build_own(ctx, overlay)?;
+    let mut entries: Vec<_> = tree
+        .entries()
+        .iter()
+        .filter(|entry| entry.intent.is_virtual_checkout())
+        .cloned()
+        .collect();
+    super::acquire_paths(ctx, overlay, selections, &mut entries)?;
+    if !ctx.dry_run {
+        for entry in &entries {
+            state::reserve(entry)?;
+        }
+    }
+    run_with(ctx, overlay, selections, select, &state::record_for_entry)
 }
 
 fn run_with(
@@ -61,7 +75,7 @@ fn run_with(
     overlay: &Overlay,
     selections: &[PathBuf],
     mut select: impl FnMut(&Unit, bool) -> Result<Decision>,
-    record_for: &impl Fn(&Path) -> Result<Option<state::VirtualCheckoutRecord>>,
+    record_for: &impl Fn(&DesiredEntry) -> Result<Option<state::VirtualCheckoutRecord>>,
 ) -> Result<()> {
     let tree = DesiredTree::build_own(ctx, overlay)?;
     // Legacy un-mapped root checkouts do not encode all independent entries in
@@ -79,7 +93,7 @@ fn run_with(
         })
         .map(|entry| entry.target.clone())
         .collect();
-    let entries: Vec<_> = tree
+    let mut entries: Vec<_> = tree
         .entries()
         .iter()
         .filter(|entry| entry.intent.is_virtual_checkout())
@@ -95,6 +109,7 @@ fn run_with(
                 .map(|logical| routing.target_for(&logical))
         })
         .collect::<Result<Vec<_>>>()?;
+    super::acquire_paths(ctx, overlay, &selections, &mut entries)?;
     for path in &selections {
         let logical = routing.logical_path_for(path)?;
         ensure!(
@@ -125,7 +140,7 @@ fn run_with(
         {
             continue;
         }
-        let record = record_for(&entry.target)?.with_context(|| {
+        let record = record_for(entry)?.with_context(|| {
             format!(
                 "no checkout at '{}'; run over apply first",
                 entry.target.display()
@@ -520,8 +535,8 @@ mod tests {
             paths: &[PathBuf],
             select: impl FnMut(&Unit, bool) -> Result<Decision>,
         ) -> Result<()> {
-            run_with(&self.ctx, &self.overlay, paths, select, &|target| {
-                Ok(self.records.get(target).cloned())
+            run_with(&self.ctx, &self.overlay, paths, select, &|entry| {
+                Ok(self.records.get(&entry.target).cloned())
             })
         }
 
@@ -605,7 +620,7 @@ mod tests {
             dry_run,
             &fixture.overlay,
             false,
-            &|target| Ok(fixture.records.get(target).cloned()),
+            &|entry| Ok(fixture.records.get(&entry.target).cloned()),
             &git::source_entry,
         );
         assert!(result.unwrap_err().to_string().contains("symlink"));
@@ -742,7 +757,8 @@ mod tests {
 
     #[test]
     fn atomic_additions_and_deletions_can_be_accepted_without_changing_targets() {
-        let fixture = Fixture::new();
+        let mut fixture = Fixture::new();
+        std::sync::Arc::make_mut(&mut fixture.ctx).acquire_checkout_paths = true;
         fs::remove_file(fixture.target.join("deleted")).unwrap();
         fs::write(fixture.target.join("binary"), b"binary\0bytes").unwrap();
         fs::write(fixture.target.join("empty"), b"").unwrap();

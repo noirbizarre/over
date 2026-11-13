@@ -7,8 +7,9 @@
 //! see that intent's doc and ADR-022 for the full distinction.
 //!
 //! Like `CheckoutMaterializer`, this backend only handles *presence*:
-//! `Missing -> Create`, and migration to/from a stale symlink or a legacy
-//! symlink-only directory. Any further nuance for an *existing* virtual
+//! `Missing -> Create`, with fresh checkouts projecting finite owned leaves into
+//! shared directories. Deployed symlinks require explicit teardown first.
+//! Any further nuance for an *existing* virtual
 //! checkout — dirty/added/deleted files, divergence from the source
 //! repository — is deliberately left to `over status`/`over diff`/
 //! `over commit`/`over sync` (`crate::status::virtual_checkout`), never
@@ -84,6 +85,10 @@ impl Materializer for VirtualCheckoutMaterializer {
         // to `checkout`) — always safe to migrate away from: removing a
         // symlink never loses source content.
         if let ActualState::Symlink { points_to } = &actual {
+            anyhow::ensure!(
+                scope.projection.is_none(),
+                "cannot convert deployed symlinks to a virtual checkout; unapply the old layout first"
+            );
             let Provenance::Overlay { source, .. } = &entry.provenance else {
                 unreachable!()
             };
@@ -106,9 +111,11 @@ impl Materializer for VirtualCheckoutMaterializer {
         // status/diff/commit/sync for anything beyond "it exists" (see
         // module doc). Uses the blocking XDG read since `classify` is
         // deliberately sync across every `Materializer` backend.
-        if let Some(record) = state::record_for_blocking(&entry.target)? {
+        if let Some(record) = state::record_for_entry(entry)? {
             state::verify(entry, &record)?;
-            return Ok(Operation::Noop);
+            if !record.initializing {
+                return Ok(Operation::Noop);
+            }
         }
 
         // Preserve the legacy migration checks before assessing ordinary content.
@@ -124,6 +131,10 @@ impl Materializer for VirtualCheckoutMaterializer {
         if matches!(actual, ActualState::Directory)
             && super::symlink::directory_is_symlink_mirror(&entry.target, source)?
         {
+            anyhow::ensure!(
+                scope.projection.is_none(),
+                "cannot convert a deployed symlink mirror to a virtual checkout; unapply the old layout first"
+            );
             anyhow::ensure!(
                 scope.target_excludes.is_empty(),
                 "cannot migrate a legacy directory with mapping holes; unapply its old layout first"

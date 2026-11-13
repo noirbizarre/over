@@ -145,7 +145,8 @@ impl Initial {
                         ensure!(
                             !directory.join(".git").try_exists()?
                                 && !directory.join(".git").is_symlink()
-                                && super::state::record_for_blocking(&directory)?.is_none(),
+                                && super::state::record_for_blocking(&directory)?
+                                    .is_none_or(|record| record.scope.projection.is_some()),
                             "virtual checkout path crosses protected checkout '{}'",
                             directory.display()
                         );
@@ -160,6 +161,12 @@ impl Initial {
             }
             if let Some(obstruction) = obstruction {
                 let before = inventory(&target.join(&obstruction))?;
+                ensure!(
+                    scope.projection.is_none()
+                        || !before.values().any(|node| matches!(node, Node::Link(_))),
+                    "cannot convert deployed symlinks at '{}'; unapply the old layout first",
+                    target.join(&obstruction).display()
+                );
                 if obstruction == *path && matches!(before.get(Path::new("")), Some(Node::File(..)))
                 {
                     let actual = snapshot::canonical_target_entry(
@@ -459,6 +466,16 @@ fn initialize_with(
     }
     // Every blob, permission check and source ingestion is prepared before the
     // first target write; a late obstruction must not leave earlier files applied.
+    let association = VirtualCheckoutRecord {
+        initializing: false,
+        overlay: overlay.into(),
+        managed_path: initial.managed.clone(),
+        base_oid: initial.base.to_string(),
+        created_at: super::now(),
+        last_commit_at: None,
+        scope: scope.clone(),
+        source_repository: initial.repo.workdir().map(Path::to_path_buf),
+    };
     let applied = (|| -> Result<()> {
         guard.verify()?;
         source_guard.verify()?;
@@ -479,6 +496,10 @@ fn initialize_with(
                 inventory(&target.join(&group.path))? == group.before,
                 "virtual checkout target changed before initialization"
             );
+        }
+        if scope.projection.is_some() {
+            // Reserve before publication so another owner cannot claim a partially installed file.
+            super::state::reserve_initial(target, association.clone())?;
         }
         regular.apply()?;
         for replacement in &mut replacements {
@@ -509,15 +530,7 @@ fn initialize_with(
         // initialization and prevent persistence of its comparison base.
         tracing::warn!("virtual checkout initialized, but backup cleanup failed: {error:#}");
     }
-    Ok(VirtualCheckoutRecord {
-        overlay: overlay.into(),
-        managed_path: initial.managed,
-        base_oid: initial.base.to_string(),
-        created_at: super::now(),
-        last_commit_at: None,
-        scope,
-        source_repository: initial.repo.workdir().map(Path::to_path_buf),
-    })
+    Ok(association)
 }
 
 fn validate_source(initial: &Initial, source: &Path, group: &Group) -> Result<()> {

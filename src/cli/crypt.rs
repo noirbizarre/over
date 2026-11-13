@@ -122,12 +122,22 @@ pub fn policy_inputs(
     let mut mapped = std::collections::BTreeMap::new();
     for physical in &paths {
         let mut candidates = Vec::new();
+        let mut projected_namespace = false;
         for (target, record) in &state.checkouts {
-            let target = crate::overlays::mapping::physical(std::path::Path::new(target))?;
+            let target = crate::overlays::mapping::physical(
+                &crate::materialize::virtual_checkout::state::target_for_key(target)?,
+            )?;
             let location = crate::overlays::mapping::location(physical)?;
             let Ok(relative) = location.strip_prefix(&target) else {
                 continue;
             };
+            projected_namespace |= record.scope.projection.is_some()
+                && record.scope.owns_source(relative)
+                && !record
+                    .scope
+                    .target_excludes
+                    .iter()
+                    .any(|root| relative.starts_with(root));
             if record.scope.owns_target(relative) && record.scope.owns_source(relative) {
                 let source = record.source_repository.as_ref().ok_or_else(|| anyhow::anyhow!("legacy virtual association lacks its source; reapply before changing crypt policy"))?;
                 ensure!(
@@ -141,6 +151,11 @@ pub fn policy_inputs(
         ensure!(
             candidates.len() <= 1,
             "ambiguous virtual checkout ownership; repair overlapping mappings before changing policy"
+        );
+        ensure!(
+            !candidates.is_empty() || !projected_namespace,
+            "unowned virtual destination '{}'; use over add --crypt --overlay NAME PATH to acquire it",
+            physical.display()
         );
         if let Some(source) = candidates.pop() {
             mapped.insert(source, physical.clone());
@@ -203,7 +218,9 @@ fn policy_repository(cli: &super::CLI, paths: &[String]) -> Result<git2::Reposit
         let physical = crate::overlays::mapping::location(&cwd.join(path))?;
         let mut owners = Vec::new();
         for (target, record) in &state.checkouts {
-            let target = crate::overlays::mapping::physical(std::path::Path::new(target))?;
+            let target = crate::overlays::mapping::physical(
+                &crate::materialize::virtual_checkout::state::target_for_key(target)?,
+            )?;
             if physical
                 .strip_prefix(target)
                 .is_ok_and(|relative| record.scope.owns_target(relative))

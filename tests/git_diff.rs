@@ -108,6 +108,27 @@ impl Fixture {
                 .unwrap(),
         );
     }
+
+    fn legacy_exclusive_association(&self) {
+        // Exercise renderer compatibility with a pre-projection deployment, not new-file admission.
+        let path = self.temp.path().join("state/over/virtual_checkout.toml");
+        let mut document: toml::Value =
+            toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        document["version"] = 2.into();
+        let records = document["state"]["checkouts"].as_table_mut().unwrap();
+        let key = records.keys().next().unwrap().clone();
+        let mut record = records.remove(&key).unwrap();
+        record["scope"].as_table_mut().unwrap().remove("projection");
+        records.insert(
+            self.target
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            record,
+        );
+        fs::write(path, toml::to_string(&document).unwrap()).unwrap();
+    }
 }
 
 fn checked(output: Output) -> Output {
@@ -266,6 +287,9 @@ fn virtual_staged_changes_use_the_recorded_base_after_source_head_advances() {
 fn virtual_additions_deletions_binary_and_missing_newlines_have_real_git_patches() {
     let fixture = Fixture::new(true);
     fs::write(fixture.target.join("new"), "new without newline").unwrap();
+    // Explicit admission survives reset; unrelated target files are no longer discovered.
+    fixture.add_target("new");
+    fixture.git(&["reset", "-q", "HEAD", "--", "ov/new"]);
     fs::write(fixture.target.join("file"), b"binary\0content").unwrap();
     fs::remove_file(fixture.target.join("deleted")).unwrap();
     let output = fixture.over("diff", &[]);
@@ -755,6 +779,7 @@ fn virtual_file_directory_replacements_show_deleted_and_added_content(
         // Reapply after removing the clean old deployment to record this baseline.
         fixture.over("apply", &["--no-prompt"]);
     }
+    fixture.legacy_exclusive_association();
     if directory_replaces_file {
         fs::remove_file(fixture.target.join("file")).unwrap();
         fs::create_dir(fixture.target.join("file")).unwrap();

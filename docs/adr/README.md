@@ -55,3 +55,4 @@ semantics, use the [configuration reference](../configuration.md) and
 | [026](026-git-aware-diff-delegates-presentation-to-git.md) | Git-aware diff delegates presentation to Git |
 | [027](027-installation-is-an-opt-in-hook-event.md) | Installation is an opt-in lifecycle hook event, superseding ADR-004 |
 | [028](028-repository-encryption.md) | Deterministic authenticated repository encryption and persistent local unlock state |
+| [029](029-virtual-checkouts-project-file-ownership.md) | Fresh virtual checkouts project individual files into shared destination directories |

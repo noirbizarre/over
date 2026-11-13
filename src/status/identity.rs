@@ -19,6 +19,7 @@ enum Intent {
     VirtualCheckout {
         source_excludes: Vec<PathBuf>,
         target_excludes: Vec<PathBuf>,
+        projection: Option<std::collections::BTreeSet<PathBuf>>,
         policy: Option<(PathBuf, SourcePolicyIdentity)>,
     },
     Symlink {
@@ -64,6 +65,7 @@ impl ClaimIdentity {
                 Intent::VirtualCheckout {
                     source_excludes: scope.source_excludes,
                     target_excludes: scope.target_excludes,
+                    projection: scope.projection.map(|paths| *paths),
                     policy: scope
                         .source_policy
                         .map(|(source, policy)| (source, policy.identity())),

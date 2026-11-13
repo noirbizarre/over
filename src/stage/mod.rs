@@ -15,7 +15,26 @@ use crate::overlays::Overlay;
 
 pub(crate) fn owns(entry: &DesiredEntry, path: &Path) -> bool {
     path.strip_prefix(&entry.target)
-        .is_ok_and(|relative| entry.intent.checkout_scope().owns_target(relative))
+        .is_ok_and(|relative| match &entry.intent {
+            crate::desired::MaterializationIntent::ScopedVirtualCheckout(scope) => {
+                scope.owns_target_kind(relative, path.is_dir())
+            }
+            _ => true,
+        })
+}
+
+fn projection_boundary(entry: &DesiredEntry, path: &Path) -> bool {
+    let crate::desired::MaterializationIntent::ScopedVirtualCheckout(scope) = &entry.intent else {
+        return false;
+    };
+    scope.projection.is_some()
+        && path.strip_prefix(&entry.target).is_ok_and(|relative| {
+            scope.owns_source_kind(relative, path.is_dir())
+                && !scope
+                    .target_excludes
+                    .iter()
+                    .any(|root| relative.starts_with(root))
+        })
 }
 
 /// Preflight all checkout/index changes before performing ingestion actions.
@@ -32,6 +51,15 @@ pub(crate) fn add_blocking(
     overlay: &Overlay,
     selections: &[PathBuf],
 ) -> Result<Vec<PathBuf>> {
+    let has_checkouts = DesiredTree::build_own(ctx, overlay)?
+        .entries()
+        .iter()
+        .any(|entry| entry.intent.is_virtual_checkout());
+    let _ownership = if ctx.dry_run || !has_checkouts {
+        None
+    } else {
+        Some(state::mutation_guard()?)
+    };
     add_blocking_with(ctx, overlay, selections, false)
 }
 
@@ -51,7 +79,7 @@ fn add_blocking_with(
 ) -> Result<Vec<PathBuf>> {
     crate::secrets::validate_ingestion(ctx, overlay, selections)?;
     let tree = DesiredTree::build_own(ctx, overlay)?;
-    let entries: Vec<_> = tree
+    let mut entries: Vec<_> = tree
         .entries()
         .iter()
         .filter(|entry| entry.intent.is_virtual_checkout())
@@ -67,6 +95,7 @@ fn add_blocking_with(
                 .map(|logical| routing.target_for(&logical))
         })
         .collect::<Result<Vec<_>>>()?;
+    acquire_paths(ctx, overlay, &selections, &mut entries)?;
     let mut remaining = BTreeSet::new();
     for path in &selections {
         let logical = routing.logical_path_for(path)?;
@@ -78,11 +107,25 @@ fn add_blocking_with(
         if path.is_dir() && overlay.is_link_dir(&logical) {
             policy.validate_directory_link(path, &overlay.root.join(&logical))?;
         }
-        if path.is_dir()
-            && entries
-                .iter()
-                .any(|entry| owns(entry, path) || entry.target.starts_with(path))
-        {
+        if !path.is_dir() && entries.iter().any(|entry| projection_boundary(entry, path)) {
+            // Shared-container operands are consumed here even when they have no owned leaves.
+            ensure!(
+                path.is_dir() || entries.iter().any(|entry| owns(entry, path)),
+                "'{}' is not owned by this overlay's checkout; select its owner explicitly",
+                path.display()
+            );
+            continue;
+        }
+        if !entries.iter().any(|entry| {
+            owns(entry, path) || entry.target.starts_with(path) || projection_boundary(entry, path)
+        }) {
+            ensure!(
+                path.symlink_metadata().is_ok(),
+                "{} does not exist",
+                path.display()
+            );
+            remaining.insert(path.clone());
+        } else if path.is_dir() {
             for item in walkdir::WalkDir::new(path)
                 .min_depth(1)
                 .into_iter()
@@ -94,29 +137,145 @@ fn add_blocking_with(
                 })
             {
                 let item = item?;
-                if !item.file_type().is_dir()
-                    && !item.file_type().is_symlink()
-                    && !entries.iter().any(|entry| owns(entry, item.path()))
+                if item.file_type().is_file()
+                    && !entries.iter().any(|entry| {
+                        owns(entry, item.path()) || projection_boundary(entry, item.path())
+                    })
+                    && routing
+                        .logical_path_for(item.path())
+                        .is_ok_and(|logical| policy.includes(&overlay.root.join(logical), false))
                 {
-                    let logical = routing.logical_path_for(item.path())?;
-                    if policy.includes(&overlay.root.join(&logical), false) {
-                        remaining.insert(item.path().to_path_buf());
-                    }
+                    remaining.insert(item.into_path());
                 }
             }
-        } else if entries.iter().any(|entry| owns(entry, path)) {
-            continue;
-        } else {
-            ensure!(
-                path.symlink_metadata().is_ok(),
-                "{} does not exist",
-                path.display()
-            );
-            remaining.insert(path.clone());
         }
     }
-    stage_entries(&entries, &selections, ctx.dry_run, overlay, preserve_staged)?;
+    stage_entries(&entries, &selections, true, overlay, preserve_staged)?;
+    if !ctx.dry_run {
+        // Reserve after preflight but before index publication; reset cannot transfer ownership.
+        for entry in &entries {
+            state::reserve(entry)?;
+        }
+        stage_entries(&entries, &selections, false, overlay, preserve_staged)?;
+    }
     Ok(remaining.into_iter().collect())
+}
+
+/// Admission is shared by full and patch staging; selection alone is not ownership.
+pub(crate) fn reserve_inputs(ctx: &Ctx, overlay: &Overlay, selections: &[PathBuf]) -> Result<()> {
+    let tree = DesiredTree::build_own(ctx, overlay)?;
+    let mut entries: Vec<_> = tree
+        .entries()
+        .iter()
+        .filter(|entry| entry.intent.is_virtual_checkout())
+        .cloned()
+        .collect();
+    acquire_paths(ctx, overlay, selections, &mut entries)?;
+    for entry in &entries {
+        state::reserve(entry)?;
+    }
+    Ok(())
+}
+
+/// Traversal permission and concrete leaf ownership differ in shared directories.
+pub(crate) fn acquire_paths(
+    ctx: &Ctx,
+    overlay: &Overlay,
+    selections: &[PathBuf],
+    entries: &mut [DesiredEntry],
+) -> Result<()> {
+    let routing = overlay.resolve_mappings(ctx)?;
+    let policy = crate::overlays::ignore::SourcePolicy::new(&ctx.repository.root, overlay)?;
+    for selection in selections {
+        let recursive = selection.is_dir();
+        let candidates = if recursive {
+            let mut paths = Vec::new();
+            for item in walkdir::WalkDir::new(selection)
+                .min_depth(1)
+                .into_iter()
+                .filter_entry(|item| {
+                    !item.file_type().is_symlink()
+                        && !item.path().starts_with(&overlay.root)
+                        && routing.logical_path_for(item.path()).is_ok_and(|logical| {
+                            policy.includes(&overlay.root.join(logical), item.file_type().is_dir())
+                        })
+                })
+            {
+                let item = item?;
+                if item.file_type().is_file() {
+                    paths.push(item.into_path());
+                }
+            }
+            paths
+        } else {
+            vec![selection.clone()]
+        };
+        for path in candidates {
+            if entries.iter().any(|entry| owns(entry, &path)) {
+                continue;
+            }
+            let Some(entry) = entries
+                .iter_mut()
+                .filter(|entry| {
+                    path.starts_with(&entry.target)
+                        && entry.intent.checkout_scope().projection.is_some()
+                })
+                .max_by_key(|entry| entry.target.components().count())
+            else {
+                continue;
+            };
+            let relative = path.strip_prefix(&entry.target)?.to_path_buf();
+            let mut scope = entry.intent.checkout_scope();
+            if !scope.owns_source(&relative)
+                || scope
+                    .target_excludes
+                    .iter()
+                    .any(|root| relative.starts_with(root))
+            {
+                continue;
+            }
+            let mut claim = entry.clone();
+            let mut claim_scope = scope.clone();
+            claim_scope.projection = Some(Box::new(BTreeSet::from([relative.clone()])));
+            claim.intent =
+                crate::desired::MaterializationIntent::ScopedVirtualCheckout(claim_scope);
+            if let Err(error) =
+                state::validate_claims(&state::state_file()?.inspect_blocking()?, &claim)
+            {
+                if recursive {
+                    continue;
+                }
+                return Err(error);
+            }
+            if !ctx.acquire_checkout_paths {
+                ensure!(
+                    recursive,
+                    "'{}' has no checkout owner; specify --overlay NAME to acquire it",
+                    path.display()
+                );
+                continue;
+            }
+            for ancestor in path
+                .ancestors()
+                .skip(1)
+                .take_while(|parent| *parent != entry.target)
+            {
+                ensure!(
+                    !ancestor.join(".git").try_exists()? && !ancestor.join(".git").is_symlink(),
+                    "cannot acquire '{}' inside atomic Git repository '{}'",
+                    path.display(),
+                    ancestor.display()
+                );
+            }
+            scope
+                .projection
+                .as_mut()
+                .expect("projection checked above")
+                .insert(relative);
+            entry.intent = crate::desired::MaterializationIntent::ScopedVirtualCheckout(scope);
+        }
+    }
+    Ok(())
 }
 
 fn stage_entries(
@@ -132,7 +291,7 @@ fn stage_entries(
         dry_run,
         overlay,
         preserve_staged,
-        &state::record_for_blocking,
+        &state::record_for_entry,
         &snapshot::canonical_source_entry,
     )
 }
@@ -143,7 +302,7 @@ fn stage_entries_with(
     dry_run: bool,
     overlay: &Overlay,
     preserve_staged: bool,
-    record_for: &impl Fn(&Path) -> Result<Option<state::VirtualCheckoutRecord>>,
+    record_for: &impl Fn(&DesiredEntry) -> Result<Option<state::VirtualCheckoutRecord>>,
     source_entry: &impl Fn(&git2::Repository, &Path) -> Result<Option<(git2::Oid, i32)>>,
 ) -> Result<()> {
     // One in-memory index per repository prevents sibling units from overwriting
@@ -157,12 +316,16 @@ fn stage_entries_with(
         {
             continue;
         }
-        let record = record_for(&entry.target)?.with_context(|| {
+        let record = record_for(entry)?.with_context(|| {
             format!(
                 "no checkout at '{}'; run over apply first",
                 entry.target.display()
             )
         })?;
+        ensure!(
+            !record.initializing,
+            "checkout initialization was interrupted; rerun over apply before staging"
+        );
         let Provenance::Overlay { source, .. } = &entry.provenance else {
             unreachable!()
         };
@@ -302,6 +465,14 @@ fn stage_entries_with(
                 }
             }
         }
+    }
+    for (key, (repo, _)) in &repositories {
+        // Preview filters can invoke arbitrary Git commands; don't accept their
+        // concurrent changes as the next publication's starting snapshot.
+        ensure!(
+            crate::actions::git::index::read_index(&repo.path().join("index"))? == originals[key],
+            "source index changed during staging; retry"
+        );
     }
     if !dry_run {
         let mut prepared = Vec::new();

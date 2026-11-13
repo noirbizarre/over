@@ -742,6 +742,14 @@ pub(crate) fn commits_between(repo: &Repository, from: Oid, to: Oid) -> Result<u
 /// `root` — used to detect files added directly at a virtual checkout's
 /// target that aren't tracked at all yet.
 pub(crate) fn walk_owned_files(root: &Path, scope: &CheckoutScope) -> Result<Vec<PathBuf>> {
+    if let Some(paths) = &scope.projection {
+        // Never walk a shared home to discover additions belonging to somebody else.
+        return Ok(paths
+            .iter()
+            .filter(|path| scope.owns_target(path) && root.join(path).is_file())
+            .cloned()
+            .collect());
+    }
     let mut files = Vec::new();
     if !root.exists() {
         return Ok(files);
