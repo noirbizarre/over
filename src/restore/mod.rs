@@ -73,6 +73,11 @@ fn restore_blocking(
     options: &RestoreOptions,
 ) -> Result<()> {
     ensure!(!paths.is_empty(), "specify at least one file to restore");
+    let _ownership = if ctx.dry_run {
+        None
+    } else {
+        Some(state::mutation_guard()?)
+    };
     let tree = DesiredTree::build_own(ctx, overlay)?;
     let routing = overlay.resolve_mappings(ctx)?;
     let policy = crate::overlays::ignore::SourcePolicy::new(&ctx.repository.root, overlay)?;
@@ -104,7 +109,7 @@ fn restore_blocking(
             "'{}' is not an owned checkout file",
             target.display()
         );
-        let record = state::record_for_blocking(&entry.target)?.with_context(|| {
+        let record = state::record_for_entry(entry)?.with_context(|| {
             format!(
                 "no checkout at '{}'; run over apply first",
                 entry.target.display()
@@ -125,7 +130,7 @@ fn restore_blocking(
     }
     restore_paths(&requests, options, ctx.dry_run, || {
         for (entry, original) in &associations {
-            let current = state::record_for_blocking(&entry.target)?
+            let current = state::record_for_entry(entry)?
                 .context("checkout association disappeared while preparing restore")?;
             state::verify(entry, &current)?;
             ensure!(

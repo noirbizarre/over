@@ -95,6 +95,7 @@ nav = [
     { "026: Git-aware diff" = "adr/026-git-aware-diff-delegates-presentation-to-git.md" },
     { "027: Install hooks" = "adr/027-installation-is-an-opt-in-hook-event.md" },
     { "028: Repository encryption" = "adr/028-repository-encryption.md" },
+    { "029: Checkout file ownership" = "adr/029-virtual-checkouts-project-file-ownership.md" },
   ] },
 ]
 

@@ -110,7 +110,8 @@ async fn xdg_state_findings_in(
                 findings.extend(stale_record_findings(
                     "virtual checkout",
                     repo,
-                    target,
+                    &crate::materialize::virtual_checkout::state::target_for_key(target)?
+                        .to_string_lossy(),
                     &record.overlay,
                 ));
             }

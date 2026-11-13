@@ -85,7 +85,9 @@ fn inspect_with_details(
     let Some(record) = snapshots
         .state
         .as_ref()
-        .and_then(|state| state.checkouts.get(&state::key_for(&entry.target)))
+        .map(|snapshot| state::record_in_snapshot(snapshot, entry))
+        .transpose()?
+        .flatten()
     else {
         // No recorded association: `VirtualCheckoutMaterializer::classify`
         // would have produced `Create`/`Migrate` for this, never `Noop` —
@@ -104,6 +106,14 @@ fn inspect_with_details(
         });
     };
 
+    if record.initializing {
+        return Ok(Inspection {
+            status: Status::Broken,
+            staged: Vec::new(),
+            unstaged: Vec::new(),
+            unmerged: Vec::new(),
+        });
+    }
     let Provenance::Overlay { source, .. } = &entry.provenance else {
         unreachable!(
             "VirtualCheckout entries only ever carry Provenance::Overlay \
@@ -111,7 +121,7 @@ fn inspect_with_details(
         );
     };
 
-    state::verify(entry, record)?;
+    state::verify(entry, &record)?;
     let scope = entry.intent.checkout_scope();
     let (repo, managed_path) = git::discover_source(source)?;
     let key = repo.path().to_path_buf();
@@ -244,7 +254,7 @@ fn inspect_with_details(
 /// wouldn't report [`Status::Conflict`].
 #[cfg(test)]
 fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
-    let Some(record) = state::record_for_blocking(&entry.target)? else {
+    let Some(record) = state::record_for_entry(entry)? else {
         return Ok(Vec::new());
     };
     let Provenance::Overlay { source, .. } = &entry.provenance else {
@@ -276,7 +286,7 @@ fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
 
 /// Commit only needs known selected paths; reconciliation's untracked walk is unnecessary.
 pub(crate) fn commit_conflicts(entry: &DesiredEntry, paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    let Some(record) = state::record_for_blocking(&entry.target)? else {
+    let Some(record) = state::record_for_entry(entry)? else {
         return Ok(Vec::new());
     };
     let Provenance::Overlay { source, .. } = &entry.provenance else {
@@ -316,7 +326,7 @@ pub(crate) fn commit_conflicts(entry: &DesiredEntry, paths: &[PathBuf]) -> Resul
 /// [`inspect`]'s own `Missing`/`Broken` fallback).
 #[cfg(test)]
 pub(crate) fn file_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
-    let Some(record) = state::record_for_blocking(&entry.target)? else {
+    let Some(record) = state::record_for_entry(entry)? else {
         return Ok(Vec::new());
     };
     let Provenance::Overlay { source, .. } = &entry.provenance else {

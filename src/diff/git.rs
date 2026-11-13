@@ -178,17 +178,17 @@ impl Report {
                 intent if intent.is_virtual_checkout() => {
                     let state = checkout_state.as_ref().context("missing checkout state")?;
                     state::verify_live_target_snapshot(state, entry)?;
-                    let Some(record) = state.checkouts.get(&state::key_for(&entry.target)) else {
+                    let Some(record) = state::record_in_snapshot(state, entry)? else {
                         report.diagnostics.push(format!(
                             "{}: virtual checkout has no recorded base; apply it first",
                             entry.target.display()
                         ));
                         continue;
                     };
-                    state::verify(entry, record)?;
+                    state::verify(entry, &record)?;
                     report
                         .comparisons
-                        .extend(virtual_comparisons(entry, record, views)?);
+                        .extend(virtual_comparisons(entry, &record, views)?);
                 }
                 MaterializationIntent::PartialFile { .. } => {
                     // Partial ownership is a managed block, never a whole-file Git snapshot.

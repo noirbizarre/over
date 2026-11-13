@@ -35,6 +35,9 @@ Commit does not discover every overlay to infer ownership.
 An explicit `--overlay NAME` retains the configured default's
 [data context](../configuration/overlay.md#consumer-metadata-data) for path rendering.
 Only the selected overlay's own checkout entries are committed.
+This also applies when multiple applications project files into the same home:
+their source snapshots and checkout checkpoints remain independent. Use an explicit
+overlay when invoking commit from a shared destination directory.
 
 Path operands filter **staged snapshots**, including staged additions and
 deletions. They never stage current file contents. Without operands, all owned

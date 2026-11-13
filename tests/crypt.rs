@@ -253,6 +253,193 @@ fn a_virtual_crypt_commit_includes_canonical_policy_and_ciphertext(#[case] direc
 }
 
 #[test]
+fn composed_checkouts_keep_ciphertext_in_git_and_isolate_plaintext_destinations_through_lock_and_sync()
+ {
+    let (root, identities) = repository();
+    let deployed = tempfile::tempdir().unwrap();
+    fs::write(
+        root.path().join("over.toml"),
+        "mode='checkout'\noverlays=['apps/*', 'hosts/*']\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.path().join("hosts/laptop")).unwrap();
+    fs::write(
+        root.path().join("hosts/laptop/over.toml"),
+        "uses=['apps/git', 'apps/ssh']\n",
+    )
+    .unwrap();
+    for app in ["git", "ssh"] {
+        let directory = root.path().join("apps").join(app).join(".env.d");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(app), format!("initial {app}")).unwrap();
+        over(
+            root.path(),
+            &["crypt", "add", &format!("apps/{app}/.env.d/{app}")],
+        );
+    }
+    git(root.path(), &["add", "."]);
+    git(root.path(), &["commit", "-qm", "protected composition"]);
+    let home = root.path().to_str().unwrap();
+    let target = deployed.path().to_str().unwrap();
+    over(
+        root.path(),
+        &[
+            "--home",
+            home,
+            "apply",
+            "hosts/laptop",
+            "--no-prompt",
+            "--target",
+            target,
+        ],
+    );
+    let git_target = deployed.path().join(".env.d/git");
+    let ssh_target = deployed.path().join(".env.d/ssh");
+    fs::write(&git_target, b"composed git target sentinel").unwrap();
+    fs::write(&ssh_target, b"composed ssh target sentinel").unwrap();
+    over(
+        root.path(),
+        &[
+            "--home",
+            home,
+            "add",
+            "--overlay",
+            "apps/git",
+            "--target",
+            target,
+            git_target.to_str().unwrap(),
+        ],
+    );
+    over(
+        root.path(),
+        &[
+            "--home",
+            home,
+            "commit",
+            "--overlay",
+            "apps/git",
+            "--no-prompt",
+            "-m",
+            "git target",
+            "--target",
+            target,
+        ],
+    );
+    let fresh = deployed.path().join(".env.d/fresh");
+    fs::write(&fresh, b"composed acquired protected sentinel").unwrap();
+    // Policy routing must not infer acquisition from another application's neighboring files.
+    let unowned = Command::new(cargo_bin("over"))
+        .current_dir(deployed.path())
+        .env_remove("OVER_HOME")
+        .env("XDG_STATE_HOME", root.path().join(".git/test-state"))
+        .args(["--home", home, "crypt", "add", fresh.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!unowned.status.success());
+    assert!(String::from_utf8_lossy(&unowned.stderr).contains("--overlay"));
+    over(
+        root.path(),
+        &[
+            "--home",
+            home,
+            "add",
+            "--crypt",
+            "--overlay",
+            "apps/git",
+            "--target",
+            target,
+            fresh.to_str().unwrap(),
+        ],
+    );
+    over(
+        root.path(),
+        &[
+            "--home",
+            home,
+            "commit",
+            "--overlay",
+            "apps/git",
+            "--no-prompt",
+            "-m",
+            "acquired target",
+            "--target",
+            target,
+        ],
+    );
+    for path in [
+        "apps/git/.env.d/git",
+        "apps/git/.env.d/fresh",
+        "apps/ssh/.env.d/ssh",
+    ] {
+        over::crypt::format::inspect(&git(root.path(), &["show", &format!("HEAD:{path}")]).stdout)
+            .unwrap();
+        over::crypt::format::inspect(&git(root.path(), &["show", &format!(":{path}")]).stdout)
+            .unwrap();
+    }
+    over(root.path(), &["lock"]);
+    assert_eq!(
+        fs::read(&git_target).unwrap(),
+        b"composed git target sentinel"
+    );
+    assert_eq!(
+        fs::read(&ssh_target).unwrap(),
+        b"composed ssh target sentinel"
+    );
+    assert_eq!(
+        fs::read(&fresh).unwrap(),
+        b"composed acquired protected sentinel"
+    );
+    assert!(!fresh.is_symlink());
+    over(
+        root.path(),
+        &[
+            "unlock",
+            "--identity",
+            identities.path().join("alice.age").to_str().unwrap(),
+        ],
+    );
+    fs::write(
+        root.path().join("apps/git/.env.d/git"),
+        b"composed source advancement sentinel",
+    )
+    .unwrap();
+    git(root.path(), &["add", "apps/git/.env.d/git"]);
+    git(root.path(), &["commit", "-qm", "source advance"]);
+    over(
+        root.path(),
+        &[
+            "--home",
+            home,
+            "sync",
+            "apps/git",
+            "--no-prompt",
+            "--target",
+            target,
+        ],
+    );
+    assert_eq!(
+        fs::read(&git_target).unwrap(),
+        b"composed source advancement sentinel"
+    );
+    assert_eq!(
+        fs::read(&ssh_target).unwrap(),
+        b"composed ssh target sentinel"
+    );
+    let repo = git2::Repository::open(root.path()).unwrap();
+    for plaintext in [
+        b"composed git target sentinel".as_slice(),
+        b"composed acquired protected sentinel",
+        b"composed source advancement sentinel",
+    ] {
+        let oid = git2::Oid::hash_object(git2::ObjectType::Blob, plaintext).unwrap();
+        assert!(
+            repo.find_blob(oid).is_err(),
+            "plaintext reached the source object database"
+        );
+    }
+}
+
+#[test]
 fn legacy_migration_preserves_age_backups_and_native_binary_values() {
     let (root, _) = repository();
     let legacy = age::scrypt::Recipient::new("migration credential".into());

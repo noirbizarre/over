@@ -287,6 +287,7 @@ pub(crate) fn select_commit(ctx: &Context, name: Option<&str>) -> Result<Overlay
     let mut sources = std::collections::BTreeSet::new();
     let mut targets = std::collections::BTreeSet::new();
     for (target, record) in &state.checkouts {
+        let target = crate::materialize::virtual_checkout::state::target_for_key(target)?;
         let source = record
             .source_repository
             .as_ref()
@@ -300,7 +301,7 @@ pub(crate) fn select_commit(ctx: &Context, name: Option<&str>) -> Result<Overlay
             continue;
         }
         let target_owned = cwd
-            .strip_prefix(target)
+            .strip_prefix(&target)
             .is_ok_and(|relative| record.scope.owns_target_kind(relative, true));
         if target_owned {
             targets.insert(record.overlay.clone());

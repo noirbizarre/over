@@ -402,8 +402,10 @@ impl Report {
                 }
                 if entry_outcome.entry.intent.is_virtual_checkout() {
                     entry_outcome.outcome =
-                        if crate::materialize::virtual_checkout::state::record_for_blocking(target)?
-                            .is_some()
+                        if crate::materialize::virtual_checkout::state::record_for_entry(
+                            &entry_outcome.entry,
+                        )?
+                        .is_some()
                         {
                             Outcome::CheckoutNotClean {
                                 status: status::virtual_checkout::inspect(&entry_outcome.entry)?,
@@ -595,7 +597,14 @@ async fn remove_partial_block_if_unchanged(
 /// be misread as already having history against a `base_oid` it never
 /// actually started from.
 async fn remove_virtual_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
-    let association_key = crate::materialize::virtual_checkout::state::key_for(&entry.target);
+    let _ownership =
+        spawn_blocking(crate::materialize::virtual_checkout::state::mutation_guard).await??;
+    let Some(record) = crate::materialize::virtual_checkout::state::record_for_entry(&entry)?
+    else {
+        return Ok(());
+    };
+    let association_key =
+        crate::materialize::virtual_checkout::state::association_key(&entry.target, &record)?;
     let inspect_entry = entry.clone();
     let is_clean = spawn_blocking(move || {
         anyhow::Ok(matches!(
@@ -611,7 +620,7 @@ async fn remove_virtual_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
     let removal_entry = entry.clone();
     spawn_blocking(move || -> Result<()> {
         use crate::materialize::virtual_checkout::{git, state};
-        let Some(record) = state::record_for_blocking(&target)? else {
+        let Some(record) = state::record_for_entry(&removal_entry)? else {
             return Ok(());
         };
         state::verify(&removal_entry, &record)?;
@@ -642,6 +651,9 @@ async fn remove_virtual_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
                     Err(error) => return Err(error.into()),
                 }
             }
+        }
+        if scope.projection.is_some() {
+            return Ok(());
         }
         match fs::remove_dir(&target) {
             Ok(()) => Ok(()),

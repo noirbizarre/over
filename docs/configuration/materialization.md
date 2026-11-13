@@ -20,9 +20,42 @@ during traversal are still individually symlinked. Modes select directory units,
 not arbitrary single-file checkouts. New source files in a linked directory are
 visible through the link; new individually linked files require another apply.
 
-Root `checkout` owns the whole overlay except independently mapped directories.
-Initial checkout materialization reads committed source `HEAD`, so commit source
-content before applying it. It is distinct from a declared `git` clone.
+Fresh checkouts own projected files, sharing destination directories with other
+overlays. Initial materialization reads committed source `HEAD`, so commit source
+content before applying it. A virtual checkout is distinct from a declared `git` clone.
+
+### Compose flat application overlays
+
+The following root configuration supports applications targeting the same home:
+
+```yaml
+mode: checkout
+default_overlay: hosts/laptop
+overlays: [apps/*, hosts/*]
+```
+
+```yaml
+# hosts/laptop/over.yaml
+uses: [apps/git, apps/ssh]
+```
+
+`apps/git/.config/git/config` and `apps/ssh/.ssh/config` become ordinary files at
+their corresponding home paths. Applications can also contribute distinct files
+to `.env.d`, `.alias.d`, `.config/systemd/user`, and `.local/bin`, or independent
+root files such as `.gitconfig`. These directories are shared containers.
+Two overlays claiming the same file still conflict, even with identical content.
+File/directory conflicts and another overlay's atomic Git repository remain errors.
+
+Unrelated destination files are not discovered as checkout additions. Use
+`over add --overlay apps/git ~/.env.d/new-fragment` to assign a new file explicitly.
+Existing owned files can infer their overlay. Each application retains its own
+recorded base, staged snapshots, and source lifecycle at a shared destination.
+
+Older deployed checkout associations retain their exclusive directory ownership;
+upgrading does not narrow them automatically. To adopt projections, resolve edits,
+unapply using the old layout, and apply again. Deployed symlinks and recursive
+symlink mirrors also require unapplying the old layout before checkout deployment;
+`--force` does not convert them.
 
 ## Rule configuration
 
@@ -63,8 +96,9 @@ overlapping rules with the winning declaration for each property.
 ## Atomic boundaries and mappings
 
 An effective directory link owns its entire subtree; descendant rules cannot
-change what is inside it. A checkout is also an atomic directory unit:
-descendant mode rules do not split it. Lint reports unreachable overrides with
+change what is inside it. A checkout remains a source reconciliation unit:
+descendant mode rules do not split it, even though fresh destination ownership is
+per file. Lint reports unreachable overrides with
 the blocking declaration and a repair hint. Reopen a boundary with a later
 same-path assignment or a nearer baseline selecting `symlink`, then select the
 desired child units.
@@ -73,8 +107,9 @@ desired child units.
 ownership boundaries with their own effective mode. With checkout mode, the
 residual overlay and each mapped directory are separate checkout units. A
 mapping cannot hide inside a whole-directory link that already owns its subtree.
-Single-file checkout units are unsupported; a file redirect inheriting checkout
+Single-file checkout redirects are unsupported; a file redirect inheriting checkout
 mode must redirect a containing directory instead or explicitly select symlink mode.
+Independent root files already work inside a root checkout projection without redirects.
 
 A whole-directory link is rejected before changes if it would expose ignored
 children or control metadata. Use file-level symlinks or checkout instead.

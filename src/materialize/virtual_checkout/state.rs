@@ -20,17 +20,16 @@ use crate::xdg::state::{StateFile, VersionedState};
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VirtualCheckoutState {
-    /// Keyed by the checkout's target path (stringified), like
-    /// `sync::state::SyncState::checkouts`.
+    /// Legacy target keys coexist with source-unit keys for shared destinations.
     pub checkouts: HashMap<String, VirtualCheckoutRecord>,
 }
 
 impl VersionedState for VirtualCheckoutState {
-    const VERSION: u32 = 2;
+    const VERSION: u32 = 3;
 
     fn migrate(version: u32, raw: toml::Value) -> Result<Self> {
         anyhow::ensure!(
-            version == 1,
+            version == 1 || version == 2,
             "cannot migrate virtual checkout state from version {version}"
         );
         // Legacy records owned their complete subtree. Never infer new holes
@@ -41,6 +40,9 @@ impl VersionedState for VirtualCheckoutState {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VirtualCheckoutRecord {
+    /// An interrupted first apply reserves its leaves but must still initialize on retry.
+    #[serde(default)]
+    pub initializing: bool,
     pub overlay: String,
     /// Path of the managed subtree relative to the source repository's
     /// working directory root (empty for a whole-repository virtual
@@ -102,11 +104,12 @@ pub(crate) fn verify_live_target_snapshot(
         anyhow::bail!("virtual checkout has no overlay source");
     };
     let desired_key = key_for(&entry.target);
-    for (target, record) in &state.checkouts {
-        if target == &desired_key || &record.overlay != overlay {
+    for (key, record) in &state.checkouts {
+        let target = target_for_key(key)?;
+        if key_for(&target) == desired_key || &record.overlay != overlay {
             continue;
         }
-        match Path::new(target).symlink_metadata() {
+        match target.symlink_metadata() {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error.into()),
@@ -124,7 +127,8 @@ pub(crate) fn verify_live_target_snapshot(
         };
         anyhow::ensure!(
             record.managed_path != managed_path || !same_repository,
-            "checkout association at '{target}' has a different target '{}'; unapply with the old configuration before changing mappings",
+            "checkout association at '{}' has a different target '{}'; unapply with the old configuration before changing mappings",
+            target.display(),
             entry.target.display()
         );
     }
@@ -150,13 +154,13 @@ pub(crate) fn state_file() -> Result<StateFile<VirtualCheckoutState>> {
 /// on the literal string `"."`, silently reading/overwriting each
 /// other's association — observed directly, not just theoretical.
 ///
-/// Falls back to an absolute (but not symlink-resolved) path if
-/// canonicalization fails — every call site here only ever looks this up
-/// for a target that has just been materialized (so it exists), but
-/// there's no reason to make this key computation itself fallible for a
-/// clearly non-fatal, best-effort concern.
+/// Missing destinations retain the canonical spelling of their existing ancestor,
+/// including Windows verbatim prefixes used by legacy records. Fall back to an
+/// absolute path if ancestors cannot be resolved; operational guards report the error.
 pub(crate) fn key_for(target: &Path) -> String {
-    let resolved = target.canonicalize().unwrap_or_else(|_| {
+    // Reservations precede directory creation; resolve existing ancestors too so
+    // initialization and final publication cannot acquire different alias keys.
+    let resolved = canonical_target(target).unwrap_or_else(|_| {
         if target.is_absolute() {
             target.to_path_buf()
         } else {
@@ -166,6 +170,290 @@ pub(crate) fn key_for(target: &Path) -> String {
         }
     });
     resolved.to_string_lossy().to_string()
+}
+
+fn canonical_target(target: &Path) -> Result<PathBuf> {
+    let resolved = crate::overlays::mapping::physical(target)?;
+    for ancestor in resolved.ancestors() {
+        match ancestor.canonicalize() {
+            Ok(canonical) => {
+                let suffix = resolved.strip_prefix(ancestor)?;
+                // Keep std's Windows canonical prefix, and avoid adding a trailing
+                // separator to existing destinations when the suffix is empty.
+                return Ok(if suffix.as_os_str().is_empty() {
+                    canonical
+                } else {
+                    canonical.join(suffix)
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("target '{}' has no canonical ancestor", target.display())
+}
+
+/// Legacy keys remain paths; projection keys encode a tuple without delimiter ambiguity.
+pub(crate) fn target_for_key(key: &str) -> Result<PathBuf> {
+    if let Some(encoded) = key.strip_prefix("projection:") {
+        let (target, _, _, _): (PathBuf, Option<PathBuf>, String, PathBuf) =
+            serde_json::from_str(encoded)?;
+        Ok(target)
+    } else {
+        Ok(PathBuf::from(key))
+    }
+}
+
+pub(crate) fn association_key(target: &Path, record: &VirtualCheckoutRecord) -> Result<String> {
+    let target = key_for(target);
+    if record.scope.projection.is_none() {
+        return Ok(target);
+    }
+    Ok(format!(
+        "projection:{}",
+        serde_json::to_string(&(
+            target,
+            &record.source_repository,
+            &record.overlay,
+            &record.managed_path,
+        ))?
+    ))
+}
+
+fn unique_record(
+    state: &VirtualCheckoutState,
+    target: &Path,
+) -> Result<Option<VirtualCheckoutRecord>> {
+    // Target-only queries are boundary guards, not permission to mutate an owner.
+    for (key, record) in &state.checkouts {
+        if key_for(&target_for_key(key)?) == key_for(target) {
+            return Ok(Some(record.clone()));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn record_in_snapshot(
+    state: &VirtualCheckoutState,
+    entry: &crate::desired::DesiredEntry,
+) -> Result<Option<VirtualCheckoutRecord>> {
+    let crate::desired::Provenance::Overlay { overlay, source } = &entry.provenance else {
+        return Ok(None);
+    };
+    let source_identity = super::git::discover_source(source)
+        .ok()
+        .map(|(repo, managed)| (repo.workdir().map(Path::to_path_buf), managed));
+    for (key, record) in &state.checkouts {
+        if key_for(&target_for_key(key)?) != key_for(&entry.target) {
+            continue;
+        }
+        if record.scope.projection.is_none() {
+            // Return legacy ownership even for a different source so verification rejects it.
+            return Ok(Some(record.clone()));
+        }
+        if &record.overlay == overlay
+            && source_identity.as_ref().is_some_and(|(root, managed)| {
+                root == &record.source_repository && managed == &record.managed_path
+            })
+        {
+            return Ok(Some(record.clone()));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn record_for_entry(
+    entry: &crate::desired::DesiredEntry,
+) -> Result<Option<VirtualCheckoutRecord>> {
+    record_in_snapshot(&state_file()?.inspect_blocking()?, entry)
+}
+
+/// Lock order is ownership mutation, source index, then short state publication locks.
+/// Read-only commands never create this sentinel or acquire publication locks.
+pub(crate) fn mutation_guard() -> Result<std::fs::File> {
+    let directory = XdgDirs::new()?.state_dir().to_path_buf();
+    std::fs::create_dir_all(&directory)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(directory.join("virtual_checkout.mutation.lock"))?;
+    file.lock()?;
+    Ok(file)
+}
+
+pub(crate) fn validate_claims(
+    state: &VirtualCheckoutState,
+    entry: &crate::desired::DesiredEntry,
+) -> Result<()> {
+    let own_key = record_in_snapshot(state, entry)?
+        .map(|record| association_key(&entry.target, &record))
+        .transpose()?;
+    for (key, record) in &state.checkouts {
+        let target = target_for_key(key)?;
+        let source = record
+            .source_repository
+            .as_ref()
+            .map(|root| root.join(&record.managed_path));
+        if own_key.as_ref() == Some(key) {
+            continue;
+        }
+        let Some(source) = source else {
+            // Legacy records without source identity still reserve their entire namespace.
+            if entry.target.starts_with(&target) || target.starts_with(&entry.target) {
+                anyhow::bail!(
+                    "target '{}' overlaps legacy checkout '{}' owned by {}; unapply its old layout first",
+                    entry.target.display(),
+                    target.display(),
+                    record.overlay
+                );
+            }
+            continue;
+        };
+        let mut other = crate::desired::DesiredEntry {
+            target,
+            provenance: crate::desired::Provenance::Overlay {
+                overlay: record.overlay.clone(),
+                source,
+            },
+            intent: crate::desired::MaterializationIntent::ScopedVirtualCheckout(
+                record.scope.clone(),
+            ),
+            permissions: None,
+        };
+        resolve_projection_with_record(&mut other, false, Some(record.clone()))?;
+        // Resolve aliases at the concrete deployment roots as well as lexical paths.
+        let mut candidate = entry.clone();
+        candidate.target = crate::overlays::mapping::location(&candidate.target)?;
+        other.target = crate::overlays::mapping::location(&other.target)?;
+        if let Some((path, reason)) = crate::desired::ownership::conflict(&candidate, &other)? {
+            anyhow::bail!(
+                "conflicting target ownership at '{}': selected checkout conflicts with {} ({reason})",
+                path.display(),
+                record.overlay
+            );
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn reserve(entry: &crate::desired::DesiredEntry) -> Result<()> {
+    state_file()?.update_blocking(|state| {
+        validate_claims(state, entry)?;
+        let mut record = record_in_snapshot(state, entry)?
+            .ok_or_else(|| anyhow::anyhow!("run over apply before acquiring checkout files"))?;
+        verify(entry, &record)?;
+        if let (Some(paths), Some(admitted)) = (
+            &mut record.scope.projection,
+            entry.intent.checkout_scope().projection,
+        ) {
+            paths.extend(*admitted);
+        }
+        state
+            .checkouts
+            .insert(association_key(&entry.target, &record)?, record);
+        Ok(())
+    })
+}
+
+pub(crate) fn reserve_initial(target: &Path, mut record: VirtualCheckoutRecord) -> Result<()> {
+    let source = record
+        .source_repository
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("projected checkout lacks source identity"))?
+        .join(&record.managed_path);
+    let entry = crate::desired::DesiredEntry {
+        target: target.to_path_buf(),
+        provenance: crate::desired::Provenance::Overlay {
+            overlay: record.overlay.clone(),
+            source,
+        },
+        intent: crate::desired::MaterializationIntent::ScopedVirtualCheckout(record.scope.clone()),
+        permissions: None,
+    };
+    record.initializing = true;
+    state_file()?.update_blocking(|state| {
+        validate_claims(state, &entry)?;
+        state
+            .checkouts
+            .insert(association_key(target, &record)?, record);
+        Ok(())
+    })
+}
+
+/// Build positive claims without reading any destination content or publishing Git objects.
+pub(crate) fn resolve_projection(
+    entry: &mut crate::desired::DesiredEntry,
+    walk_source: bool,
+) -> Result<()> {
+    if !entry.intent.is_virtual_checkout() {
+        return Ok(());
+    }
+    let existing = record_for_entry(entry)?;
+    resolve_projection_with_record(entry, walk_source, existing)
+}
+
+fn resolve_projection_with_record(
+    entry: &mut crate::desired::DesiredEntry,
+    walk_source: bool,
+    existing: Option<VirtualCheckoutRecord>,
+) -> Result<()> {
+    let crate::desired::Provenance::Overlay { source, .. } = &entry.provenance else {
+        return Ok(());
+    };
+    if !entry.intent.is_virtual_checkout() {
+        return Ok(());
+    }
+    let mut scope = entry.intent.checkout_scope();
+    if existing
+        .as_ref()
+        .is_some_and(|record| record.scope.projection.is_none())
+    {
+        return Ok(());
+    }
+    let mut paths = existing
+        .as_ref()
+        .and_then(|record| record.scope.projection.clone())
+        .unwrap_or_default();
+    if walk_source && source.is_dir() {
+        for candidate in walkdir::WalkDir::new(source)
+            .min_depth(1)
+            .into_iter()
+            .filter_entry(|item| {
+                let relative = item.path().strip_prefix(source).unwrap_or(Path::new(""));
+                scope.owns_source_kind(relative, item.file_type().is_dir())
+            })
+        {
+            let candidate = candidate?;
+            let relative = candidate.path().strip_prefix(source)?;
+            if candidate.file_type().is_file() && !super::git::is_overlay_metadata(relative) {
+                paths.insert(relative.to_path_buf());
+            }
+        }
+    }
+    if let Ok((repo, managed)) = super::git::discover_source(source) {
+        for oid in [
+            None,
+            existing.as_ref().map(|record| record.base_oid.as_str()),
+        ] {
+            if let Ok(tree) = super::git::base_tree(&repo, oid) {
+                paths.extend(
+                    super::git::scoped_entries(&repo, &tree, &managed, &scope)?.into_keys(),
+                );
+            }
+        }
+        for indexed in repo.index()?.iter() {
+            if let Some(relative) = super::git::relative_index_path(&indexed.path, &managed)?
+                && scope.owns_source(&relative)
+                && !super::git::is_overlay_metadata(&relative)
+            {
+                paths.insert(relative);
+            }
+        }
+    }
+    scope.projection = Some(paths);
+    entry.intent = crate::desired::MaterializationIntent::ScopedVirtualCheckout(scope);
+    Ok(())
 }
 
 /// Synchronous read, for use from [`crate::materialize::Materializer::classify`]
@@ -180,19 +468,21 @@ pub(crate) fn record_for_blocking_in(
     target: &Path,
 ) -> Result<Option<VirtualCheckoutRecord>> {
     let state = state_file.inspect_blocking()?;
-    Ok(state.checkouts.get(&key_for(target)).cloned())
+    unique_record(&state, target)
 }
 
+#[cfg(test)]
 pub(crate) async fn record_for(target: &Path) -> Result<Option<VirtualCheckoutRecord>> {
     record_for_in(&state_file()?, target).await
 }
 
+#[cfg(test)]
 pub(crate) async fn record_for_in(
     state_file: &StateFile<VirtualCheckoutState>,
     target: &Path,
 ) -> Result<Option<VirtualCheckoutRecord>> {
     let state = state_file.inspect().await?;
-    Ok(state.checkouts.get(&key_for(target)).cloned())
+    unique_record(&state, target)
 }
 
 pub(crate) async fn persist(target: &Path, record: VirtualCheckoutRecord) -> Result<()> {
@@ -202,11 +492,37 @@ pub(crate) async fn persist(target: &Path, record: VirtualCheckoutRecord) -> Res
 pub(crate) async fn persist_in(
     state_file: &StateFile<VirtualCheckoutState>,
     target: &Path,
-    record: VirtualCheckoutRecord,
+    mut record: VirtualCheckoutRecord,
 ) -> Result<()> {
-    let key = key_for(target);
+    let key = association_key(target, &record)?;
+    let target = target.to_path_buf();
     state_file
         .update(move |s| {
+            if let Some(paths) = &mut record.scope.projection {
+                if let Some(previous) = s
+                    .checkouts
+                    .get(&key)
+                    .and_then(|old| old.scope.projection.as_ref())
+                {
+                    // Checkpoint publication must not erase an explicit acquisition after reset.
+                    paths.extend(previous.iter().cloned());
+                }
+                let root = record.source_repository.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("projected checkout lacks source repository identity")
+                })?;
+                let entry = crate::desired::DesiredEntry {
+                    target,
+                    provenance: crate::desired::Provenance::Overlay {
+                        overlay: record.overlay.clone(),
+                        source: root.join(&record.managed_path),
+                    },
+                    intent: crate::desired::MaterializationIntent::ScopedVirtualCheckout(
+                        record.scope.clone(),
+                    ),
+                    permissions: None,
+                };
+                validate_claims(s, &entry)?;
+            }
             s.checkouts.insert(key, record);
             Ok(())
         })
@@ -239,6 +555,16 @@ async fn remove_key_in(state_file: &StateFile<VirtualCheckoutState>, key: String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creating_a_reserved_destination_preserves_its_canonical_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("missing").join("target");
+        let reserved = key_for(&target);
+        std::fs::create_dir_all(&target).unwrap();
+        assert_eq!(reserved, key_for(&target));
+        assert_eq!(reserved, target.canonicalize().unwrap().to_string_lossy());
+    }
 
     #[tokio::test]
     async fn live_source_associations_distinguish_repositories_and_ignore_removed_targets() {
@@ -276,15 +602,18 @@ mod tests {
         assert!(!entry.target.exists());
     }
 
-    #[test]
-    fn legacy_records_migrate_without_inventing_mapping_ownership() {
+    #[rstest::rstest]
+    #[case(1)]
+    #[case(2)]
+    fn legacy_records_migrate_without_inventing_mapping_ownership(#[case] version: u32) {
         let raw: toml::Value = toml::from_str("[checkouts.'/target']\noverlay='ov'\nmanaged_path='ov'\nbase_oid='0123456789'\ncreated_at=0\n").unwrap();
-        let migrated = VirtualCheckoutState::migrate(1, raw).unwrap();
+        let migrated = VirtualCheckoutState::migrate(version, raw).unwrap();
         assert_eq!(
             migrated.checkouts["/target"].scope,
             crate::desired::CheckoutScope::default()
         );
         assert!(migrated.checkouts["/target"].source_repository.is_none());
+        assert!(migrated.checkouts["/target"].scope.projection.is_none());
     }
 
     fn record(managed_path: &str, oid: &str) -> VirtualCheckoutRecord {

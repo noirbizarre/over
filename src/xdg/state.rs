@@ -182,6 +182,15 @@ where
         .await?
     }
 
+    /// Blocking counterpart for transactional Git workers which already run off-runtime.
+    pub(crate) fn update_blocking(&self, mutate: impl FnOnce(&mut T) -> Result<()>) -> Result<()> {
+        let lock_file = Self::open_lock_file(&self.lock_path())?;
+        lock_file.lock()?;
+        let mut state = Self::read(&self.path)?;
+        mutate(&mut state)?;
+        Self::write_atomic(&self.path, &state)
+    }
+
     /// Opens (creating if needed) the lock sentinel file, creating its
     /// parent directory first since XDG state dirs aren't guaranteed to
     /// pre-exist.

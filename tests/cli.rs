@@ -3543,7 +3543,7 @@ fn virtual_checkout_initializes_a_populated_root_and_preserves_local_additions()
         .env("XDG_STATE_HOME", state.path())
         .assert()
         .success()
-        .stdout(contains("keep me"));
+        .stdout(contains("keep me").not());
     Ok(())
 }
 

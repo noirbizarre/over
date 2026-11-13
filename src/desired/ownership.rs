@@ -259,6 +259,41 @@ pub(crate) fn conflict(
     {
         return Ok(None);
     }
+    for (projection, other) in [(a, b), (b, a)] {
+        if let MaterializationIntent::ScopedVirtualCheckout(scope) = &projection.intent
+            && let Some(paths) = &scope.projection
+        {
+            // Containers are shared; compare concrete leaves so file ancestors still conflict.
+            for path in paths.iter() {
+                if !scope.owns_target(path) {
+                    continue;
+                }
+                // Do not clone the whole projection inventory for every leaf comparison.
+                let leaf = DesiredEntry {
+                    target: projection.target.join(path),
+                    provenance: projection.provenance.clone(),
+                    intent: MaterializationIntent::SymlinkFile {
+                        source: path.clone(),
+                        link_type: crate::actions::symlink::LinkType::Soft,
+                    },
+                    permissions: projection.permissions,
+                };
+                if let Some(issue) = conflict(&leaf, other)? {
+                    return Ok(Some(issue));
+                }
+                let location = mapping::location(&leaf.target)?;
+                if location != leaf.target {
+                    // Shared roots can contain deeper aliases; resolving only the root misses them.
+                    let mut physical = leaf;
+                    physical.target = location;
+                    if let Some(issue) = conflict(&physical, other)? {
+                        return Ok(Some(issue));
+                    }
+                }
+            }
+            return Ok(None);
+        }
+    }
     if scaffold(a) || scaffold(b) {
         let (scaffold, other) = if scaffold(a) { (a, b) } else { (b, a) };
         if directory(other) || !scaffold.target.starts_with(&other.target) {
@@ -615,7 +650,7 @@ mod tests {
     #[rstest]
     #[case("symlink", false)]
     #[case("symlink-directory", true)]
-    #[case("checkout", true)]
+    #[case("checkout", false)]
     fn directory_materialization_controls_namespace_ownership(
         #[case] mode: &str,
         #[case] collides: bool,

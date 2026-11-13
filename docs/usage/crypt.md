@@ -100,6 +100,12 @@ without the filter. Do not protect them with broad overriding rules.
 
 ## Transparent Git and explicit lock
 
+Flat applications can share a virtual-checkout destination while retaining distinct
+canonical source paths and encryption policy. Use `over add --crypt --overlay NAME PATH`
+to acquire a new protected destination file explicitly. Its destination stays an
+ordinary file; its staged and committed source blobs use native ciphertext. Existing
+owned destination files can resolve their source policy through `over crypt add`.
+
 Over installs only local `filter.over.clean`, `filter.over.smudge`,
 `filter.over.process`, and `filter.over.required=true`. Git uses its v2 long-lived
 filter protocol; one-shot clean/smudge remain available as compatible fallback

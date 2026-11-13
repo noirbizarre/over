@@ -67,6 +67,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
 
     let ctx = Context::builder()
+        .acquire_checkout_paths(args.overlay.is_some())
         .dry_run(args.dry_run)
         .debug(cli.debug)
         .verbose(cli.verbose)
@@ -104,6 +105,11 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         let routing = routing.clone();
         let dry_run = args.dry_run;
         return tokio::task::spawn_blocking(move || -> Result<()> {
+            let _ownership = if dry_run {
+                None
+            } else {
+                Some(crate::materialize::virtual_checkout::state::mutation_guard()?)
+            };
             let mut preview = (*ctx).clone();
             preview.dry_run = true;
             // Validate ownership and source drift before policy can replace selected index entries.
@@ -131,6 +137,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             }
             let mut ingestion = crate::crypt::ingest::Ingestion::prepare(&moves)?;
             if !dry_run {
+                crate::stage::reserve_inputs(&ctx, &overlay, &resolved)?;
                 let patterns = inputs
                     .keys()
                     .map(|path| path.to_string_lossy().replace('\\', "/"))

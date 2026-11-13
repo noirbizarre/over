@@ -501,10 +501,7 @@ fn migrating_a_legacy_symlink_directory_to_checkout_preserves_newly_ignored_link
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        text.contains("ignored") || text.contains("unmanaged"),
-        "{text}"
-    );
+    assert!(text.contains("unapply the old layout first"), "{text}");
     assert!(fixture.home.join("target/app/secret.pem").is_symlink());
     assert_eq!(
         fs::read_to_string(fixture.home.join("target/app/secret.pem")).unwrap(),
@@ -725,7 +722,7 @@ fn git_add_excludes_newly_staged_checkout_files_from_the_host_repository(
     write(&target, "secret.pem", "unmanaged host content");
     fixture
         .command("git")
-        .args(["add", "new"])
+        .args(["add", "--overlay", "ov", "new"])
         .env("HOME", &fixture.home)
         .current_dir(&target)
         .assert()

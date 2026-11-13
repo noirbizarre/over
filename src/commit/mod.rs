@@ -181,6 +181,7 @@ pub(crate) async fn commit_entries_checked(
     opts: &CommitOptions,
     expected: Option<Snapshot>,
 ) -> Result<CommitOutcome> {
+    let _ownership = tokio::task::spawn_blocking(state::mutation_guard).await??;
     let entries = entries.to_vec();
     let opts = opts.clone();
     let (outcome, persist) = tokio::task::spawn_blocking(move || {
@@ -234,7 +235,7 @@ fn commit_blocking(
         if file_changes.is_empty() {
             continue;
         }
-        let Some(record) = state::record_for_blocking(&entry.target)? else {
+        let Some(record) = state::record_for_entry(entry)? else {
             anyhow::bail!(
                 "no virtual checkout association recorded for '{}' — was it materialized by `over apply`?",
                 entry.target.display(),
@@ -564,6 +565,8 @@ mod tests {
         index.write().unwrap();
         let before = repo.head().unwrap().target();
         let state_dir = xdg.path().join("over");
+        // Fail checkpoint publication, not acquisition of the mutation sentinel.
+        drop(state::mutation_guard().unwrap());
         let permissions = fs::metadata(&state_dir).unwrap().permissions();
         fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o500)).unwrap();
         let result = commit(

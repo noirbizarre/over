@@ -110,6 +110,9 @@ pub struct Context {
 
     pub overlay: Option<Overlay>,
 
+    /// Only explicit selection may acquire unowned files in a shared checkout target.
+    pub acquire_checkout_paths: bool,
+
     /// Facts about the current machine, available to all templates.
     pub machine: MachineInfo,
 
@@ -157,6 +160,7 @@ impl Progress {
 /// to get an `Arc<Context>`.
 #[derive(Default)]
 pub struct ContextBuilder {
+    acquire_checkout_paths: bool,
     path_inputs: PathInputs,
     dry_run: bool,
     debug: bool,
@@ -177,6 +181,10 @@ pub struct ContextBuilder {
 }
 
 impl ContextBuilder {
+    pub fn acquire_checkout_paths(mut self, enabled: bool) -> Self {
+        self.acquire_checkout_paths = enabled;
+        self
+    }
     pub fn install(mut self, install: bool) -> Self {
         self.install = install;
         self
@@ -260,6 +268,7 @@ impl ContextBuilder {
 
     pub fn build(self) -> Arc<Context> {
         Arc::new(Context {
+            acquire_checkout_paths: self.acquire_checkout_paths,
             crypto: Arc::new(crate::secrets::CryptoService::default()),
             path_inputs: self.path_inputs,
             current_target: None,

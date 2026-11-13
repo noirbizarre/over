@@ -370,7 +370,12 @@ fn ownership_lint_never_writes_sources_git_objects_targets_or_state(
             "target: ~/Workspace/Client",
         )
         .unwrap();
-        fs::write(fixture.source.join("dependency/foreign"), "competing owner").unwrap();
+        fs::create_dir_all(fixture.source.join("dependency/main")).unwrap();
+        fs::write(
+            fixture.source.join("dependency/main/file"),
+            "competing owner",
+        )
+        .unwrap();
         let descriptor = fixture.source.join("workspace/client/over.yaml");
         let configuration = fs::read_to_string(&descriptor).unwrap();
         fs::write(descriptor, format!("uses: [dependency]\n{configuration}")).unwrap();
