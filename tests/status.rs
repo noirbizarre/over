@@ -342,7 +342,7 @@ fn healthy_entries_are_summarized_until_verbose_is_requested() {
         .env("CLICOLOR_FORCE", "1")
         .assert()
         .success()
-        .stdout(contains("Fully applied"))
+        .stdout(contains("Reconciliation:\n  Fully applied: 2 applied"))
         .stdout(contains("source:").count(1))
         .stdout(contains("\x1b[").not());
     command(&source, &root, "status")
