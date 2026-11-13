@@ -8,6 +8,11 @@ you compose with `uses`.
 
 Both root and overlay descriptors accept `mode` and ordered `rules`.
 
+For missing root configuration, [`over init`](../usage/init.md#choose-a-repository-default)
+recommends virtual checkout and persists the selected repository default. Existing
+configuration is preserved, and the implicit fallback remains symlink when no
+policy selects a mode. Initialization never migrates existing deployments.
+
 | Mode | When to use it | Behavior |
 | --- | --- | --- |
 | `symlink` | Share source files while retaining real target directories | Recurse and link individual files; implicit fallback |

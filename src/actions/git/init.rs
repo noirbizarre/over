@@ -1,6 +1,7 @@
 //! Guarded bootstrap operations, independent of overlay application.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
@@ -9,7 +10,7 @@ use git2::{
     build::{CheckoutBuilder, RepoBuilder},
 };
 
-use crate::overlays;
+use crate::overlays::{self, MaterializationKind};
 
 #[derive(Debug)]
 pub struct Initialization {
@@ -23,6 +24,29 @@ pub struct Initialization {
 }
 
 impl Initialization {
+    /// Create repository policy only when no supported root descriptor exists.
+    pub fn create_configuration(&self, mode: MaterializationKind) -> Result<PathBuf> {
+        let mode = match mode {
+            MaterializationKind::Checkout => "checkout",
+            MaterializationKind::Symlink => "symlink",
+            _ => bail!("repository setup supports checkout or symlink mode"),
+        };
+        // Confirmation can take arbitrarily long; do not overwrite a descriptor added meanwhile.
+        if self.repository.root_descriptor()?.is_some() {
+            bail!("root configuration appeared during initialization; retry to review it");
+        }
+        let path = self.destination.join("over.toml");
+        // Publish only complete content, so a write failure cannot leave an empty default policy.
+        let mut file = tempfile::NamedTempFile::new_in(&self.destination)
+            .context("failed to prepare root configuration")?;
+        file.write_all(format!("mode = \"{mode}\"\n").as_bytes())
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        file.persist_noclobber(&path)
+            .with_context(|| format!("failed to create {} without overwriting", path.display()))?;
+        self.repository.validate_initialization()?;
+        Ok(path)
+    }
+
     pub fn needs_origin_update(&self) -> bool {
         self.canonical.is_some() && self.canonical != self.origin
     }
@@ -96,6 +120,19 @@ fn origin_urls(repo: &Repository) -> Result<(Option<String>, Option<String>)> {
 
 /// Clone into an empty destination, or inspect an existing checkout without fetching.
 pub fn initialize(destination: PathBuf, source: Option<&str>) -> Result<Initialization> {
+    initialize_checkout(destination, source, false)
+}
+
+/// Prepare initialization while allowing the caller to offer missing root configuration.
+pub fn prepare(destination: PathBuf, source: Option<&str>) -> Result<Initialization> {
+    initialize_checkout(destination, source, true)
+}
+
+fn initialize_checkout(
+    destination: PathBuf,
+    source: Option<&str>,
+    allow_missing: bool,
+) -> Result<Initialization> {
     let empty = match fs::symlink_metadata(&destination) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -133,13 +170,23 @@ pub fn initialize(destination: PathBuf, source: Option<&str>) -> Result<Initiali
             destination.display()
         );
     }
-    finish_initialization(destination, cloned)
+    finish_initialization(destination, cloned, allow_missing)
 }
 
-fn finish_initialization(destination: PathBuf, cloned: bool) -> Result<Initialization> {
+fn finish_initialization(
+    destination: PathBuf,
+    cloned: bool,
+    allow_missing: bool,
+) -> Result<Initialization> {
     let repo = open_checkout(&destination)?;
     let repository = overlays::Repository::new(destination.clone());
-    let canonical = repository.validate_initialization().with_context(|| {
+    let validate = || {
+        if allow_missing && repository.root_descriptor()?.is_none() {
+            return Ok(None);
+        }
+        repository.validate_initialization()
+    };
+    let canonical = validate().with_context(|| {
         format!(
             "invalid Over repository at {}; checkout preserved: fix its root descriptor and retry",
             destination.display()
@@ -176,7 +223,7 @@ mod tests {
         )
         .unwrap();
         // Exercise post-clone finalization without requiring a public HTTPS server.
-        let result = finish_initialization(tmp.path().to_path_buf(), true).unwrap();
+        let result = finish_initialization(tmp.path().to_path_buf(), true, false).unwrap();
         assert_eq!(
             result.origin.as_deref(),
             Some("git@example.invalid:user/dotfiles.git")

@@ -22,6 +22,23 @@ Root hooks are also repository-scoped. Ordinary [overlay fields](overlay.md),
 such as `target`, `data`, and overlay rules, may appear here as
 inherited policy; they are not additional repository preferences.
 
+## Default materialization
+
+Set `mode` in the root descriptor to persist the repository's inherited
+[materialization policy](materialization.md):
+
+```toml
+mode = "checkout"
+```
+
+[`over init`](../usage/init.md#choose-a-repository-default) offers to create this
+minimal configuration when no root descriptor exists, recommending virtual
+checkout and offering symlink as an alternative. Scripts can use
+`over init --mode checkout`, `--mode symlink`, or `--no-config` to skip creation.
+These setup-only options preserve existing configuration. Nearer descriptors
+and rules still take precedence; choosing a default does not migrate deployed
+files. Descriptors without a mode retain the implicit symlink fallback.
+
 ## Editor support
 
 Use the [repository-root schema](https://noirbizarre.github.io/over/schemas/config.json) for this descriptor.
