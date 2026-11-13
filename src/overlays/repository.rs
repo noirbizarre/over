@@ -102,15 +102,44 @@ impl Repository {
         Ok(self.root_config()?.sync)
     }
 
-    /// Bootstrap requires an explicit root descriptor, unlike overlay discovery.
-    pub fn validate_initialization(&self) -> Result<Option<String>> {
-        let descriptors = EXTENSIONS
-            .iter()
-            .filter(|ext| self.root.join(format!("{BASENAME}.{ext}")).exists())
-            .count();
-        if descriptors != 1 {
+    /// Discover a single root descriptor without mistaking broken paths for absence.
+    pub fn root_descriptor(&self) -> Result<Option<PathBuf>> {
+        let mut descriptors = Vec::new();
+        for ext in EXTENSIONS {
+            let path = self.root.join(format!("{BASENAME}.{ext}"));
+            match std::fs::symlink_metadata(&path) {
+                Ok(_) => {
+                    // Follow valid descriptor links, but never offer to replace a dangling one.
+                    if !std::fs::metadata(&path)
+                        .with_context(|| format!("failed to inspect {}", path.display()))?
+                        .is_file()
+                    {
+                        bail!("root descriptor {} must be a file", path.display());
+                    }
+                    descriptors.push(path);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to inspect {}", path.display()));
+                }
+            }
+        }
+        if descriptors.len() > 1 {
             bail!(
-                "expected exactly one root over.toml, over.yaml or over.yml in {} (found {descriptors})",
+                "expected exactly one root over.toml, over.yaml or over.yml in {} (found {})",
+                self.root.display(),
+                descriptors.len()
+            );
+        }
+        Ok(descriptors.pop())
+    }
+
+    /// Bootstrap hooks require an explicit root descriptor, unlike overlay discovery.
+    pub fn validate_initialization(&self) -> Result<Option<String>> {
+        if self.root_descriptor()?.is_none() {
+            bail!(
+                "expected exactly one root over.toml, over.yaml or over.yml in {} (found 0)",
                 self.root.display()
             );
         }

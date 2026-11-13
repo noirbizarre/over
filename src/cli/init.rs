@@ -1,10 +1,11 @@
 use std::io::{self, IsTerminal};
 
 use anyhow::{Context as _, Result, bail};
-use clap::Args;
-use dialoguer::Confirm;
+use clap::{Args, ValueEnum};
+use dialoguer::{Confirm, Select};
 
-use crate::actions::git::init::initialize;
+use crate::actions::git::init::prepare;
+use crate::overlays::MaterializationKind;
 use crate::ui::{self, style::DialogTheme};
 
 use super::CLI;
@@ -13,6 +14,13 @@ use super::CLI;
 pub struct Params {
     /// Clone from a Git URL or local repository path
     source: Option<String>,
+
+    /// Create a missing root configuration with this repository default
+    #[arg(long, value_enum, conflicts_with = "no_config")]
+    mode: Option<SetupMode>,
+    /// Continue without creating missing root configuration
+    #[arg(long)]
+    no_config: bool,
 
     /// Set an existing checkout's canonical origin without prompting
     #[arg(long)]
@@ -25,14 +33,124 @@ pub struct Params {
     identity: Option<std::path::PathBuf>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum SetupMode {
+    Checkout,
+    Symlink,
+}
+
+impl SetupMode {
+    fn materialization(self) -> MaterializationKind {
+        match self {
+            Self::Checkout => MaterializationKind::Checkout,
+            Self::Symlink => MaterializationKind::Symlink,
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Checkout => "virtual checkout (mode: checkout)",
+            Self::Symlink => "symlink (mode: symlink)",
+        }
+    }
+}
+
+fn choose_configuration(
+    mode: Option<SetupMode>,
+    no_config: bool,
+    interactive: bool,
+    confirm: impl FnOnce() -> Result<bool>,
+    select: impl FnOnce() -> Result<SetupMode>,
+) -> Result<Option<SetupMode>> {
+    if mode.is_some() || no_config {
+        return Ok(mode);
+    }
+    if !interactive {
+        bail!(
+            "no root Over configuration found; rerun over init --mode checkout (recommended), --mode symlink, or --no-config to skip creation"
+        );
+    }
+    if confirm()? {
+        Ok(Some(select()?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn setup_configuration(
+    result: &crate::actions::git::init::Initialization,
+    mode: Option<SetupMode>,
+    no_config: bool,
+) -> Result<()> {
+    if let Some(path) = result.repository.root_descriptor()? {
+        if mode.is_some() {
+            ui::info(format!(
+                "Existing configuration {} preserved; --mode only creates missing configuration. Existing repository and overlay policy remains authoritative.",
+                path.display()
+            ))?;
+        }
+        return Ok(());
+    }
+    let selected = choose_configuration(
+        mode,
+        no_config,
+        io::stdin().is_terminal() && io::stderr().is_terminal(),
+        || {
+            let _pause = crate::ui::progress::pause()?;
+            Confirm::with_theme(&DialogTheme::default())
+                .with_prompt("No root Over configuration found. Create over.toml?")
+                .default(true)
+                .interact()
+                .context("configuration creation confirmation failed")
+        },
+        || {
+            let _pause = crate::ui::progress::pause()?;
+            ui::info(
+                "Virtual checkout uses ordinary target files from committed source HEAD; symlink edits target files through links to the source.",
+            )?;
+            let selection = Select::with_theme(&DialogTheme::default())
+                .with_prompt(
+                    "Choose the repository default materialization (no files will be applied)",
+                )
+                .items(["Virtual checkout (recommended)", "Symlink"])
+                .default(0)
+                .interact()
+                .context("materialization selection failed")?;
+            Ok(if selection == 0 {
+                SetupMode::Checkout
+            } else {
+                SetupMode::Symlink
+            })
+        },
+    )?;
+    if let Some(mode) = selected {
+        let path = result.create_configuration(mode.materialization())?;
+        ui::info(format!(
+            "Created {} with repository default {}; nearer overlay and rule policy still takes precedence. No deployed files were changed.",
+            path.display(),
+            mode.description()
+        ))?;
+    } else {
+        ui::info(
+            "Root configuration creation skipped. Implicit materialization remains symlink unless child policy overrides it; only discovered child overlays are available. Create configuration later with over init --mode checkout or --mode symlink.",
+        )?;
+    }
+    Ok(())
+}
+
 pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
     tracing::debug!("init command");
     let destination = cli.resolve_home()?;
     let source = params.source.clone();
-    let mut result =
-        tokio::task::spawn_blocking(move || initialize(destination, source.as_deref()))
-            .await
-            .context("initialization task failed")??;
+    let mode = params.mode;
+    let no_config = params.no_config;
+    let mut result = tokio::task::spawn_blocking(move || {
+        let result = prepare(destination, source.as_deref())?;
+        setup_configuration(&result, mode, no_config)?;
+        Ok::<_, anyhow::Error>(result)
+    })
+    .await
+    .context("initialization task failed")??;
     if result.needs_origin_update() {
         confirm_origin_change(
             params.set_origin,
@@ -163,6 +281,76 @@ fn confirm_origin_change(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[rstest::rstest]
+    #[case(Some(SetupMode::Checkout), false)]
+    #[case(Some(SetupMode::Symlink), false)]
+    #[case(None, true)]
+    fn explicit_configuration_choices_never_prompt(
+        #[case] mode: Option<SetupMode>,
+        #[case] no_config: bool,
+    ) {
+        assert_eq!(
+            choose_configuration(
+                mode,
+                no_config,
+                false,
+                || panic!("must not prompt"),
+                || { panic!("must not prompt") }
+            )
+            .unwrap(),
+            mode
+        );
+    }
+
+    #[rstest::rstest]
+    #[case(SetupMode::Checkout)]
+    #[case(SetupMode::Symlink)]
+    fn accepting_configuration_creation_uses_the_selected_mode(#[case] mode: SetupMode) {
+        assert_eq!(
+            choose_configuration(None, false, true, || Ok(true), || Ok(mode)).unwrap(),
+            Some(mode)
+        );
+    }
+
+    #[test]
+    fn declining_configuration_creation_never_asks_for_a_mode() {
+        assert_eq!(
+            choose_configuration(
+                None,
+                false,
+                true,
+                || Ok(false),
+                || panic!("must not select")
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn noninteractive_missing_configuration_requires_an_explicit_decision() {
+        let error = choose_configuration(
+            None,
+            false,
+            false,
+            || panic!("must not prompt"),
+            || panic!("must not select"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("--mode checkout"));
+        assert!(error.to_string().contains("--no-config"));
+    }
+
+    #[test]
+    fn cancelled_mode_selection_propagates_the_error() {
+        assert!(
+            choose_configuration(None, false, true, || Ok(true), || bail!("cancelled"))
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+    }
 
     #[test]
     fn explicit_origin_approval_never_prompts_even_without_a_terminal() {

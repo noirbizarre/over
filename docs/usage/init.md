@@ -10,6 +10,8 @@ Arguments:
 
 Options:
   -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
+      --mode <MODE>  Create a missing root configuration with this repository default [possible values: checkout, symlink]
+      --no-config    Continue without creating missing root configuration
       --set-origin   Set an existing checkout's canonical origin without prompting
       --unlock       Explicitly unlock repository encryption during initialization
       --identity <IDENTITY>  Use a standard Age identity when unlocking
@@ -17,6 +19,56 @@ Options:
   -v, --verbose      Toggle verbose output
   -h, --help         Print help
 ```
+
+## Choose a repository default
+
+When the checkout has no root `over.toml`, `over.yaml`, or `over.yml`, interactive
+init explains that configuration is missing and offers to create `over.toml`.
+Accepting opens a materialization choice:
+
+- **Virtual checkout (recommended)** is selected by default. Apply creates
+  ordinary target files from committed source `HEAD`, with changes recorded back
+  through the checkout workflow.
+- **Symlink** links target files to the source, so editing a target edits its source.
+
+For example, selecting virtual checkout writes this minimal root configuration:
+
+```toml
+mode = "checkout"
+```
+
+Init reports the created path and repository default. This policy is inherited
+by overlays; nearer descriptors and ordered rules retain their precedence.
+The file is not staged or committed automatically. Review and commit it to share
+the default with future checkouts. See [Materialization](../configuration/materialization.md).
+
+Existing configuration is preserved without setup questions, including descriptors
+that omit `mode`. Their implicit fallback remains symlink. Adding a default does
+not convert deployed files or symlinks, migrate virtual checkouts, apply overlays,
+or authorize encryption unlock. Existing deployments require an explicit migration.
+
+Declining creation continues without a root descriptor. Only discovered child
+overlays are available, with the implicit symlink fallback unless their own policy
+overrides it. You can create the root descriptor later with
+`over init --mode checkout` or `over init --mode symlink`.
+
+### Noninteractive setup
+
+Missing configuration requires an explicit decision when stdin or stderr is not
+a terminal. Without one, init fails with guidance instead of prompting:
+
+```sh
+over init https://github.com/user/dotfiles.git --mode checkout
+over init https://github.com/user/dotfiles.git --mode symlink
+over init https://github.com/user/dotfiles.git --no-config
+```
+
+`--mode` and `--no-config` are mutually exclusive. `--mode` only selects the default
+when creating missing configuration; it is not a per-command override. Repeating
+it with existing configuration preserves that file and reports that its policy
+remains authoritative. `--no-config` likewise preserves existing configuration.
+Invalid or multiple root descriptors must be repaired; these flags cannot replace
+them. Origin changes and encryption unlock retain their separate consent flags.
 
 ## Bootstrap before SSH is configured
 
@@ -50,8 +102,9 @@ The destination is `--home`, then `OVER_HOME`, then `~/.dotfiles`. With no sourc
 `over init` validates that location, not the current directory. To validate a
 checkout elsewhere, use `over --home /path/to/checkout init`.
 
-The checkout must be non-bare and have exactly one root `over.toml`, `over.yaml`
-or `over.yml` with valid configuration. Both flat single-overlay layouts and
+The checkout must be non-bare. Existing root configuration must be exactly one
+valid `over.toml`, `over.yaml`, or `over.yml`; missing configuration follows the
+setup flow above. Both flat single-overlay layouts and
 root-declared overlay directories are supported. No fixed `overlays/` directory
 is required. Init checks root schema without applying overlays or evaluating
 machine-dependent templates; use `over lint` for broader overlay diagnostics.

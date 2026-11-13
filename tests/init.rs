@@ -350,8 +350,308 @@ fn missing_or_ambiguous_root_descriptors_do_not_change_remotes() {
     command(tmp.path())
         .assert()
         .failure()
-        .stderr(contains("exactly one root"));
+        .stderr(contains("--mode checkout"));
     assert_eq!(origin(tmp.path()), "https://example.invalid/keep.git");
+}
+
+#[rstest]
+#[case("checkout")]
+#[case("symlink")]
+fn explicit_setup_persists_the_repository_default_without_touching_source_edits(
+    #[case] mode: &str,
+) {
+    let tmp = TempDir::new().unwrap();
+    let repo = source(tmp.path(), "over.toml", "");
+    fs::remove_file(tmp.path().join("over.toml")).unwrap();
+    fs::write(tmp.path().join("dotfile"), "dirty\n").unwrap();
+    let index = fs::read(repo.path().join("index")).unwrap();
+    command(tmp.path())
+        .args(["--mode", mode])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("over.toml")).unwrap(),
+        format!("mode = \"{mode}\"\n")
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("dotfile")).unwrap(),
+        "dirty\n"
+    );
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+    let repository = over::overlays::Repository::new(tmp.path().to_path_buf());
+    let overlay = over::overlays::Overlay::new(&repository, tmp.path()).unwrap();
+    let expected = if mode == "checkout" {
+        over::overlays::MaterializationKind::Checkout
+    } else {
+        over::overlays::MaterializationKind::Symlink
+    };
+    assert_eq!(overlay.materialization_for(Path::new("dotfile")), expected);
+}
+
+#[rstest]
+#[case("over.toml", "# legacy default\ntarget = '~'\n")]
+#[case("over.yaml", "mode: symlink\n")]
+#[case("over.yml", "mode: checkout\n")]
+fn setup_flags_preserve_existing_configuration_and_report_its_precedence(
+    #[case] descriptor: &str,
+    #[case] config: &str,
+) {
+    let tmp = TempDir::new().unwrap();
+    source(tmp.path(), descriptor, config);
+    command(tmp.path())
+        .args(["--mode", "checkout"])
+        .assert()
+        .success()
+        .stdout(contains("--mode only creates missing configuration"));
+    command(tmp.path()).arg("--no-config").assert().success();
+    assert_eq!(
+        fs::read_to_string(tmp.path().join(descriptor)).unwrap(),
+        config
+    );
+    if descriptor != "over.toml" {
+        assert!(!tmp.path().join("over.toml").exists());
+    }
+}
+
+#[test]
+fn explicit_skip_allows_descriptorless_initialization_without_writing_configuration() {
+    let tmp = TempDir::new().unwrap();
+    source(tmp.path(), "over.yaml", "");
+    fs::remove_file(tmp.path().join("over.yaml")).unwrap();
+    command(tmp.path())
+        .arg("--no-config")
+        .assert()
+        .success()
+        .stdout(contains("Implicit materialization remains symlink"));
+    assert!(!tmp.path().join("over.toml").exists());
+    command(tmp.path())
+        .assert()
+        .failure()
+        .stderr(contains("--no-config"));
+    assert!(!tmp.path().join("over.toml").exists());
+}
+
+#[rstest]
+#[case("checkout")]
+#[case("symlink")]
+fn missing_configuration_can_be_created_after_a_fresh_clone(#[case] mode: &str) {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("source");
+    // This ordinary tracked file deliberately is not a supported Over descriptor.
+    source(&src, "readme.txt", "fixture");
+    let dest = tmp.path().join("destination");
+    command(&dest)
+        .arg(&src)
+        .args(["--mode", mode])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(dest.join("over.toml")).unwrap(),
+        format!("mode = \"{mode}\"\n")
+    );
+    assert_eq!(
+        PathBuf::from(origin(&dest)).canonicalize().unwrap(),
+        src.canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn configuration_created_while_setup_is_pending_is_never_overwritten() {
+    let tmp = TempDir::new().unwrap();
+    source(tmp.path(), "readme.txt", "fixture");
+    let pending = over::actions::git::init::prepare(tmp.path().to_path_buf(), None).unwrap();
+    fs::write(tmp.path().join("over.yml"), "mode: symlink\n").unwrap();
+    assert!(
+        pending
+            .create_configuration(over::overlays::MaterializationKind::Checkout)
+            .is_err()
+    );
+    assert!(!tmp.path().join("over.toml").exists());
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("over.yml")).unwrap(),
+        "mode: symlink\n"
+    );
+}
+
+#[test]
+fn invalid_setup_options_are_rejected() {
+    let tmp = TempDir::new().unwrap();
+    command(tmp.path())
+        .args(["--mode", "checkout", "--no-config"])
+        .assert()
+        .failure();
+    command(tmp.path())
+        .args(["--mode", "symlink-directory"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn generated_defaults_preserve_nearer_overlay_policy() {
+    let tmp = TempDir::new().unwrap();
+    source(tmp.path(), "readme.txt", "fixture");
+    fs::create_dir(tmp.path().join("child")).unwrap();
+    fs::write(
+        tmp.path().join("child/over.toml"),
+        "mode = 'symlink'\n[[rules]]\npath = 'directory'\nmode = 'symlink-directory'\n",
+    )
+    .unwrap();
+    command(tmp.path())
+        .args(["--mode", "checkout"])
+        .assert()
+        .success();
+    let repository = over::overlays::Repository::new(tmp.path().to_path_buf());
+    let child = over::overlays::Overlay::new(&repository, &tmp.path().join("child")).unwrap();
+    assert_eq!(
+        child.materialization_for(Path::new("file")),
+        over::overlays::MaterializationKind::Symlink
+    );
+    assert_eq!(
+        child.materialization_for(Path::new("directory")),
+        over::overlays::MaterializationKind::SymlinkDirectory
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn selecting_checkout_preserves_deployed_links_and_external_state() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("source");
+    source(&src, "readme.txt", "fixture");
+    let target = tmp.path().join("deployed");
+    fs::create_dir(&target).unwrap();
+    std::os::unix::fs::symlink(src.join("dotfile"), target.join("dotfile")).unwrap();
+    let state = tmp.path().join("state/over");
+    fs::create_dir_all(&state).unwrap();
+    // Init must not load, repair, or reinterpret deployment registrations at all.
+    let registration = state.join("virtual_checkout.toml");
+    fs::write(&registration, "deployment-state sentinel\n").unwrap();
+    command(&src)
+        .env("XDG_STATE_HOME", tmp.path().join("state"))
+        .args(["--mode", "checkout"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_link(target.join("dotfile")).unwrap(),
+        src.join("dotfile")
+    );
+    assert_eq!(
+        fs::read_to_string(registration).unwrap(),
+        "deployment-state sentinel\n"
+    );
+    assert_eq!(fs::read_dir(target).unwrap().count(), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[rstest]
+#[case("\r", Some("checkout"))]
+#[case("j\r", Some("symlink"))]
+#[case("decline", None)]
+#[case("cancel", None)]
+fn interactive_setup_persists_only_an_accepted_mode(
+    #[case] answer: &str,
+    #[case] expected: Option<&str>,
+) {
+    let tmp = TempDir::new().unwrap();
+    source(tmp.path(), "readme.txt", "fixture");
+    // A controlling terminal exercises Dialoguer's actual default and key handling;
+    // piped stdin cannot cover either because it deliberately disables setup prompts.
+    let steps = if answer == "decline" {
+        vec![("Create over.toml?", "n")]
+    } else {
+        vec![
+            ("Create over.toml?", "y"),
+            ("Symlink", if answer == "cancel" { "\u{3}" } else { answer }),
+        ]
+    };
+    let driver = r#"
+import errno, fcntl, json, os, pty, select, signal, struct, sys, time
+steps = json.loads(sys.argv[1])
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(sys.argv[2], sys.argv[2:])
+fcntl.ioctl(fd, 0x5414, struct.pack('HHHH', 50, 120, 0, 0))
+deadline = time.monotonic() + 20
+output = b''
+pending = b''
+sent = 0
+while time.monotonic() < deadline:
+    if select.select([fd], [], [], 0.1)[0]:
+        try:
+            block = os.read(fd, 65536)
+        except OSError as error:
+            if error.errno == errno.EIO:
+                break
+            raise
+        if not block:
+            break
+        output += block
+        pending += block
+        if sent < len(steps) and steps[sent][0].encode() in pending:
+            if steps[sent][1] == '\x03':
+                os.killpg(pid, signal.SIGINT)
+            else:
+                os.write(fd, steps[sent][1].encode())
+            sent += 1
+            pending = b''
+else:
+    os.killpg(pid, signal.SIGKILL)
+    sys.exit(124)
+_, status = os.waitpid(pid, 0)
+sys.stdout.buffer.write(output)
+if sent != len(steps):
+    sys.exit(125)
+sys.exit(os.waitstatus_to_exitcode(status))
+"#;
+    let output = std::process::Command::new("python3")
+        .args(["-c", driver])
+        .arg(serde_json::to_string(&steps).unwrap())
+        .arg(assert_cmd::cargo::cargo_bin!("over"))
+        .arg("--home")
+        .arg(tmp.path())
+        .arg("init")
+        .env_remove("OVER_HOME")
+        .env("NO_COLOR", "1")
+        .env("TERM", "xterm")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert_ne!(
+        output.status.code(),
+        Some(124),
+        "terminal timed out: {text}"
+    );
+    assert_ne!(output.status.code(), Some(125), "missing prompt: {text}");
+    assert_eq!(output.status.success(), answer != "cancel", "{text}");
+    if let Some(mode) = expected {
+        assert!(text.contains("Virtual checkout (recommended)"), "{text}");
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("over.toml")).unwrap(),
+            format!("mode = \"{mode}\"\n")
+        );
+    } else {
+        assert!(!tmp.path().join("over.toml").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn dangling_descriptor_links_are_not_replaced_by_setup() {
+    let tmp = TempDir::new().unwrap();
+    source(tmp.path(), "readme.txt", "fixture");
+    let descriptor = tmp.path().join("over.yaml");
+    std::os::unix::fs::symlink("missing", &descriptor).unwrap();
+    command(tmp.path())
+        .args(["--mode", "checkout"])
+        .assert()
+        .failure();
+    assert!(
+        fs::symlink_metadata(descriptor)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(!tmp.path().join("over.toml").exists());
 }
 
 #[test]
