@@ -375,15 +375,24 @@ path = "ssh/agent"
 permissions = "600"
 ```
 
-Permissions manage **partial-file and decrypted-file targets**. Symlinks share the source
-inode, so applying permissions there would mutate source files. This setting
-does not independently chmod virtual checkout content.
+Permissions manage **partial-file, decrypted-file, and generated-file outputs**,
+including templates and extension-stripped files. Ordinary source symlinks share
+their source inode, so applying permissions there would mutate source files.
+Generated symlink-mode files instead link to an artifact whose permissions are
+managed independently. Generated physical checkout files also enforce explicit
+permission assignments, including permission-only drift during sync. Ordinary
+virtual-checkout files retain Git executability and existing access permissions;
+this policy does not independently chmod them.
 
 For partials, the selector matches the sidecar's own stem (`ssh/agent` for
 `ssh/agent.partial.toml`), not its rendered destination. Encrypted files use the
 decrypted logical name, without `.age`. Without an assignment, partial permissions
-remain unmanaged and decrypted files default to `0600`. Permission drift is a
-pending change fixed by apply, not a blocking content conflict.
+remain unmanaged and decrypted files default to `0600`. New generated outputs
+default to `0600` with the source executable bits retained; existing generated
+checkout files preserve access permissions unless explicitly assigned. Generated
+selectors use the source path before extension stripping. Permission drift is a
+pending change fixed by apply or generated-checkout sync, not a blocking content
+conflict.
 
 ## Link sidecars
 

@@ -230,11 +230,10 @@ pub struct DesiredEntry {
     pub intent: MaterializationIntent,
     /// Desired permissions resolved from scalar baselines and shared rules —
     /// see [`crate::overlays::Overlay::permission_for`].
-    /// Used by partial files and encrypted whole files. Other intents leave it `None`:
-    /// symlinked entries share their overlay source's inode (there is no
-    /// independent target permission to set without mutating that source,
-    /// out of scope for #65 — see ADR-020), and `Directory`/`Checkout`
-    /// entries have no permission concept here either.
+    /// Used by partial files, encrypted whole files, and rendered artifacts.
+    /// Generated checkout leaves carry their assignments in the rendered inventory.
+    /// Ordinary source links cannot set independent permissions without mutating
+    /// the source; scaffolds and ordinary checkouts have no assignment here.
     pub permissions: Option<FileMode>,
 }
 

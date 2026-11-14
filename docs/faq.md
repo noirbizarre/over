@@ -222,8 +222,10 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
 
     There are two distinct capabilities here: checkout removes dependence on a
     source symlink, while [permission policy](configuration/overlay.md#file-permissions)
-    controls **partial-file and legacy decrypted-file targets**. That policy does
-    not independently chmod virtual-checkout files, and Over has no general
+    controls **partial-file, legacy decrypted-file, and generated outputs**,
+    including generated physical checkout files. Ordinary virtual-checkout files
+    preserve access permissions while following Git executability; permission
+    policy does not independently chmod them. Over has no general
     declarative owner/group assignment. Existing metadata is preserved within
     the [documented platform limits](usage/safety.md#recovery-limitations).
     Arrange required ownership/restrictive checkout permissions separately and
