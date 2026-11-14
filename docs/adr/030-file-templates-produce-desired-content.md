@@ -36,8 +36,19 @@ desired ref advances. Explicit restore accepts the generated desired snapshot.
 Publication uses path revalidation, ref matching, and metadata-only recovery
 information. Reporting uses the same analysis without publishing objects/refs.
 
-Generated destinations cannot flow back into ordinary source staging/commit or
-Absorb. Reverse patching belongs to #276.
+Generated destinations cannot flow back into ordinary source staging or Absorb.
+The #276 follow-up adds conservative reverse patches during `over commit`:
+recorded rendered changes map only to uniquely identified literal source content,
+with disjoint source changes preserved and incompatible hunks reported per file.
+This does not invert Jinja expressions or control flow. Only translated source
+templates enter the source commit; physical rendered files remain untouched.
+
+Partial reverse commits record per-destination source revisions. A journal ties
+generated checkpoint publication to the planned source commit, so retrying can
+finish metadata publication without a duplicate source commit. An additional
+Git-backed consumed-render snapshot distinguishes already-recorded edits from
+independent source changes still awaiting sync. Generated commits retain these
+snapshots through parent links; XDG metadata continues to contain identities only.
 
 ## Consequences
 

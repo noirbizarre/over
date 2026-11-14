@@ -23,7 +23,7 @@ pub struct Params {
 
     #[clap(
         value_name = "PATH",
-        help = "Commit staged paths (defaults to all owned staged changes)"
+        help = "Commit staged paths and compatible rendered edits (defaults to all owned paths)"
     )]
     paths: Vec<PathBuf>,
 
@@ -191,17 +191,37 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     // something to commit — never prompt for a no-op.
     let preflight_entries = owned_entries.clone();
     let preflight_options = options.clone();
-    let (pending, conflicting_files, snapshot) =
+    let preflight_ctx = ctx.clone();
+    let preflight_overlay = overlay.clone();
+    let (pending, conflicting_files, snapshot, reverse) =
         tokio::task::spawn_blocking(move || -> Result<_> {
+            let _ownership = crate::materialize::virtual_checkout::state::mutation_guard()?;
+            commit::reverse_patch::recover(&preflight_entries)?;
             let snapshot = commit::snapshot(&preflight_entries)?;
-            let pending = commit::pending(&preflight_entries, &preflight_options)?;
+            let has_generated = preflight_entries
+                .iter()
+                .map(crate::materialize::virtual_checkout::state::record_for_entry)
+                .collect::<Result<Vec<_>>>()?
+                .iter()
+                .flatten()
+                .any(|record| record.generated.is_some());
+            let rendering = if has_generated {
+                preflight_ctx.prepare_rendering(&preflight_overlay)?
+            } else {
+                preflight_ctx
+            };
+            let reverse = commit::reverse_patch::prepare(
+                &preflight_entries,
+                &preflight_options,
+                &rendering,
+                &preflight_overlay,
+            )?;
+            let pending = !reverse.files.is_empty()
+                || commit::pending(&preflight_entries, &preflight_options, &reverse)?;
             let conflicts = preflight_entries
                 .iter()
                 .map(|entry| {
-                    crate::status::virtual_checkout::commit_conflicts(
-                        entry,
-                        &preflight_options.paths,
-                    )
+                    commit::reverse_patch::ordinary_conflicts(entry, &preflight_options.paths)
                 })
                 .collect::<Result<Vec<_>>>()?
                 .into_iter()
@@ -211,17 +231,26 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 commit::snapshot(&preflight_entries)? == snapshot,
                 "source HEAD or index changed while preparing the commit; retry the command"
             );
-            Ok((pending, conflicts, snapshot))
+            Ok((pending, conflicts, snapshot, reverse))
         })
         .await??;
     let outcome = if !conflicting_files.is_empty() {
         CommitOutcome::Blocked { conflicting_files }
     } else if !pending {
-        CommitOutcome::NothingToCommit
+        if reverse.conflicts.is_empty() {
+            CommitOutcome::NothingToCommit
+        } else {
+            CommitOutcome::ReversePatch {
+                oid: None,
+                files: 0,
+                conflicts: reverse.conflicts,
+            }
+        }
     } else {
         let message = resolve_message(args, &target)?;
         options.message = message;
-        commit::commit_entries_checked(&owned_entries, &options, Some(snapshot)).await?
+        commit::commit_entries_prepared(&owned_entries, &options, Some(snapshot), Some(reverse))
+            .await?
     };
     ui::info(format!(
         "  {} {}",
@@ -307,6 +336,125 @@ mod tests {
 
     fn make_cli(home: PathBuf) -> CLI {
         CLI::parse_from(vec!["over", "--home", home.to_str().unwrap()])
+    }
+
+    #[rstest::rstest]
+    #[case("source")]
+    #[case("target")]
+    #[case("index")]
+    #[case("HEAD")]
+    #[case("generated_ref")]
+    #[tokio::test]
+    async fn changed_reverse_patch_inputs_require_preparing_a_new_commit(#[case] changed: &str) {
+        let _xdg = isolate_xdg_state();
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("app");
+        let target = tmp.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::write(
+            source.join("over.yaml"),
+            "mode: checkout\nrules: [{path: '*.jinja', template: true, strip_extension: true}]\n",
+        )
+        .unwrap();
+        fs::write(
+            source.join("config.jinja"),
+            "host={{ machine.os }}\nliteral=old\n",
+        )
+        .unwrap();
+        init_committed_repo(&source);
+        let repository = Repository::new(tmp.path().into());
+        let overlay = repository.get("app").unwrap();
+        let ctx = Context::builder()
+            .root(target.clone())
+            .repository(repository)
+            .overlay(overlay.clone())
+            .build();
+        overlay.apply(&ctx).await.unwrap();
+        fs::write(
+            target.join("config"),
+            fs::read_to_string(target.join("config"))
+                .unwrap()
+                .replace("literal=old", "literal=edited"),
+        )
+        .unwrap();
+        let desired = DesiredTree::build_commit(&ctx, &overlay).unwrap();
+        let entries: Vec<_> = desired
+            .entries()
+            .iter()
+            .filter(|entry| entry.intent.is_virtual_checkout())
+            .cloned()
+            .collect();
+        let options = CommitOptions::default();
+        let expected = commit::snapshot(&entries).unwrap();
+        let rendering = ctx.prepare_rendering(&overlay).unwrap();
+        let reverse =
+            commit::reverse_patch::prepare(&entries, &options, &rendering, &overlay).unwrap();
+        assert_eq!(reverse.files.len(), 1);
+        let repo = git2::Repository::open(&source).unwrap();
+        let reference = repo
+            .references_glob("refs/over/generated/*")
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .name()
+            .unwrap()
+            .to_owned();
+        match changed {
+            "source" => fs::write(source.join("config.jinja"), "independent source").unwrap(),
+            "target" => fs::write(target.join("config"), "later rendered edit").unwrap(),
+            "index" => {
+                let mut index = repo.index().unwrap();
+                let entry = index
+                    .get_path(std::path::Path::new("config.jinja"), 0)
+                    .unwrap();
+                index
+                    .add_frombuffer(&entry, b"independent staged edit")
+                    .unwrap();
+                index.write().unwrap();
+            }
+            "HEAD" => {
+                let parent = repo.head().unwrap().peel_to_commit().unwrap();
+                let signature = repo.signature().unwrap();
+                repo.commit(
+                    Some("HEAD"),
+                    &signature,
+                    &signature,
+                    "concurrent commit",
+                    &parent.tree().unwrap(),
+                    &[&parent],
+                )
+                .unwrap();
+            }
+            "generated_ref" => {
+                repo.reference(
+                    &reference,
+                    repo.head().unwrap().target().unwrap(),
+                    true,
+                    "concurrent ref update",
+                )
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let head = repo.head().unwrap().target();
+        let generated = repo.refname_to_id(&reference).unwrap();
+        let index = fs::read(repo.path().join("index")).unwrap();
+        let source_before = fs::read(source.join("config.jinja")).unwrap();
+        let target_before = fs::read(target.join("config")).unwrap();
+        let error =
+            commit::commit_entries_prepared(&entries, &options, Some(expected), Some(reverse))
+                .await
+                .unwrap_err();
+        assert!(error.to_string().contains("changed"), "{error:#}");
+        assert_eq!(repo.head().unwrap().target(), head);
+        assert_eq!(repo.refname_to_id(&reference).unwrap(), generated);
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+        assert_eq!(
+            fs::read(source.join("config.jinja")).unwrap(),
+            source_before
+        );
+        assert_eq!(fs::read(target.join("config")).unwrap(), target_before);
     }
 
     /// Points `$XDG_STATE_HOME` at a fresh, writable temp dir for the

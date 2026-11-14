@@ -36,6 +36,25 @@ pub struct GeneratedState {
     pub permissions: BTreeMap<PathBuf, u32>,
     #[serde(default)]
     pub source_revision: String,
+    /// Partial reverse commits must retain the source base of unselected files.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_revisions: BTreeMap<PathBuf, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverse_pending: Option<ReversePublication>,
+    /// A reverse commit consumes local edits without applying independent source edits to the target.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reverse_observed: BTreeMap<PathBuf, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReversePublication {
+    pub parent: String,
+    pub source_commit: String,
+    pub generated_commit: String,
+    pub destinations: Vec<PathBuf>,
+    pub observed: BTreeMap<PathBuf, String>,
+    pub index_before: String,
+    pub sources_before: BTreeMap<PathBuf, String>,
 }
 
 pub(crate) fn active(entry: &DesiredEntry) -> Result<bool> {
@@ -275,7 +294,8 @@ pub(crate) fn analyze(
     } else {
         desired(entry, &repo, &managed)?
     };
-    let base = if let Some(generated) = generated.filter(|generated| !generated.base.is_empty()) {
+    let mut base = if let Some(generated) = generated.filter(|generated| !generated.base.is_empty())
+    {
         tree_inventory(&repo, &generated.base, &generated.sources)?
     } else if let Some(record) =
         record.filter(|record| !record.initializing && !record.base_oid.is_empty())
@@ -301,6 +321,14 @@ pub(crate) fn analyze(
     } else {
         BTreeMap::new()
     };
+    if let Some(generated) = generated {
+        for (path, commit) in &generated.reverse_observed {
+            if let Some(observed) = tree_inventory(&repo, commit, &generated.sources)?.remove(path)
+            {
+                base.insert(path.clone(), observed);
+            }
+        }
+    }
     let mut analysis = Analysis {
         base,
         desired,
@@ -420,7 +448,7 @@ fn merge(
     Ok(Some(file))
 }
 
-fn persist(entry: &DesiredEntry, record: &state::VirtualCheckoutRecord) -> Result<()> {
+pub(crate) fn persist(entry: &DesiredEntry, record: &state::VirtualCheckoutRecord) -> Result<()> {
     let key = state::association_key(&entry.target, record)?;
     state::state_file()?.update_blocking(|snapshot| {
         state::validate_claims(snapshot, entry)?;
@@ -432,6 +460,13 @@ fn persist(entry: &DesiredEntry, record: &state::VirtualCheckoutRecord) -> Resul
 pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
     state::verify_live_target(entry)?;
     let previous = state::record_for_entry(entry)?;
+    ensure!(
+        previous
+            .as_ref()
+            .and_then(|record| record.generated.as_ref())
+            .is_none_or(|generated| generated.reverse_pending.is_none()),
+        "reverse commit metadata publication was interrupted; rerun over commit first"
+    );
     if let Some(record) = &previous {
         state::verify(entry, record)?;
     }
@@ -547,6 +582,16 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
     };
     let mut generated = old.clone().unwrap_or_default();
     if generated.pending.is_none() {
+        // Failed destinations still compare against the source used by their retained base.
+        for path in analysis.conflicts.keys() {
+            generated
+                .source_revisions
+                .entry(path.clone())
+                .or_insert_with(|| generated.source_revision.clone());
+        }
+        generated
+            .source_revisions
+            .retain(|path, _| analysis.conflicts.contains_key(path));
         generated.source_revision = entry
             .intent
             .checkout_scope()
@@ -707,6 +752,9 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
     generated.pending_sources = None;
     generated.applied.clear();
     generated.observed.clear();
+    generated
+        .reverse_observed
+        .retain(|path, _| analysis.conflicts.contains_key(path));
     // Once a conversion has published safely, ordinary files must regain their source workflows.
     generated.sources.retain(|path, _| {
         generated.conflicts.contains_key(path)
@@ -808,8 +856,8 @@ pub(crate) fn restore(entry: &DesiredEntry, paths: &[PathBuf], dry_run: bool) ->
         .clone()
         .context("checkout has no generated snapshot")?;
     ensure!(
-        generated.pending.is_none(),
-        "checkout publication was interrupted; rerun sync before restoring"
+        generated.pending.is_none() && generated.reverse_pending.is_none(),
+        "checkout publication was interrupted; finish sync or reverse commit before restoring"
     );
     let (_, source) = source(entry)?;
     let (repo, _) = git::discover_source(source)?;
@@ -860,6 +908,7 @@ pub(crate) fn restore(entry: &DesiredEntry, paths: &[PathBuf], dry_run: bool) ->
             fs::remove_file(target)?;
         }
         generated.conflicts.remove(path);
+        generated.reverse_observed.remove(path);
         if entry
             .intent
             .checkout_scope()
@@ -884,8 +933,10 @@ pub(crate) fn remove(entry: &DesiredEntry) -> Result<()> {
         .as_ref()
         .context("checkout has no generated snapshot")?;
     ensure!(
-        generated.pending.is_none() && generated.conflicts.is_empty(),
-        "generated checkout has an unfinished sync or unresolved conflicts"
+        generated.pending.is_none()
+            && generated.reverse_pending.is_none()
+            && generated.conflicts.is_empty(),
+        "generated checkout has an unfinished sync, reverse commit, or unresolved conflicts"
     );
     let analysis = analyze(entry, Some(&record))?;
     ensure!(

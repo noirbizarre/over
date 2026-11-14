@@ -161,7 +161,9 @@ In symlink mode, destinations link to atomic, reconstructible artifacts under
 whole-directory symlink containing templates is expanded into leaf links.
 In checkout mode, generated output is an ordinary physical file, rendered from
 committed source `HEAD`; commit template-file edits with Git in the source
-repository before syncing them. Context
+repository before syncing them, or use
+[`over commit`](../usage/commit.md#rendered-file-edits) to propagate compatible
+literal edits from the rendered file. Context
 changes can rerender without a source commit. See
 [generated checkout synchronization](../usage/sync.md#generated-checkouts).
 

@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use rstest::rstest;
 use tempfile::TempDir;
@@ -137,6 +138,14 @@ impl Fixture {
         command
     }
 
+    fn commit(&self) -> Command {
+        let mut command = self.command("commit");
+        command
+            .args(["--overlay", "app", "--no-prompt", "--target"])
+            .arg(&self.target);
+        command
+    }
+
     fn stage(&self, name: &str) {
         self.command("add")
             .args(["--overlay", "app", "--target"])
@@ -190,6 +199,551 @@ fn commit_all(repo: &git2::Repository) {
         &parent.iter().collect::<Vec<_>>(),
     )
     .unwrap();
+}
+
+#[test]
+fn committing_a_rendered_literal_updates_only_the_template_and_is_not_replayed() {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    let edited = "host=first\nfirst=edited\nmiddle=stable\nlast=base";
+    fs::write(fixture.target.join("config"), edited).unwrap();
+    fixture
+        .commit()
+        .assert()
+        .success()
+        .stdout(contains("committed"));
+    let repo = fixture.repo();
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    let tree = head.tree().unwrap();
+    assert_eq!(
+        repo.find_blob(tree.get_path(Path::new("app/config.jinja")).unwrap().id())
+            .unwrap()
+            .content(),
+        b"host={{ data.hostname }}\nfirst=edited\nmiddle=stable\nlast=base\n"
+    );
+    assert!(tree.get_path(Path::new("app/config")).is_err());
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("config")).unwrap(),
+        edited
+    );
+    fixture
+        .commit()
+        .assert()
+        .success()
+        .stdout(contains("nothing to commit"));
+    assert_eq!(fixture.repo().head().unwrap().target(), Some(head.id()));
+    fixture.sync().assert().success();
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("config")).unwrap(),
+        edited
+    );
+}
+
+#[rstest]
+#[case("expression", "host=changed\nfirst=base\nmiddle=stable\nlast=base\n")]
+#[case("binary", "host=first\nfirst=\0binary\nmiddle=stable\nlast=base\n")]
+fn incompatible_rendered_edits_preserve_both_files(#[case] _reason: &str, #[case] edited: &str) {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    let original = fs::read(fixture.source.join("app/config.jinja")).unwrap();
+    let head = fixture.repo().head().unwrap().target();
+    fs::write(fixture.target.join("config"), edited).unwrap();
+    fixture
+        .commit()
+        .assert()
+        .failure()
+        .stdout(contains("source template").and(contains("config.jinja")));
+    assert_eq!(
+        fs::read(fixture.source.join("app/config.jinja")).unwrap(),
+        original
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("config")).unwrap(),
+        edited
+    );
+    assert_eq!(fixture.repo().head().unwrap().target(), head);
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn disjoint_source_worktree_edits_remain_unstaged_after_a_reverse_commit(#[case] staged: bool) {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    let repo = fixture.repo();
+    let source = fixture.source.join("app/config.jinja");
+    let original = fs::read_to_string(&source).unwrap();
+    if staged {
+        fs::write(&source, original.replace("middle=stable", "middle=staged")).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("app/config.jinja")).unwrap();
+        index.write().unwrap();
+    }
+    fs::write(
+        &source,
+        fs::read_to_string(&source)
+            .unwrap()
+            .replace("last=base", "last=unstaged"),
+    )
+    .unwrap();
+    fs::write(
+        fixture.target.join("config"),
+        "host=first\nfirst=edited\nmiddle=stable\nlast=base",
+    )
+    .unwrap();
+    fixture.commit().assert().success();
+    let committed = repo
+        .find_blob(
+            fixture
+                .repo()
+                .head()
+                .unwrap()
+                .peel_to_tree()
+                .unwrap()
+                .get_path(Path::new("app/config.jinja"))
+                .unwrap()
+                .id(),
+        )
+        .unwrap();
+    let committed = std::str::from_utf8(committed.content()).unwrap();
+    assert!(committed.contains("first=edited"));
+    assert!(!committed.contains("unstaged"));
+    assert_eq!(committed.contains("middle=staged"), staged);
+    let worktree = fs::read_to_string(&source).unwrap();
+    assert!(worktree.contains("first=edited") && worktree.contains("last=unstaged"));
+    let indexed = repo
+        .find_blob(
+            fixture
+                .repo()
+                .index()
+                .unwrap()
+                .get_path(Path::new("app/config.jinja"), 0)
+                .unwrap()
+                .id,
+        )
+        .unwrap();
+    assert_eq!(indexed.content(), committed.as_bytes());
+    let head = fixture.repo().head().unwrap().target();
+    fixture
+        .commit()
+        .assert()
+        .success()
+        .stdout(contains("nothing to commit"));
+    assert_eq!(fixture.repo().head().unwrap().target(), head);
+    fixture.sync().assert().success();
+    let physical = fs::read_to_string(fixture.target.join("config")).unwrap();
+    assert!(physical.contains("first=edited"));
+    assert_eq!(physical.contains("middle=staged"), staged);
+    assert!(!physical.contains("unstaged"));
+}
+
+#[test]
+fn committed_disjoint_source_changes_are_preserved_by_reverse_patches() {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    let source = fixture.source.join("app/config.jinja");
+    fs::write(
+        &source,
+        fs::read_to_string(&source)
+            .unwrap()
+            .replace("last=base", "last=upstream"),
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    fs::write(
+        fixture.target.join("config"),
+        "host=first\nfirst=edited\nmiddle=stable\nlast=base",
+    )
+    .unwrap();
+    fixture.commit().assert().success();
+    let source = fs::read_to_string(source).unwrap();
+    assert!(source.contains("first=edited") && source.contains("last=upstream"));
+}
+
+#[rstest]
+#[case("worktree")]
+#[case("index")]
+#[case("HEAD")]
+fn overlapping_source_changes_are_never_overwritten(#[case] layer: &str) {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    let source = fixture.source.join("app/config.jinja");
+    fs::write(
+        &source,
+        fs::read_to_string(&source)
+            .unwrap()
+            .replace("first=base", "first=source"),
+    )
+    .unwrap();
+    if layer == "HEAD" {
+        commit_all(&fixture.repo());
+    }
+    if layer == "index" {
+        let repo = fixture.repo();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("app/config.jinja")).unwrap();
+        index.write().unwrap();
+    }
+    let before = fs::read(&source).unwrap();
+    let repo = fixture.repo();
+    let index = fs::read(repo.path().join("index")).unwrap();
+    let head = repo.head().unwrap().target();
+    let edited = "host=first\nfirst=target\nmiddle=stable\nlast=base";
+    fs::write(fixture.target.join("config"), edited).unwrap();
+    fixture
+        .commit()
+        .assert()
+        .failure()
+        .stdout(contains("overlap"));
+    assert_eq!(fs::read(&source).unwrap(), before);
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+    assert_eq!(fixture.repo().head().unwrap().target(), head);
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("config")).unwrap(),
+        edited
+    );
+}
+
+#[test]
+fn successful_and_conflicting_templates_are_reported_independently() {
+    let fixture = Fixture::new(true);
+    fs::write(fixture.source.join("app/third.jinja"), "literal=old\n").unwrap();
+    fs::write(
+        fixture.source.join("app/other.jinja"),
+        "name={{ data.hostname }}\nvalue=old\n",
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    fixture.apply();
+    let good = "host=first\nfirst=edited\nmiddle=stable\nlast=base";
+    let bad = "name=untranslatable\nvalue=old\n";
+    fs::write(fixture.target.join("config"), good).unwrap();
+    fs::write(fixture.target.join("other"), bad).unwrap();
+    fs::write(fixture.target.join("third"), "literal=new").unwrap();
+    fs::write(fixture.target.join("plain"), "ordinary staged change\n").unwrap();
+    fixture.stage("plain");
+    fixture
+        .commit()
+        .assert()
+        .failure()
+        .stdout(contains("committed 3").and(contains("other.jinja")));
+    assert_eq!(
+        fs::read_to_string(fixture.source.join("app/third.jinja")).unwrap(),
+        "literal=new\n"
+    );
+    assert!(
+        fs::read_to_string(fixture.source.join("app/config.jinja"))
+            .unwrap()
+            .contains("first=edited")
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.source.join("app/other.jinja")).unwrap(),
+        "name={{ data.hostname }}\nvalue=old\n"
+    );
+    let head = fixture.repo().head().unwrap().target();
+    fixture.commit().assert().failure();
+    assert_eq!(fixture.repo().head().unwrap().target(), head);
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("config")).unwrap(),
+        good
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("other")).unwrap(),
+        bad
+    );
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn reverse_patches_follow_directory_mappings_for_both_operand_namespaces(
+    #[case] source_operand: bool,
+) {
+    let fixture = Fixture::new(true);
+    fs::create_dir(fixture.source.join("app/sub")).unwrap();
+    fs::rename(
+        fixture.source.join("app/config.jinja"),
+        fixture.source.join("app/sub/config.jinja"),
+    )
+    .unwrap();
+    let descriptor = fixture.source.join("app/over.yaml");
+    let config = fs::read_to_string(&descriptor).unwrap() + "  - {path: sub, target: '~/mapped'}\n";
+    fs::write(descriptor, config).unwrap();
+    commit_all(&fixture.repo());
+    fixture.apply();
+    let target = fixture.target.join("mapped/config");
+    let source = fixture.source.join("app/sub/config.jinja");
+    fs::write(
+        &target,
+        fs::read_to_string(&target)
+            .unwrap()
+            .replace("first=base", "first=mapped"),
+    )
+    .unwrap();
+    fixture
+        .commit()
+        .arg(if source_operand { &source } else { &target })
+        .assert()
+        .success();
+    assert!(fs::read_to_string(source).unwrap().contains("first=mapped"));
+    assert!(fs::read_to_string(target).unwrap().contains("first=mapped"));
+}
+
+#[cfg(unix)]
+#[test]
+fn reverse_patches_accept_an_aliased_source_collection() {
+    let mut fixture = Fixture::new(true);
+    let alias = fixture.temp.path().join("source-alias");
+    std::os::unix::fs::symlink(&fixture.source, &alias).unwrap();
+    fixture.source = alias;
+    fixture.apply();
+    let target = fixture.target.join("config");
+    fs::write(
+        &target,
+        fs::read_to_string(&target)
+            .unwrap()
+            .replace("first=base", "first=aliased"),
+    )
+    .unwrap();
+    fixture.commit().arg(target).assert().success();
+    assert!(
+        fs::read_to_string(fixture.source.join("app/config.jinja"))
+            .unwrap()
+            .contains("first=aliased")
+    );
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn rendered_commit_selection_accepts_source_and_destination_paths(#[case] source_operand: bool) {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    fs::write(
+        fixture.target.join("config"),
+        "host=first\nfirst=edited\nmiddle=stable\nlast=base",
+    )
+    .unwrap();
+    fs::write(fixture.target.join("plain"), "staged ordinary\n").unwrap();
+    fixture.stage("plain");
+    let path = if source_operand {
+        fixture.source.join("app/config.jinja")
+    } else {
+        fixture.target.join("config")
+    };
+    fixture.commit().arg(path).assert().success();
+    let repo = fixture.repo();
+    let tree = repo.head().unwrap().peel_to_tree().unwrap();
+    assert_eq!(
+        repo.find_blob(tree.get_path(Path::new("app/plain")).unwrap().id())
+            .unwrap()
+            .content(),
+        b"ordinary\n"
+    );
+    assert_eq!(
+        repo.find_blob(
+            repo.index()
+                .unwrap()
+                .get_path(Path::new("app/plain"), 0)
+                .unwrap()
+                .id
+        )
+        .unwrap()
+        .content(),
+        b"staged ordinary\n"
+    );
+}
+
+#[rstest]
+#[case(
+    "host={{ data.hostname }}\nsame\nsame\nend\n",
+    "host=first\nchanged\nsame\nend",
+    "ambiguous"
+)]
+#[case("{% if true %}literal{% endif %}\n", "changed", "control structures")]
+#[case("{{ '}}' +\n'literal' }}\n", "changed", "multiline")]
+fn ambiguous_or_structurally_transformed_output_requires_manual_source_edits(
+    #[case] template: &str,
+    #[case] edited: &str,
+    #[case] reason: &str,
+) {
+    let fixture = Fixture::new(true);
+    let source = fixture.source.join("app/config.jinja");
+    fs::write(&source, template).unwrap();
+    commit_all(&fixture.repo());
+    fixture.apply();
+    fs::write(fixture.target.join("config"), edited).unwrap();
+    fixture
+        .commit()
+        .assert()
+        .failure()
+        .stdout(contains(reason).and(contains("hunk")));
+    assert_eq!(fs::read_to_string(source).unwrap(), template);
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("config")).unwrap(),
+        edited
+    );
+}
+
+#[test]
+fn extension_stripping_without_rendering_propagates_literal_jinja_bytes_as_text() {
+    let fixture = Fixture::new(true);
+    let descriptor = fixture.source.join("app/over.yaml");
+    fs::write(
+        &descriptor,
+        fs::read_to_string(&descriptor)
+            .unwrap()
+            .replace("template: true", "template: false"),
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    fixture.apply();
+    let edited = "host={{ another.expression }}\nfirst=edited\n";
+    fs::write(fixture.target.join("config"), edited).unwrap();
+    fixture.commit().assert().success();
+    assert_eq!(
+        fs::read_to_string(fixture.source.join("app/config.jinja")).unwrap(),
+        edited
+    );
+}
+
+#[test]
+fn a_changed_rendering_context_does_not_copy_expression_values_into_source_or_diagnostics() {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    let descriptor = fixture.source.join("app/over.yaml");
+    fs::write(
+        &descriptor,
+        fs::read_to_string(&descriptor)
+            .unwrap()
+            .replace("hostname: first", "hostname: PRIVATE_REVERSE_SENTINEL"),
+    )
+    .unwrap();
+    let edited = "host=PRIVATE_LOCAL_SENTINEL\nfirst=edited\nmiddle=stable\nlast=base";
+    fs::write(fixture.target.join("config"), edited).unwrap();
+    let assertion = fixture
+        .commit()
+        .assert()
+        .failure()
+        .stdout(contains("context or rules"));
+    let output = assertion.get_output();
+    for sentinel in ["PRIVATE_REVERSE_SENTINEL", "PRIVATE_LOCAL_SENTINEL"] {
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(sentinel));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(sentinel));
+    }
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("config")).unwrap(),
+        edited
+    );
+    assert!(
+        fs::read_to_string(fixture.source.join("app/config.jinja"))
+            .unwrap()
+            .contains("first=base")
+    );
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn a_published_reverse_commit_recovers_its_checkpoint_without_replaying_the_edit(
+    #[case] ref_advanced: bool,
+) {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    let repo = fixture.repo();
+    let parent = repo.head().unwrap().target().unwrap();
+    let old_snapshot = fixture.snapshot();
+    let state = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let mut before: toml::Value = toml::from_str(&fs::read_to_string(&state).unwrap()).unwrap();
+    let edited = "host=first\nfirst=edited\nmiddle=stable\nlast=base";
+    fs::write(fixture.target.join("config"), edited).unwrap();
+    fixture.commit().assert().success();
+    let committed = fixture.repo().head().unwrap().target().unwrap();
+    let new_snapshot = fixture.snapshot();
+    let generated = before["state"]["checkouts"]
+        .as_table_mut()
+        .unwrap()
+        .iter_mut()
+        .next()
+        .unwrap()
+        .1["generated"]
+        .as_table_mut()
+        .unwrap();
+    generated.insert(
+        "reverse_pending".into(),
+        toml::Value::Table(toml::map::Map::from_iter([
+            ("parent".into(), parent.to_string().into()),
+            ("source_commit".into(), committed.to_string().into()),
+            ("generated_commit".into(), new_snapshot.to_string().into()),
+            (
+                "destinations".into(),
+                toml::Value::Array(vec!["config".into()]),
+            ),
+            ("observed".into(), toml::Value::Table(Default::default())),
+            ("index_before".into(), "unused after publication".into()),
+            (
+                "sources_before".into(),
+                toml::Value::Table(Default::default()),
+            ),
+        ])),
+    );
+    fs::write(&state, toml::to_string(&before).unwrap()).unwrap();
+    if !ref_advanced {
+        let mut reference = repo
+            .references_glob("refs/over/generated/*")
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        reference
+            .set_target(old_snapshot, "simulate interrupted checkpoint")
+            .unwrap();
+    }
+    fixture
+        .commit()
+        .assert()
+        .success()
+        .stdout(contains("nothing to commit"));
+    assert_eq!(fixture.repo().head().unwrap().target(), Some(committed));
+    assert_eq!(fixture.snapshot(), new_snapshot);
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("config")).unwrap(),
+        edited
+    );
+    assert!(
+        !fs::read_to_string(state)
+            .unwrap()
+            .contains("reverse_pending")
+    );
+}
+
+#[test]
+fn a_failed_reverse_commit_restores_source_and_index_before_retrying() {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    let repo = fixture.repo();
+    let source = fixture.source.join("app/config.jinja");
+    let original = fs::read(&source).unwrap();
+    let index = fs::read(repo.path().join("index")).unwrap();
+    let head = repo.head().unwrap().target();
+    let snapshot = fixture.snapshot();
+    let reference = repo.head().unwrap().name().unwrap().to_owned();
+    let lock = repo.path().join(format!("{reference}.lock"));
+    fs::write(&lock, b"").unwrap();
+    let edited = "host=first\nfirst=edited\nmiddle=stable\nlast=base";
+    fs::write(fixture.target.join("config"), edited).unwrap();
+    fixture.commit().assert().failure();
+    assert_eq!(fs::read(&source).unwrap(), original);
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+    assert_eq!(fixture.repo().head().unwrap().target(), head);
+    assert_eq!(fixture.snapshot(), snapshot);
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("config")).unwrap(),
+        edited
+    );
+    fs::remove_file(lock).unwrap();
+    fixture.commit().assert().success();
+    assert!(fs::read_to_string(source).unwrap().contains("first=edited"));
 }
 
 #[test]

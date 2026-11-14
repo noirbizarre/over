@@ -1,5 +1,7 @@
 //! `over commit`: record staged virtual-checkout snapshots in the overlay's
 //! own source repository, preserving unstaged target and unrelated index changes.
+//! The standalone CLI can additionally supply checked reverse patches for rendered
+//! literals; sync's reusable staged-only entry points do not select those edits.
 //!
 //! Reused by both `cli::commit` (the standalone command) and `crate::sync`
 //! (which offers to commit dirty virtual-checkout files before
@@ -25,6 +27,8 @@ use crate::materialize::virtual_checkout::state::{self, VirtualCheckoutRecord};
 use crate::status;
 use crate::ui::{emojis, style};
 
+pub(crate) mod reverse_patch;
+
 /// What `over commit` should do for a single virtual checkout entry.
 #[derive(Debug, Clone, Default)]
 pub struct CommitOptions {
@@ -47,7 +51,11 @@ pub(crate) fn selects(entry: &DesiredEntry, path: &std::path::Path, paths: &[Pat
 }
 
 /// Preflight uses the same path filter as execution, so no-op selections never prompt.
-pub(crate) fn pending(entries: &[DesiredEntry], opts: &CommitOptions) -> Result<bool> {
+pub(crate) fn pending(
+    entries: &[DesiredEntry],
+    opts: &CommitOptions,
+    reverse: &reverse_patch::Prepared,
+) -> Result<bool> {
     let mut pending = false;
     for entry in entries {
         let Provenance::Overlay { source, .. } = &entry.provenance else {
@@ -57,7 +65,13 @@ pub(crate) fn pending(entries: &[DesiredEntry], opts: &CommitOptions) -> Result<
         let scope = entry.intent.checkout_scope();
         let selected = |path: &std::path::Path| selects(entry, path, &opts.paths);
         git::ensure_supported_staged_selected(&repo, &managed, &scope, &selected)?;
-        pending |= !git::staged_changes_selected(&repo, &managed, &scope, &selected)?.is_empty();
+        pending |= git::staged_changes_selected(&repo, &managed, &scope, &selected)?
+            .iter()
+            .any(|change| {
+                !reverse
+                    .selected_sources
+                    .contains(&source.join(&change.path))
+            });
     }
     Ok(pending)
 }
@@ -107,17 +121,40 @@ pub enum CommitOutcome {
     Blocked { conflicting_files: Vec<PathBuf> },
     /// A new commit was created in the source repository.
     Committed { oid: String, files: usize },
+    /// Successful files may be committed even when another reverse patch fails.
+    ReversePatch {
+        oid: Option<String>,
+        files: usize,
+        conflicts: Vec<String>,
+    },
 }
 
 impl CommitOutcome {
     pub fn needs_attention(&self) -> bool {
-        matches!(self, CommitOutcome::Blocked { .. })
+        matches!(
+            self,
+            CommitOutcome::Blocked { .. } | CommitOutcome::ReversePatch { .. }
+        )
     }
 }
 
 impl fmt::Display for CommitOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            CommitOutcome::ReversePatch {
+                oid,
+                files,
+                conflicts,
+            } => {
+                if let Some(oid) = oid {
+                    write!(
+                        f,
+                        "committed {files} file(s) ({}); ",
+                        &oid[..oid.len().min(10)]
+                    )?;
+                }
+                write!(f, "reverse-patch conflicts:\n{}", conflicts.join("\n"))
+            }
             CommitOutcome::NotVirtualCheckout => write!(
                 f,
                 "{} {}",
@@ -181,17 +218,29 @@ pub(crate) async fn commit_entries_checked(
     opts: &CommitOptions,
     expected: Option<Snapshot>,
 ) -> Result<CommitOutcome> {
+    commit_entries_prepared(entries, opts, expected, None).await
+}
+
+pub(crate) async fn commit_entries_prepared(
+    entries: &[DesiredEntry],
+    opts: &CommitOptions,
+    expected: Option<Snapshot>,
+    reverse: Option<reverse_patch::Prepared>,
+) -> Result<CommitOutcome> {
     let _ownership = tokio::task::spawn_blocking(state::mutation_guard).await??;
     let entries = entries.to_vec();
     let opts = opts.clone();
     let (outcome, persist) = tokio::task::spawn_blocking(move || {
-        if let Some(expected) = expected {
+        if let Some(expected) = &expected {
             anyhow::ensure!(
-                snapshot(&entries)? == expected,
+                &snapshot(&entries)? == expected,
                 "source HEAD or index changed while preparing the commit; retry the command"
             );
         }
-        commit_blocking(&entries, &opts)
+        if let Some(reverse) = &reverse {
+            reverse.verify()?;
+        }
+        commit_blocking(&entries, &opts, reverse.as_ref(), expected.as_ref())
     })
     .await??;
     for (target, record) in persist {
@@ -209,16 +258,22 @@ pub(crate) async fn commit_entries_checked(
 fn commit_blocking(
     entries: &[DesiredEntry],
     opts: &CommitOptions,
+    reverse: Option<&reverse_patch::Prepared>,
+    expected: Option<&Snapshot>,
 ) -> Result<(CommitOutcome, Vec<(PathBuf, VirtualCheckoutRecord)>)> {
     let mut repository = None;
     let mut paths = Vec::new();
     let mut changes = Vec::new();
     let mut records = Vec::new();
     for entry in entries {
-        if !opts.paths.is_empty() {
+        if reverse.is_none() && !opts.paths.is_empty() {
             crate::desired::content::validate_selection(entry, &opts.paths)?;
         }
-        let conflicting_files = status::virtual_checkout::commit_conflicts(entry, &opts.paths)?;
+        let conflicting_files = if reverse.is_some() {
+            reverse_patch::ordinary_conflicts(entry, &opts.paths)?
+        } else {
+            status::virtual_checkout::commit_conflicts(entry, &opts.paths)?
+        };
         if !conflicting_files.is_empty() {
             return Ok((CommitOutcome::Blocked { conflicting_files }, Vec::new()));
         }
@@ -234,16 +289,51 @@ fn commit_blocking(
         let scope = entry.intent.checkout_scope();
         let selected = |path: &std::path::Path| selects(entry, path, &opts.paths);
         git::ensure_supported_staged_selected(&repo, &managed_path, &scope, &selected)?;
-        let file_changes = git::staged_changes_selected(&repo, &managed_path, &scope, &selected)?;
+        let mut file_changes =
+            git::staged_changes_selected(&repo, &managed_path, &scope, &selected)?;
+        let record = state::record_for_entry(entry)?;
+        if let Some(reverse) = reverse {
+            // Generated source paths participate only through a successfully translated candidate.
+            file_changes.retain(|change| {
+                !reverse
+                    .selected_sources
+                    .contains(&source.join(&change.path))
+            });
+        }
         let destinations: Vec<_> = file_changes
             .iter()
+            .filter(|change| {
+                reverse.is_none()
+                    || record
+                        .as_ref()
+                        .and_then(|record| record.generated.as_ref())
+                        .is_none_or(|generated| {
+                            !generated
+                                .sources
+                                .values()
+                                .any(|template| template == &source.join(&change.path))
+                        })
+            })
             .map(|change| entry.target.join(&change.path))
             .collect();
         crate::desired::content::validate_selection(entry, &destinations)?;
+        if let Some(reverse) = reverse {
+            for file in reverse
+                .files
+                .iter()
+                .filter(|file| file.target == entry.target)
+            {
+                file_changes.push(git::FileChange {
+                    path: file.source.strip_prefix(source)?.to_path_buf(),
+                    kind: git::FileChangeKind::Modified,
+                    local_oid: None,
+                });
+            }
+        }
         if file_changes.is_empty() {
             continue;
         }
-        let Some(record) = state::record_for_entry(entry)? else {
+        let Some(record) = record else {
             anyhow::bail!(
                 "no virtual checkout association recorded for '{}' — was it materialized by `over apply`?",
                 entry.target.display(),
@@ -252,10 +342,24 @@ fn commit_blocking(
         state::verify(entry, &record)?;
         let base = git::base_tree(&repo, Some(&record.base_oid))?;
         let head = git::base_tree(&repo, None)?;
+        let mut base_entries = git::scoped_entries(&repo, &base, &managed_path, &scope)?;
+        let mut head_entries = git::scoped_entries(&repo, &head, &managed_path, &scope)?;
+        if reverse.is_some()
+            && let Some(generated) = &record.generated
+        {
+            // Only generated sources have per-file history and a checked disjoint merge.
+            let ordinary = |path: &PathBuf, _: &mut (git2::Oid, i32)| {
+                !generated
+                    .sources
+                    .values()
+                    .any(|template| template == &source.join(path))
+            };
+            base_entries.retain(ordinary);
+            head_entries.retain(ordinary);
+        }
         anyhow::ensure!(
             // A whole-unit checkpoint must not absorb unselected, unsynchronized source changes.
-            git::scoped_entries(&repo, &base, &managed_path, &scope)?
-                == git::scoped_entries(&repo, &head, &managed_path, &scope)?,
+            base_entries == head_entries,
             "checkout '{}' is behind its source; sync before committing",
             entry.target.display()
         );
@@ -279,7 +383,18 @@ fn commit_blocking(
         records.push((entry.target.clone(), record));
     }
     let Some(repo) = repository else {
-        return Ok((CommitOutcome::NothingToCommit, Vec::new()));
+        return Ok((
+            if let Some(reverse) = reverse.filter(|reverse| !reverse.conflicts.is_empty()) {
+                CommitOutcome::ReversePatch {
+                    oid: None,
+                    files: 0,
+                    conflicts: reverse.conflicts.clone(),
+                }
+            } else {
+                CommitOutcome::NothingToCommit
+            },
+            Vec::new(),
+        ));
     };
     let message = opts
         .message
@@ -323,7 +438,55 @@ fn commit_blocking(
             }
         }
     }
-    let oid = git::commit_staged(&repo, &paths, &message)?;
+    let oid = if let Some(reverse) = reverse {
+        let updates = reverse
+            .files
+            .iter()
+            .map(|file| {
+                (
+                    file.path.clone(),
+                    git::SourceUpdate {
+                        indexed: file.indexed.clone(),
+                        worktree: file.worktree.clone(),
+                        mode: file.mode,
+                        expected: file.expected,
+                    },
+                )
+            })
+            .collect();
+        git::commit_staged_prepared(&repo, &paths, &message, &updates, &mut |oid| {
+            if let Some(expected) = expected {
+                anyhow::ensure!(
+                    &snapshot(entries)? == expected,
+                    "source HEAD or index changed while preparing the commit; retry the command"
+                );
+            }
+            reverse.verify()?;
+            reverse.journal(&repo, oid)?;
+            // Journaling performs filesystem I/O; editors and native Git do not honor our guard.
+            reverse.verify_inputs()?;
+            if let Some(expected) = expected {
+                anyhow::ensure!(
+                    &snapshot(entries)? == expected,
+                    "source HEAD or index changed while journaling the commit; retry the command"
+                );
+            }
+            Ok(())
+        })?
+    } else {
+        git::commit_staged(&repo, &paths, &message)?
+    };
+
+    if reverse.is_some() {
+        reverse_patch::recover(entries).with_context(|| format!("commit {oid} succeeded but generated checkpoint publication failed; rerun over commit to recover"))?;
+        // Recovery publishes the generated checkpoint without touching physical files.
+        for (target, record) in &mut records {
+            if let Some(entry) = entries.iter().find(|entry| &entry.target == target) {
+                *record =
+                    state::record_for_entry(entry)?.context("checkout association disappeared")?;
+            }
+        }
+    }
 
     for (_, record) in &mut records {
         record.base_oid = oid.to_string();
@@ -331,9 +494,17 @@ fn commit_blocking(
     }
 
     Ok((
-        CommitOutcome::Committed {
-            oid: oid.to_string(),
-            files: changes.len(),
+        if let Some(reverse) = reverse.filter(|reverse| !reverse.conflicts.is_empty()) {
+            CommitOutcome::ReversePatch {
+                oid: Some(oid.to_string()),
+                files: changes.len(),
+                conflicts: reverse.conflicts.clone(),
+            }
+        } else {
+            CommitOutcome::Committed {
+                oid: oid.to_string(),
+                files: changes.len(),
+            }
         },
         records,
     ))

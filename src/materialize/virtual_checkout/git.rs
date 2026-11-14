@@ -882,7 +882,7 @@ pub(crate) fn build_content_tree<'repo>(
 /// Reverse of `git2::FileMode`'s `Into<i32>`: libgit2 only ever reports one
 /// of these fixed values from `TreeEntry::filemode`, so a linear scan
 /// against the small, closed set is simplest.
-fn filemode_from_raw(raw: i32) -> Option<git2::FileMode> {
+pub(crate) fn filemode_from_raw(raw: i32) -> Option<git2::FileMode> {
     use git2::FileMode::*;
     [
         Unreadable,
@@ -1057,9 +1057,55 @@ pub(crate) fn ensure_supported_path(head: &Tree, index: &git2::Index, path: &Pat
 /// Commit exactly these repository-relative staged paths, preserving unrelated
 /// index entries and checking the source worktree before updating owned files.
 pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str) -> Result<Oid> {
+    commit_staged_prepared(repo, paths, message, &BTreeMap::new(), &mut |_| Ok(()))
+}
+
+/// A translated template has separate selected-index and unstaged-worktree results.
+pub(crate) struct SourceUpdate {
+    pub indexed: Vec<u8>,
+    pub worktree: Vec<u8>,
+    pub mode: u32,
+    pub expected: (Oid, i32),
+}
+
+pub(crate) fn commit_staged_prepared(
+    repo: &Repository,
+    paths: &[PathBuf],
+    message: &str,
+    prepared: &BTreeMap<PathBuf, SourceUpdate>,
+    before_publish: &mut dyn FnMut(Oid) -> Result<()>,
+) -> Result<Oid> {
+    let index_path = repo.path().join("index");
+    let mut index_lock = if prepared.is_empty() {
+        None
+    } else {
+        Some(crate::actions::git::index::IndexLock::acquire(&index_path)?)
+    };
+    let original_index = crate::actions::git::index::read_index(&index_path)?;
     let parent = repo.head()?.peel_to_commit()?;
     let head = parent.tree()?;
-    let index = repo.index()?;
+    let mut index = repo.index()?;
+    for (path, update) in prepared {
+        let mut entry = index
+            .get_path(path, 0)
+            .context("translated template is missing from the index")?;
+        entry.id = repo.blob(&update.indexed)?;
+        entry.mode = update.mode;
+        index.add(&entry)?;
+    }
+    let prepared_index = if prepared.is_empty() {
+        None
+    } else {
+        // Serialize privately: publication must not stage translations before preflight succeeds.
+        let directory = tempfile::tempdir_in(repo.path())?;
+        let path = directory.path().join("index");
+        let mut output = git2::Index::open(&path)?;
+        for entry in index.iter() {
+            output.add(&entry)?;
+        }
+        output.write()?;
+        Some(fs::read(path)?)
+    };
     for entry in index.iter().filter(|entry| entry.flags & 0x3000 != 0) {
         // Selected paths are already UTF-8; invalid unrelated names cannot match them.
         let path = std::str::from_utf8(&entry.path).ok().map(Path::new);
@@ -1090,7 +1136,11 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
         let file = workdir.join(path);
         let current = super::snapshot::canonical_source_entry(repo, path)?;
         anyhow::ensure!(
-            entries_match(current, old) || entries_match(current, new),
+            if let Some(update) = prepared.get(path) {
+                current == Some(update.expected)
+            } else {
+                entries_match(current, old) || entries_match(current, new)
+            },
             "source file '{}' has unstaged edits",
             file.display()
         );
@@ -1105,7 +1155,12 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
             builder.upsert(path.clone(), entry.id, mode);
             // Already-converged sources need no filesystem writes, preserving
             // their metadata and avoiding failures on read-only directories.
-            if !entries_match(current, new) {
+            if let Some(update) = prepared.get(path) {
+                updates.push((
+                    file,
+                    Some((zeroize::Zeroizing::new(update.worktree.clone()), entry.mode)),
+                ));
+            } else if !entries_match(current, new) {
                 updates.push((
                     file,
                     Some((
@@ -1124,6 +1179,8 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
     let tree = repo.find_tree(builder.create_updated(repo, &head)?)?;
     crate::crypt::policy::validate_tree(repo, &tree)?;
     let signature = crate::actions::git::sync::signature(repo)?;
+    // A stable commit object lets the generated journal recognize HEAD after interruption.
+    let planned_commit = repo.commit(None, &signature, &signature, message, &tree, &[&parent])?;
     let mut protected_updates = false;
     for (path, _) in &updates {
         // Attribute inspection errors must never select plaintext rollback handling.
@@ -1176,6 +1233,7 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
     // Prepare every write on the destination filesystem before changing any
     // source file. Backups remain available until Git accepts the HEAD update.
     let mut transaction = SourceTransaction::default();
+    let mut index_published = false;
     let result = (|| {
         for (file, update) in updates {
             if protected_updates
@@ -1193,6 +1251,11 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
                 .with_context(|| {
                     format!("failed to prepare source update for '{}'", file.display())
                 })?;
+        }
+        before_publish(planned_commit)?;
+        if let (Some(lock), Some(bytes)) = (&mut index_lock, &prepared_index) {
+            lock.replace_while_locked(&index_path, bytes)?;
+            index_published = true;
         }
         transaction.apply()?;
         for (file, update) in &protected_files {
@@ -1231,12 +1294,18 @@ pub(crate) fn commit_staged(repo: &Repository, paths: &[PathBuf], message: &str)
             Ok(oid)
         }
         Err(error) => {
+            if index_published && let (Some(lock), Some(bytes)) = (&mut index_lock, &original_index)
+            {
+                lock.replace_while_locked(&index_path, bytes)
+                    .with_context(|| format!("{error:#}; source index rollback also failed"))?;
+            }
             transaction
                 .rollback()
                 .with_context(|| format!("{error:#}; source rollback also failed"))?;
             if crypt_guard.is_some() {
                 // Release the exclusive guard before the recovery routine reacquires it.
                 drop(crypt_guard.take());
+                drop(index_lock.take());
                 crate::crypt::policy::recover(repo)?;
             }
             Err(error)

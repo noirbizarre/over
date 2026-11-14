@@ -766,6 +766,7 @@ async fn commit_virtual_checkout_interactively(
             let _ = conflicting_files;
             Ok(SyncOutcome::Conflict { path })
         }
+        CommitOutcome::ReversePatch { .. } => unreachable!("sync does not select rendered edits"),
         CommitOutcome::NotVirtualCheckout => unreachable!(
             "sync_virtual_checkout only ever calls commit::commit for a VirtualCheckout entry"
         ),
