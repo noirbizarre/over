@@ -87,6 +87,28 @@ struct Fixture {
     target: PathBuf,
 }
 
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn reapply_keeps_unsynchronized_historical_checkout_leaves_excluded(#[case] local_edit: bool) {
+    let fixture = Fixture::new(true);
+    fs::write(fixture.source.join("app/over.yaml"), "mode: checkout\n").unwrap();
+    commit_all(&fixture.repo());
+    let host = git2::Repository::init(&fixture.target).unwrap();
+    fixture.apply();
+    assert!(host.is_path_ignored(Path::new("plain")).unwrap());
+    if local_edit {
+        fs::write(fixture.target.join("plain"), "local\n").unwrap();
+    }
+    fs::remove_file(fixture.source.join("app/plain")).unwrap();
+    commit_all(&fixture.repo());
+    fixture.apply();
+    assert!(fixture.target.join("plain").exists());
+    assert!(host.is_path_ignored(Path::new("plain")).unwrap());
+    fs::write(fixture.target.join("neighbor"), "host-owned\n").unwrap();
+    assert!(!host.is_path_ignored(Path::new("neighbor")).unwrap());
+}
+
 #[cfg(unix)]
 #[rstest]
 #[case(false, false)]

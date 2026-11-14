@@ -32,7 +32,7 @@ use git2::Repository;
 
 use crate::actions::partial::{self, BlockState};
 use crate::desired::{DesiredTree, MaterializationIntent, Provenance};
-use crate::materialize::virtual_checkout::git;
+use crate::materialize::virtual_checkout::{git, state};
 use crate::ui;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
@@ -257,6 +257,25 @@ pub fn managed_targets(desired: &DesiredTree) -> Result<Vec<ManagedTarget>> {
                     && !git::is_overlay_metadata(&relative)
                 {
                     paths.insert(relative.to_path_buf());
+                }
+            }
+            // Reapply does not sync existing checkouts: source deletions must
+            // not expose retained, possibly locally edited deployment leaves.
+            let mut historical = scope.projection.as_deref().cloned().unwrap_or_default();
+            if let Some(record) = state::record_for_entry(entry)? {
+                let base = git::base_tree(&repo, Some(&record.base_oid))?;
+                historical.extend(git::scoped_entries(&repo, &base, &managed, scope)?.into_keys());
+            }
+            for path in historical {
+                if !scope.owns_source(&path) || !scope.owns_target(&path) {
+                    continue;
+                }
+                match fs::symlink_metadata(entry.target.join(&path)) {
+                    Ok(_) => {
+                        paths.insert(path);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
                 }
             }
             for path in paths {
