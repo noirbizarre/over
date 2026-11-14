@@ -23,6 +23,9 @@ objects, indexes, or refs. It is a snapshot, not a reservation of those paths.
 - **Legacy `.age` files** offer only skip or explicitly authorized overwrite, never
   Absorb or plaintext diff. Authentication completes before target writes, and
   unapply retains changed or unverifiable plaintext. See [Age encryption](secrets.md).
+- **Generated symlink-mode files** have no interactive conflict menu or Absorb.
+  Unmanaged destinations require explicit `--force` for non-directory replacement;
+  directory obstructions must be moved aside manually, even with force.
 - **Repository crypt protection** uses required local Git filters and one
   persistent local key. `over lock` refuses unsafe edits before restoring clean
   protected Git-worktree files to ciphertext and removing the key. Policy removal
@@ -50,6 +53,7 @@ Blocked migrations fail apply and suppress install and post-apply hooks.
 | Operation | Affected data and authorization | Safeguards and preview |
 | --- | --- | --- |
 | Apply ordinary/sidecar links | Conflicting target file, link, or whole directory; interactive overwrite/absorb or `--force` | No-prompt refuses; checkout-specific checks precede generic recursive replacement; preview names target and replacement policy. |
+| Apply generated artifact links | Existing unmanaged non-directory target; explicit `--force` | No interactive menu or Absorb; directories refuse even with force. |
 | Apply encrypted files | Final plaintext destination; explicit overwrite or `--force` for differing files | Authenticate in memory before writes; default Unix mode `0600`; no plaintext staging files. Existing destinations update in place. Hard links and directory obstructions refuse. |
 | Apply scaffold replacement | Conflicting node at a required directory; confirmation or `--force` | Unlinks a conflicting directory link rather than changing its referent; refusal stops descendants. |
 | Absorb | Copies target content over overlay/sidecar source, then replaces target with a link; explicit Absorb choice | Rejects overlapping trees, prepares copies before replacing the source, and copies links without traversing their referents. Diff/Skip do not modify either input. |

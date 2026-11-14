@@ -42,13 +42,17 @@ Options:
 - `--install` additionally runs `hooks.install` (see
   [Install hooks](../install-config.md)). File materialization, declared
   Git provisioning, and post-apply hooks do not require `--install`.
-- A file that already exists at the target triggers an interactive prompt
+- An ordinary source-link conflict at the target triggers an interactive prompt
   (skip, overwrite, absorb, diff) unless `--force` or `--no-prompt` is given.
 - The same conflict policy applies to `.link.*` sidecars. No-prompt alone
   refuses conflicts; force explicitly authorizes replacing them, including
   conflicting directories. Checkout disposal requires separate confirmation
   or `--discard-checkout`; force alone is insufficient. Ownership and mapping
   boundaries cannot be overridden. See [Safety and recovery](safety.md).
+- Generated symlink-mode files (templates or extension-stripped outputs) have no
+  interactive conflict menu or Absorb/write-back choice. An unmanaged destination
+  fails unless `--force` authorizes a non-directory replacement. Directory
+  obstructions must be moved aside manually, even with force.
 - `--dry-run`/`--verbose` print the structured reconciliation plan (one line
   per entry: create/no-op/conflict) before executing it, rather than just
   reporting success or failure. See
