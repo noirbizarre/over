@@ -602,14 +602,16 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
                         .map_or(default_mode, |permissions| permissions.bits()),
                 )?;
                 if file.permissions.is_none()
-                    && let Some(mut permissions) = permissions
+                    && let Some(permissions) = permissions
                 {
                     #[cfg(unix)]
-                    {
+                    let permissions = {
                         use std::os::unix::fs::PermissionsExt;
+                        let mut permissions = permissions;
                         permissions
                             .set_mode((permissions.mode() & !0o111) | (file.mode as u32 & 0o111));
-                    }
+                        permissions
+                    };
                     fs::set_permissions(&target, permissions)?;
                 }
             }

@@ -25,7 +25,7 @@ pub(crate) fn artifact(file: &crate::desired::content::RenderedFile) -> Result<P
 fn artifact_matches(
     path: &Path,
     file: &crate::desired::content::RenderedFile,
-    permissions: Option<crate::overlays::FileMode>,
+    _permissions: Option<crate::overlays::FileMode>,
 ) -> Result<bool> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -38,7 +38,7 @@ fn artifact_matches(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let desired = permissions.map_or(0o600 | (file.mode as u32 & 0o111), |mode| mode.bits());
+        let desired = _permissions.map_or(0o600 | (file.mode as u32 & 0o111), |mode| mode.bits());
         if metadata.permissions().mode() & 0o777 != desired & 0o777 {
             return Ok(false);
         }
@@ -46,7 +46,7 @@ fn artifact_matches(
     Ok(fs::read(path)? == file.bytes.as_ref())
 }
 
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8], _mode: u32) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("output has no parent"))?;
@@ -58,7 +58,7 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         temporary
             .as_file()
-            .set_permissions(fs::Permissions::from_mode(mode & 0o777))?;
+            .set_permissions(fs::Permissions::from_mode(_mode & 0o777))?;
     }
     temporary.as_file().sync_all()?;
     temporary.persist(path).map_err(|error| error.error)?;
