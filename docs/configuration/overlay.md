@@ -250,7 +250,9 @@ fails.
 ## Overlay Rules
 
 Use one ordered `rules` list for source-path configuration. Each rule has a
-`path` selector and any supported subset of `target`, `mode`, and `permissions`:
+`path` selector and at least one non-null assignment among `target`, `mode`,
+`permissions`, `template`, and `strip_extension`. Explicit boolean `false`
+counts as an assignment, so rendering-only rules need no extra mode or target:
 
 ```yaml
 # ~/.dotfiles/workspace/client/over.yaml

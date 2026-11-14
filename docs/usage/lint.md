@@ -164,7 +164,9 @@ are errors.
 ## Overlay rules
 
 Lint validates the shared `rules` list and reports obsolete configuration keys
-with migration hints. A rule must set `target`, `mode`, or `permissions`. Literal
+with migration hints. A rule must set at least one non-null assignment among
+`target`, `mode`, `permissions`, `template`, and `strip_extension`; explicit
+`false` counts as an assignment. Literal
 paths select a path and its descendants, respecting component boundaries.
 Globs can match files or directories, including permissions-only rules.
 Target-bearing rules require literal selectors. See
