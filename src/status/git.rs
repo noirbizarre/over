@@ -8,12 +8,15 @@
 //! (`CheckoutMaterializer`, #110) like every other intent, but this module
 //! only ever *reads* whatever `actions::git::clone_repositories` (called
 //! directly by `Overlay::apply`, before the `Plan`/`Materializer` pipeline
-//! runs) already put on disk — content-level sync stays `over sync`'s job.
+//! runs) already put on disk. Manage declared repositories with ordinary Git:
+//! the `over sync` CLI excludes them, while [`crate::sync::sync`] retains
+//! separate library synchronization support.
 //!
 //! **Root vs. declared entries (#140, ADR-021):** [`Provenance::Git`]'s
 //! `repo_key` distinguishes the overlay's own root checkout (`repo_key ==
-//! `[`ROOT_PATH`](crate::actions::git::config::ROOT_PATH)`, a genuine
-//! bidirectional sync surface, ADR-014) from any other declared repository
+//! `[`ROOT_PATH`](crate::actions::git::config::ROOT_PATH)`, inspected as a
+//! content repository and supported by the broader library sync API) from
+//! any other declared repository
 //! (an opaque, provisioned-only resource — e.g. a plugin-manager clone at a
 //! subpath). [`inspect`] branches on that key: the root entry keeps the
 //! full content status this module always computed
