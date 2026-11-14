@@ -215,6 +215,9 @@ fn commit_blocking(
     let mut changes = Vec::new();
     let mut records = Vec::new();
     for entry in entries {
+        if !opts.paths.is_empty() {
+            crate::desired::content::validate_selection(entry, &opts.paths)?;
+        }
         let conflicting_files = status::virtual_checkout::commit_conflicts(entry, &opts.paths)?;
         if !conflicting_files.is_empty() {
             return Ok((CommitOutcome::Blocked { conflicting_files }, Vec::new()));
@@ -232,6 +235,11 @@ fn commit_blocking(
         let selected = |path: &std::path::Path| selects(entry, path, &opts.paths);
         git::ensure_supported_staged_selected(&repo, &managed_path, &scope, &selected)?;
         let file_changes = git::staged_changes_selected(&repo, &managed_path, &scope, &selected)?;
+        let destinations: Vec<_> = file_changes
+            .iter()
+            .map(|change| entry.target.join(&change.path))
+            .collect();
+        crate::desired::content::validate_selection(entry, &destinations)?;
         if file_changes.is_empty() {
             continue;
         }

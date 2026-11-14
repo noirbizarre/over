@@ -119,8 +119,9 @@ Destination templates render before path resolution. `~` means `--target`, then
 Explicit hook `cwd` is an exception: relative values always use the repository
 root. Sidecar paths use their owning overlay root, even in nested directories.
 
-Templates apply to supported destination paths and hook execution fields, not
-arbitrary strings, file bodies, partial content, or metadata strings. Overlay
+Templates apply to supported destination paths, hook execution fields, and files
+explicitly selected by `rules[].template`. Other file bodies, partial content,
+and metadata strings remain literal. Overlay
 identifiers, source selectors, Git refs, and transport URLs have their own
 literal semantics. See [Path resolution](../configuration.md#path-resolution)
 and [Targets and templates](overlay.md#targets-and-templates) for template context
@@ -144,19 +145,23 @@ ownership, target-mapping constraints, and lifecycle guidance.
 
 `permissions` and `rules[].permissions` require quoted octal strings, such as
 `"600"`, `"0644"`, or `"0o644"`, in both root and overlay descriptors.
-They manage partial-file and decrypted-file targets, without chmod of symlink
-sources or independent chmod of virtual checkout content. Without an assignment,
-partial permissions are unmanaged and decrypted files default to `0600`.
+They manage partial-file, decrypted-file, and generated-template outputs, without
+chmod of tracked symlink sources or independent chmod of ordinary virtual
+checkout content. Without an assignment, partial permissions are unmanaged;
+decrypted files default to `0600`, and rendered files use private access with the
+source executable bit retained.
 See [File permissions](overlay.md#file-permissions).
 
 ## Rules
 
 Each `rules` entry requires `path` and at least one non-null assignment among
-`target`, `mode`, and `permissions`.
+`target`, `mode`, `permissions`, `template`, and `strip_extension`.
 
 | Attribute | Scope | Type | Default / requirement | Purpose |
 | --- | --- | --- | --- | --- |
 | `rules[].path` | Both | String | Required | Literal source prefix or glob, relative to the declaring descriptor. |
+| `rules[].template` | Both | Boolean | `false` | Render selected file paths and contents using MiniJinja. |
+| `rules[].strip_extension` | Both | Boolean | `false` | Remove the final source filename extension independently of rendering. |
 | `rules[].target` | Both | String | No assignment | Templated destination prefix replacing the matched literal source prefix. |
 | `rules[].mode` | Both | Materialization mode | No assignment | Assign `symlink`, `symlink-directory`, or `checkout`. |
 | `rules[].permissions` | Both | Octal string | No assignment | Assign permissions independently of target and mode. |

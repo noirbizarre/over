@@ -66,6 +66,10 @@ impl Report {
                     continue;
                 };
                 let source = overlay.root.join(relative);
+                let policy = crate::overlays::rules::resolve_with_origins(overlay, relative, false);
+                if policy.template || policy.strip_extension {
+                    continue;
+                }
                 // Ciphertext is not a linked plaintext destination and must not reach external diff drivers.
                 if crate::secrets::is_encrypted(relative) {
                     continue;
@@ -136,6 +140,44 @@ impl Report {
         };
         for entry in desired.entries() {
             match &entry.intent {
+                MaterializationIntent::RenderedFile(file) => {
+                    if views.contains(&View::Unstaged) {
+                        let (repo, _) = vc::discover_source(&file.source)?;
+                        let scratch = Scratch::new(&repo)?;
+                        let path = PathBuf::from(
+                            entry
+                                .target
+                                .file_name()
+                                .context("rendered destination has no filename")?,
+                        );
+                        let mut before = Entries::new();
+                        match std::fs::read(&entry.target) {
+                            Ok(bytes) => {
+                                before
+                                    .insert(path.clone(), (scratch.repo.blob(&bytes)?, file.mode));
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                        let after = Entries::from([(
+                            path.clone(),
+                            (scratch.repo.blob(&file.bytes)?, file.mode),
+                        )]);
+                        let left = vc::build_content_tree(&scratch.repo, &before)?.id();
+                        let right = vc::build_content_tree(&scratch.repo, &after)?.id();
+                        report.comparisons.push(Comparison {
+                            repository: repo
+                                .workdir()
+                                .context("source has no worktree")?
+                                .to_path_buf(),
+                            scope: vec![path],
+                            view: View::Unstaged,
+                            trees: Some((left, right)),
+                            baseline: Some(format!("rendered source {}", file.source.display())),
+                            scratch,
+                        });
+                    }
+                }
                 MaterializationIntent::EncryptedFile(_) => {
                     report.entry_diagnostic(
                         entry,
@@ -342,16 +384,45 @@ fn virtual_comparisons(
     record: &state::VirtualCheckoutRecord,
     views: &[View],
 ) -> Result<Vec<Comparison>> {
+    if record.generated.is_some() || entry.intent.checkout_scope().rendered.is_some() {
+        let mut comparisons = generated_comparisons(entry, record, views)?;
+        comparisons.extend(source_virtual_comparisons(entry, record, views)?);
+        return Ok(comparisons);
+    }
+    source_virtual_comparisons(entry, record, views)
+}
+
+fn source_virtual_comparisons(
+    entry: &DesiredEntry,
+    record: &state::VirtualCheckoutRecord,
+    views: &[View],
+) -> Result<Vec<Comparison>> {
     let Provenance::Overlay { source, .. } = &entry.provenance else {
         anyhow::bail!("virtual checkout has no source");
     };
     let (repo, managed) = vc::discover_source(source)?;
     let scope = entry.intent.checkout_scope();
+    let mut generated_destinations: BTreeSet<_> = scope
+        .rendered
+        .iter()
+        .flat_map(|inventory| {
+            inventory
+                .iter()
+                .filter(|(_, file)| file.generated)
+                .map(|(path, _)| path.clone())
+        })
+        .collect();
+    if let Some(generated) = &record.generated {
+        generated_destinations.extend(generated.sources.keys().cloned());
+    }
     let base = vc::base_tree(&repo, Some(&record.base_oid))?;
     let mut base_entries = vc::tracked_entries(&base)?;
     let owns = |path: &Path| -> bool {
-        path.strip_prefix(&managed)
-            .is_ok_and(|relative| scope.owns_source(relative) && !vc::is_overlay_metadata(relative))
+        path.strip_prefix(&managed).is_ok_and(|relative| {
+            !generated_destinations.contains(relative)
+                && scope.owns_source(relative)
+                && !vc::is_overlay_metadata(relative)
+        })
     };
     base_entries.retain(|path, _| owns(path));
     let index = repo.index()?;
@@ -459,6 +530,72 @@ fn virtual_comparisons(
             view,
             trees: Some((left, right)),
             baseline: Some(record.base_oid.clone()),
+            scratch,
+        });
+    }
+    Ok(comparisons)
+}
+
+fn generated_comparisons(
+    entry: &DesiredEntry,
+    record: &state::VirtualCheckoutRecord,
+    views: &[View],
+) -> Result<Vec<Comparison>> {
+    if !views.contains(&View::Unstaged) {
+        return Ok(Vec::new());
+    }
+    let Provenance::Overlay { source, .. } = &entry.provenance else {
+        unreachable!()
+    };
+    let (repo, _) = vc::discover_source(source)?;
+    let analysis = crate::materialize::virtual_checkout::generated::analyze(entry, Some(record))?;
+    let mut comparisons = Vec::new();
+    for (label, right) in [("local", &analysis.local), ("desired", &analysis.desired)] {
+        let scratch = Scratch::new(&repo)?;
+        let tree = |inventory: &crate::desired::content::RenderedInventory| -> Result<_> {
+            let entries = inventory
+                .iter()
+                .filter(|(path, _)| {
+                    analysis.base.get(*path).is_some_and(|file| file.generated)
+                        || analysis
+                            .desired
+                            .get(*path)
+                            .is_some_and(|file| file.generated)
+                })
+                .map(|(path, file)| {
+                    Ok((path.clone(), (scratch.repo.blob(&file.bytes)?, file.mode)))
+                })
+                .collect::<Result<_>>()?;
+            Ok(vc::build_content_tree(&scratch.repo, &entries)?.id())
+        };
+        let left = tree(&analysis.base)?;
+        let right_id = tree(right)?;
+        if left == right_id {
+            continue;
+        }
+        comparisons.push(Comparison {
+            repository: repo
+                .workdir()
+                .context("source has no worktree")?
+                .to_path_buf(),
+            scope: analysis
+                .base
+                .keys()
+                .chain(right.keys())
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            view: View::Unstaged,
+            trees: Some((left, right_id)),
+            baseline: Some(format!(
+                "generated {label}: {}",
+                record
+                    .generated
+                    .as_ref()
+                    .map(|state| state.base.as_str())
+                    .unwrap_or(&record.base_oid)
+            )),
             scratch,
         });
     }

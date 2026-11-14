@@ -99,7 +99,10 @@ fn inherited_local_git_sources_keep_the_declaring_root() {
 #[rstest]
 #[case("permissions: [{path: secret, mode: '600'}]\n", "octal string")]
 #[case("rules: [{path: config, materialization: checkout}]\n", "mode")]
-#[case("rules: [{path: config}]\n", "must set target, mode or permissions")]
+#[case(
+    "rules: [{path: config}]\n",
+    "must set target, mode, permissions, template or strip_extension"
+)]
 #[case(
     "rules: [{path: '.', target: '~/redirected'}]\n",
     "set target, mode or permissions directly"

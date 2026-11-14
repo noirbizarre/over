@@ -122,6 +122,13 @@ fn inspect_with_details(
     };
 
     state::verify(entry, &record)?;
+    if record.generated.is_some() || entry.intent.checkout_scope().rendered.is_some() {
+        return crate::materialize::virtual_checkout::generated::inspection(
+            entry,
+            &record,
+            tracked_only,
+        );
+    }
     let scope = entry.intent.checkout_scope();
     let (repo, managed_path) = git::discover_source(source)?;
     let key = repo.path().to_path_buf();
@@ -359,6 +366,14 @@ fn blob_ids(entries: &BTreeMap<PathBuf, (Oid, i32)>) -> BTreeMap<PathBuf, Oid> {
 }
 
 pub(crate) fn unstaged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
+    if let Some(record) = state::record_for_entry(entry)?
+        && (record.generated.is_some() || entry.intent.checkout_scope().rendered.is_some())
+    {
+        return Ok(crate::materialize::virtual_checkout::generated::inspection(
+            entry, &record, false,
+        )?
+        .unstaged);
+    }
     let Provenance::Overlay { source, .. } = &entry.provenance else {
         unreachable!()
     };

@@ -17,6 +17,7 @@
 //! directory resolves only actual path collisions, preserving local content
 //! when the user chooses Skip or Absorb.
 
+pub(crate) mod generated;
 pub(crate) mod git;
 mod initial;
 pub(crate) mod snapshot;
@@ -68,6 +69,9 @@ impl Materializer for VirtualCheckoutMaterializer {
     }
 
     fn classify(&self, entry: &DesiredEntry) -> Result<Operation> {
+        if entry.intent.checkout_scope().rendered.is_some() {
+            return generated::classify(entry);
+        }
         // A missing new destination does not mean this source unit is undeployed.
         state::verify_live_target(entry)?;
         let actual = actual::inspect(&entry.target)?;
@@ -160,6 +164,13 @@ impl Materializer for VirtualCheckoutMaterializer {
     /// Initialize missing or unassociated directory targets, resolving leaf
     /// conflicts. Unblocked migrations first remove their verified legacy layout.
     async fn materialize(&self, ctx: Ctx, step: &PlanStep) -> Result<()> {
+        if step.entry.intent.checkout_scope().rendered.is_some() {
+            if !ctx.dry_run {
+                let entry = step.entry.clone();
+                tokio::task::spawn_blocking(move || generated::reconcile(&entry, false)).await??;
+            }
+            return Ok(());
+        }
         if let Operation::Conflict { current } = &step.operation
             && !matches!(current, ActualState::Directory)
         {

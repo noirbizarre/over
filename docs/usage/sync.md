@@ -119,3 +119,40 @@ Dry-run never prompts or mutates virtual checkouts. Refresh preserves private
 access restrictions such as `0600`, while applying Git's executable bit.
 See [Safety and recovery](safety.md) and
 [Materialization](../configuration/materialization.md#editing-and-lifecycle).
+
+### Generated checkouts
+
+Checkouts containing [file templates](../configuration/overlay.md#file-templates)
+use a generated desired snapshot rather than raw template text as their base.
+Source template contents come from committed `HEAD`; newly resolved context data
+can change the desired render without a source commit.
+
+Sync compares three versions: the previous generated snapshot, the physical local
+file, and the new desired render. Local-only edits are preserved and reported
+with both destination and source-template paths. Non-overlapping textual edits
+are merged automatically. Overlapping, binary, and delete/modify conflicts retain
+the exact local file; sync reports the affected paths without printing values or
+writing conflict markers. Conflicts stay visible on later sync/status runs.
+
+The desired snapshot advances after reconciliation, including when local files
+conflict. Merged/local content remains outside that desired snapshot. To accept
+the generated desired version and clear a conflict, use `over restore PATH`.
+Alternatively, edit the source template and sync a compatible result. Generated
+destinations cannot be ingested through add, patch-add, commit, or Absorb; edit
+the source template manually. Reverse patches are a separate follow-up (#276).
+Ordinary non-template siblings retain their source staging workflow. A recursive
+add containing generated destinations fails before staging anything.
+
+Generated snapshots are complete Git trees/commits under local
+`refs/over/generated/<checkout-id>` refs, chained to preserve internal history.
+They do not move the user's `HEAD`, branches, or index. XDG state retains only
+checkout/provenance/ref/conflict metadata, not duplicate snapshot contents.
+Status and explicitly requested diffs compare generated output; diffs can display
+the rendered values. Reporting and dry-run do not publish objects or refs.
+
+Snapshots may contain locally rendered secrets in plaintext Git objects. They
+are subject to the machine's repository/filesystem security and are not
+encrypted by these refs. Over never configures a push refspec for the generated
+namespace. It is private by convention, not an access-control boundary: explicit
+refspecs and `git push --mirror` can publish it. Removing a checkout/ref is not
+secure erasure of Git objects or their history.

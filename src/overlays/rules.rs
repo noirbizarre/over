@@ -39,7 +39,9 @@ impl fmt::Display for MaterializationKind {
     "anyOf" = [
         {"required": ["mode"], "properties": {"mode": {"not": {"type": "null"}}}},
         {"required": ["permissions"], "properties": {"permissions": {"not": {"type": "null"}}}},
-        {"required": ["target"], "properties": {"target": {"type": "string", "pattern": "\\S"}}}
+        {"required": ["target"], "properties": {"target": {"type": "string", "pattern": "\\S"}}},
+        {"required": ["template"], "properties": {"template": {"type": "boolean"}}},
+        {"required": ["strip_extension"], "properties": {"strip_extension": {"type": "boolean"}}}
     ],
     "if" = {"properties": {"path": {"pattern": "[*?\\[{]"}}, "required": ["path"]},
     "then" = {"properties": {"target": {"type": "null"}}}
@@ -54,6 +56,8 @@ pub struct Rule {
     pub permissions: Option<FileMode>,
     #[cfg_attr(feature = "schema", schemars(extend("pattern" = r"\S")))]
     pub target: Option<String>,
+    pub template: Option<bool>,
+    pub strip_extension: Option<bool>,
 }
 
 impl Rule {
@@ -63,8 +67,12 @@ impl Rule {
 
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.mode.is_some() || self.permissions.is_some() || self.target.is_some(),
-            "rule '{}' must set target, mode or permissions",
+            self.mode.is_some()
+                || self.permissions.is_some()
+                || self.target.is_some()
+                || self.template.is_some()
+                || self.strip_extension.is_some(),
+            "rule '{}' must set target, mode, permissions, template or strip_extension",
             self.path
         );
         ensure!(!self.path.trim().is_empty(), "rule path must not be empty");
@@ -137,6 +145,10 @@ impl PolicyScope {
 pub(crate) type AssignmentOrigin<'a> = (&'a PolicyScope, Option<usize>);
 
 pub(crate) struct ResolvedProperties<'a> {
+    pub template: bool,
+    pub strip_extension: bool,
+    pub template_origin: Option<AssignmentOrigin<'a>>,
+    pub strip_extension_origin: Option<AssignmentOrigin<'a>>,
     pub mode: MaterializationKind,
     pub permissions: Option<FileMode>,
     pub mode_origin: Option<AssignmentOrigin<'a>>,
@@ -150,6 +162,10 @@ pub(crate) fn resolve_with_origins<'a>(
     is_directory: bool,
 ) -> ResolvedProperties<'a> {
     let mut resolved = ResolvedProperties {
+        template: false,
+        strip_extension: false,
+        template_origin: None,
+        strip_extension_origin: None,
         mode: MaterializationKind::Symlink,
         permissions: None,
         mode_origin: None,
@@ -173,6 +189,14 @@ pub(crate) fn resolve_with_origins<'a>(
         }
         for (index, rule) in scope.rules.iter().enumerate() {
             if scope.matches(rule, &source, is_directory) {
+                if let Some(value) = rule.template {
+                    resolved.template = value;
+                    resolved.template_origin = Some((scope, Some(index)));
+                }
+                if let Some(value) = rule.strip_extension {
+                    resolved.strip_extension = value;
+                    resolved.strip_extension_origin = Some((scope, Some(index)));
+                }
                 if let Some(value) = rule.mode {
                     resolved.mode = value;
                     resolved.mode_origin = Some((scope, Some(index)));
@@ -262,6 +286,8 @@ mod tests {
     fn literal_prefixes_respect_component_boundaries() {
         let rule = Rule {
             path: "foo".into(),
+            template: None,
+            strip_extension: None,
             mode: Some(MaterializationKind::Symlink),
             permissions: None,
             target: None,
@@ -274,6 +300,8 @@ mod tests {
     fn globs_match_files_and_directories_but_cannot_redirect_targets() {
         let mut rule = Rule {
             path: "config/*".into(),
+            template: None,
+            strip_extension: None,
             mode: Some(MaterializationKind::SymlinkDirectory),
             permissions: None,
             target: None,

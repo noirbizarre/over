@@ -42,6 +42,7 @@
 mod checkout;
 pub(crate) mod encrypted;
 mod partial;
+pub(crate) mod rendered;
 pub(crate) mod symlink;
 pub mod virtual_checkout;
 
@@ -93,6 +94,7 @@ impl Default for MaterializerRegistry {
     fn default() -> Self {
         Self {
             backends: vec![
+                Box::new(rendered::RenderedMaterializer),
                 Box::new(encrypted::EncryptedFileMaterializer),
                 // Must come before `SymlinkMaterializer`: `PartialFile` is
                 // a distinct intent, but registration order matters for

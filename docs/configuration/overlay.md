@@ -115,12 +115,55 @@ For example, a sidecar can refer to `{{ paths.target }}/shared`, while a target
 definition can use `{{ paths.home }}/Workspaces`. Unlike `~`, `paths.home` does
 not follow an execution-root override.
 
-Templates apply to supported path fields and lifecycle hook execution fields,
-not arbitrary strings. File bodies, partial content, and metadata strings
-remain literal. See
+Templates apply to supported path fields, lifecycle hook execution fields, and
+explicitly selected [file templates](#file-templates). Other file bodies,
+partial content, and metadata strings remain literal. See
 [Path resolution](../configuration.md#path-resolution) for relative paths and
 [Default overlay selection](root.md#default-overlay-selection) for bootstrap
 template limitations.
+
+### File templates
+
+Enable MiniJinja rendering through the existing ordered rules:
+
+```yaml
+rules:
+  - path: "**/*.jinja"
+    template: true
+    strip_extension: true
+  - path: "**/*.dotfile"
+    template: true
+    strip_extension: true
+  - path: "config/extensionless"
+    template: true
+```
+
+`template` renders both the selected source's destination path and UTF-8 file
+content. For example, `config.toml.jinja` containing
+`hostname = "{{ data.hostname }}"` produces `config.toml` with the resolved
+hostname. `machine.os`, `machine.arch`, and `machine.hostname` provide detected
+machine facts; `data` includes inherited and dependency-provided values.
+
+`strip_extension` independently removes the final filename extension. It does
+not enable rendering. Extensionless names and dotfiles without another suffix
+are unchanged. Rules match original source paths, and later matching assignments
+win independently for each property; explicit `false` disables an inherited
+assignment. Neither a conventional suffix nor Jinja-looking text enables
+rendering automatically. Rendered destinations must remain safe relative paths
+and cannot collide with another managed entry.
+
+Data and dependencies are resolved before rendering. Every file consumes that
+immutable snapshot, with its owning overlay's path bindings. Templates cannot
+produce data for another template. Rendering never modifies the source template.
+
+In symlink mode, destinations link to atomic, reconstructible artifacts under
+`$XDG_STATE_HOME/over/rendered` (normally `~/.local/state/over/rendered`). A
+whole-directory symlink containing templates is expanded into leaf links.
+In checkout mode, generated output is an ordinary physical file, rendered from
+committed source `HEAD`; commit template-file edits with Git in the source
+repository before syncing them. Context
+changes can rerender without a source commit. See
+[generated checkout synchronization](../usage/sync.md#generated-checkouts).
 
 ## Composition
 
@@ -519,7 +562,8 @@ fail resolution.
 
 Supported destination templates can read `{{ data.hostname }}` or nested values
 such as `{{ data.hardware.gpu }}`. Metadata is read-only and strings inside it
-are not recursively templated. File bodies and partial content remain literal.
+are not recursively templated. Explicitly selected file templates can consume
+the same data; partial content remains literal.
 `default_overlay` is resolved before this composition and cannot depend on it.
 
 [`over data`](../usage/data.md) exports JSON, preserving types and nulls, with

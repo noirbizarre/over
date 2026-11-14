@@ -56,3 +56,4 @@ semantics, use the [configuration reference](../configuration.md) and
 | [027](027-installation-is-an-opt-in-hook-event.md) | Installation is an opt-in lifecycle hook event, superseding ADR-004 |
 | [028](028-repository-encryption.md) | Deterministic authenticated repository encryption and persistent local unlock state |
 | [029](029-virtual-checkouts-project-file-ownership.md) | Fresh virtual checkouts project individual files into shared destination directories |
+| [030](030-file-templates-produce-desired-content.md) | File templates produce desired content and generated Git snapshots, superseding ADR-010's path-only scope |

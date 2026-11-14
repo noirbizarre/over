@@ -27,7 +27,14 @@ pub(crate) const OVERLAY_KEYS: &[&str] = &[
 pub(super) const EVENTS: &[&str] = &["install", "post-clone", "post-init", "post-apply"];
 pub(super) const HOOK_FIELDS: &[&str] = &["command", "env", "cwd", "when"];
 pub(super) const SYNC_FIELDS: &[&str] = &["pull", "push"];
-pub(super) const RULE_FIELDS: &[&str] = &["path", "mode", "permissions", "target"];
+pub(super) const RULE_FIELDS: &[&str] = &[
+    "path",
+    "mode",
+    "permissions",
+    "target",
+    "template",
+    "strip_extension",
+];
 pub(super) const WORKTREE_FIELDS: &[&str] = &["branch", "config"];
 pub(super) const REPO_FIELDS: &[&str] = &[
     "url",

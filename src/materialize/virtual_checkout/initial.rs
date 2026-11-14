@@ -467,6 +467,7 @@ fn initialize_with(
     // Every blob, permission check and source ingestion is prepared before the
     // first target write; a late obstruction must not leave earlier files applied.
     let association = VirtualCheckoutRecord {
+        generated: None,
         initializing: false,
         overlay: overlay.into(),
         managed_path: initial.managed.clone(),

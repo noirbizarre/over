@@ -64,7 +64,7 @@ where
     Ok(Some(value))
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Overlay {
     /// Executable commands never inherit through the descriptor cascade.
     #[serde(skip)]
@@ -103,6 +103,17 @@ pub struct Overlay {
     /// Reporting metadata contains declaration paths, never configuration values.
     #[serde(skip)]
     pub(crate) field_origins: std::collections::BTreeMap<String, PathBuf>,
+}
+
+impl fmt::Debug for Overlay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Debug logging a resolved overlay must not disclose data namespaces or configuration values.
+        f.debug_struct("Overlay")
+            .field("name", &self.name)
+            .field("root", &self.root)
+            .field("mode", &self.mode)
+            .finish_non_exhaustive()
+    }
 }
 
 impl fmt::Display for Overlay {
@@ -370,6 +381,8 @@ impl Overlay {
             !overlays.is_empty(),
             "at least one overlay must be selected"
         );
+        let prepared = ctx.prepare_rendering_many(overlays)?;
+        let ctx = &prepared;
         let mut desired = DesiredTree::build_many(ctx, overlays)?;
         let has_virtual_checkouts = desired
             .entries()
@@ -533,11 +546,10 @@ impl Overlay {
         } else {
             for name in self.uses.iter().flatten() {
                 let overlay = ctx
-                    .repository
-                    .get(name)
+                    .resolved_overlay(name)
                     .with_context(|| format!("used overlay '{name}' not found"))?;
                 if ctx.debug {
-                    tracing::debug!(?overlay, "used overlay");
+                    tracing::debug!(overlay = %overlay.name, "used overlay");
                 }
                 overlay.collect_participants(ctx, visited, stack, participants)?;
             }
@@ -1003,7 +1015,7 @@ mod tests {
         assert!(result.is_err(), "cycle should be detected");
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("Cycle detected"),
+            err_msg.to_lowercase().contains("cycle"),
             "error should mention cycle: {err_msg}"
         );
         assert!(

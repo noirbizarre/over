@@ -25,11 +25,11 @@ pub struct VirtualCheckoutState {
 }
 
 impl VersionedState for VirtualCheckoutState {
-    const VERSION: u32 = 3;
+    const VERSION: u32 = 4;
 
     fn migrate(version: u32, raw: toml::Value) -> Result<Self> {
         anyhow::ensure!(
-            version == 1 || version == 2,
+            (1..=3).contains(&version),
             "cannot migrate virtual checkout state from version {version}"
         );
         // Legacy records owned their complete subtree. Never infer new holes
@@ -40,6 +40,8 @@ impl VersionedState for VirtualCheckoutState {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VirtualCheckoutRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated: Option<super::generated::GeneratedState>,
     /// An interrupted first apply reserves its leaves but must still initialize on retry.
     #[serde(default)]
     pub initializing: bool,
@@ -415,6 +417,19 @@ fn resolve_projection_with_record(
         .as_ref()
         .and_then(|record| record.scope.projection.clone())
         .unwrap_or_default();
+    if let Some(generated) = existing
+        .as_ref()
+        .and_then(|record| record.generated.as_ref())
+    {
+        // Snapshot leaves use destination names; source/index names would reintroduce template suffixes.
+        paths.extend(generated.sources.keys().cloned());
+        if let Some(rendered) = &scope.rendered {
+            paths.extend(rendered.keys().cloned());
+        }
+        scope.projection = Some(paths);
+        entry.intent = crate::desired::MaterializationIntent::ScopedVirtualCheckout(scope);
+        return Ok(());
+    }
     if walk_source && source.is_dir() {
         for candidate in walkdir::WalkDir::new(source)
             .min_depth(1)

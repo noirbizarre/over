@@ -57,6 +57,10 @@ impl ClaimIdentity {
             }
         };
         let intent = match &entry.intent {
+            MaterializationIntent::RenderedFile(file) => Intent::Symlink {
+                source: file.source.clone(),
+                hard: false,
+            },
             MaterializationIntent::Directory => Intent::Directory,
             MaterializationIntent::Checkout => Intent::Checkout,
             MaterializationIntent::VirtualCheckout

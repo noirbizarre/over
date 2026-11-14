@@ -49,6 +49,7 @@ pub(crate) fn run(
     select: impl FnMut(&Unit, bool) -> Result<Decision>,
 ) -> Result<()> {
     crate::secrets::validate_ingestion(ctx, overlay, selections)?;
+    crate::desired::content::validate_ingestion(ctx, overlay, selections)?;
     let _ownership = if ctx.dry_run {
         None
     } else {

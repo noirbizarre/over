@@ -91,12 +91,28 @@ impl Repository {
     /// # }
     /// ```
     pub fn resolve_data(&self, ctx: &exec::Context, selected: Option<&Overlay>) -> Result<DataMap> {
-        self.resolve_data_many(ctx, selected.map(std::slice::from_ref).unwrap_or_default())
+        Ok(self.resolve_inputs(ctx, selected)?.0)
+    }
+
+    pub(crate) fn resolve_inputs(
+        &self,
+        ctx: &exec::Context,
+        selected: Option<&Overlay>,
+    ) -> Result<(DataMap, Vec<Overlay>)> {
+        self.resolve_inputs_many(ctx, selected.map(std::slice::from_ref).unwrap_or_default())
     }
 
     /// Merge ordered roots like a `uses` composition, after repository defaults.
     /// A single selected root retains its historical highest precedence.
     pub fn resolve_data_many(&self, ctx: &exec::Context, selected: &[Overlay]) -> Result<DataMap> {
+        Ok(self.resolve_inputs_many(ctx, selected)?.0)
+    }
+
+    pub(crate) fn resolve_inputs_many(
+        &self,
+        ctx: &exec::Context,
+        selected: &[Overlay],
+    ) -> Result<(DataMap, Vec<Overlay>)> {
         // Repeating a root must not discard its single-root precedence guarantee.
         let mut selected_names = HashSet::new();
         let selected: Vec<_> = selected
@@ -127,8 +143,8 @@ impl Repository {
             }
         }
         let mut data = DataMap::new();
-        for overlay in ordered {
-            for (key, value) in overlay.data {
+        for overlay in &ordered {
+            for (key, value) in overlay.data.clone() {
                 if let Some(previous) = data.get_mut(&key) {
                     merge_value(previous, value);
                 } else {
@@ -136,7 +152,7 @@ impl Repository {
                 }
             }
         }
-        Ok(data)
+        Ok((data, ordered))
     }
 }
 
@@ -221,6 +237,41 @@ mod tests {
         );
         assert!(data.contains_key("cleared"));
         assert!(!data.contains_key("absent"));
+    }
+
+    #[test]
+    fn descriptor_inheritance_recursively_merges_nested_maps_and_accumulates_distinct_keys() {
+        let temp = TempDir::new().unwrap();
+        descriptor(
+            &temp,
+            "",
+            "data: {app: {inherited: old, changed: old}, retained: true}",
+        );
+        descriptor(&temp, "selected", "data: {app: {changed: new}}");
+        let repo = Repository::new(temp.path().into());
+        assert_eq!(
+            repo.get("selected").unwrap().data,
+            mapping("app: {inherited: old, changed: new}\nretained: true")
+        );
+    }
+
+    #[test]
+    fn prepared_data_is_not_resolved_again_when_descriptors_change_during_execution() {
+        let temp = TempDir::new().unwrap();
+        descriptor(&temp, "selected", "data: {value: original}");
+        let repo = Repository::new(temp.path().into());
+        let selected = repo.get("selected").unwrap();
+        let ctx = Context::builder()
+            .repository(repo)
+            .overlay(selected)
+            .build()
+            .resolve_data()
+            .unwrap();
+        descriptor(&temp, "selected", "data: {value: changed}");
+        assert_eq!(
+            ctx.resolve_data().unwrap().data["value"],
+            DataValue::String("original".into())
+        );
     }
 
     #[test]

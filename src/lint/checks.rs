@@ -164,7 +164,10 @@ fn check_duplicate_rule_paths(overlay: &Overlay) -> Vec<Diagnostic> {
                 let mode = rule.mode.is_some() && later.mode.is_some();
                 let permissions = rule.permissions.is_some() && later.permissions.is_some();
                 let target = rule.target.is_some() && later.target.is_some();
-                if !mode && !permissions && !target {
+                let template = rule.template.is_some() && later.template.is_some();
+                let strip_extension =
+                    rule.strip_extension.is_some() && later.strip_extension.is_some();
+                if !mode && !permissions && !target && !template && !strip_extension {
                     continue;
                 }
                 let first = lexical(&scope.root.join(&rule.path));
@@ -219,6 +222,18 @@ fn check_duplicate_rule_paths(overlay: &Overlay) -> Vec<Diagnostic> {
                 let resolved = resolve_with_origins(overlay, relative, is_dir);
                 let mut winners = Vec::new();
                 for (property, active, origin, value) in [
+                    (
+                        "template",
+                        template,
+                        resolved.template_origin,
+                        resolved.template.to_string(),
+                    ),
+                    (
+                        "strip_extension",
+                        strip_extension,
+                        resolved.strip_extension_origin,
+                        resolved.strip_extension.to_string(),
+                    ),
                     (
                         "target",
                         target,

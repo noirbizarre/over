@@ -136,6 +136,8 @@ See [Examples](docs/examples.md) for complete descriptors, content, commands,
 multi-destination mappings, and checkout staging. Supported destination fields
 can use templates such as `{{ machine.hostname }}` and `{{ data.theme }}`;
 file content and arbitrary configuration strings are not automatically templated.
+Enable [file templates](docs/configuration/overlay.md#file-templates) explicitly
+with `template: true` rules; `strip_extension: true` removes a chosen source suffix.
 
 ## Why Over?
 

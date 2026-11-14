@@ -91,12 +91,34 @@ pub(crate) fn virtual_changes(
         .to_path_buf();
     let worktree = crate::overlays::mapping::lexical(&worktree);
     let mut changes = BTreeMap::new();
+    let generated = crate::materialize::virtual_checkout::state::record_for_entry(entry)?
+        .and_then(|record| record.generated);
+    let source_path = |path: &Path| -> PathBuf {
+        entry
+            .intent
+            .checkout_scope()
+            .rendered
+            .as_ref()
+            .and_then(|inventory| inventory.get(path))
+            .map(|file| file.source.clone())
+            .or_else(|| {
+                generated
+                    .as_ref()
+                    .and_then(|state| state.sources.get(path).cloned())
+            })
+            .and_then(|source| source.strip_prefix(&worktree).ok().map(Path::to_path_buf))
+            .unwrap_or_else(|| managed.join(path))
+    };
     for (staged, files) in [(true, &inspection.staged), (false, &inspection.unstaged)] {
         for file in files {
             let change = changes.entry(file.path.clone()).or_insert_with(|| Change {
                 worktree: worktree.clone(),
-                target: Some(entry.target.clone()),
-                path: managed.join(&file.path),
+                target: Some(if generated.is_some() {
+                    entry.target.join(&file.path)
+                } else {
+                    entry.target.clone()
+                }),
+                path: source_path(&file.path),
                 staged: None,
                 unstaged: None,
             });
@@ -117,8 +139,12 @@ pub(crate) fn virtual_changes(
             path.clone(),
             Change {
                 worktree: worktree.clone(),
-                target: Some(entry.target.clone()),
-                path: managed.join(path),
+                target: Some(if generated.is_some() {
+                    entry.target.join(path)
+                } else {
+                    entry.target.clone()
+                }),
+                path: source_path(path),
                 staged: Some(FileState::Unmerged),
                 unstaged: Some(FileState::Unmerged),
             },
