@@ -25,11 +25,11 @@ pub struct VirtualCheckoutState {
 }
 
 impl VersionedState for VirtualCheckoutState {
-    const VERSION: u32 = 3;
+    const VERSION: u32 = 4;
 
     fn migrate(version: u32, raw: toml::Value) -> Result<Self> {
         anyhow::ensure!(
-            version == 1 || version == 2,
+            (1..=3).contains(&version),
             "cannot migrate virtual checkout state from version {version}"
         );
         // Legacy records owned their complete subtree. Never infer new holes
@@ -40,6 +40,8 @@ impl VersionedState for VirtualCheckoutState {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VirtualCheckoutRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated: Option<super::generated::GeneratedState>,
     /// An interrupted first apply reserves its leaves but must still initialize on retry.
     #[serde(default)]
     pub initializing: bool,

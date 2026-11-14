@@ -444,6 +444,16 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
                         ),
                     ),
                 ];
+                for (property, value) in [
+                    ("template", rule.template),
+                    ("strip_extension", rule.strip_extension),
+                ] {
+                    if let Some(value) = value {
+                        field
+                            .children
+                            .push(Field::new(property, Value::Text(value.to_string())));
+                    }
+                }
                 details.push(field);
             }
             if let Some(exclude) = &scope.exclude {
@@ -565,6 +575,7 @@ fn explain(entry: &DesiredEntry, overlays: &[Overlay]) -> Vec<Field> {
         ),
     };
     let intent = match entry.intent {
+        MaterializationIntent::RenderedFile(_) => "rendered file",
         MaterializationIntent::EncryptedFile(_) => "encrypted file",
         MaterializationIntent::Directory => "directory scaffold",
         MaterializationIntent::SymlinkFile { .. } => "symlink",

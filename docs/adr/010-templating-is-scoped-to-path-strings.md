@@ -1,6 +1,14 @@
 # ADR-010: Templating is scoped to path-resolution strings, not file content
 
-**Status:** accepted
+**Status:** superseded for file content by [ADR-030](030-file-templates-produce-desired-content.md)
+
+## File-content amendment (#61)
+
+Explicit `template` and `strip_extension` rule assignments now transform ordinary
+file paths and contents during desired-state construction. The source template
+remains unchanged. Symlinks expose generated XDG artifacts; virtual checkouts use
+physical files backed by internal generated Git snapshots. The original decision
+below records the earlier path-only scope.
 
 ## Age amendment (#62)
 

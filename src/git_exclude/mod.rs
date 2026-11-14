@@ -213,6 +213,7 @@ pub fn managed_targets(desired: &DesiredTree) -> Result<Vec<ManagedTarget>> {
             matches!(
                 entry.intent,
                 MaterializationIntent::SymlinkFile { .. }
+                    | MaterializationIntent::RenderedFile(_)
                     | MaterializationIntent::EncryptedFile(_)
                     | MaterializationIntent::SymlinkDirectory { .. }
                     | MaterializationIntent::Checkout
@@ -226,6 +227,18 @@ pub fn managed_targets(desired: &DesiredTree) -> Result<Vec<ManagedTarget>> {
         .collect();
     for entry in desired.entries() {
         if let MaterializationIntent::ScopedVirtualCheckout(scope) = &entry.intent {
+            if let Some(inventory) = &scope.rendered {
+                for path in inventory
+                    .keys()
+                    .chain(scope.projection.iter().flat_map(|paths| paths.iter()))
+                {
+                    targets.push(ManagedTarget {
+                        target: entry.target.join(path),
+                        overlay: overlay_name(&entry.provenance).to_string(),
+                    });
+                }
+                continue;
+            }
             let Provenance::Overlay { source, .. } = &entry.provenance else {
                 unreachable!()
             };

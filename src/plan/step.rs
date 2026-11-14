@@ -63,6 +63,7 @@ pub enum Operation {
 /// that changed.
 fn intent_label(intent: &MaterializationIntent) -> &'static str {
     match intent {
+        MaterializationIntent::RenderedFile(_) => "rendered file",
         MaterializationIntent::EncryptedFile(_) => "encrypted file",
         MaterializationIntent::Directory => "directory",
         MaterializationIntent::SymlinkFile { .. } => "symlink",
@@ -87,6 +88,11 @@ impl fmt::Display for PlanStep {
         let target = short_path(&self.entry.target.to_string_lossy());
 
         match (&self.entry.intent, &self.operation) {
+            (MaterializationIntent::RenderedFile(file), operation) => write!(
+                f,
+                "rendered file: {target} from {} ({operation:?})",
+                file.source.display()
+            ),
             (_, Operation::NeedsUnlock) => {
                 write!(
                     f,

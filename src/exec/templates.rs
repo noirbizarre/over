@@ -11,7 +11,7 @@ use serde::Serialize;
 pub(crate) struct TemplateContext<'a> {
     #[serde(flatten)]
     ctx: &'a crate::exec::Context,
-    env: HashMap<String, String>,
+    env: &'a std::collections::BTreeMap<String, String>,
     overlays: &'a HashMap<String, String>,
     paths: TemplatePaths,
 }
@@ -50,7 +50,7 @@ impl<'a> TemplateContext<'a> {
         }
         Ok(Self {
             ctx,
-            env: std::env::vars().collect(),
+            env: &ctx.path_inputs.environment,
             overlays: ctx.resolved_overlays.as_ref(),
             paths,
         })
@@ -64,6 +64,8 @@ impl<'a> TemplateContext<'a> {
 pub fn create_env<'a>() -> Environment<'a> {
     // Register custom filters/functions here when needed
     let mut env = Environment::new();
+    // Template locals and source snippets may contain resolved private values.
+    env.set_debug(false);
     // An unavailable input must never become an unrelated empty destination.
     env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
     env
@@ -106,11 +108,45 @@ pub(crate) fn render_path(template: &str, state: &impl Serialize) -> Result<Stri
     render_string(template, state)
 }
 
+pub(crate) fn render_content(template: &str, ctx: &crate::exec::Context) -> Result<String> {
+    let state = TemplateContext::new(ctx)?;
+    create_env()
+        .render_str(template, Serde(&state))
+        .map_err(|error| {
+            // Neither Display nor the error chain is safe: user expressions can construct messages.
+            anyhow::anyhow!(
+                "template rendering failed ({:?}, line {})",
+                error.kind(),
+                error.line().unwrap_or(0)
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use super::*;
+
+    #[test]
+    fn content_rendering_uses_the_captured_environment_instead_of_rediscovering_it() {
+        let mut ctx = crate::exec::Context::default();
+        ctx.path_inputs
+            .environment
+            .insert("OVER_RENDER_FROZEN".into(), "snapshot".into());
+        assert_eq!(
+            render_content("{{ env.OVER_RENDER_FROZEN }}", &ctx).unwrap(),
+            "snapshot"
+        );
+        assert_eq!(
+            render_content(
+                "{{ env.OVER_RENDER_FROZEN }}",
+                &ctx.with_progress(indicatif::ProgressBar::hidden())
+            )
+            .unwrap(),
+            "snapshot"
+        );
+    }
 
     #[test]
     fn ordinary_template_environments_cannot_resolve_secrets() {

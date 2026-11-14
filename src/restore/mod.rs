@@ -84,6 +84,10 @@ fn restore_blocking(
     let mut checked = BTreeSet::new();
     let mut requests = Vec::new();
     let mut associations = Vec::new();
+    let mut generated_requests: std::collections::BTreeMap<
+        PathBuf,
+        (&crate::desired::DesiredEntry, Vec<PathBuf>),
+    > = std::collections::BTreeMap::new();
     for input in paths {
         let logical = routing.logical_path_for(input)?;
         ensure!(
@@ -101,6 +105,22 @@ fn restore_blocking(
         );
         let entry = owner(&tree, &target)?;
         let relative = target.strip_prefix(&entry.target)?;
+        if crate::materialize::virtual_checkout::generated::active(entry)? {
+            ensure!(
+                !options.staged && options.source.is_none(),
+                "generated output can only be restored from its generated desired snapshot; edit the source template for source changes"
+            );
+            ensure!(
+                !relative.as_os_str().is_empty(),
+                "specify generated destination files to restore"
+            );
+            generated_requests
+                .entry(entry.target.clone())
+                .or_insert_with(|| (entry, Vec::new()))
+                .1
+                .push(relative.to_path_buf());
+            continue;
+        }
         let scope = entry.intent.checkout_scope();
         ensure!(
             !relative.as_os_str().is_empty()
@@ -128,6 +148,9 @@ fn restore_blocking(
         });
         associations.push((entry, record));
     }
+    for (entry, paths) in generated_requests.values() {
+        crate::materialize::virtual_checkout::generated::restore(entry, paths, true)?;
+    }
     restore_paths(&requests, options, ctx.dry_run, || {
         for (entry, original) in &associations {
             let current = state::record_for_entry(entry)?
@@ -139,5 +162,9 @@ fn restore_blocking(
             );
         }
         Ok(())
-    })
+    })?;
+    for (entry, paths) in generated_requests.values() {
+        crate::materialize::virtual_checkout::generated::restore(entry, paths, ctx.dry_run)?;
+    }
+    Ok(())
 }

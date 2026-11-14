@@ -78,6 +78,7 @@ fn add_blocking_with(
     preserve_staged: bool,
 ) -> Result<Vec<PathBuf>> {
     crate::secrets::validate_ingestion(ctx, overlay, selections)?;
+    crate::desired::content::validate_ingestion(ctx, overlay, selections)?;
     let tree = DesiredTree::build_own(ctx, overlay)?;
     let mut entries: Vec<_> = tree
         .entries()

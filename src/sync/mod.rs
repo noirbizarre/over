@@ -572,6 +572,33 @@ async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Resu
             reason: "virtual checkout has no abortable operation".into(),
         });
     }
+    if crate::materialize::virtual_checkout::generated::active(entry)? {
+        if !opts.pull {
+            return Ok(SyncOutcome::UpToDate { path });
+        }
+        let entry = entry.clone();
+        let dry_run = opts.dry_run;
+        let result = tokio::task::spawn_blocking(move || {
+            let _guard = if dry_run {
+                None
+            } else {
+                Some(vc_state::mutation_guard()?)
+            };
+            crate::materialize::virtual_checkout::generated::reconcile(&entry, dry_run)
+        })
+        .await?;
+        return match result {
+            Ok(()) if dry_run => Ok(SyncOutcome::Preview {
+                path,
+                action: "reconcile generated checkout with local edits preserved".into(),
+            }),
+            Ok(()) => Ok(SyncOutcome::FastForwarded { path }),
+            Err(error) => Ok(SyncOutcome::Blocked {
+                path,
+                reason: error.to_string(),
+            }),
+        };
+    }
     let vc_status = status::virtual_checkout::inspect(entry)?;
 
     match vc_status {

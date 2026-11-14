@@ -53,11 +53,22 @@ fn detect_username() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct PathInputs {
     // Keep capture errors so a later render cannot silently adopt a different cwd.
     cwd: Result<PathBuf, String>,
     pub home: Option<PathBuf>,
+    pub environment: std::collections::BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for PathInputs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Environment variables can include credentials, even before content rendering.
+        f.debug_struct("PathInputs")
+            .field("cwd", &self.cwd)
+            .field("home", &self.home)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for PathInputs {
@@ -65,12 +76,19 @@ impl Default for PathInputs {
         Self {
             cwd: std::env::current_dir().map_err(|error| error.to_string()),
             home: dirs::home_dir(),
+            environment: std::env::vars().collect(),
         }
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Clone, Default, Serialize)]
 pub struct Context {
+    #[serde(skip)]
+    pub(crate) data_prepared: bool,
+    #[serde(skip)]
+    pub(crate) rendering_prepared: bool,
+    #[serde(skip)]
+    pub(crate) resolved_dependencies: Arc<Vec<Overlay>>,
     #[serde(skip)]
     pub crypto: Arc<crate::secrets::CryptoService>,
     #[serde(skip)]
@@ -128,6 +146,16 @@ pub struct Context {
 
     #[serde(skip)]
     pub resolved_overlays: Arc<HashMap<String, String>>,
+}
+
+impl std::fmt::Debug for Context {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Overlay descriptors and effective data may carry locally resolved private values.
+        f.debug_struct("Context")
+            .field("root", &self.root)
+            .field("dry_run", &self.dry_run)
+            .finish_non_exhaustive()
+    }
 }
 
 // Store the current progress bar
@@ -268,6 +296,9 @@ impl ContextBuilder {
 
     pub fn build(self) -> Arc<Context> {
         Arc::new(Context {
+            data_prepared: false,
+            rendering_prepared: false,
+            resolved_dependencies: Arc::default(),
             acquire_checkout_paths: self.acquire_checkout_paths,
             crypto: Arc::new(crate::secrets::CryptoService::default()),
             path_inputs: self.path_inputs,
@@ -341,12 +372,72 @@ impl Context {
     /// Prepare metadata before rendering paths; dependency context copies keep
     /// this snapshot so they cannot discard the command target's overrides.
     pub fn resolve_data(&self) -> anyhow::Result<Ctx> {
+        if self.data_prepared {
+            return Ok(Arc::new(self.clone()));
+        }
+        let (data, overlays) = self
+            .repository
+            .resolve_inputs(self, self.overlay.as_ref())?;
         Ok(Arc::new(Self {
+            data_prepared: true,
+            resolved_dependencies: Arc::new(overlays),
             // Metadata may change the rendered target, invalidating an earlier binding.
             current_target: None,
-            data: self.repository.resolve_data(self, self.overlay.as_ref())?,
+            data,
             ..self.clone()
         }))
+    }
+
+    pub(crate) fn prepare_rendering(&self, selected: &Overlay) -> anyhow::Result<Ctx> {
+        if self.rendering_prepared {
+            return Ok(self.with_overlay(selected.clone()));
+        }
+        let mut prepared = self.with_overlay(selected.clone());
+        if !self.repository.root.as_os_str().is_empty() {
+            prepared = prepared.resolve_data()?;
+        }
+        let overlays = if prepared.resolved_dependencies.is_empty() {
+            Arc::new(vec![selected.clone()])
+        } else {
+            prepared.resolved_dependencies.clone()
+        };
+        {
+            let mut operational = std::collections::HashSet::new();
+            let mut pending = vec![selected.name.clone()];
+            while let Some(name) = pending.pop() {
+                if operational.insert(name.clone())
+                    && !self.no_uses
+                    && let Some(overlay) = overlays.iter().find(|overlay| overlay.name == name)
+                {
+                    pending.extend(overlay.uses.iter().flatten().cloned());
+                }
+            }
+            for overlay in overlays
+                .iter()
+                .filter(|overlay| operational.contains(&overlay.name))
+            {
+                let target = overlay.resolve_target(&prepared)?;
+                prepared = prepared.with_resolved_overlay(
+                    overlay.name.clone(),
+                    target.to_string_lossy().into_owned(),
+                );
+            }
+        }
+        Ok(Arc::new(Self {
+            rendering_prepared: true,
+            ..prepared.as_ref().clone()
+        }))
+    }
+
+    pub(crate) fn resolved_overlay(&self, name: &str) -> anyhow::Result<Overlay> {
+        if let Some(overlay) = self
+            .resolved_dependencies
+            .iter()
+            .find(|overlay| overlay.name == name)
+        {
+            return Ok(overlay.clone());
+        }
+        self.repository.get(name)
     }
 
     /// Create a new [`ContextBuilder`] with default values.

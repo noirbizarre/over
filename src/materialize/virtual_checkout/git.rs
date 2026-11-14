@@ -114,6 +114,19 @@ pub(crate) fn scoped_entries_with_index(
     let subtree = managed_subtree(repo, tree, managed_path)?;
     let mut entries = tracked_entries(&subtree)?;
     entries.retain(|path, _| scope.owns_source(path));
+    if let Some(inventory) = &scope.rendered {
+        let root = repo
+            .workdir()
+            .context("checkout source has no worktree")?
+            .join(managed_path);
+        // Source/index workflows may still operate on ordinary siblings, never generated leaves.
+        let generated: std::collections::BTreeSet<_> = inventory
+            .values()
+            .filter(|file| file.generated)
+            .map(|file| file.source.clone())
+            .collect();
+        entries.retain(|path, _| !generated.contains(&root.join(path)));
+    }
     for path in entries.keys() {
         anyhow::ensure!(
             !crate::secrets::is_encrypted(path),

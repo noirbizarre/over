@@ -77,8 +77,9 @@ Descriptor `data` inherits through the existing ancestor cascade, then composes
 over the default and selected dependency closures. Each closure uses dependency-first
 DFS in declared `uses` order, default closure first, with shared overlays visited
 once. The explicitly selected root contributes last even if it was reached from
-the default closure. Mappings merge recursively, while other values (including
-lists and null) replace lower-priority values. This metadata composition does not
+the default closure. As amended by [ADR-030](030-file-templates-produce-desired-content.md),
+top-level keys replace complete values, including mappings, lists, and null;
+distinct keys accumulate. This metadata composition does not
 change ADR-008's filesystem flat union. `--no-uses` only skips dependency operations;
 metadata closure resolution remains complete. See
 [Consumer metadata](../configuration/overlay.md#consumer-metadata-data) for the full contract

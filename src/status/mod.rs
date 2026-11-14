@@ -259,6 +259,11 @@ impl Report {
                         | MaterializationIntent::ScopedVirtualCheckout(_),
                         _,
                     ) => inspect(&step.entry)?,
+                    (MaterializationIntent::RenderedFile(_), Operation::Create)
+                        if step.entry.target.symlink_metadata().is_ok() =>
+                    {
+                        Status::Modified
+                    }
                     (_, Operation::Create) => Status::Missing,
                     (_, Operation::Conflict { .. }) => Status::Conflict,
                     (intent, Operation::Noop) => classify_noop(intent),

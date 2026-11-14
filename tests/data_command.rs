@@ -119,7 +119,7 @@ fn an_explicit_name_composes_both_closures_with_canonical_precedence() -> TestRe
         command(repo.path())?.arg("selected"),
         json!({
             "shared": "host", "host_only": true, "dependency_wins": "selected_dependency",
-            "sibling": "second", "nested": {"retained": true, "host": true, "selected": true},
+            "sibling": "second", "nested": {"selected": true},
             "list": ["new"], "optional": null,
         }),
     )

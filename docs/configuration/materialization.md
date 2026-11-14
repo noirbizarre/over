@@ -134,7 +134,9 @@ Sidecars and descriptors are control metadata, never ordinary deployed files.
 
 ## Editing and lifecycle
 
-For symlinks, editing the target edits the linked source. For virtual checkouts,
+For ordinary symlinks, editing the target edits the linked source. Template
+symlinks instead expose reconstructible rendered artifacts: edit their tracked
+source templates to make lasting changes. For ordinary virtual checkout files,
 the source and target are separate snapshots:
 
 1. Edit ordinary target files.
@@ -165,6 +167,11 @@ confirmation or `--discard-checkout`, even when status is clean. Dirty virtual
 checkouts and independent mapped destinations remain protected under every flag.
 Checkout-to-recursive-link changes require unapplying the old layout first.
 See [Safety and recovery](../usage/safety.md) for the full contract.
+
+Template-containing checkouts use complete generated Git snapshots and preserve
+local edits through three-way sync. Generated output cannot be staged back into
+the source template. See [Generated checkouts](../usage/sync.md#generated-checkouts)
+for snapshot storage, conflict resolution, and local-data security.
 
 ## Migrating older descriptors
 

@@ -18,10 +18,19 @@ use super::entry::{DesiredEntry, MaterializationIntent, Provenance};
 
 /// The canonical desired filesystem state for an overlay and everything it
 /// transitively `uses`. See the [module docs](super) for the overall model.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct DesiredTree {
     entries: Vec<DesiredEntry>,
     pub(crate) sources: Vec<SourceSelection>,
+}
+
+impl std::fmt::Debug for DesiredTree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Source selections retain descriptors, whose data must not enter debug output.
+        f.debug_struct("DesiredTree")
+            .field("entries", &self.entries)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Retain resolved policy even for paths deleted from today's filesystem.
@@ -49,6 +58,8 @@ impl DesiredTree {
     }
 
     fn build_mode(ctx: &exec::Context, overlay: &Overlay, reporting: bool) -> Result<Self> {
+        let prepared = ctx.prepare_rendering(overlay)?;
+        let ctx = prepared.as_ref();
         let mut entries = Vec::new();
         let mut visited = HashSet::new();
         let mut stack = Vec::new();
@@ -76,6 +87,8 @@ impl DesiredTree {
     /// remains the entry point for whole-overlay status/diff (#12/#109),
     /// which need every `uses` dependency's entries too.
     pub fn build_own(ctx: &exec::Context, overlay: &Overlay) -> Result<Self> {
+        let prepared = ctx.prepare_rendering(overlay)?;
+        let ctx = prepared.as_ref();
         // Stage selections are absolute; relative roots must share their namespace.
         let target = mapping::absolute(&overlay.resolve_target(ctx)?)?;
         let mut sources = Vec::new();
@@ -349,8 +362,7 @@ fn build_inner(
         } else {
             for name in uses {
                 let used = ctx
-                    .repository
-                    .get(name)
+                    .resolved_overlay(name)
                     .with_context(|| format!("used overlay '{}' not found", name))?;
                 let sub_ctx = ctx.with_overlay(used.clone());
                 build_inner(&sub_ctx, &used, visited, stack, entries, sources, reporting)?;
@@ -429,7 +441,9 @@ fn collect_own_entries(
         )?;
         build_partial_sidecars(&ctx_with_target, overlay, &policy, &mut entries)?;
         attach_source_policy(&mut entries, &policy);
+        prune_transformed_scaffolds(&mut entries);
         finalize_entries(overlay, &routing, &mut entries, reporting)?;
+        attach_rendered_checkouts(ctx, overlay, &mut entries)?;
         return Ok(entries);
     }
 
@@ -469,7 +483,9 @@ fn collect_own_entries(
     build_partial_sidecars(&ctx_with_target, overlay, &policy, &mut entries)?;
 
     attach_source_policy(&mut entries, &policy);
+    prune_transformed_scaffolds(&mut entries);
     finalize_entries(overlay, &routing, &mut entries, reporting)?;
+    attach_rendered_checkouts(ctx, overlay, &mut entries)?;
     Ok(entries)
 }
 
@@ -483,6 +499,144 @@ fn attach_source_policy(entries: &mut [DesiredEntry], policy: &Arc<SourcePolicy>
             entry.intent = MaterializationIntent::ScopedVirtualCheckout(scope);
         }
     }
+}
+
+fn prune_transformed_scaffolds(entries: &mut Vec<DesiredEntry>) {
+    let rendered: Vec<_> = entries
+        .iter()
+        .filter_map(|entry| match &entry.intent {
+            MaterializationIntent::RenderedFile(file) => Some((&file.source, &entry.target)),
+            _ => None,
+        })
+        .collect();
+    if rendered.is_empty() {
+        return;
+    }
+    let obsolete: std::collections::BTreeSet<_> = entries
+        .iter()
+        .filter_map(|entry| {
+            if !matches!(entry.intent, MaterializationIntent::Directory) {
+                return None;
+            }
+            let Provenance::Overlay { source, .. } = &entry.provenance else {
+                return None;
+            };
+            let moved = rendered.iter().any(|(file, target)| {
+                file.starts_with(source) && !target.starts_with(&entry.target)
+            });
+            if !moved {
+                return None;
+            }
+            let required = entries.iter().any(|child| {
+                child.target != entry.target && child.target.starts_with(&entry.target)
+            });
+            // A rendered directory component must not leave an empty literal Jinja directory behind.
+            (moved && !required).then(|| entry.target.clone())
+        })
+        .collect();
+    entries.retain(|entry| {
+        !matches!(entry.intent, MaterializationIntent::Directory)
+            || !obsolete.contains(&entry.target)
+    });
+}
+
+fn attach_rendered_checkouts(
+    ctx: &exec::Context,
+    overlay: &Overlay,
+    entries: &mut [DesiredEntry],
+) -> Result<()> {
+    use crate::materialize::virtual_checkout::git;
+    for entry in entries {
+        if !entry.intent.is_virtual_checkout() {
+            continue;
+        }
+        let previous = crate::materialize::virtual_checkout::state::record_for_entry(entry)?;
+        let can_transform = overlay.scopes.iter().any(|scope| {
+            scope
+                .rules
+                .iter()
+                .any(|rule| rule.template == Some(true) || rule.strip_extension == Some(true))
+        });
+        if !can_transform
+            && !previous
+                .as_ref()
+                .is_some_and(|record| record.generated.is_some())
+        {
+            continue;
+        }
+        let Provenance::Overlay { source, .. } = &entry.provenance else {
+            continue;
+        };
+        let (repo, managed) = git::discover_source(source)?;
+        let source_commit = repo.head()?.peel_to_commit()?;
+        let head = source_commit.tree()?;
+        let mut scope = entry.intent.checkout_scope();
+        // Source selection precedes destination projection, which rendering may rename.
+        scope.projection = None;
+        let leaves = git::scoped_entries(&repo, &head, &managed, &scope)?;
+        let mut inventory = super::content::RenderedInventory::new();
+        let mut transformed = false;
+        for (relative, (oid, mode)) in leaves {
+            let full = source.join(&relative);
+            let logical = full.strip_prefix(&overlay.root)?;
+            let bytes =
+                crate::crypt::policy::materialized_blob(&repo, &managed.join(&relative), oid)?;
+            let (destination, content) = super::content::transform(
+                ctx, overlay, logical, &bytes, mode,
+            )
+            .with_context(|| format!("cannot render source template '{}'", full.display()))?;
+            let prefix = source.strip_prefix(&overlay.root)?;
+            let destination = destination
+                .strip_prefix(prefix)
+                .with_context(|| "rendered path escapes its checkout unit")?
+                .to_path_buf();
+            transformed |= content.generated;
+            if content.generated {
+                super::content::validate_destination(&content, &entry.target.join(&destination))?;
+            }
+            if let Some(previous) = inventory.insert(destination.clone(), content) {
+                anyhow::bail!(
+                    "source templates '{}' and '{}' render to the same destination '{}'",
+                    previous.source.display(),
+                    full.display(),
+                    entry.target.join(destination).display()
+                );
+            }
+        }
+        // Source-only checkouts retain their established staging and canonical-filter workflow.
+        if transformed
+            || previous
+                .as_ref()
+                .is_some_and(|record| record.generated.is_some())
+        {
+            for path in inventory.keys() {
+                for ancestor in path.ancestors().skip(1) {
+                    anyhow::ensure!(
+                        !inventory.contains_key(ancestor),
+                        "rendered file '{}' is an ancestor of another rendered destination '{}'",
+                        entry.target.join(ancestor).display(),
+                        entry.target.join(path).display()
+                    );
+                }
+            }
+            let mut projection: std::collections::BTreeSet<_> = inventory.keys().cloned().collect();
+            if let Some(previous) = previous {
+                if let Some(paths) = previous.scope.projection {
+                    projection.extend(*paths);
+                }
+                if let Some(generated) = previous.generated {
+                    projection.extend(generated.sources.into_keys());
+                }
+            }
+            scope.projection = Some(Box::new(projection));
+            scope.rendered = Some(Arc::new(super::content::RenderedCheckout {
+                inventory,
+                source_revision: source_commit.id().to_string(),
+            }));
+            entry.intent = MaterializationIntent::ScopedVirtualCheckout(scope);
+        }
+    }
+    Ok(())
 }
 
 fn finalize_entries(
@@ -718,7 +872,7 @@ fn walk_overlay_tree(
             }
             continue;
         }
-        let entry_target = routing.target_for(&logical);
+        let mut entry_target = routing.target_for(&logical);
         anyhow::ensure!(
             routing.logical_path_for(&entry_target)? == logical,
             "residual path '{}' collides with a mapped destination",
@@ -728,7 +882,7 @@ fn walk_overlay_tree(
         // Terminal modes own their subtree; enumerating children would create overlapping units.
         if path.is_dir() {
             match overlay.materialization_for(rel_path) {
-                MaterializationKind::SymlinkDirectory => {
+                MaterializationKind::SymlinkDirectory if !subtree_has_transform(overlay, path)? => {
                     policy.validate_directory_link(path, path)?;
                     if entry_target
                         .symlink_metadata()
@@ -770,7 +924,7 @@ fn walk_overlay_tree(
                     walker.skip_current_dir();
                     continue;
                 }
-                MaterializationKind::Symlink => {}
+                MaterializationKind::Symlink | MaterializationKind::SymlinkDirectory => {}
             }
         }
 
@@ -785,13 +939,35 @@ fn walk_overlay_tree(
                 permissions: None,
             });
         } else {
+            let properties = crate::overlays::rules::resolve_with_origins(overlay, rel_path, false);
+            let rendered = if properties.template || properties.strip_extension {
+                anyhow::ensure!(
+                    !encrypted && entry.file_type().is_file(),
+                    "templates require ordinary regular source files"
+                );
+                let mode = i32::from(crate::materialize::virtual_checkout::git::on_disk_filemode(
+                    path,
+                )?);
+                let (destination, content) =
+                    super::content::transform(ctx, overlay, rel_path, &std::fs::read(path)?, mode)
+                        .with_context(|| {
+                            format!("cannot render source template '{}'", path.display())
+                        })?;
+                entry_target = transformed_target(routing, rel_path, &destination)?;
+                super::content::validate_destination(&content, &entry_target)?;
+                Some(content)
+            } else {
+                None
+            };
             entries.push(DesiredEntry {
                 target: entry_target,
                 provenance: Provenance::Overlay {
                     overlay: overlay.name.clone(),
                     source: path.to_path_buf(),
                 },
-                intent: if encrypted {
+                intent: if let Some(rendered) = rendered {
+                    MaterializationIntent::RenderedFile(Arc::new(rendered))
+                } else if encrypted {
                     MaterializationIntent::EncryptedFile(crate::secrets::EncryptedFile {
                         source: path.to_path_buf(),
                         crypto: ctx.crypto.clone(),
@@ -802,7 +978,7 @@ fn walk_overlay_tree(
                         link_type: symlink::LinkType::Soft,
                     }
                 },
-                permissions: if encrypted {
+                permissions: if encrypted || properties.template || properties.strip_extension {
                     overlay.permission_for(&logical)
                 } else {
                     None
@@ -812,6 +988,46 @@ fn walk_overlay_tree(
     }
 
     Ok(())
+}
+
+fn subtree_has_transform(overlay: &Overlay, root: &Path) -> Result<bool> {
+    for item in WalkDir::new(root).min_depth(1) {
+        let item = item?;
+        if !item.file_type().is_dir() {
+            let properties = crate::overlays::rules::resolve_with_origins(
+                overlay,
+                item.path().strip_prefix(&overlay.root)?,
+                false,
+            );
+            if properties.template || properties.strip_extension {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn transformed_target(
+    routing: &ResolvedMappings,
+    original: &Path,
+    transformed: &Path,
+) -> Result<PathBuf> {
+    let boundary = routing
+        .boundaries
+        .keys()
+        .filter(|boundary| original.starts_with(boundary))
+        .max_by_key(|boundary| boundary.components().count());
+    if let Some(boundary) = boundary {
+        if boundary == original {
+            // A literal file target already names its destination explicitly.
+            return Ok(routing.target_for(original));
+        }
+        let suffix = transformed
+            .strip_prefix(boundary)
+            .context("rendered destination escapes its declared mapping")?;
+        return Ok(routing.target_for(boundary).join(suffix));
+    }
+    Ok(routing.target_for(Path::new("")).join(transformed))
 }
 
 /// Resolve `.link.{toml,yaml,yml}` sidecars into entries (`.link.*` config
@@ -895,6 +1111,7 @@ fn checkout_intent(routing: &ResolvedMappings, logical: &Path) -> Materializatio
         MaterializationIntent::VirtualCheckout
     } else {
         MaterializationIntent::ScopedVirtualCheckout(super::CheckoutScope {
+            rendered: None,
             source_excludes,
             target_excludes,
             source_policy: None,
@@ -1892,7 +2109,7 @@ mod tests {
         assert!(result.is_err(), "cycle should be detected");
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("Cycle detected"),
+            err_msg.to_lowercase().contains("cycle"),
             "error should mention cycle: {err_msg}"
         );
         assert!(

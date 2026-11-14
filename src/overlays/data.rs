@@ -24,21 +24,6 @@ pub(crate) fn validate_source(source: &impl Source) -> Result<()> {
     Ok(())
 }
 
-fn merge_value(current: &mut DataValue, incoming: DataValue) {
-    match (current, incoming) {
-        (DataValue::Mapping(current), DataValue::Mapping(incoming)) => {
-            for (key, value) in incoming {
-                if let Some(previous) = current.get_mut(&key) {
-                    merge_value(previous, value);
-                } else {
-                    current.insert(key, value);
-                }
-            }
-        }
-        (current, incoming) => *current = incoming,
-    }
-}
-
 fn visit(
     repo: &Repository,
     overlay: Overlay,
@@ -91,6 +76,14 @@ impl Repository {
     /// # }
     /// ```
     pub fn resolve_data(&self, ctx: &exec::Context, selected: Option<&Overlay>) -> Result<DataMap> {
+        Ok(self.resolve_inputs(ctx, selected)?.0)
+    }
+
+    pub(crate) fn resolve_inputs(
+        &self,
+        ctx: &exec::Context,
+        selected: Option<&Overlay>,
+    ) -> Result<(DataMap, Vec<Overlay>)> {
         let mut ordered = Vec::new();
         let mut visited = HashSet::new();
         let mut stack = HashSet::new();
@@ -113,16 +106,11 @@ impl Repository {
             }
         }
         let mut data = DataMap::new();
-        for overlay in ordered {
-            for (key, value) in overlay.data {
-                if let Some(previous) = data.get_mut(&key) {
-                    merge_value(previous, value);
-                } else {
-                    data.insert(key, value);
-                }
-            }
+        for overlay in &ordered {
+            // Namespaces are atomic: retaining nested defaults can leak another host's facts.
+            data.extend(overlay.data.clone());
         }
-        Ok(data)
+        Ok((data, ordered))
     }
 }
 
@@ -182,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn recursive_merging_replaces_lists_and_preserves_explicit_nulls() {
+    fn top_level_replacement_preserves_explicit_nulls_without_merging_nested_maps() {
         let temp = TempDir::new().unwrap();
         descriptor(
             &temp,
@@ -202,11 +190,46 @@ mod tests {
         assert_eq!(
             data,
             mapping(
-                "nested: {keep: yes, change: new}\nlist: [three]\ncleared: null\nscalar: {new: value}\nmap: replacement"
+                "nested: {change: new}\nlist: [three]\ncleared: null\nscalar: {new: value}\nmap: replacement"
             )
         );
         assert!(data.contains_key("cleared"));
         assert!(!data.contains_key("absent"));
+    }
+
+    #[test]
+    fn descriptor_inheritance_replaces_complete_namespaces_and_accumulates_distinct_keys() {
+        let temp = TempDir::new().unwrap();
+        descriptor(
+            &temp,
+            "",
+            "data: {app: {inherited: old, changed: old}, retained: true}",
+        );
+        descriptor(&temp, "selected", "data: {app: {changed: new}}");
+        let repo = Repository::new(temp.path().into());
+        assert_eq!(
+            repo.get("selected").unwrap().data,
+            mapping("app: {changed: new}\nretained: true")
+        );
+    }
+
+    #[test]
+    fn prepared_data_is_not_resolved_again_when_descriptors_change_during_execution() {
+        let temp = TempDir::new().unwrap();
+        descriptor(&temp, "selected", "data: {value: original}");
+        let repo = Repository::new(temp.path().into());
+        let selected = repo.get("selected").unwrap();
+        let ctx = Context::builder()
+            .repository(repo)
+            .overlay(selected)
+            .build()
+            .resolve_data()
+            .unwrap();
+        descriptor(&temp, "selected", "data: {value: changed}");
+        assert_eq!(
+            ctx.resolve_data().unwrap().data["value"],
+            DataValue::String("original".into())
+        );
     }
 
     #[test]

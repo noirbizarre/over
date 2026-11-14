@@ -39,7 +39,8 @@
 //!   syntax with path/subtree overrides *is* here — #126, resolved via
 //!   `Overlay::materialization_for`/`crate::overlays::rules` before this
 //!   module ever walks the overlay tree.)
-//! - Rendered file content (`DesiredEntry` has no `content` field) — #61.
+//! - Rendered file bytes and source identity live in [`content`]; checkout units
+//!   carry complete desired-leaf inventories without overlapping child entries.
 //! - Permission metadata is present (`DesiredEntry.permissions`, #65) but
 //!   scoped to entries `over` writes content for directly (`PartialFile`
 //!   today) — a symlinked entry shares its overlay source's inode, so
@@ -58,3 +59,4 @@ mod tree;
 
 pub use entry::{CheckoutScope, DesiredEntry, EntryKind, MaterializationIntent, Provenance};
 pub use tree::DesiredTree;
+pub mod content;

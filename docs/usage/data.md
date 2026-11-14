@@ -34,8 +34,8 @@ is an error even when an explicit name is supplied.
 The command uses the same [data resolution rules](../configuration/overlay.md#resolution-and-precedence)
 as templates and the public Rust API: dependencies precede their parents,
 shared dependencies contribute once, and the selected overlay's effective
-inherited mapping merges last. Mappings merge recursively; lists and other
-values replace earlier values, including explicit nulls.
+inherited mapping merges last. Top-level keys replace complete values, including
+explicit nulls; nested maps are never deep-merged. Distinct top-level keys accumulate.
 
 ## Output and Scripting
 

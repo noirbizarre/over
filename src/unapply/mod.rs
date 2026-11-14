@@ -444,6 +444,13 @@ impl Report {
 /// call `status::git`/`actions::git` directly for what they need).
 async fn dematerialize(entry: &DesiredEntry) -> Result<()> {
     match &entry.intent {
+        MaterializationIntent::RenderedFile(file) => {
+            remove_symlink_if_unchanged(
+                entry.target.clone(),
+                crate::materialize::rendered::artifact(file)?,
+            )
+            .await
+        }
         MaterializationIntent::EncryptedFile(_) => {
             let entry = entry.clone();
             spawn_blocking(move || -> Result<()> {
@@ -624,6 +631,9 @@ async fn remove_virtual_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
             return Ok(());
         };
         state::verify(&removal_entry, &record)?;
+        if record.generated.is_some() {
+            return crate::materialize::virtual_checkout::generated::remove(&removal_entry);
+        }
         let crate::desired::Provenance::Overlay { source, .. } = &removal_entry.provenance else {
             unreachable!()
         };

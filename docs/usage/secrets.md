@@ -112,8 +112,10 @@ over apply selected
 ```
 
 The encrypted source remains unchanged. Decryption is a desired-state content
-transformation, producing a real file rather than a source symlink. Content
-templating is not implemented. Lifecycle hooks support native secret interpolation
+transformation, producing a real file rather than a source symlink. These Age
+files do not support content templating. Ordinary files can opt into
+[file templates](../configuration/overlay.md#file-templates) through rules.
+Lifecycle hooks support native secret interpolation
 through `secret("name")` in commands, environment values, working directories
 and conditions. See [hook templates](../configuration/root.md#templates-and-conditions).
 

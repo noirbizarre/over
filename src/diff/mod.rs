@@ -272,6 +272,25 @@ impl Report {
 /// Classify a filesystem (non-`Checkout`) entry's `Operation` into a
 /// [`Change`].
 fn classify_fs(entry: &DesiredEntry, operation: &Operation) -> Result<Change> {
+    if let MaterializationIntent::RenderedFile(file) = &entry.intent {
+        return match fs::read(&entry.target) {
+            Ok(bytes) => match (
+                std::str::from_utf8(&bytes),
+                std::str::from_utf8(&file.bytes),
+            ) {
+                (Ok(old), Ok(new)) if old == new => Ok(Change::Unchanged),
+                (Ok(old), Ok(new)) => Ok(Change::Modified(ContentDiff::from_texts(old, new))),
+                _ => Ok(Change::Modified(ContentDiff::binary())),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Change::Missing),
+            Err(error) if error.kind() == std::io::ErrorKind::IsADirectory => {
+                Ok(Change::Unexpected {
+                    actual: ActualState::Directory,
+                })
+            }
+            Err(error) => Err(error.into()),
+        };
+    }
     match operation {
         Operation::NeedsUnlock => Ok(Change::Checkout(Status::Locked)),
         Operation::Create => Ok(Change::Missing),
@@ -383,6 +402,71 @@ fn classify_checkout(entry: &DesiredEntry) -> Result<Change> {
 /// then — when there's something worth showing — builds a content diff
 /// per modified file against the checkout's recorded base content.
 fn classify_virtual_checkout(entry: &DesiredEntry) -> Result<Change> {
+    if crate::materialize::virtual_checkout::generated::active(entry)? {
+        let record = crate::materialize::virtual_checkout::state::record_for_entry(entry)?;
+        let Some(record) = record else {
+            return Ok(Change::Missing);
+        };
+        let analysis =
+            crate::materialize::virtual_checkout::generated::analyze(entry, Some(&record))?;
+        let status = status::virtual_checkout::inspect(entry)?;
+        let mut files = Vec::new();
+        for (path, desired) in &analysis.desired {
+            if !desired.generated && !analysis.base.get(path).is_some_and(|file| file.generated) {
+                continue;
+            }
+            let local = analysis.local.get(path);
+            if local.is_some_and(|local| local.bytes == desired.bytes && local.mode == desired.mode)
+            {
+                continue;
+            }
+            let diff = local.map(|local| {
+                match (
+                    std::str::from_utf8(&local.bytes),
+                    std::str::from_utf8(&desired.bytes),
+                ) {
+                    (Ok(old), Ok(new)) => ContentDiff::from_texts(old, new),
+                    _ => ContentDiff::binary(),
+                }
+            });
+            files.push(VirtualCheckoutFileChange {
+                path: path.clone(),
+                kind: if local.is_some() {
+                    VirtualCheckoutFileKind::Modified
+                } else {
+                    VirtualCheckoutFileKind::Added
+                },
+                diff,
+                staged: false,
+            });
+        }
+        for (path, base) in &analysis.base {
+            if base.generated && !analysis.desired.contains_key(path) {
+                files.push(VirtualCheckoutFileChange {
+                    path: path.clone(),
+                    kind: VirtualCheckoutFileKind::Deleted,
+                    diff: None,
+                    staged: false,
+                });
+            }
+        }
+        let staged = status::virtual_checkout::staged_changes(entry)?;
+        files.extend(build_virtual_checkout_file_diffs(entry, &staged, true)?);
+        let mut unstaged = status::virtual_checkout::unstaged_changes(entry)?;
+        unstaged.retain(|change| {
+            !analysis
+                .desired
+                .get(&change.path)
+                .or_else(|| analysis.base.get(&change.path))
+                .is_some_and(|file| file.generated)
+        });
+        files.extend(build_virtual_checkout_file_diffs(entry, &unstaged, false)?);
+        return if files.is_empty() && status == Status::Applied {
+            Ok(Change::Unchanged)
+        } else {
+            Ok(Change::VirtualCheckout { status, files })
+        };
+    }
     let status = status::virtual_checkout::inspect(entry)?;
     match status {
         Status::Applied => return Ok(Change::Unchanged),
