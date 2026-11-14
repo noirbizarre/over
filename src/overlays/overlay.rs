@@ -170,7 +170,6 @@ impl Overlay {
         let mut local_hooks = crate::hooks::Hooks::default();
         let mut scopes = Vec::new();
         let mut scoped_sources = Vec::new();
-        let mut inherited_data = super::DataMap::new();
         let mut target_origin = root.to_path_buf();
         let mut field_origins = std::collections::BTreeMap::new();
         let directories: Vec<_> = root
@@ -262,10 +261,6 @@ impl Overlay {
             }
             super::data::validate_source(source)
                 .with_context(|| format!("invalid data in descriptor source {source:?}"))?;
-            // Config's recursive merge is unsuitable for atomic data namespaces.
-            if let Some(data) = values.remove("data") {
-                inherited_data.extend(data.try_deserialize::<super::DataMap>()?);
-            }
             scoped_sources.push(super::paths::ScopedSource(values));
         }
 
@@ -283,7 +278,6 @@ impl Overlay {
                 name,
             )
         })?;
-        overlay.data = inherited_data;
         overlay.hooks = local_hooks;
         overlay.scopes = scopes;
         overlay.target_origin = target_origin;

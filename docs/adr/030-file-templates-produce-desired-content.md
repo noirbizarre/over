@@ -11,8 +11,8 @@ must remain physical files while retaining editable local changes.
 ## Decision
 
 Extend existing hierarchical ordered rules with independent `template` and
-`strip_extension` booleans. Resolve overlay dependencies/data before rendering;
-top-level data keys replace complete values, with no recursive merge. Freeze the
+`strip_extension` booleans. Resolve overlay dependencies/data once before rendering
+using the existing cascading and recursive-merge semantics. Freeze the
 data/environment inputs and use the shared strict MiniJinja infrastructure.
 Templates consume data and never produce it for another template.
 

@@ -96,7 +96,7 @@ selected overlay:
 | `description`, `target` | Nearest declaration wins. |
 | `uses`, `exclude` | Nearest declaration replaces the inherited value; `[]` clears it. |
 | `mode`, `permissions`, `rules` | At each scope, explicit baselines apply before that scope's rules. Rules accumulate; `rules: []` does not clear inherited rules. |
-| `data` | Shallow top-level replacement: each namespace/value replaces the complete previous value. Distinct keys accumulate; nulls are retained. Top-level `data` must be a mapping. |
+| `data` | Mappings merge recursively; lists, scalars, and nested nulls replace previous values. Top-level `data` must be a mapping. |
 | `git` | Tables merge by key; nearer conflicting values replace earlier values. |
 | `hooks` | Never inherited. Root hooks remain repository-scoped; child hooks belong to their own overlay. |
 | `$schema` | Document-local; never inherited. |

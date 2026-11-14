@@ -6,6 +6,42 @@ use predicates::str::contains;
 use rstest::rstest;
 use tempfile::TempDir;
 
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn templates_consume_recursively_merged_inherited_and_dependency_data(#[case] checkout: bool) {
+    let fixture = Fixture::new(checkout);
+    fs::write(
+        fixture.source.join("over.yaml"),
+        "default_overlay: app\ndata: {config: {root: inherited}}\n",
+    )
+    .unwrap();
+    fs::create_dir_all(fixture.source.join("base")).unwrap();
+    fs::write(
+        fixture.source.join("base/over.yaml"),
+        "data: {config: {dependency: shared}}\n",
+    )
+    .unwrap();
+    let descriptor = fixture.source.join("app/over.yaml");
+    let configuration = fs::read_to_string(&descriptor).unwrap().replace(
+        "data: {hostname: first}",
+        "uses: [base]\ndata: {hostname: first, config: {selected: local}}",
+    );
+    fs::write(descriptor, configuration).unwrap();
+    let template = "{{ data.config.root }}/{{ data.config.dependency }}/{{ data.config.selected }}";
+    fs::write(fixture.source.join("app/config.jinja"), template).unwrap();
+    commit_all(&fixture.repo());
+    fixture.apply();
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("config")).unwrap(),
+        "inherited/shared/local"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.source.join("app/config.jinja")).unwrap(),
+        template
+    );
+}
+
 struct Fixture {
     temp: TempDir,
     source: PathBuf,

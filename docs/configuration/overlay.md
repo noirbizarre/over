@@ -546,14 +546,12 @@ composes these effective mappings:
 3. Merge the selected overlay last, even when the default depends on it. Each
    overlay contributes once.
 
-Later contributions win through shallow top-level replacement, both within the
-descriptor chain and across overlay dependencies. Each top-level key is an
-atomic namespace/value: `hardware: {gpu: nvidia}` replaces the complete previous
-`hardware: {gpu: integrated, arch: x86_64}` value, removing `arch`. Distinct keys
-accumulate; lists and explicit nulls replace previous values while retaining the
-key. Namespace data by overlay, such as `data.editor.*`, to avoid accidental
-replacement. Host overlays can intentionally provide root-level facts such as
-`data.hostname`. Even an inherited selected value can override a host value.
+Later contributions win. Mappings merge recursively; lists replace whole lists,
+scalars replace prior values, and explicit nested nulls replace while retaining
+the key. Absent keys leave earlier values intact. Even an inherited selected
+value can override a host-specific value. For example, merging
+`hardware: {gpu: nvidia}` into `{gpu: integrated, arch: x86_64}` changes only
+`gpu`; merging `packages: [three]` replaces `[one, two]` entirely.
 
 Without a default, only the selected closure contributes. All-overlay commands
 resolve separate contexts per target, not one pooled mapping. `--no-uses` skips

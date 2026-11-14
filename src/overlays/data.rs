@@ -24,6 +24,21 @@ pub(crate) fn validate_source(source: &impl Source) -> Result<()> {
     Ok(())
 }
 
+fn merge_value(current: &mut DataValue, incoming: DataValue) {
+    match (current, incoming) {
+        (DataValue::Mapping(current), DataValue::Mapping(incoming)) => {
+            for (key, value) in incoming {
+                if let Some(previous) = current.get_mut(&key) {
+                    merge_value(previous, value);
+                } else {
+                    current.insert(key, value);
+                }
+            }
+        }
+        (current, incoming) => *current = incoming,
+    }
+}
+
 fn visit(
     repo: &Repository,
     overlay: Overlay,
@@ -107,8 +122,13 @@ impl Repository {
         }
         let mut data = DataMap::new();
         for overlay in &ordered {
-            // Namespaces are atomic: retaining nested defaults can leak another host's facts.
-            data.extend(overlay.data.clone());
+            for (key, value) in overlay.data.clone() {
+                if let Some(previous) = data.get_mut(&key) {
+                    merge_value(previous, value);
+                } else {
+                    data.insert(key, value);
+                }
+            }
         }
         Ok((data, ordered))
     }
@@ -170,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn top_level_replacement_preserves_explicit_nulls_without_merging_nested_maps() {
+    fn recursive_merging_replaces_lists_and_preserves_explicit_nulls() {
         let temp = TempDir::new().unwrap();
         descriptor(
             &temp,
@@ -190,7 +210,7 @@ mod tests {
         assert_eq!(
             data,
             mapping(
-                "nested: {change: new}\nlist: [three]\ncleared: null\nscalar: {new: value}\nmap: replacement"
+                "nested: {keep: yes, change: new}\nlist: [three]\ncleared: null\nscalar: {new: value}\nmap: replacement"
             )
         );
         assert!(data.contains_key("cleared"));
@@ -198,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_inheritance_replaces_complete_namespaces_and_accumulates_distinct_keys() {
+    fn descriptor_inheritance_recursively_merges_nested_maps_and_accumulates_distinct_keys() {
         let temp = TempDir::new().unwrap();
         descriptor(
             &temp,
@@ -209,7 +229,7 @@ mod tests {
         let repo = Repository::new(temp.path().into());
         assert_eq!(
             repo.get("selected").unwrap().data,
-            mapping("app: {changed: new}\nretained: true")
+            mapping("app: {inherited: old, changed: new}\nretained: true")
         );
     }
 
