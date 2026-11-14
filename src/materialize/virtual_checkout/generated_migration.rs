@@ -75,7 +75,24 @@ pub(crate) fn ensure_ready(repo: &Repository) -> Result<()> {
     Ok(())
 }
 
+fn state_directory_obstructed() -> Result<bool> {
+    let directory = crate::xdg::XdgDirs::new()?.state_dir();
+    // Windows and Unix report different errors beneath a file; inspect parents before descending.
+    for ancestor in directory.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        match fs::metadata(ancestor) {
+            Ok(metadata) if !metadata.is_dir() => return Ok(true),
+            Ok(_) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(false)
+}
+
 fn associations(repo: &Repository) -> Result<BTreeMap<String, state::VirtualCheckoutRecord>> {
+    if state_directory_obstructed()? {
+        return Ok(BTreeMap::new());
+    }
     let path = crate::xdg::XdgDirs::new()?
         .state_dir()
         .join("virtual_checkout.toml");
@@ -121,6 +138,10 @@ pub(crate) fn ownership_guard(repo: &Repository) -> Result<Option<fs::File>> {
         .transpose()?
         .is_some();
     let relevant = has_refs || ledger_path(repo).try_exists()? || !associations(repo)?.is_empty();
+    if !relevant && state_directory_obstructed()? {
+        // No association can exist here, so crypto-only worktrees need no checkout mutation lock.
+        return Ok(None);
+    }
     match state::raw_mutation_guard() {
         Ok(guard) => Ok(Some(guard)),
         // Such a directory cannot hold or publish a checkout association in the first place.

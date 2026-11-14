@@ -105,6 +105,40 @@ impl Fixture {
 }
 
 #[test]
+fn crypto_only_lifecycle_does_not_require_a_checkout_state_directory_beneath_a_file() {
+    let fixture = Fixture::new();
+    let state = fixture.identity.path().join("obstructed-state");
+    fs::create_dir(&state).unwrap();
+    fs::write(state.join("over"), b"an unrelated file").unwrap();
+    let locked = fixture
+        .command(cargo_bin("over"))
+        .env("XDG_STATE_HOME", &state)
+        .arg("lock")
+        .output()
+        .unwrap();
+    assert!(
+        locked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&locked.stderr)
+    );
+    assert!(!fixture.key().exists());
+    let unlocked = fixture
+        .command(cargo_bin("over"))
+        .env("XDG_STATE_HOME", &state)
+        .args(["unlock", "--identity"])
+        .arg(fixture.identity.path().join("key.age"))
+        .output()
+        .unwrap();
+    assert!(
+        unlocked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unlocked.stderr)
+    );
+    assert!(fixture.key().exists());
+    assert_eq!(fs::read(state.join("over")).unwrap(), b"an unrelated file");
+}
+
+#[test]
 fn filter_configuration_failure_does_not_install_a_previously_locked_key() {
     let fixture = Fixture::new();
     fixture.success(&["lock"]);
