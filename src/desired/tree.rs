@@ -49,19 +49,31 @@ impl DesiredTree {
     }
 
     fn build_mode(ctx: &exec::Context, overlay: &Overlay, reporting: bool) -> Result<Self> {
+        Self::build_roots(ctx, std::slice::from_ref(overlay), reporting)
+    }
+
+    /// Compose explicit roots as one flat union, deduplicating shared dependencies.
+    pub fn build_many(ctx: &exec::Context, overlays: &[Overlay]) -> Result<Self> {
+        Self::build_roots(ctx, overlays, false)
+    }
+
+    fn build_roots(ctx: &exec::Context, overlays: &[Overlay], reporting: bool) -> Result<Self> {
         let mut entries = Vec::new();
         let mut visited = HashSet::new();
         let mut stack = Vec::new();
         let mut sources = Vec::new();
-        build_inner(
-            ctx,
-            overlay,
-            &mut visited,
-            &mut stack,
-            &mut entries,
-            &mut sources,
-            reporting,
-        )?;
+        for overlay in overlays {
+            let overlay_ctx = ctx.with_overlay(overlay.clone());
+            build_inner(
+                &overlay_ctx,
+                overlay,
+                &mut visited,
+                &mut stack,
+                &mut entries,
+                &mut sources,
+                reporting,
+            )?;
+        }
         // Canonical, deterministic ordering — useful for #109 diff and tests.
         entries.sort_by(|a, b| a.target.cmp(&b.target));
         Ok(Self { entries, sources })

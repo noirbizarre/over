@@ -349,6 +349,19 @@ impl Context {
         }))
     }
 
+    /// Prepare a shared snapshot without inventing an identity for a composition.
+    pub fn resolve_data_many(&self, overlays: &[Overlay]) -> anyhow::Result<Ctx> {
+        Ok(Arc::new(Self {
+            current_target: None,
+            overlay: overlays
+                .first()
+                .filter(|first| overlays.iter().all(|overlay| overlay.name == first.name))
+                .cloned(),
+            data: self.repository.resolve_data_many(self, overlays)?,
+            ..self.clone()
+        }))
+    }
+
     /// Create a new [`ContextBuilder`] with default values.
     pub fn builder() -> ContextBuilder {
         ContextBuilder::default()

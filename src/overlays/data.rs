@@ -91,20 +91,34 @@ impl Repository {
     /// # }
     /// ```
     pub fn resolve_data(&self, ctx: &exec::Context, selected: Option<&Overlay>) -> Result<DataMap> {
+        self.resolve_data_many(ctx, selected.map(std::slice::from_ref).unwrap_or_default())
+    }
+
+    /// Merge ordered roots like a `uses` composition, after repository defaults.
+    /// A single selected root retains its historical highest precedence.
+    pub fn resolve_data_many(&self, ctx: &exec::Context, selected: &[Overlay]) -> Result<DataMap> {
+        // Repeating a root must not discard its single-root precedence guarantee.
+        let mut selected_names = HashSet::new();
+        let selected: Vec<_> = selected
+            .iter()
+            .filter(|overlay| selected_names.insert(&overlay.name))
+            .collect();
         let mut ordered = Vec::new();
         let mut visited = HashSet::new();
         let mut stack = HashSet::new();
         if let Some(default) = self.default_overlay(ctx)? {
             visit(self, default, &mut visited, &mut stack, &mut ordered)?;
         }
-        if let Some(selected) = selected {
+        for selected in &selected {
             visit(
                 self,
-                selected.clone(),
+                (*selected).clone(),
                 &mut visited,
                 &mut stack,
                 &mut ordered,
             )?;
+        }
+        if let [selected] = selected.as_slice() {
             // A host may use the command target: deduplication must not reverse
             // the explicitly selected root's promised precedence.
             if let Some(index) = ordered.iter().position(|o| o.name == selected.name) {
@@ -267,6 +281,40 @@ mod tests {
                 .unwrap(),
             mapping("priority: selected")
         );
+        let repeated = vec![repo.get("selected").unwrap(); 2];
+        assert_eq!(
+            ctx.resolve_data_many(&repeated).unwrap().data,
+            mapping("priority: selected")
+        );
+    }
+
+    #[rstest]
+    #[case(vec!["parent", "dependency"], "parent")]
+    #[case(vec!["dependency", "parent"], "parent")]
+    #[case(vec!["parent", "sibling", "dependency"], "sibling")]
+    fn multiple_explicit_roots_merge_in_dependency_order_without_replaying_contributors(
+        #[case] names: Vec<&str>,
+        #[case] winner: &str,
+    ) {
+        let temp = TempDir::new().unwrap();
+        descriptor(&temp, "", "default_overlay: host");
+        descriptor(&temp, "host", "data: {host: true, priority: host}");
+        descriptor(&temp, "dependency", "data: {priority: dependency}");
+        descriptor(
+            &temp,
+            "parent",
+            "uses: [dependency]\ndata: {priority: parent}",
+        );
+        descriptor(
+            &temp,
+            "sibling",
+            "uses: [dependency]\ndata: {priority: sibling}",
+        );
+        let repo = Repository::new(temp.path().into());
+        let ctx = Context::builder().repository(repo.clone()).build();
+        let roots: Vec<_> = names.iter().map(|name| repo.get(name).unwrap()).collect();
+        let data = repo.resolve_data_many(&ctx, &roots).unwrap();
+        assert_eq!(data, mapping(&format!("host: true\npriority: {winner}")));
     }
 
     #[test]

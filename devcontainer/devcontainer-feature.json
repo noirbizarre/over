@@ -15,7 +15,7 @@
     "options": {
         "overlay": {
             "type": "string",
-            "description": "Overlay to apply without prompting or forcing conflicts (empty skips apply)",
+            "description": "Comma-separated overlay names to compose in order without prompting or forcing conflicts (empty skips apply)",
             "default": ""
         },
         "repository": {

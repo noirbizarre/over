@@ -1,21 +1,21 @@
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use clap::Args;
 use dirs::home_dir;
 
 use crate::cli::CLI;
 use crate::cli::common::select_overlay;
 use crate::exec::Context;
-use crate::overlays::Repository;
+use crate::overlays::{Overlay, Repository};
 use crate::ui;
 use crate::ui::{emojis, style};
 #[derive(Args, Debug)]
 pub struct Params {
     #[clap(
-        help = "Name of the overlay to apply (otherwise infer context, then use default_overlay)"
+        help = "Names of overlays to compose (otherwise infer context, then use default_overlay)"
     )]
-    name: Option<String>,
+    names: Vec<String>,
 
     #[clap(
         short = 'r',
@@ -83,26 +83,48 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .build();
 
     let selection_ctx = ctx.clone();
-    let name = args.name.clone();
-    let overlay =
-        tokio::task::spawn_blocking(move || select_overlay(&selection_ctx, name.as_deref()))
-            .await??;
+    let names = args.names.clone();
+    let overlays = tokio::task::spawn_blocking(move || -> Result<Vec<Overlay>> {
+        if names.is_empty() {
+            return Ok(vec![select_overlay(&selection_ctx, None)?]);
+        }
+        names
+            .iter()
+            .map(|name| {
+                selection_ctx.repository.get(name).with_context(|| {
+                    format!(
+                        "could not select overlay '{name}' from {}",
+                        selection_ctx.repository.root.display()
+                    )
+                })
+            })
+            .collect()
+    })
+    .await??;
     if cli.debug {
-        tracing::debug!(?overlay, "resolved overlay");
+        tracing::debug!(?overlays, "resolved overlays");
     }
 
-    let ctx = ctx.with_overlay(overlay.clone()).resolve_data()?;
+    let ctx = ctx.resolve_data_many(&overlays)?;
 
-    overlay.apply(&ctx).await.inspect_err(|e| {
-        ui::warn(format!(
-            "{} {} {}: {}",
-            emojis::crossmark().for_stderr(),
-            style::heading("Failed to apply overlay"),
-            style::overlay(&overlay.name),
-            e,
-        ))
-        .ok();
-    })?;
+    Overlay::apply_many(&overlays, &ctx)
+        .await
+        .inspect_err(|e| {
+            ui::warn(format!(
+                "{} {} {}: {}",
+                emojis::crossmark().for_stderr(),
+                style::heading("Failed to apply overlays"),
+                style::overlay(
+                    &overlays
+                        .iter()
+                        .map(|overlay| overlay.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                e,
+            ))
+            .ok();
+        })?;
 
     Ok(())
 }
