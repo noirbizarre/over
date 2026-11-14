@@ -137,6 +137,25 @@ impl Fixture {
         command
     }
 
+    fn stage(&self, name: &str) {
+        self.command("add")
+            .args(["--overlay", "app", "--target"])
+            .arg(&self.target)
+            .arg(self.target.join(name))
+            .assert()
+            .success();
+    }
+
+    fn restore(&self, name: &str, options: &[&str]) {
+        self.command("restore")
+            .args(["--overlay", "app", "--target"])
+            .arg(&self.target)
+            .args(options)
+            .arg(self.target.join(name))
+            .assert()
+            .success();
+    }
+
     fn repo(&self) -> git2::Repository {
         git2::Repository::open(&self.source).unwrap()
     }
@@ -545,6 +564,22 @@ fn a_source_template_deletion_preserves_local_edits_until_explicit_restore() {
     fs::remove_file(fixture.source.join("app/config.jinja")).unwrap();
     commit_all(&fixture.repo());
     fixture.sync().assert().failure();
+    let snapshot = fixture.snapshot();
+    for _ in 0..2 {
+        fixture
+            .command("status")
+            .args(["app", "--target"])
+            .arg(&fixture.target)
+            .assert()
+            .failure()
+            .stdout(contains("conflict"));
+        fixture
+            .sync()
+            .assert()
+            .failure()
+            .stdout(contains("config.jinja"));
+        assert_eq!(fixture.snapshot(), snapshot);
+    }
     assert_eq!(fs::read_to_string(&destination).unwrap(), local);
     fixture
         .command("add")
@@ -757,4 +792,298 @@ fn changing_only_context_rerenders_checkout_and_metadata_does_not_duplicate_valu
     let output = assertion.get_output();
     assert!(!String::from_utf8_lossy(&output.stdout).contains("PRIVATE_RENDER_SENTINEL"));
     assert!(!String::from_utf8_lossy(&output.stderr).contains("PRIVATE_RENDER_SENTINEL"));
+}
+
+#[rstest]
+#[case("~/config")]
+#[case("~/config/child")]
+fn rendered_checkout_leaves_cannot_overlap_independently_mapped_targets(#[case] target: &str) {
+    let fixture = Fixture::new(true);
+    fs::write(fixture.source.join("app/special"), "independent source").unwrap();
+    let descriptor = fixture.source.join("app/over.yaml");
+    let config = format!(
+        "{}  - {{path: special, target: '{target}', mode: symlink}}\n",
+        fs::read_to_string(&descriptor).unwrap()
+    );
+    fs::write(descriptor, config).unwrap();
+    commit_all(&fixture.repo());
+    fixture
+        .command("apply")
+        .args(["app", "--no-prompt", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .failure()
+        .stderr(contains("overlaps independently managed target"));
+    assert!(!fixture.target.exists());
+    assert!(!fixture.temp.path().join("state").exists());
+}
+
+#[rstest]
+#[case(false, false)]
+#[case(true, false)]
+#[case(false, true)]
+fn disabling_rendering_restores_ordinary_source_ingestion_after_safe_resolution(
+    #[case] conflicting: bool,
+    #[case] interrupted: bool,
+) {
+    let fixture = Fixture::new(true);
+    let source = fixture.source.join("app/config");
+    fs::rename(fixture.source.join("app/config.jinja"), &source).unwrap();
+    let descriptor = fixture.source.join("app/over.yaml");
+    fs::write(
+        &descriptor,
+        fs::read_to_string(&descriptor)
+            .unwrap()
+            .replace("**/*.jinja", "config"),
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    fixture.apply();
+    let state_path = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let initial: toml::Value = toml::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
+    let initial_generated = initial["state"]["checkouts"]
+        .as_table()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()["generated"]
+        .clone();
+    if conflicting {
+        let target = fixture.target.join("config");
+        fs::write(
+            &target,
+            fs::read_to_string(&target)
+                .unwrap()
+                .replace("host=first", "host=local"),
+        )
+        .unwrap();
+    }
+    fs::write(descriptor, "mode: checkout\ndata: {hostname: first}\n").unwrap();
+    commit_all(&fixture.repo());
+    if conflicting {
+        fixture.sync().assert().failure();
+        fixture
+            .command("add")
+            .args(["--overlay", "app", "--target"])
+            .arg(&fixture.target)
+            .arg(fixture.target.join("config"))
+            .assert()
+            .failure()
+            .stderr(contains("source template"));
+        fixture.restore("config", &[]);
+    } else {
+        fixture.sync().assert().success();
+    }
+    if interrupted {
+        let snapshot = fixture.snapshot();
+        let mut document: toml::Value =
+            toml::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
+        let record = document["state"]["checkouts"]
+            .as_table_mut()
+            .unwrap()
+            .iter_mut()
+            .next()
+            .unwrap()
+            .1;
+        let generated = record["generated"].as_table_mut().unwrap();
+        // Recreate the journal after file/ref publication but before provenance retirement.
+        generated.insert("base".into(), initial_generated["base"].clone());
+        generated.insert("sources".into(), initial_generated["sources"].clone());
+        generated.insert("pending".into(), snapshot.to_string().into());
+        generated.insert(
+            "pending_sources".into(),
+            toml::Value::Table(Default::default()),
+        );
+        fs::write(&state_path, toml::to_string(&document).unwrap()).unwrap();
+        fixture
+            .command("add")
+            .args(["--overlay", "app", "--target"])
+            .arg(&fixture.target)
+            .arg(fixture.target.join("config"))
+            .assert()
+            .failure()
+            .stderr(contains("source template"));
+        fixture.sync().assert().success();
+        assert_eq!(fixture.snapshot(), snapshot);
+    }
+    assert_eq!(
+        fs::read(fixture.target.join("config")).unwrap(),
+        fs::read(&source).unwrap()
+    );
+    fs::write(fixture.target.join("config"), "ordinary local edit").unwrap();
+    fixture.stage("config");
+    fixture
+        .command("commit")
+        .args(["--overlay", "app", "--target"])
+        .arg(&fixture.target)
+        .args(["-m", "record ordinary conversion"])
+        .arg(fixture.target.join("config"))
+        .assert()
+        .success();
+    assert_eq!(fs::read(source).unwrap(), b"ordinary local edit");
+}
+
+#[test]
+fn staged_ordinary_changes_keep_a_generated_checkout_modified() {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    fs::write(fixture.target.join("plain"), "staged ordinary edit").unwrap();
+    fixture.stage("plain");
+    fixture
+        .command("unapply")
+        .args(["app", "--dry-run", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .failure()
+        .stdout(contains("modified"));
+    assert!(fixture.target.join("config").exists());
+    assert_eq!(
+        fs::read(fixture.target.join("plain")).unwrap(),
+        b"staged ordinary edit"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn restoring_generated_executables_preserves_snapshot_executable_bits() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new(true);
+    fs::set_permissions(
+        fixture.source.join("app/config.jinja"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    fixture.apply();
+    fs::write(fixture.target.join("config"), "local script edit").unwrap();
+    fixture.restore("config", &[]);
+    assert_eq!(
+        fs::metadata(fixture.target.join("config"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o711
+    );
+    fixture.sync().assert().success();
+}
+
+#[test]
+fn ordinary_restore_keeps_index_and_source_semantics_in_a_template_checkout() {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    let snapshot = fixture.snapshot();
+    fs::write(fixture.target.join("plain"), "staged ordinary edit").unwrap();
+    fixture.stage("plain");
+    fs::write(fixture.target.join("plain"), "later unstaged edit").unwrap();
+    fs::write(fixture.target.join("config"), "preserved generated edit").unwrap();
+    let index = fs::read(fixture.repo().path().join("index")).unwrap();
+    fixture.restore("plain", &[]);
+    assert_eq!(
+        fs::read(fixture.target.join("plain")).unwrap(),
+        b"staged ordinary edit"
+    );
+    assert_eq!(
+        fs::read(fixture.repo().path().join("index")).unwrap(),
+        index
+    );
+    fixture.restore("plain", &["--staged"]);
+    assert_eq!(
+        fs::read(fixture.target.join("plain")).unwrap(),
+        b"staged ordinary edit"
+    );
+    let repo = fixture.repo();
+    let indexed = repo
+        .index()
+        .unwrap()
+        .get_path(Path::new("app/plain"), 0)
+        .unwrap();
+    assert_eq!(repo.find_blob(indexed.id).unwrap().content(), b"ordinary\n");
+    fixture.restore("plain", &["--source", "HEAD"]);
+    assert_eq!(
+        fs::read(fixture.target.join("plain")).unwrap(),
+        b"ordinary\n"
+    );
+    assert_eq!(
+        fs::read(fixture.target.join("config")).unwrap(),
+        b"preserved generated edit"
+    );
+    assert_eq!(fixture.snapshot(), snapshot);
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn syncing_staged_ordinary_files_requires_consent_even_when_generated_edits_exist(
+    #[case] push_only: bool,
+) {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    fs::write(fixture.target.join("plain"), "staged ordinary edit").unwrap();
+    fixture.stage("plain");
+    fs::write(fixture.target.join("config"), "preserved generated edit").unwrap();
+    let head = fixture.repo().head().unwrap().target();
+    let mut command = fixture.sync();
+    if push_only {
+        command.arg("--push-only");
+    }
+    command
+        .assert()
+        .failure()
+        .stdout(contains("no-prompt disables the sync-time"));
+    assert_eq!(fixture.repo().head().unwrap().target(), head);
+    assert_eq!(
+        fs::read(fixture.target.join("config")).unwrap(),
+        b"preserved generated edit"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sync_can_commit_an_ordinary_sibling_with_consent_without_recording_generated_edits() {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    fs::write(fixture.target.join("plain"), "staged ordinary edit").unwrap();
+    fixture.stage("plain");
+    fs::write(fixture.target.join("config"), "preserved generated edit").unwrap();
+    let snapshot = fixture.snapshot();
+    let output = Command::new("script")
+        .args(["--quiet", "--return", "--echo", "never", "--command", "exec \"$OVER_TEST_BINARY\" --home \"$OVER_TEST_SOURCE\" sync app --push-only --target \"$OVER_TEST_TARGET\"", "/dev/null"])
+        .env("OVER_TEST_BINARY", assert_cmd::cargo::cargo_bin!("over"))
+        .env("OVER_TEST_SOURCE", &fixture.source)
+        .env("OVER_TEST_TARGET", &fixture.target)
+        .env("XDG_STATE_HOME", fixture.temp.path().join("state"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", fixture.temp.path().join("gitconfig"))
+        .env("NO_COLOR", "1").env("TERM", "dumb")
+        .write_stdin(b"\nrecord ordinary sibling\n")
+        .timeout(std::time::Duration::from_secs(10)).output().unwrap();
+    let transcript = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{transcript}");
+    assert!(transcript.contains("1 staged file"), "{transcript}");
+    assert_eq!(
+        fixture
+            .repo()
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .message(),
+        Ok("record ordinary sibling")
+    );
+    assert_eq!(
+        fs::read(fixture.source.join("app/plain")).unwrap(),
+        b"staged ordinary edit"
+    );
+    assert_eq!(
+        fs::read(fixture.target.join("config")).unwrap(),
+        b"preserved generated edit"
+    );
+    assert!(
+        fs::read_to_string(fixture.source.join("app/config.jinja"))
+            .unwrap()
+            .contains("{{ data.hostname }}")
+    );
+    assert_eq!(fixture.snapshot(), snapshot);
 }

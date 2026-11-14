@@ -621,6 +621,15 @@ fn attach_rendered_checkouts(
                 .strip_prefix(prefix)
                 .with_context(|| "rendered path escapes its checkout unit")?
                 .to_path_buf();
+            for excluded in &scope.target_excludes {
+                anyhow::ensure!(
+                    !destination.starts_with(excluded) && !excluded.starts_with(&destination),
+                    "rendered destination '{}' from '{}' overlaps independently managed target '{}'",
+                    entry.target.join(&destination).display(),
+                    full.display(),
+                    entry.target.join(excluded).display()
+                );
+            }
             transformed |= content.generated;
             if content.generated {
                 super::content::validate_destination(&content, &entry.target.join(&destination))?;

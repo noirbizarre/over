@@ -182,8 +182,21 @@ pub(crate) fn transform(
         }
     });
     let mut destination = relative.to_path_buf();
-    if policy.strip_extension && destination.extension().is_some() {
-        destination.set_extension("");
+    if policy.strip_extension
+        && let Some(extension) = destination.extension()
+    {
+        let literal = if policy.template {
+            let name = destination
+                .file_name()
+                .and_then(|name| name.to_str())
+                .context("template path is not valid UTF-8")?;
+            literal_suffix(name, name.len() - extension.len() - 1)
+        } else {
+            true
+        };
+        if literal {
+            destination.set_extension("");
+        }
     }
     let output = if policy.template {
         let name = destination
@@ -232,6 +245,55 @@ pub(crate) fn transform(
     ))
 }
 
+fn literal_suffix(name: &str, dot: usize) -> bool {
+    let bytes = name.as_bytes();
+    let mut cursor = 0;
+    while cursor + 1 < bytes.len() {
+        let (closing, comment) = match &bytes[cursor..cursor + 2] {
+            b"{{" => (b"}}", false),
+            b"{%" => (b"%}", false),
+            b"{#" => (b"#}", true),
+            _ => {
+                cursor += 1;
+                continue;
+            }
+        };
+        cursor += 2;
+        let mut quote = None;
+        let mut closed = false;
+        while cursor + 1 < bytes.len() {
+            let byte = bytes[cursor];
+            if !comment {
+                if quote.is_some() && byte == b'\\' {
+                    cursor += 2;
+                    continue;
+                }
+                if quote == Some(byte) {
+                    quote = None;
+                    cursor += 1;
+                    continue;
+                }
+                if quote.is_none() && matches!(byte, b'\'' | b'"') {
+                    quote = Some(byte);
+                    cursor += 1;
+                    continue;
+                }
+            }
+            if quote.is_none() && &bytes[cursor..cursor + 2] == closing {
+                cursor += 2;
+                closed = true;
+                break;
+            }
+            cursor += 1;
+        }
+        // Property dots and dynamic suffixes belong to Jinja, not Path::extension.
+        if !closed || cursor > dot {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +306,11 @@ mod tests {
     #[case(".dotfile", ".dotfile")]
     #[case("settings.toml.jinja", "settings.toml")]
     #[case("{{ machine.os }}.jinja", std::env::consts::OS)]
+    #[case("{{ machine.os }}", std::env::consts::OS)]
+    #[case("{{ 'host.example' }}", "host.example")]
+    #[case("{{ 'x}}.name' }}.jinja", "x}}.name")]
+    #[case("{% if true %}{{ machine.os }}{% endif %}", std::env::consts::OS)]
+    #[case("host{# .ignored #}", "host")]
     fn explicit_rules_render_arbitrary_filenames_and_strip_only_the_last_suffix(
         #[case] name: &str,
         #[case] expected: &str,

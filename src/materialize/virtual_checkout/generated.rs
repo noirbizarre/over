@@ -25,6 +25,9 @@ pub struct GeneratedState {
     pub conflicts: BTreeMap<PathBuf, String>,
     #[serde(default)]
     pub pending: Option<String>,
+    /// Separate desired provenance from the historical guards retained until publication succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_sources: Option<BTreeMap<PathBuf, PathBuf>>,
     #[serde(default)]
     pub applied: BTreeMap<PathBuf, String>,
     #[serde(default)]
@@ -38,6 +41,27 @@ pub struct GeneratedState {
 pub(crate) fn active(entry: &DesiredEntry) -> Result<bool> {
     Ok(entry.intent.checkout_scope().rendered.is_some()
         || state::record_for_entry(entry)?.is_some_and(|record| record.generated.is_some()))
+}
+
+pub(crate) fn generated_paths(entry: &DesiredEntry) -> Result<BTreeSet<PathBuf>> {
+    let mut paths: BTreeSet<_> = entry
+        .intent
+        .checkout_scope()
+        .rendered
+        .iter()
+        .flat_map(|inventory| {
+            inventory
+                .iter()
+                .filter(|(_, file)| file.generated)
+                .map(|(path, _)| path.clone())
+        })
+        .collect();
+    if let Some(record) = state::record_for_entry(entry)?
+        && let Some(generated) = record.generated
+    {
+        paths.extend(generated.sources.into_keys());
+    }
+    Ok(paths)
 }
 
 pub(crate) fn classify(entry: &DesiredEntry) -> Result<Operation> {
@@ -188,6 +212,25 @@ pub(crate) struct Analysis {
     pub conflicts: BTreeMap<PathBuf, String>,
 }
 
+impl Analysis {
+    fn template_source<'a>(
+        &'a self,
+        generated: Option<&'a GeneratedState>,
+        path: &Path,
+    ) -> Option<&'a Path> {
+        self.desired
+            .get(path)
+            .or_else(|| self.base.get(path))
+            .filter(|file| !file.source.as_os_str().is_empty())
+            .map(|file| file.source.as_path())
+            .or_else(|| {
+                generated
+                    .and_then(|generated| generated.sources.get(path))
+                    .map(PathBuf::as_path)
+            })
+    }
+}
+
 pub(crate) fn analyze(
     entry: &DesiredEntry,
     record: Option<&state::VirtualCheckoutRecord>,
@@ -215,7 +258,14 @@ pub(crate) fn analyze(
         && let Some(pending) = &generated.pending
     {
         // Finish the exact journaled operation before considering a newer context/render.
-        let mut inventory = tree_inventory(&repo, pending, &generated.sources)?;
+        let mut inventory = tree_inventory(
+            &repo,
+            pending,
+            generated
+                .pending_sources
+                .as_ref()
+                .unwrap_or(&generated.sources),
+        )?;
         for (path, permissions) in &generated.permissions {
             if let Some(file) = inventory.get_mut(path) {
                 file.permissions = Some(crate::overlays::FileMode::from_bits(*permissions));
@@ -262,6 +312,12 @@ pub(crate) fn analyze(
         .base
         .keys()
         .chain(analysis.desired.keys())
+        // Deleted destinations can disappear from both trees while their local conflict survives.
+        .chain(
+            generated
+                .into_iter()
+                .flat_map(|generated| generated.conflicts.keys()),
+        )
         .cloned()
         .collect();
     for path in paths {
@@ -401,15 +457,17 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
     }
     if dry_run {
         for path in analysis.conflicts.keys() {
-            let template = analysis
-                .desired
-                .get(path)
-                .or_else(|| analysis.base.get(path));
+            let template = analysis.template_source(
+                previous
+                    .as_ref()
+                    .and_then(|record| record.generated.as_ref()),
+                path,
+            );
             crate::ui::info(format!(
                 "would conflict: '{}' (source template '{}'); local file would be preserved",
                 entry.target.join(path).display(),
                 template
-                    .map(|file| file.source.display().to_string())
+                    .map(|source| source.display().to_string())
                     .unwrap_or_default()
             ))?;
         }
@@ -516,14 +574,22 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
         .iter()
         .filter_map(|(path, file)| file.permissions.map(|mode| (path.clone(), mode.bits())))
         .collect();
-    // Preserve old provenance until the renamed/deleted physical leaves have been reconciled.
-    generated.sources.extend(
+    generated.pending_sources = Some(
         analysis
             .desired
             .iter()
             .filter(|(_, file)| file.generated)
-            .map(|(path, file)| (path.clone(), file.source.clone())),
+            .map(|(path, file)| (path.clone(), file.source.clone()))
+            .collect(),
     );
+    // Preserve old provenance until the renamed/deleted physical leaves have been reconciled.
+    generated
+        .sources
+        .extend(generated.pending_sources.iter().flat_map(|sources| {
+            sources
+                .iter()
+                .map(|(path, source)| (path.clone(), source.clone()))
+        }));
     generated.conflicts = analysis
         .conflicts
         .iter()
@@ -638,8 +704,14 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
     }
     generated.base = commit.to_string();
     generated.pending = None;
+    generated.pending_sources = None;
     generated.applied.clear();
     generated.observed.clear();
+    // Once a conversion has published safely, ordinary files must regain their source workflows.
+    generated.sources.retain(|path, _| {
+        generated.conflicts.contains_key(path)
+            || analysis.desired.get(path).is_none_or(|file| file.generated)
+    });
     record.base_oid = generated.source_revision.clone();
     record.generated = Some(generated);
     record.initializing = false;
@@ -649,15 +721,12 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
             .conflicts
             .keys()
             .map(|path| {
-                let template = analysis
-                    .desired
-                    .get(path)
-                    .or_else(|| analysis.base.get(path));
+                let template = analysis.template_source(record.generated.as_ref(), path);
                 format!(
                     "'{}' (source template '{}')",
                     entry.target.join(path).display(),
                     template
-                        .map(|file| file.source.display().to_string())
+                        .map(|source| source.display().to_string())
                         .unwrap_or_default()
                 )
             })
@@ -714,7 +783,9 @@ pub(crate) fn inspection(
     let unstaged = git::entry_changes(&indexed, &local);
     let status = if !analysis.conflicts.is_empty() {
         crate::status::Status::Conflict
-    } else if base != desired || !analysis.updates.is_empty() || (!tracked && !unstaged.is_empty())
+    } else if base != desired
+        || !analysis.updates.is_empty()
+        || (!tracked && (!unstaged.is_empty() || !staged.is_empty()))
     {
         crate::status::Status::Modified
     } else {
@@ -780,7 +851,7 @@ pub(crate) fn restore(entry: &DesiredEntry, paths: &[PathBuf], dry_run: bool) ->
                     .get(path)
                     .copied()
                     .unwrap_or(if file.generated {
-                        0o600
+                        0o600 | (file.mode as u32 & 0o111)
                     } else {
                         file.mode as u32
                     }),
@@ -789,6 +860,16 @@ pub(crate) fn restore(entry: &DesiredEntry, paths: &[PathBuf], dry_run: bool) ->
             fs::remove_file(target)?;
         }
         generated.conflicts.remove(path);
+        if entry
+            .intent
+            .checkout_scope()
+            .rendered
+            .as_ref()
+            .and_then(|inventory| inventory.get(path))
+            .is_some_and(|file| !file.generated)
+        {
+            generated.sources.remove(path);
+        }
     }
     record.generated = Some(generated);
     persist(entry, &record)

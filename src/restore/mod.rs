@@ -105,7 +105,9 @@ fn restore_blocking(
         );
         let entry = owner(&tree, &target)?;
         let relative = target.strip_prefix(&entry.target)?;
-        if crate::materialize::virtual_checkout::generated::active(entry)? {
+        if crate::materialize::virtual_checkout::generated::generated_paths(entry)?
+            .contains(relative)
+        {
             ensure!(
                 !options.staged && options.source.is_none(),
                 "generated output can only be restored from its generated desired snapshot; edit the source template for source changes"

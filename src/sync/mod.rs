@@ -573,31 +573,7 @@ async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Resu
         });
     }
     if crate::materialize::virtual_checkout::generated::active(entry)? {
-        if !opts.pull {
-            return Ok(SyncOutcome::UpToDate { path });
-        }
-        let entry = entry.clone();
-        let dry_run = opts.dry_run;
-        let result = tokio::task::spawn_blocking(move || {
-            let _guard = if dry_run {
-                None
-            } else {
-                Some(vc_state::mutation_guard()?)
-            };
-            crate::materialize::virtual_checkout::generated::reconcile(&entry, dry_run)
-        })
-        .await?;
-        return match result {
-            Ok(()) if dry_run => Ok(SyncOutcome::Preview {
-                path,
-                action: "reconcile generated checkout with local edits preserved".into(),
-            }),
-            Ok(()) => Ok(SyncOutcome::FastForwarded { path }),
-            Err(error) => Ok(SyncOutcome::Blocked {
-                path,
-                reason: error.to_string(),
-            }),
-        };
+        return sync_generated_virtual_checkout(entry, opts).await;
     }
     let vc_status = status::virtual_checkout::inspect(entry)?;
 
@@ -654,6 +630,63 @@ async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Resu
     }
 }
 
+async fn sync_generated_virtual_checkout(
+    entry: &DesiredEntry,
+    opts: &SyncOptions,
+) -> Result<SyncOutcome> {
+    let path = entry.target.clone();
+    if opts.pull {
+        let reconcile_entry = entry.clone();
+        let dry_run = opts.dry_run;
+        let result = tokio::task::spawn_blocking(move || {
+            let _guard = if dry_run {
+                None
+            } else {
+                Some(vc_state::mutation_guard()?)
+            };
+            crate::materialize::virtual_checkout::generated::reconcile(&reconcile_entry, dry_run)
+        })
+        .await?;
+        if let Err(error) = result {
+            return Ok(SyncOutcome::Blocked {
+                path,
+                reason: error.to_string(),
+            });
+        }
+    }
+    let (staged, unstaged) = ordinary_virtual_checkout_changes(entry)?;
+    if !staged.is_empty() || !unstaged.is_empty() {
+        if !opts.push {
+            return Ok(SyncOutcome::Blocked { path, reason: "uncommitted ordinary file changes; run `over commit` or re-run without --pull-only".into() });
+        }
+        return commit_virtual_checkout_interactively(entry, opts).await;
+    }
+    Ok(if opts.pull && opts.dry_run {
+        SyncOutcome::Preview {
+            path,
+            action: "reconcile generated checkout with local edits preserved".into(),
+        }
+    } else if opts.pull {
+        SyncOutcome::FastForwarded { path }
+    } else {
+        SyncOutcome::UpToDate { path }
+    })
+}
+
+fn ordinary_virtual_checkout_changes(
+    entry: &DesiredEntry,
+) -> Result<(Vec<vc_git::FileChange>, Vec<vc_git::FileChange>)> {
+    let mut staged = status::virtual_checkout::staged_changes(entry)?;
+    let mut unstaged = status::virtual_checkout::unstaged_changes(entry)?;
+    if crate::materialize::virtual_checkout::generated::active(entry)? {
+        let generated = crate::materialize::virtual_checkout::generated::generated_paths(entry)?;
+        // Generated local edits stay one-way and must not block committing an ordinary sibling.
+        staged.retain(|change| !generated.contains(&change.path));
+        unstaged.retain(|change| !generated.contains(&change.path));
+    }
+    Ok((staged, unstaged))
+}
+
 /// Ask whether to commit a virtual checkout's local changes, then a commit
 /// message, and commit if confirmed — never touches anything if the user
 /// declines. `opts.no_prompt` skips straight to `Blocked` instead of
@@ -664,11 +697,17 @@ async fn commit_virtual_checkout_interactively(
     opts: &SyncOptions,
 ) -> Result<SyncOutcome> {
     let path = entry.target.clone();
-    let pending = status::virtual_checkout::staged_changes(entry)?;
-    if pending.is_empty() || !status::virtual_checkout::unstaged_changes(entry)?.is_empty() {
+    let (pending, unstaged) = ordinary_virtual_checkout_changes(entry)?;
+    if pending.is_empty() || !unstaged.is_empty() {
         return Ok(SyncOutcome::Blocked {
             path,
             reason: "uncommitted changes; stage selected paths with `over add`, then run `over commit`; unstaged edits are preserved".to_string(),
+        });
+    }
+    if opts.dry_run {
+        return Ok(SyncOutcome::Blocked {
+            path,
+            reason: "uncommitted changes; would prompt to commit".into(),
         });
     }
     if opts.no_prompt {
