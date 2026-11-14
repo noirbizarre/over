@@ -29,8 +29,8 @@ pub struct Params {
     #[arg(long)]
     unlock: bool,
     /// Use a standard Age identity when unlocking
-    #[arg(long, requires = "unlock")]
-    identity: Option<std::path::PathBuf>,
+    #[arg(short = 'i', long, requires = "unlock")]
+    identity: Vec<std::path::PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

@@ -1309,10 +1309,20 @@ pub fn unlock(
     user: Option<&str>,
     name: Option<&str>,
 ) -> Result<()> {
+    unlock_with(repo, |repo| {
+        access::unwrap_key(repo, identity, passphrase, user, name)
+    })
+}
+
+/// Authenticate once under lifecycle ownership, then publish the existing refresh transaction.
+pub fn unlock_with(
+    repo: &git2::Repository,
+    authenticate: impl FnOnce(&git2::Repository) -> Result<format::RepositoryKey>,
+) -> Result<()> {
     let _ownership =
         crate::materialize::virtual_checkout::generated_migration::ownership_guard(repo)?;
     let _guard = access::lifecycle_guard(repo, true)?;
-    let key = access::unwrap_key(repo, identity, passphrase, user, name)?;
+    let key = authenticate(repo)?;
     crate::materialize::virtual_checkout::generated_migration::migrate(repo, &key)?;
     let prepared = Refresh::prepare(repo, &key, false)?;
     access::configure_filters(repo)?;
@@ -1615,7 +1625,16 @@ pub fn materialized_blob(
 pub fn rotate(
     repo: &git2::Repository,
     revoke: Option<(&str, Option<&str>)>,
+    password: impl FnMut(&str) -> Result<age::secrecy::SecretString>,
+) -> Result<()> {
+    rotate_with(repo, revoke, password, age::NoCallbacks)
+}
+
+pub fn rotate_with<C: age::Callbacks>(
+    repo: &git2::Repository,
+    revoke: Option<(&str, Option<&str>)>,
     mut password: impl FnMut(&str) -> Result<age::secrecy::SecretString>,
+    callbacks: C,
 ) -> Result<()> {
     let _ownership =
         crate::materialize::virtual_checkout::generated_migration::ownership_guard(repo)?;
@@ -1675,7 +1694,12 @@ pub fn rotate(
                     "a retained passphrase also unlocks a revoked key; replace that reused credential before revocation"
                 );
             }
-            *key = access::envelope(&new, key.recipient.as_deref(), passphrase)?;
+            *key = access::envelope_with(
+                &new,
+                key.recipient.as_deref(),
+                passphrase,
+                callbacks.clone(),
+            )?;
         }
     }
     registry.generation = new.generation;

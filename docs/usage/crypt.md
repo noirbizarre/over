@@ -29,14 +29,16 @@ over unlock --identity ~/.config/age/over-alice.txt
 ```
 
 Unlock configures repository-local filters, unwraps the key, and refreshes clean
-protected files. Without an identity option, Over reuses locally remembered
-generated identities or asks which key/credential to use. It never takes a
+protected files. Without an identity option, Over tries all applicable locally
+remembered identities, then asks for remaining credentials. It never takes a
 passphrase in command arguments. `--home` / `OVER_HOME` explicitly selects a
 repository; otherwise crypt/access commands discover the current Git repository,
 falling back to the usual Over home for virtual destinations.
 
 Credential prompts require terminal stdin and stderr. For scripted fresh unlock,
-supply `--identity`; Git filters and hooks never acquire credentials themselves.
+supply an available unencrypted software identity with `--identity`; encrypted
+identity files and hardware identities can still require terminal interaction.
+Git filters and hooks never acquire credentials themselves.
 Repeating `over unlock` with an already valid local key repairs filters and
 unfinished ciphertext materialization without reauthentication. Existing
 uncommitted plaintext edits are retained; a fresh unlock refuses ambiguous
@@ -208,12 +210,60 @@ over key rotate
 ```
 
 A user is a logical grouping, not an Age identity. Each key independently wraps
-the same repository key in a standard Age envelope. Software recipients and
-passphrase/scrypt envelopes are supported; future Age plugin adapters can use the
-same public recipient/envelope model without changing file encryption.
+the same repository key in a separately addressable standard Age envelope.
+Software, SSH, passphrase/scrypt and plugin-backed keys can belong to the same
+user. Any one available key can unlock; possession of every device is not required.
 
-Duplicate software recipients are rejected so revocation cannot leave the same
-private identity authorized through another key alias. Revocation also refuses
+Import standard recipient lists directly, including Passage's recipient files:
+
+```sh
+over user add alice --recipients-file ~/.passage/store/.age-recipients --name-prefix imported
+over user key add alice --name laptop --recipient age1...
+over unlock --identity ~/.passage/identities
+over unlock --identity ~/.passage/identities --identity ~/.config/age/recovery.txt
+```
+
+`--recipient` (`-r`) and `--recipients-file` (`-R`) can be repeated. Each recipient
+becomes a separate key/envelope. Multiple recipients require `--name-prefix`;
+the example creates `imported-1`, `imported-2`, and so on. Inline recipients come
+first in argument order, followed by files in argument order and their lines in
+file order. Name collisions, duplicate recipients, and failures abort the entire
+import. No partially configured new user is published. For one recipient, use
+`--name` or the new user's default key name. Input paths must name files; `-`
+stdin inputs are not supported.
+
+Recipient files accept comments, empty lines, CRLF, and multiple recipients.
+Unsupported SSH key types in public lists are skipped with a message; an empty
+supported list is an error. Identity inputs accept standard multi-identity files,
+binary or armored passphrase-encrypted identity files, SSH private keys (including
+encrypted keys), and plugin stubs. An identity-file password protects that file;
+a passphrase access key instead wraps the repository key directly with scrypt.
+Over reads external identity files in place and remembers successful paths only
+in private local hints. It does not copy them into the repository or depend on
+Passage's store layout or environment variables.
+
+Explicit `--identity` (`-i`) arguments restrict the identity-file sources to those
+supplied, rather than silently adding remembered files. Over still tries selected
+independent passphrase keys if necessary. `--user` and `--key` limit every attempt.
+Missing plugins, unavailable devices, denied requests, wrong credentials, and
+stale hints do not block another independently configured key. Successful unlock
+reports unavailable attempts; if all fail, a bounded per-key/source summary is
+returned without installing a key or publishing plaintext. A plugin-level denied
+request skips that method; interrupting the command cancels the whole operation.
+
+Ordinary Age, SSH, encrypted identities and hardware plugins use the Rust Age
+library. Native software post-quantum identities (`AGE-SECRET-KEY-PQ-1...`) and
+recipients (`age1pq1...`) require the standard `age` executable, version 1.3 or
+later, on `PATH`: the published Rust library lacks this format. Only that envelope
+operation uses the compatibility adapter; filters never run the Age CLI. Private
+identity input goes through stdin, not arguments or temporary plaintext files.
+A classical recovery envelope for the same repository key limits any claim of
+post-quantum protection.
+
+Duplicate canonical public recipients are rejected so revocation cannot leave the
+same recipient authorized through another key alias. Distinct plugin recipient
+strings can still represent related underlying credentials; Over cannot prove
+their independence. Revocation also refuses
 a retained passphrase that unlocks a revoked envelope; replace that reused
 credential first.
 
@@ -228,6 +278,69 @@ or wrong credentials abort without publication. Resolve unstaged protected edits
 first. New metadata/content are staged for explicit review/commit; old commits
 are not rewritten. A generation change on another branch/clone requires unlock
 using that generation's trusted envelope.
+
+Rotation also needs each retained recipient's wrapping implementation, including
+its plugin. Failure aborts rotation; retained keys are never silently dropped.
+
+### Hardware keys: YubiKey and Ledger
+
+Install and configure the upstream plugin, then import its public recipient and
+use its normal identity stub. Over does not generate, import, or export hardware
+private keys. Use the plugin's own setup tools for device generation, selection,
+PIN and touch policy; no Over-specific device format is involved.
+
+For [YubiKey](https://github.com/str4d/age-plugin-yubikey):
+
+```sh
+age-plugin-yubikey
+age-plugin-yubikey --identity --slot SLOT > ~/.config/age/yubikey.txt
+age-plugin-yubikey --list > ~/.config/age/yubikey-recipients.txt
+over user key add alice --recipients-file ~/.config/age/yubikey-recipients.txt --name-prefix yubikey
+over unlock --identity ~/.config/age/yubikey.txt
+```
+
+`age-plugin-yubikey` must be discoverable on `PATH`. Linux/BSD also need a running
+PC/SC service (`pcscd`/pcsc-lite); source installation needs PC/SC development
+headers. The plugin controls PIN/touch policy and any PIN caching. Over surfaces
+its insertion/touch messages, confirmations and hidden PIN input in the terminal.
+
+For [Ledger](https://github.com/Ledger-Donjon/age-plugin-ledger), install
+`age-plugin-ledger` and the upstream [age app](https://github.com/Ledger-Donjon/app-age):
+
+```sh
+age-plugin-ledger --identity > ~/.config/age/ledger.txt
+age-plugin-ledger --list > ~/.config/age/ledger-recipients.txt
+over user key add alice --recipients-file ~/.config/age/ledger-recipients.txt --name-prefix ledger
+over unlock --identity ~/.config/age/ledger.txt
+```
+
+Compatibility status checked against upstream documentation and repository status
+on **2026-11-14**:
+
+| Plugin | Upstream-listed devices | Availability and validation |
+| --- | --- | --- |
+| YubiKey | YubiKey 4/5 series, including Nano and USB-C variants | Upstream provides Linux/macOS/Windows binaries; Over's protocol fixture is tested, physical devices/platform combinations are not certified here. |
+| Ledger | Nano S Plus and Nano X | App README describes a pre-release Ledger Live app using Developer mode/provider 4. **The app repository is archived**; current catalog availability and device/firmware compatibility require verification before relying on it. The plugin repository is not archived. No physical Ledger validation was performed for this integration. |
+
+YubiKey NEO and the FIDO-only “Security Key by Yubico” are not supported by the
+upstream PIV plugin. Other PIV devices and Ledger models are not claimed as tested
+Over combinations. Do not equate protocol-fixture success with hardware/security
+certification, particularly for the archived, pre-release Ledger app. Report
+plugin/app defects upstream rather than adding device-specific workarounds.
+
+Device interaction unwraps the repository key during `over unlock` (or explicit
+key enrollment/rotation where a plugin requires it), never for each protected
+file. The persisted local symmetric key has the lifecycle described above;
+unplugging the device does not lock the repository. Use `over lock` explicitly.
+
+Before relying on a hardware key, add and test an independently controlled recovery
+key. With the repository locked, verify unlock with each device, PIN/touch and
+confirmation handling, recovery with the device disconnected/plugin unavailable,
+and ordinary Git operations without additional device prompts. Record the exact
+model, firmware, plugin/app version and operating system. If a device is lost,
+unlock with a recovery method and detach its envelope; if compromise is possible,
+revoke/rotate and re-encrypt instead. Without any usable configured identity or
+passphrase, Over cannot recover the repository key.
 
 Rotation and revocation refuse before publication if retained protected generated
 snapshots would become unreadable with the new key. Resolve local edits and

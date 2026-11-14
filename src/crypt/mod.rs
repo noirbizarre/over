@@ -1,6 +1,7 @@
 //! Repository-scoped encryption shared by Git filters and native secrets.
 
 pub mod access;
+pub mod age;
 pub(crate) mod buffer;
 pub mod filter;
 pub mod format;

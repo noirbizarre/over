@@ -387,20 +387,24 @@ pub fn envelope(
     recipient: Option<&str>,
     passphrase: Option<SecretString>,
 ) -> Result<AccessKey> {
-    let (encryptor, recipient) = if let Some(recipient) = recipient {
-        let recipient: age::x25519::Recipient = recipient
-            .parse()
-            .map_err(|_| anyhow::anyhow!("invalid standard Age software recipient"))?;
-        (
-            age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))?,
-            Some(recipient.to_string()),
-        )
-    } else {
-        (
-            age::Encryptor::with_user_passphrase(passphrase.context("passphrase required")?),
-            None,
-        )
-    };
+    envelope_with(key, recipient, passphrase, age::NoCallbacks)
+}
+
+pub fn envelope_with<C: age::Callbacks>(
+    key: &RepositoryKey,
+    recipient: Option<&str>,
+    passphrase: Option<SecretString>,
+    callbacks: C,
+) -> Result<AccessKey> {
+    if let Some(recipient) = recipient {
+        let (recipient, envelope) = super::age::wrap(&key.encode()[..], recipient, callbacks)?;
+        return Ok(AccessKey {
+            recipient: Some(recipient),
+            envelope,
+        });
+    }
+    let encryptor =
+        age::Encryptor::with_user_passphrase(passphrase.context("passphrase required")?);
     let mut output = Vec::new();
     let mut writer = encryptor.wrap_output(&mut output)?;
     // Age 0.12.1 copies plaintext into StreamWriter's private Vec chunk, which is
@@ -409,7 +413,7 @@ pub fn envelope(
     writer.write_all(&key.encode())?;
     writer.finish()?;
     Ok(AccessKey {
-        recipient,
+        recipient: None,
         envelope: output,
     })
 }
@@ -464,10 +468,28 @@ pub fn add_key(
     passphrase: Option<SecretString>,
     new_user: bool,
 ) -> Result<()> {
+    add_keys(
+        repo,
+        user,
+        vec![(name.to_owned(), recipient.map(str::to_owned), passphrase)],
+        new_user,
+        age::NoCallbacks,
+    )
+}
+
+/// Publish a complete import at once, so a late plugin failure cannot grant partial access.
+pub fn add_keys<C: age::Callbacks>(
+    repo: &git2::Repository,
+    user: &str,
+    entries: Vec<(String, Option<String>, Option<SecretString>)>,
+    new_user: bool,
+    callbacks: C,
+) -> Result<()> {
     validate_name(user)?;
-    validate_name(name)?;
+    ensure!(!entries.is_empty(), "configure at least one key");
     let _guard = guard(repo, true)?;
-    let (mut registry, key) = if configured(repo)? {
+    let existing = configured(repo)?;
+    let (mut registry, key) = if existing {
         (load(repo)?, local_key(repo)?)
     } else {
         ensure!(new_user, "initialize encryption with over user add");
@@ -486,21 +508,24 @@ pub fn add_key(
         registry.users.contains_key(user) != new_user,
         "user already exists or is missing"
     );
-    let access = envelope(&key, recipient, passphrase)?;
-    if let Some(recipient) = &access.recipient {
-        // Duplicate public identities would let a revoked key unwrap a retained alias's envelope.
-        ensure!(
-            !registry
-                .users
-                .values()
-                .flat_map(|keys| keys.values())
-                .any(|key| key.recipient.as_ref() == Some(recipient)),
-            "Age recipient is already attached to a key; reuse that key rather than creating an unrevocable alias"
-        );
+    for (name, recipient, passphrase) in entries {
+        validate_name(&name)?;
+        let access = envelope_with(&key, recipient.as_deref(), passphrase, callbacks.clone())?;
+        if let Some(recipient) = &access.recipient {
+            // Duplicate public identities would let a revoked key unwrap a retained alias's envelope.
+            ensure!(
+                !registry
+                    .users
+                    .values()
+                    .flat_map(|keys| keys.values())
+                    .any(|key| key.recipient.as_ref() == Some(recipient)),
+                "Age recipient is already attached to a key; reuse that key rather than creating an unrevocable alias"
+            );
+        }
+        let keys = registry.users.entry(user.to_owned()).or_default();
+        ensure!(!keys.contains_key(&name), "key already exists");
+        keys.insert(name, access);
     }
-    let keys = registry.users.entry(user.to_owned()).or_default();
-    ensure!(!keys.contains_key(name), "key already exists");
-    keys.insert(name.to_owned(), access);
     // Fail on config contention before publishing any access metadata or key.
     configure_filters(repo)?;
     let path = metadata_path(repo)?;
@@ -511,6 +536,11 @@ pub fn add_key(
     };
     // The complete public registry includes envelopes, so a user cannot persist empty.
     save(repo, &registry)?;
+    if existing {
+        // The validated key is unchanged. Reinstalling could report failure after granting
+        // access, because the old identical key cannot prove whether replacement occurred.
+        return Ok(());
+    }
     if let Err(error) = install(repo, &key) {
         // A parent fsync can fail after rename. Keep matching metadata when the
         // new key is already visible, rather than rolling back only half the pair.
@@ -557,65 +587,147 @@ pub(crate) fn unwrap_key(
     user: Option<&str>,
     name: Option<&str>,
 ) -> Result<RepositoryKey> {
+    unwrap_sources(
+        repo,
+        &identity
+            .map(Path::to_path_buf)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        user,
+        name,
+        age::NoCallbacks,
+        |_| passphrase.clone().context("passphrase unavailable"),
+    )
+}
+
+/// Try independent credentials without installing a key or changing checkout state.
+pub fn unwrap_sources<C: age::Callbacks>(
+    repo: &git2::Repository,
+    sources: &[PathBuf],
+    user: Option<&str>,
+    name: Option<&str>,
+    callbacks: C,
+    password: impl FnMut(&str) -> Result<SecretString>,
+) -> Result<RepositoryKey> {
+    unwrap_sources_with(repo, sources, user, name, callbacks, password, |_, _| {})
+}
+
+pub fn unwrap_sources_with<C: age::Callbacks>(
+    repo: &git2::Repository,
+    sources: &[PathBuf],
+    user: Option<&str>,
+    name: Option<&str>,
+    callbacks: C,
+    mut password: impl FnMut(&str) -> Result<SecretString>,
+    mut used_identity: impl FnMut(&str, &Path),
+) -> Result<RepositoryKey> {
     let registry = load(repo)?;
-    let identities = identity
-        .map(|path| age::IdentityFile::from_file(path.to_string_lossy().into_owned()))
-        .transpose()
-        .map_err(|_| anyhow::anyhow!("could not read Age identity file"))?;
-    let identities = identities
-        .map(|file| file.into_identities())
-        .transpose()
-        .map_err(|_| anyhow::anyhow!("could not load Age identities"))?
-        .unwrap_or_default();
-    let mut damaged = false;
-    for (username, keys) in &registry.users {
-        if user.is_some_and(|user| user != username) {
-            continue;
-        }
-        for (keyname, access) in keys {
-            if name.is_some_and(|name| name != keyname) {
-                continue;
+    let mut identities = Vec::new();
+    let mut failures = FailureSummary::default();
+    let mut unmatched = Vec::new();
+    for (index, path) in sources.iter().enumerate() {
+        match super::age::identities(path, callbacks.clone()) {
+            Ok(loaded) => {
+                identities.extend(loaded.entries.into_iter().map(|identity| (index, identity)));
+                failures.extend(loaded.failures.into_iter().map(|failure| format!("identity source {}: {failure}", index + 1)));
             }
-            let decryptor = match age::Decryptor::new(access.envelope.as_slice()) {
-                Ok(decryptor) => decryptor,
-                Err(_) => {
-                    damaged = true;
-                    continue;
-                }
-            };
-            let password = passphrase.clone().map(age::scrypt::Identity::new);
-            let mut all: Vec<&dyn age::Identity> = identities
-                .iter()
-                .map(|identity| identity.as_ref() as &dyn age::Identity)
-                .collect();
-            if let Some(password) = &password {
-                all.push(password);
-            }
-            let Ok(mut reader) = decryptor.decrypt(all.into_iter()) else {
-                continue;
-            };
-            let key = match read_key_bytes(&mut reader)
-                .and_then(|plaintext| RepositoryKey::decode(plaintext.as_ref()))
-            {
-                Ok(key) => key,
-                Err(_) => {
-                    damaged = true;
-                    continue;
-                }
-            };
-            if key.repository != registry.repository || key.generation != registry.generation {
-                damaged = true;
-                continue;
-            }
-            return Ok(key);
+            Err(_) => failures.push(format!("identity source {} unavailable: check file format, permissions, identity-file password and plugin installation", index + 1)),
         }
     }
-    // An independently usable trusted key must remain usable if another envelope is damaged.
-    ensure!(
-        !damaged,
-        "no selected Age key unlocked the repository; some envelopes are corrupt, unsupported or generation-mismatched; restore trusted access metadata or select a remaining recovery key"
-    );
-    anyhow::bail!("no selected Age key could unlock this repository")
+    let mut candidates: Vec<_> = registry
+        .users
+        .iter()
+        .filter(|(username, _)| user.is_none_or(|user| user == username.as_str()))
+        .flat_map(|(username, keys)| {
+            keys.iter()
+                .map(move |(keyname, access)| (username, keyname, access))
+        })
+        .filter(|(_, keyname, _)| name.is_none_or(|name| name == keyname.as_str()))
+        .collect();
+    ensure!(!candidates.is_empty(), "no matching repository key");
+    // Try supplied/remembered credentials before asking for independent recovery passphrases.
+    candidates.sort_by_key(|(_, _, access)| access.recipient.is_none());
+    for (username, keyname, access) in candidates {
+        let label = format!("{username}/{keyname}");
+        let mut attempts = Vec::new();
+        if access.recipient.is_none() {
+            callbacks.display_message(&format!("Trying passphrase key {label}"));
+            match password("Age key passphrase") {
+                Ok(password) => attempts.push(super::age::Identity::Library(Box::new(
+                    age::scrypt::Identity::new(password),
+                ))),
+                Err(_) => failures.push(format!(
+                    "{label}: passphrase input unavailable or cancelled"
+                )),
+            }
+        }
+        for (source, identity) in attempts.iter_mut().map(|identity| (None, identity)).chain(
+            identities
+                .iter_mut()
+                .filter(|(_, identity)| {
+                    access
+                        .recipient
+                        .as_deref()
+                        .is_some_and(|recipient| identity.accepts(recipient))
+                })
+                .map(|(index, identity)| (Some(*index), identity)),
+        ) {
+            let key = match identity.decrypt(&access.envelope) {
+                Ok(Some(plaintext)) => RepositoryKey::decode(plaintext.as_ref()),
+                // Unused identities are normal in shared Age files, not credential failures.
+                Ok(None) => continue,
+                Err(error) => Err(error),
+            };
+            match key {
+                    Ok(key) if key.repository == registry.repository && key.generation == registry.generation => {
+                        for failure in failures.iter().take(32) { callbacks.display_message(failure); }
+                        if let (Some(source), Some(recipient)) = (source, &access.recipient) {
+                            used_identity(recipient, &sources[source]);
+                        }
+                        return Ok(key);
+                    }
+                    Ok(_) => failures.push(format!("{label}: repository/generation-mismatched envelope; restore trusted access metadata")),
+                    Err(error) => failures.push(format!("{label}: {error}")),
+                }
+        }
+        if identities.is_empty() && access.recipient.is_some() {
+            failures.push(format!(
+                "{label}: no available identity; supply --identity or use a recovery key"
+            ));
+        }
+        if unmatched.len() < 32 {
+            unmatched.push(format!(
+                "{label}: no available credential unlocked this envelope"
+            ));
+        }
+    }
+    failures.extend(unmatched.into_iter());
+    anyhow::bail!(
+        "no selected Age key could unlock this repository; envelopes may be corrupt or credentials unavailable:\n{}",
+        failures.0.join("\n")
+    )
+}
+
+#[derive(Default)]
+struct FailureSummary(Vec<String>);
+
+impl FailureSummary {
+    fn push(&mut self, message: String) {
+        // Bound diagnostics during attempts, rather than after allocating the full cross-product.
+        if self.0.len() < 32 {
+            self.0.push(message);
+        }
+    }
+
+    fn extend(&mut self, messages: impl Iterator<Item = String>) {
+        for message in messages {
+            self.push(message);
+        }
+    }
+
+    fn iter(&self) -> std::slice::Iter<'_, String> {
+        self.0.iter()
+    }
 }
 
 pub fn detach(repo: &git2::Repository, user: &str, name: &str) -> Result<()> {
@@ -786,6 +898,28 @@ mod tests {
         assert_eq!(fs::read(metadata_path(&repo).unwrap()).unwrap(), metadata);
         assert!(fs::read(private_dir(&repo).join("key")).unwrap() == *key);
         assert_eq!(fs::read(repo.commondir().join("config")).unwrap(), config);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enrolling_another_user_preserves_the_existing_local_key_file() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (_directory, repo) = repository();
+        add(&repo, "alice").unwrap();
+        let path = private_dir(&repo).join("key");
+        // Keep the inode alive so a replacement cannot accidentally reuse its number.
+        let before = File::open(&path).unwrap();
+        let key = local_key(&repo).unwrap().encode();
+        add(&repo, "bob").unwrap();
+        assert_eq!(
+            before.metadata().unwrap().ino(),
+            fs::metadata(path).unwrap().ino()
+        );
+        assert!(local_key(&repo).unwrap().encode() == key);
+        let registry = load(&repo).unwrap();
+        assert!(registry.users.contains_key("alice"));
+        assert!(registry.users.contains_key("bob"));
     }
 
     #[test]

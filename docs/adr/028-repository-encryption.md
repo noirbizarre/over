@@ -38,7 +38,7 @@ reviewed migration/rotation, never silent reinterpretation.
 
 The presence of a valid repository- and generation-matched local key under Git's
 private common administrative directory defines persistent unlocked state.
-Standard Age software identities stay in their normal external files. No agent,
+Standard Age identities and plugin stubs stay in their normal external files. No agent,
 daemon, keyring, timeout, or XDG key cache is involved. Reboot/logout does not lock
 Over. OS/filesystem security protects the key while the OS session is locked.
 Filters never authenticate users or prompt; they read the key per request and
@@ -68,6 +68,19 @@ passphrase preflight, never just deleting metadata.
   plaintext. Unconfigured third-party Git clients cannot be made fail-closed by
   versioned attributes alone; configure local filters before staging secrets.
 - Removing a key envelope cannot erase learned keys. Rotation protects future
-  state, never old commits/remotes/clones/backups or copied plaintext. Complete
-  historical exposure auditing and hardware/plugin adapters remain separate
-  capabilities; neither requires changing the v1 file format.
+  state, never old commits/remotes/clones/backups or copied plaintext.
+
+## Passage-compatible access methods (#246)
+
+Standard Age plugin integration extends envelope wrapping/unwrapping without
+changing v1 payloads or access metadata. Recipient-list imports create one named
+key/envelope per recipient and publish atomically. Identity files are reused in
+place; independently failing identity/plugin attempts cannot suppress available
+recovery methods. Only a successful authenticated repository-key unwrap enters
+the existing refresh/publication transaction. Filters never acquire credentials.
+
+The Rust Age library handles ordinary software, SSH, scrypt and plugin operations.
+The published library lacks native software-PQ identities; a narrow standard Age
+CLI adapter handles only those envelopes. This is a library-capability exception,
+not a second payload format or a proprietary hardware protocol. Device support
+and lifecycle caveats are documented in the [encryption guide](../usage/crypt.md).
