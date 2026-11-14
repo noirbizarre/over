@@ -507,6 +507,22 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
             ))?;
         }
     }
+    // Check every changed leaf before publishing any update: rename and unlink
+    // must not bypass read-only protection merely because a sibling is rendered.
+    for path in analysis.updates.keys() {
+        let target = entry.target.join(path);
+        validate_relative_ancestors(&entry.target, &target)?;
+        match fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.is_file() => ensure!(
+                !metadata.permissions().readonly(),
+                "file '{}' is read-only",
+                target.display()
+            ),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     if dry_run {
         for path in analysis.conflicts.keys() {
             let template = analysis.template_source(
@@ -710,34 +726,34 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
                 #[cfg(windows)]
                 std::os::windows::fs::symlink_file(std::str::from_utf8(&file.bytes)?, &target)?;
             } else {
-                // Generated output may contain private values; preserve existing modes on local merges.
-                let permissions = fs::symlink_metadata(&target)
-                    .ok()
-                    .filter(|metadata| metadata.is_file())
-                    .map(|metadata| metadata.permissions());
+                let existing = match fs::symlink_metadata(&target) {
+                    Ok(metadata) => Some(metadata),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error.into()),
+                };
                 let default_mode = if file.generated {
                     0o600 | (file.mode as u32 & 0o111)
                 } else {
                     file.mode as u32
                 };
-                crate::materialize::rendered::atomic_write(
-                    &target,
-                    &file.bytes,
-                    file.permissions
-                        .map_or(default_mode, |permissions| permissions.bits()),
-                )?;
-                if file.permissions.is_none()
-                    && let Some(permissions) = permissions
-                {
-                    #[cfg(unix)]
-                    let permissions = {
-                        use std::os::unix::fs::PermissionsExt;
-                        let mut permissions = permissions;
-                        permissions
-                            .set_mode((permissions.mode() & !0o111) | (file.mode as u32 & 0o111));
-                        permissions
-                    };
-                    fs::set_permissions(&target, permissions)?;
+                if existing.as_ref().is_some_and(|metadata| metadata.is_file()) {
+                    // Physical checkout leaves carry user metadata, unlike
+                    // reconstructible artifacts: retain it and detach hard links safely.
+                    crate::actions::fs::replace_file(&target, &file.bytes, |permissions| {
+                        #[cfg(unix)]
+                        if let Some(mode) = file.permissions {
+                            use std::os::unix::fs::PermissionsExt;
+                            return fs::Permissions::from_mode(mode.bits());
+                        }
+                        git::executable_permissions(permissions, file.mode)
+                    })?;
+                } else {
+                    crate::materialize::rendered::atomic_write(
+                        &target,
+                        &file.bytes,
+                        file.permissions
+                            .map_or(default_mode, |permissions| permissions.bits()),
+                    )?;
                 }
             }
         } else if target.symlink_metadata().is_ok() {

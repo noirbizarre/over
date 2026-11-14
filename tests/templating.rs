@@ -87,6 +87,122 @@ struct Fixture {
     target: PathBuf,
 }
 
+#[cfg(unix)]
+#[rstest]
+#[case(false, false)]
+#[case(false, true)]
+#[case(true, false)]
+#[case(true, true)]
+fn checkout_sync_refuses_read_only_leaves_before_other_updates(
+    #[case] generated: bool,
+    #[case] deletion: bool,
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new(true);
+    if !generated {
+        fs::write(fixture.source.join("app/over.yaml"), "mode: checkout\n").unwrap();
+    }
+    fs::write(fixture.source.join("app/aaa"), "before\n").unwrap();
+    commit_all(&fixture.repo());
+    fixture.apply();
+    fs::set_permissions(
+        fixture.target.join("plain"),
+        fs::Permissions::from_mode(0o400),
+    )
+    .unwrap();
+    fs::write(fixture.source.join("app/aaa"), "after\n").unwrap();
+    if deletion {
+        fs::remove_file(fixture.source.join("app/plain")).unwrap();
+    } else {
+        fs::write(fixture.source.join("app/plain"), "changed\n").unwrap();
+    }
+    commit_all(&fixture.repo());
+    fixture.sync().arg("--pull-only").assert().failure();
+    assert_eq!(
+        fs::read(fixture.target.join("plain")).unwrap(),
+        b"ordinary\n"
+    );
+    assert_eq!(fs::read(fixture.target.join("aaa")).unwrap(), b"before\n");
+}
+
+#[cfg(unix)]
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn checkout_sync_retains_private_access_when_a_file_becomes_executable(#[case] generated: bool) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new(true);
+    if !generated {
+        fs::write(fixture.source.join("app/over.yaml"), "mode: checkout\n").unwrap();
+    }
+    commit_all(&fixture.repo());
+    fixture.apply();
+    fs::set_permissions(
+        fixture.target.join("plain"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    fs::set_permissions(
+        fixture.source.join("app/plain"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    fixture.sync().arg("--pull-only").assert().success();
+    assert_eq!(
+        fs::metadata(fixture.target.join("plain"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[rstest]
+#[case(false, false)]
+#[case(false, true)]
+#[case(true, false)]
+#[case(true, true)]
+fn checkout_sync_preserves_native_metadata_without_editing_other_hard_links(
+    #[case] generated: bool,
+    #[case] shared: bool,
+) {
+    use std::os::unix::fs::MetadataExt;
+
+    let fixture = Fixture::new(true);
+    if !generated {
+        fs::write(fixture.source.join("app/over.yaml"), "mode: checkout\n").unwrap();
+    }
+    commit_all(&fixture.repo());
+    fixture.apply();
+    let target = fixture.target.join("plain");
+    xattr::set(&target, "user.over-regression", b"retained").unwrap();
+    let inode = fs::metadata(&target).unwrap().ino();
+    let neighbor = fixture.temp.path().join("neighbor");
+    if shared {
+        fs::hard_link(&target, &neighbor).unwrap();
+    }
+    fs::write(fixture.source.join("app/plain"), "changed\n").unwrap();
+    commit_all(&fixture.repo());
+    fixture.sync().arg("--pull-only").assert().success();
+    assert_eq!(
+        xattr::get(&target, "user.over-regression")
+            .unwrap()
+            .unwrap(),
+        b"retained"
+    );
+    assert_eq!(fs::read(&target).unwrap(), b"changed\n");
+    if shared {
+        assert_eq!(fs::read(neighbor).unwrap(), b"ordinary\n");
+    } else {
+        assert_eq!(fs::metadata(target).unwrap().ino(), inode);
+    }
+}
+
 impl Fixture {
     fn git(&self, arguments: &[&str]) {
         let output = std::process::Command::new("git")
