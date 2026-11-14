@@ -426,6 +426,111 @@ fn no_uses_and_metadata_only_dependencies_do_not_participate_in_hooks(
 }
 
 #[rstest]
+#[case(false, false, "root\nshared\nleft\nright\n")]
+#[case(true, false, "root\nshared\nright\nleft\n")]
+#[case(false, true, "root\nleft\nright\n")]
+fn multiple_roots_share_validation_data_and_deferred_hooks(
+    #[case] reverse: bool,
+    #[case] no_uses: bool,
+    #[case] expected: &str,
+) {
+    let fixture = Fixture::new();
+    fixture.config("over.yaml", json!({"target": "~", "hooks": {"post-apply": [{
+        "command": "test -f \"$TEST_TARGET/left/file\" && test -f \"$TEST_TARGET/right/file\" && test -z \"${OVER_OVERLAY_NAME+x}\" && test -z \"${OVER_OVERLAY_ROOT+x}\" && test -z \"${OVER_OVERLAY_TARGET+x}\" && echo root >> \"$HOOK_TRACE\"",
+        "when": "overlay is none"
+    }]}}));
+    for (name, uses) in [
+        ("shared", vec![]),
+        ("left", vec!["shared"]),
+        ("right", vec!["shared"]),
+    ] {
+        fixture.config(&format!("{name}/over.yaml"), json!({
+            "target": format!("~/{name}"), "uses": uses,
+            "data": {"winner": name},
+            "hooks": {"post-apply": [{
+                "command": format!("test \"$OVER_OVERLAY_NAME\" = {name} && test \"$WINNER\" = \"$EXPECTED_WINNER\" && echo {name} >> \"$HOOK_TRACE\""),
+                "env": {"WINNER": "{{ data.winner }}"}
+            }]}
+        }));
+        fixture.write(&format!("{name}/file"), name);
+    }
+    let names = if reverse {
+        ["right", "left", "right"]
+    } else {
+        ["left", "right", "left"]
+    };
+    let mut command = fixture.apply(names[0]);
+    command.env("EXPECTED_WINNER", if reverse { "left" } else { "right" });
+    command.args(&names[1..]);
+    if no_uses {
+        command.arg("--no-uses");
+    }
+    command.assert().success();
+    assert_eq!(fixture.trace(), expected);
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("left/file")).unwrap(),
+        "left"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("right/file")).unwrap(),
+        "right"
+    );
+    assert_eq!(fixture.target.join("shared/file").exists(), !no_uses);
+}
+
+#[rstest]
+#[case("missing")]
+#[case("ownership")]
+#[case("dependency")]
+#[case("cycle")]
+fn invalid_later_roots_prevent_all_materialization_and_hooks(#[case] failure: &str) {
+    let fixture = Fixture::new();
+    fixture.config(
+        "over.yaml",
+        json!({"target": "~", "hooks": {"post-apply": ["echo root >> \"$HOOK_TRACE\""]}}),
+    );
+    fixture.config("first/over.yaml", json!({}));
+    fixture.write("first/file", "first");
+    match failure {
+        "ownership" => {
+            fixture.config("second/over.yaml", json!({}));
+            fixture.write("second/file", "second");
+        }
+        "dependency" => fixture.config("second/over.yaml", json!({"uses": ["absent"]})),
+        "cycle" => fixture.config("second/over.yaml", json!({"uses": ["second"]})),
+        _ => {}
+    }
+    fixture.apply("first").arg("second").assert().failure();
+    assert!(!fixture.target.join("file").exists());
+    assert_eq!(fixture.trace(), "");
+    if failure == "ownership" {
+        fixture.apply("second").arg("first").assert().failure();
+        assert!(!fixture.target.join("file").exists());
+    }
+}
+
+#[test]
+fn a_later_root_runtime_conflict_suppresses_all_hooks() {
+    let fixture = Fixture::new();
+    fixture.config(
+        "over.yaml",
+        json!({"target": "~", "hooks": {"post-apply": ["echo root >> \"$HOOK_TRACE\""]}}),
+    );
+    fixture.config("first/over.yaml", json!({}));
+    fixture.config("second/over.yaml", json!({}));
+    fixture.write("first/first", "deployed");
+    fixture.write("second/conflict", "desired");
+    fs::write(fixture.target.join("conflict"), "existing").unwrap();
+    fixture.apply("first").arg("second").assert().failure();
+    assert!(fixture.target.join("first").exists());
+    assert_eq!(fixture.trace(), "");
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("conflict")).unwrap(),
+        "existing"
+    );
+}
+
+#[rstest]
 fn ancestor_hooks_are_not_inherited_and_root_overlay_hooks_are_not_duplicated(
     #[values("post-apply", "install")] event: &str,
 ) {

@@ -1,6 +1,6 @@
 # Dev Containers
 
-Install Over and apply a selected dotfiles overlay as the Dev Container lifecycle
+Install Over and apply selected dotfiles overlays as the Dev Container lifecycle
 user. Supported platforms are Linux amd64 and arm64 on Debian 12+ and Ubuntu
 24.04+ images with Bash and glibc.
 
@@ -32,6 +32,49 @@ this example, not `/root/.dotfiles`. Repository credentials, if needed, must be
 available to that user during initialization. Feature options are baked into
 the image; do not put credentials in them.
 
+## Combine reusable overlays
+
+Keep the `overlay` option and separate multiple names with commas:
+
+```json
+{
+    "image": "mcr.microsoft.com/devcontainers/base:bookworm",
+    "remoteUser": "vscode",
+    "features": {
+        "ghcr.io/noirbizarre/features/over:0": {
+            "repository": "https://github.com/user/dotfiles.git",
+            "overlay": "container/base,container/rust,container/project-tools"
+        }
+    }
+}
+```
+
+Existing single-name configurations continue to work without migration. Whitespace
+around names is trimmed; commas cannot be part of a name. Empty elements such as
+`"base,,rust"`, `"base,"` or whitespace-only input fail with the element position.
+An entirely empty option skips application.
+
+The list uses the same flat-union composition as an overlay's `uses`:
+
+- Traverse each name in list order, visiting its dependencies first, depth-first.
+  Shared dependencies and repeated names participate once, at their first visit.
+- Each overlay retains its own target. File ownership conflicts are errors in
+  either order; later names do **not** override earlier files.
+- Validate every reference and the combined ownership before deploying any files.
+  An invalid later name cannot leave earlier overlays deployed.
+- Merge metadata after repository defaults in dependency-first traversal order:
+  mappings merge recursively, while later scalar/list values replace earlier ones.
+  A listed dependency already visited through another name is not merged again.
+  A single distinct selected root retains its existing highest metadata precedence.
+- Run repository hooks once, then participant hooks in dependency order, only after
+  every participant successfully materializes. Multiple distinct roots give repository
+  hooks no selected `overlay` or `OVER_OVERLAY_*` environment variables; participant
+  hooks still receive their own overlay identity and target.
+
+This is one `over apply --no-prompt -- container/base container/rust container/project-tools`
+operation. A `version` override must support multi-name `over apply` to use a list;
+older binaries fail rather than applying each name independently.
+
 ## Use a mounted repository
 
 Omit `repository` to use an existing checkout. For example, mount the host's
@@ -60,7 +103,7 @@ selects the **source**, not the target.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `overlay` | `""` | Overlay to apply; empty skips application, including repository-default overlays. |
+| `overlay` | `""` | Ordered, comma-separated overlay names; empty skips application, including repository-default overlays. |
 | `repository` | `""` | Git source passed to `over init`; empty uses an existing/mounted repository. |
 | `overHome` | `"~/.dotfiles"` | Source checkout; `~` and `~/` resolve against the lifecycle user's home. |
 | `version` | Matching feature release | Override the tag of the Over image at `ghcr.io/noirbizarre/over`. |
@@ -74,8 +117,9 @@ Set `"version": "latest"` to explicitly follow the latest binary image, or choos
 another published image tag. An override intentionally decouples the binary from
 the Feature release.
 
-The Feature treats received option values literally except the documented
-leading-tilde expansion. The current Dev Container CLI writes options into
+The Feature treats received option values literally except comma separation and
+surrounding whitespace trimming in `overlay`, and leading-tilde expansion in `overHome`.
+The current Dev Container CLI writes options into
 double-quoted shell assignments before invoking the Feature: literal `$`,
 backticks, backslashes and double quotes need shell escaping as well as JSON
 escaping at that boundary. For example, use `"overHome": "~/dot\\$files"` for

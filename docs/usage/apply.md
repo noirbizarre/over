@@ -1,15 +1,15 @@
 # `over apply`
 
-Apply an overlay and its dependencies to their configured targets. Optionally
+Apply overlays and their dependencies to their configured targets. Optionally
 run install hooks (`--install`), provision declared Git repositories, and
 materialize files as links, editable checkouts, or managed blocks according to
 the [configuration](../configuration/materialization.md).
 
 ```text
-Usage: over apply [OPTIONS] [NAME]
+Usage: over apply [OPTIONS] [NAMES]...
 
 Arguments:
-  [NAME]  Name of the overlay to apply (otherwise infer context, then use default_overlay)
+  [NAMES]...  Names of overlays to compose (otherwise infer context, then use default_overlay)
 
 Options:
   -H, --home <HOME>       Configuration and overlays root [env: OVER_HOME=]
@@ -28,10 +28,17 @@ Options:
 - When `NAME` is omitted, [infer from context](selection.md), then use the
   repository's configured `default_overlay`. Missing or ambiguous selection
   requires an explicit name.
-- `--no-uses` applies only the named overlay, skipping every overlay it
+- Multiple explicit names compose as an ordered `uses` list, with dependencies
+  before parents and shared participants included once. Each retains its target;
+  overlapping ownership fails before any participant writes, regardless of order.
+  For example, `over apply --no-prompt -- container/base container/rust`.
+- `--no-uses` applies only the named overlays, skipping every overlay each
   `uses` operationally. Metadata still includes all transitive dependencies.
 - The configured default's [data context](../configuration/overlay.md#consumer-metadata-data)
   remains available with an explicit `NAME`; this does not apply the default's files.
+  Multiple roots share one metadata snapshot merged in dependency-first order,
+  like `uses`; already-visited contributors are not replayed. The historical
+  selected-root precedence exception is retained for a single distinct root.
 - `--install` additionally runs `hooks.install` (see
   [Install hooks](../install-config.md)). File materialization, declared
   Git provisioning, and post-apply hooks do not require `--install`.
@@ -85,6 +92,10 @@ External commands retain their own
 prompt policies; Over's force/no-prompt flags do not control child prompts.
 
 ## Lifecycle hooks
+
+For multiple distinct selected roots, repository hooks run once per event with
+no selected `overlay` or `OVER_OVERLAY_*` environment variables. Participant hooks
+retain their own overlay context. All hooks wait for every participant's files.
 
 Apply can execute repository-provided commands: **only apply repositories you
 trust**. With `--install`, applying an untrusted repository executes its arbitrary
