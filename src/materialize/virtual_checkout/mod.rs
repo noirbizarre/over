@@ -18,6 +18,8 @@
 //! when the user chooses Skip or Absorb.
 
 pub(crate) mod generated;
+pub(crate) mod generated_migration;
+pub(crate) mod generated_snapshot;
 pub(crate) mod git;
 mod initial;
 pub(crate) mod snapshot;

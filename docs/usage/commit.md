@@ -141,6 +141,12 @@ selected staged template edits are included, while unstaged source edits remain
 unstaged. Overlapping source changes are never overwritten. The resulting normal
 Git commit contains source templates, never rendered artifacts.
 
+Protected templates support the same literal reverse patches while the matching
+repository key is unlocked. Source layers and previous renderings are decoded
+for translation; source commits and generated/consumed-render snapshots retain
+their [encryption policy](crypt.md#protected-generated-snapshots) at rest. Legacy
+protected snapshots must be migrated through `over unlock` first.
+
 Each template succeeds or fails as a whole. Successful files and selected ordinary
 staged changes are committed together even if another reverse patch fails. The
 command reports the successful commit and conflicting destination/source paths

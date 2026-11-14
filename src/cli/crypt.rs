@@ -442,7 +442,7 @@ pub fn unlock(cli: &super::CLI, opt: &Unlock) -> Result<()> {
 pub fn unlock_repository(repo: &git2::Repository, opt: &Unlock) -> Result<()> {
     // Interrupted operations and unsafe storage cannot be repaired by another password prompt.
     {
-        let _inspection = access::guard(repo, false)?;
+        let _inspection = access::lifecycle_guard(repo, false)?;
     }
     if opt.identity.is_none()
         && opt.user.is_none()

@@ -138,8 +138,59 @@ not silently replaced. An inaccessible worktree blocks the common transition.
 
 Lock cannot erase plaintext deployed to virtual destinations, copies held by
 other programs, snapshots, backups, or keys already copied elsewhere. Delete does
-not promise physical erasure from storage. Protected virtual diffs remain in
-Git's ciphertext domain; explicit plaintext inspection is the user's choice.
+not promise physical erasure from storage. Ordinary protected virtual diffs remain
+in Git's ciphertext domain. Generated-checkout comparisons explicitly decode
+protected snapshots while unlocked, and requested diffs can display rendered values.
+
+## Protected generated snapshots
+
+Generated checkout snapshots preserve each source entry's encryption policy,
+including ordinary protected siblings of templates. Protected rendered bytes and
+reverse-patch consumed renderings are encrypted before entering the Git object
+database. Unlock makes their plaintext available transiently for rendering,
+comparison, merging, restore, and reverse patching; it never decrypts the stored
+Git blobs. These operations require the matching unlocked repository key.
+
+Each generated commit carries a versioned provenance manifest in its message.
+Source/destination names, protection policy, and Git metadata remain visible.
+Unprotected templates still produce unprotected snapshots, even when their
+rendering contains secrets obtained from context data. Protect the source to
+protect its generated snapshot.
+
+Lock and unlock also inspect older generated history and retained operational
+snapshots. Known legacy snapshots are rewritten with encrypted protected entries
+and updated checkout pointers. Interrupted migration resumes through unlock or
+`over crypt recover`. Migration preserves pending/conflict roots under local
+`refs/over/generated-retained/` refs so Git maintenance cannot prune needed bases.
+Successful unapply removes an association's retained refs along with its main ref.
+
+Legacy source mappings can change and source history can be replaced. Migration
+therefore conservatively encrypts historical output unless its bytes are already
+present in a known public source blob, recording the original exposed object IDs.
+A public template today does not establish that an older rendering was public.
+Missing ownership/source hints still require restored provenance or explicit cleanup.
+
+Rewriting refs does **not** erase old plaintext objects. Over records known leaked
+blob IDs in `over-crypt/generated-snapshots.json` under the common Git directory
+and checks their actual availability, including packed and alternate object
+stores. While known plaintext remains, lock/unlock reports incomplete cleanup
+and preserves the previous source worktree/key access state; successfully
+migrated snapshot refs remain migrated. Keep the ledger until cleanup is verified.
+
+Inspect remaining refs, reflogs, and alternate object stores, stop repository
+writers, and deliberately perform the appropriate Git history/reflog/object
+maintenance. Over does not expire unrelated recovery history or automatically
+prune your object database. Rerun lock/unlock to verify cleanup. If provenance is
+missing or ambiguous, restore the matching XDG association/source history, or
+explicitly retire the affected snapshots and their objects. The audit also finds
+unreferenced legacy snapshot commits left by failed publication. Local cleanup
+cannot establish erasure from clones, remotes, backups, or filesystem snapshots.
+
+Repositories without protected source history can continue using their legacy
+snapshots for ordinary and reverse commits without configuring encryption. These
+comparisons do not certify old snapshot contents as public: reverse checkpoints
+retain their legacy representation until sync publishes a new desired inventory.
+An interrupted unencrypted sync can finish without a repository key.
 
 ## Users and keys
 
@@ -177,6 +228,13 @@ or wrong credentials abort without publication. Resolve unstaged protected edits
 first. New metadata/content are staged for explicit review/commit; old commits
 are not rewritten. A generation change on another branch/clone requires unlock
 using that generation's trusted envelope.
+
+Rotation and revocation refuse before publication if retained protected generated
+snapshots would become unreadable with the new key. Resolve local edits and
+unapply those generated checkouts first, then rotate and reapply. Historical
+source templates encrypted with an unavailable generation cannot be reverse
+patched; Over reports the missing matching key rather than processing ciphertext
+as template text.
 
 Rotation protects new state, not previously published ciphertext, old commits,
 clones, backups, caches, or plaintext already copied by recipients. It cannot
@@ -232,10 +290,13 @@ expected, not a leak. Locked reports distinguish structural checks from
 authentication unavailable without a key. Findings identify the storage location
 and remediation; diagnosis never stages or rewrites encryption state.
 
-The bounded history check examines at most 16 commits and 256 path/blob pairs.
+The bounded source-history check examines at most 16 commits and 256 path/blob pairs.
 Known plaintext exposure is reported; absence of a finding does not establish
 clean history. A complete reachable-history audit is a separate future
 capability. Encrypting current versions does not erase historical exposure.
+Generated refs and operational roots are checked separately across their complete
+history; the object database is also inspected for orphaned Over snapshot commits
+and known leaked blob IDs. These checks do not mutate refs or encryption state.
 
 Payload v1 uses RustCrypto RFC 5297 AES-256-SIV, authenticates its version/domain/
 generation header, and authenticates the entire message before returning

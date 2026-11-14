@@ -234,7 +234,7 @@ impl FileTransaction {
 
     pub fn rollback(&mut self) -> Result<()> {
         if self.guard.take().is_some() {
-            policy::recover(&git2::Repository::open(&self.repository)?)?;
+            policy::recover_source(&git2::Repository::open(&self.repository)?)?;
         }
         self.updates.clear();
         self.originals.clear();

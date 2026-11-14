@@ -167,6 +167,12 @@ pub(crate) fn windows_acl(path: &Path, initialize: bool) -> Result<()> {
 
 /// Sentinel inode is never replaced, so atomic data writes cannot split locks.
 pub fn guard(repo: &git2::Repository, exclusive: bool) -> Result<File> {
+    let file = lifecycle_guard(repo, exclusive)?;
+    crate::materialize::virtual_checkout::generated_migration::ensure_ready(repo)?;
+    Ok(file)
+}
+
+pub(crate) fn lifecycle_guard(repo: &git2::Repository, exclusive: bool) -> Result<File> {
     let file = raw_guard(repo, exclusive)?;
     ensure!(
         !private_dir(repo).join("transaction.json").try_exists()?,

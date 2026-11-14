@@ -610,12 +610,16 @@ fn attach_rendered_checkouts(
         for (relative, (oid, mode)) in leaves {
             let full = source.join(&relative);
             let logical = full.strip_prefix(&overlay.root)?;
-            let bytes =
-                crate::crypt::policy::materialized_blob(&repo, &managed.join(&relative), oid)?;
-            let (destination, content) = super::content::transform(
+            let protection =
+                crate::crypt::protection::Protection::for_path(&repo, &managed.join(&relative))?;
+            // Rendering requires plaintext: smudge's locked passthrough would render ciphertext.
+            let bytes = protection.decode(&repo, repo.find_blob(oid)?.content())?;
+            let (destination, mut content) = super::content::transform(
                 ctx, overlay, logical, &bytes, mode,
             )
             .with_context(|| format!("cannot render source template '{}'", full.display()))?;
+            content.protection = protection;
+            content.source_revision = Some(source_commit.id().to_string());
             let prefix = source.strip_prefix(&overlay.root)?;
             let destination = destination
                 .strip_prefix(prefix)

@@ -106,7 +106,7 @@ impl Scratch {
         Oid::from_str(std::str::from_utf8(&output.stdout)?.trim()).map_err(Into::into)
     }
 
-    fn environment(&self) -> Vec<(&'static str, std::ffi::OsString)> {
+    pub(crate) fn environment(&self) -> Vec<(&'static str, std::ffi::OsString)> {
         // A single alternate avoids platform-specific path-list escaping; Git
         // follows the source ODB's own alternates recursively.
         vec![

@@ -6,6 +6,7 @@ pub mod filter;
 pub mod format;
 pub(crate) mod ingest;
 pub mod policy;
+pub mod protection;
 pub(crate) mod transaction;
 #[cfg(windows)]
 pub(crate) mod windows;
