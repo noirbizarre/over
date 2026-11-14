@@ -87,6 +87,49 @@ struct Fixture {
     target: PathBuf,
 }
 
+#[cfg(unix)]
+#[rstest]
+#[case("template")]
+#[case("environment")]
+#[case("missing_artifact")]
+#[case("artifact_content")]
+#[case("artifact_permissions")]
+#[case("clean")]
+fn rendered_unapply_reports_retained_links_and_keeps_their_exclusions(#[case] change: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new(false);
+    let host = git2::Repository::init(&fixture.target).unwrap();
+    fixture.apply();
+    let target = fixture.target.join("config");
+    let artifact = fs::read_link(&target).unwrap();
+    match change {
+        "template" => fs::write(fixture.source.join("app/config.jinja"), "changed\n").unwrap(),
+        "environment" | "clean" => {}
+        "missing_artifact" => fs::remove_file(&artifact).unwrap(),
+        "artifact_content" => fs::write(&artifact, "changed\n").unwrap(),
+        "artifact_permissions" => {
+            fs::set_permissions(&artifact, fs::Permissions::from_mode(0o644)).unwrap()
+        }
+        _ => unreachable!(),
+    }
+    let mut command = fixture.command("unapply");
+    command
+        .args(["app", "--no-prompt", "--target"])
+        .arg(&fixture.target);
+    if change == "environment" {
+        command.env("OVER_UNAPPLY_REGRESSION", "changed");
+    }
+    if change == "clean" {
+        command.assert().success();
+        assert!(!target.is_symlink());
+    } else {
+        command.assert().failure().stdout(contains("skip:"));
+        assert!(target.is_symlink());
+        assert!(host.is_path_ignored(Path::new("config")).unwrap());
+    }
+}
+
 #[rstest]
 #[case(false)]
 #[case(true)]

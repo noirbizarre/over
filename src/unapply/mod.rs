@@ -232,6 +232,9 @@ impl Report {
                     Status::Applied => Outcome::Removed,
                     other => Outcome::CheckoutNotClean { status: other },
                 },
+                (MaterializationIntent::RenderedFile(_), operation) => {
+                    rendered_outcome(&step.entry, operation)?
+                }
                 (_, Operation::Create) => Outcome::AlreadyAbsent,
                 // A permission-only drift (#65) doesn't change ownership:
                 // the content is still exactly what this overlay put
@@ -349,6 +352,19 @@ impl Report {
             guard.verify()?;
             if matches!(
                 entry_outcome.entry.intent,
+                MaterializationIntent::RenderedFile(_)
+            ) {
+                use crate::materialize::Materializer;
+                let entry = entry_outcome.entry.clone();
+                entry_outcome.outcome = spawn_blocking(move || {
+                    let operation =
+                        crate::materialize::rendered::RenderedMaterializer.classify(&entry)?;
+                    rendered_outcome(&entry, &operation)
+                })
+                .await??;
+            }
+            if matches!(
+                entry_outcome.entry.intent,
                 MaterializationIntent::EncryptedFile(_)
             ) {
                 use crate::materialize::Materializer;
@@ -392,6 +408,7 @@ impl Report {
                 } else if matches!(
                     entry_outcome.entry.intent,
                     MaterializationIntent::EncryptedFile(_)
+                        | MaterializationIntent::RenderedFile(_)
                         | MaterializationIntent::SymlinkFile { .. }
                         | MaterializationIntent::SymlinkDirectory { .. }
                 ) && (target.exists() || target.is_symlink())
@@ -434,6 +451,18 @@ impl Report {
         }
         Ok(executed)
     }
+}
+
+fn rendered_outcome(entry: &DesiredEntry, operation: &Operation) -> Result<Outcome> {
+    if matches!(operation, Operation::Noop) {
+        return Ok(Outcome::Removed);
+    }
+    // Create also means a stale or damaged artifact link. Without historical
+    // provenance we cannot prove ownership merely from its cache directory.
+    Ok(match actual::inspect(&entry.target)? {
+        ActualState::Missing => Outcome::AlreadyAbsent,
+        current => Outcome::NotOwned { current },
+    })
 }
 
 /// Tear down a single entry classified [`Outcome::Removed`]. Dispatches on

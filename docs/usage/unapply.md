@@ -58,6 +58,11 @@ materialize there right now:
   overlay's source. Anything else there (a real file, a symlink pointing
   elsewhere, a plain directory where a symlink was expected) is left
   untouched and reported.
+- A generated artifact link is removed only when both the link and artifact
+  match current desired content and permissions. A stale link after template or
+  environment changes, or a missing/damaged artifact, is retained and reported
+  as requiring attention. Its host Git exclusions remain. Reapply to reconcile
+  it before unapplying, or inspect and remove the retained link manually.
 - A directory is removed only if it's already empty (a non-recursive
   removal) — never `rm -rf`. A directory that still holds anything else
   (unrelated user files, another overlay's content) is retained and reported
