@@ -431,6 +431,7 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
         scope: entry.intent.checkout_scope(),
         ..Default::default()
     });
+    record.scope = entry.intent.checkout_scope();
     let old = record.generated.clone();
     let identity = format!(
         "{}:{}:{}",

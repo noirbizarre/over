@@ -16,6 +16,8 @@ SETUP_DIR = "/usr/local/share/over"
 SETUP = f"{SETUP_DIR}/setup.sh"
 # Unreleased metadata can be exercised against an available image before tagging.
 TEST_VERSION = os.environ.get("OVER_FEATURE_TEST_VERSION", "")
+# Mount a Debian-compatible candidate at runtime while retaining real installation tests.
+TEST_BINARY = os.environ.get("OVER_FEATURE_TEST_BINARY", "")
 # Shell metacharacters must survive both build-time serialization and runtime use.
 CUSTOM_HOME = "/home/vscode/dot files ' $(touch /tmp/over-option-executed)"
 
@@ -77,8 +79,14 @@ def scenario(name, options, assertion=None, error=None, prepare="", mounts=None)
         # conflicts before the Feature's postCreateCommand can apply anything.
         if prepare:
             config["onCreateCommand"] = ["bash", "-euc", prepare]
-        if mounts:
-            config["mounts"] = mounts
+        effective_mounts = list(mounts or [])
+        if TEST_BINARY:
+            candidate = Path(TEST_BINARY).resolve(strict=True)
+            effective_mounts.append(
+                f"type=bind,source={candidate},target=/usr/local/bin/over,readonly"
+            )
+        if effective_mounts:
+            config["mounts"] = effective_mounts
         (config_dir / "devcontainer.json").write_text(json.dumps(config))
         try:
             output = command(
@@ -114,6 +122,8 @@ def main():
     assert metadata["version"] == package["version"]
     assert metadata["options"]["version"]["default"] == package["version"]
     assert metadata["options"]["overHome"]["default"] == "~/.dotfiles"
+    assert metadata["options"]["overlay"]["default"] == ""
+    assert "overlays" not in metadata["options"]
     assert os.access(FEATURE / "install.sh", os.X_OK)
     # Only the real default is pinned; the pre-release test override may float.
     version_assertion = "true" if TEST_VERSION else (
@@ -225,6 +235,40 @@ def main():
         {"version": "nonexistent-feature-smoke-test-version"},
         error="Failed to extract Over from ghcr.io/noirbizarre/over:nonexistent-feature-smoke-test-version",
     )
+    for names, expected in [
+        ("left,right", "shared,left,right,"),
+        (" right , left ,right ", "shared,right,left,"),
+    ]:
+        scenario(
+            "multiple overlays compose once in dependency order: " + names,
+            {"repository": "/opt/dotfiles", "overlay": names},
+            f"""
+            test -f "$HOME/feature-left/left"
+            test -f "$HOME/feature-right/right"
+            test -f "$HOME/feature-shared/shared"
+            test "$(tr '\\n' ',' < "$HOME/feature-trace")" = '{expected}'
+            """,
+        )
+    scenario(
+        "a missing later overlay prevents earlier deployment",
+        {"repository": "/opt/dotfiles", "overlay": "left,missing-overlay"},
+        assertion='test ! -e "$HOME/feature-left/left"; test ! -e "$HOME/feature-trace"',
+        error="missing-overlay",
+    )
+    for names in ["smoke,collision", "collision,smoke"]:
+        scenario(
+            "ownership conflicts reject both list orders: " + names,
+            {"repository": "/opt/dotfiles", "overlay": names},
+            assertion='test ! -e "$HOME/feature-target/file"',
+            error="Could not apply",
+        )
+    for names in [",smoke", "smoke,", "smoke,,left", " ", "smoke, ,left"]:
+        scenario(
+            "blank list elements are rejected: " + repr(names),
+            {"repository": "/opt/dotfiles", "overlay": names},
+            assertion='test ! -e "$HOME/.dotfiles"',
+            error="Invalid 'overlay' option: empty name at position",
+        )
 
 
 if __name__ == "__main__":

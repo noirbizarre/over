@@ -417,6 +417,19 @@ fn resolve_projection_with_record(
         .as_ref()
         .and_then(|record| record.scope.projection.clone())
         .unwrap_or_default();
+    if let Some(generated) = existing
+        .as_ref()
+        .and_then(|record| record.generated.as_ref())
+    {
+        // Snapshot leaves use destination names; source/index names would reintroduce template suffixes.
+        paths.extend(generated.sources.keys().cloned());
+        if let Some(rendered) = &scope.rendered {
+            paths.extend(rendered.keys().cloned());
+        }
+        scope.projection = Some(paths);
+        entry.intent = crate::desired::MaterializationIntent::ScopedVirtualCheckout(scope);
+        return Ok(());
+    }
     if walk_source && source.is_dir() {
         for candidate in walkdir::WalkDir::new(source)
             .min_depth(1)

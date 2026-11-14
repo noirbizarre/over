@@ -58,21 +58,33 @@ impl DesiredTree {
     }
 
     fn build_mode(ctx: &exec::Context, overlay: &Overlay, reporting: bool) -> Result<Self> {
-        let prepared = ctx.prepare_rendering(overlay)?;
+        Self::build_roots(ctx, std::slice::from_ref(overlay), reporting)
+    }
+
+    /// Compose explicit roots as one flat union, deduplicating shared dependencies.
+    pub fn build_many(ctx: &exec::Context, overlays: &[Overlay]) -> Result<Self> {
+        Self::build_roots(ctx, overlays, false)
+    }
+
+    fn build_roots(ctx: &exec::Context, overlays: &[Overlay], reporting: bool) -> Result<Self> {
+        let prepared = ctx.prepare_rendering_many(overlays)?;
         let ctx = prepared.as_ref();
         let mut entries = Vec::new();
         let mut visited = HashSet::new();
         let mut stack = Vec::new();
         let mut sources = Vec::new();
-        build_inner(
-            ctx,
-            overlay,
-            &mut visited,
-            &mut stack,
-            &mut entries,
-            &mut sources,
-            reporting,
-        )?;
+        for overlay in overlays {
+            let overlay_ctx = ctx.with_overlay(overlay.clone());
+            build_inner(
+                &overlay_ctx,
+                overlay,
+                &mut visited,
+                &mut stack,
+                &mut entries,
+                &mut sources,
+                reporting,
+            )?;
+        }
         // Canonical, deterministic ordering — useful for #109 diff and tests.
         entries.sort_by(|a, b| a.target.cmp(&b.target));
         Ok(Self { entries, sources })
@@ -247,6 +259,25 @@ impl DesiredTree {
         build_partial_sidecars(ctx, overlay, &policy, &mut entries)?;
         attach_source_policy(&mut entries, &policy);
         finalize_entries(overlay, &routing, &mut entries, true)?;
+        for entry in &mut entries {
+            if !entry.intent.is_virtual_checkout() {
+                continue;
+            }
+            if let Some(record) =
+                crate::materialize::virtual_checkout::state::record_in_snapshot(&state, entry)?
+                && let Some(generated) = record.generated
+                && let Provenance::Overlay { source, .. } = &entry.provenance
+            {
+                let mut scope = entry.intent.checkout_scope();
+                if let Some(paths) = &mut scope.projection {
+                    // This source-commit inventory needs Git names as well as generated destination names.
+                    paths.extend(generated.sources.values().filter_map(|template| {
+                        template.strip_prefix(source).ok().map(Path::to_path_buf)
+                    }));
+                }
+                entry.intent = MaterializationIntent::ScopedVirtualCheckout(scope);
+            }
+        }
         entries.retain(|entry| entry.intent.is_virtual_checkout());
         for entry in &entries {
             crate::materialize::virtual_checkout::state::verify_live_target_snapshot(
@@ -619,6 +650,9 @@ fn attach_rendered_checkouts(
                     );
                 }
             }
+            let exclusive = previous
+                .as_ref()
+                .is_some_and(|record| record.scope.projection.is_none());
             let mut projection: std::collections::BTreeSet<_> = inventory.keys().cloned().collect();
             if let Some(previous) = previous {
                 if let Some(paths) = previous.scope.projection {
@@ -628,7 +662,8 @@ fn attach_rendered_checkouts(
                     projection.extend(generated.sources.into_keys());
                 }
             }
-            scope.projection = Some(Box::new(projection));
+            // Rendering does not grant permission to reinterpret a legacy exclusive ownership unit.
+            scope.projection = (!exclusive).then(|| Box::new(projection));
             scope.rendered = Some(Arc::new(super::content::RenderedCheckout {
                 inventory,
                 source_revision: source_commit.id().to_string(),

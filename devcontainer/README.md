@@ -1,8 +1,11 @@
 # Over Dev Container Feature
 
-Install Over and optionally initialize a repository and apply an overlay as the
+Install Over and optionally initialize a repository and apply overlays as the
 container's lifecycle user. See the [Dev Containers guide](https://noirbizarre.github.io/over/devcontainer/)
 for clone/mount examples, options, supported platforms and retry behavior.
+
+Use `"overlay": "container/base"` for one overlay or
+`"overlay": "container/base,container/rust"` for an ordered composition.
 
 The Feature is published at `ghcr.io/noirbizarre/features/over`. Its version and
 default binary version match the Over release. Use `:0` for the current major,
@@ -16,6 +19,7 @@ access available:
 
 ```sh
 mise install devcontainer-cli
+python3 -m unittest discover -s tests/features -p 'test_*.py'
 mise run test:features
 devcontainer features package ./devcontainer --output-folder /tmp/over-feature
 ```
@@ -26,6 +30,28 @@ behavior, or release preparation names an unpublished image, use
 `OVER_FEATURE_TEST_VERSION=latest mise run test:features`; explicit scenario
 options still take precedence. Without this override the suite checks that the
 default binary matches the Feature version.
+
+For unreleased multi-name CLI behavior, build a Debian-compatible candidate and
+mount it into lifecycle tests (the image build still tests published installation):
+
+```sh
+docker build --tag over-feature-candidate .
+container=$(docker create over-feature-candidate)
+docker cp "$container:/usr/local/bin/over" /tmp/over-feature-candidate
+docker rm "$container"
+OVER_FEATURE_TEST_BINARY=/tmp/over-feature-candidate OVER_FEATURE_TEST_VERSION=latest mise run test:features
+```
+
+The unittest suite can also exercise the real setup script with a locally built
+binary, without Docker or registry access:
+
+```sh
+cargo build --features vendored
+OVER_FEATURE_TEST_BINARY="$PWD/target/debug/over" python3 -m unittest discover -s tests/features -p 'test_*.py'
+```
+
+PR/main CI uses this candidate override on both native architectures. Release
+publication tests use the matching published image without substitution.
 
 The suite stages this directory as a local `over` Feature and runs real
 `devcontainer up`/`exec` commands against minimal Debian images, using a non-root

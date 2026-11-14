@@ -392,18 +392,35 @@ impl Context {
         if self.rendering_prepared {
             return Ok(self.with_overlay(selected.clone()));
         }
-        let mut prepared = self.with_overlay(selected.clone());
+        self.prepare_rendering_many(std::slice::from_ref(selected))
+    }
+
+    pub(crate) fn prepare_rendering_many(&self, selected: &[Overlay]) -> anyhow::Result<Ctx> {
+        if self.rendering_prepared {
+            return Ok(Arc::new(self.clone()));
+        }
+        let mut prepared = Arc::new(Self {
+            current_target: None,
+            overlay: selected
+                .first()
+                .filter(|first| selected.iter().all(|overlay| overlay.name == first.name))
+                .cloned(),
+            ..self.clone()
+        });
         if !self.repository.root.as_os_str().is_empty() {
-            prepared = prepared.resolve_data()?;
+            prepared = prepared.resolve_data_many(selected)?;
         }
         let overlays = if prepared.resolved_dependencies.is_empty() {
-            Arc::new(vec![selected.clone()])
+            Arc::new(selected.to_vec())
         } else {
             prepared.resolved_dependencies.clone()
         };
         {
             let mut operational = std::collections::HashSet::new();
-            let mut pending = vec![selected.name.clone()];
+            let mut pending: Vec<_> = selected
+                .iter()
+                .map(|overlay| overlay.name.clone())
+                .collect();
             while let Some(name) = pending.pop() {
                 if operational.insert(name.clone())
                     && !self.no_uses
@@ -438,6 +455,25 @@ impl Context {
             return Ok(overlay.clone());
         }
         self.repository.get(name)
+    }
+
+    /// Prepare a shared snapshot without inventing an identity for a composition.
+    pub fn resolve_data_many(&self, overlays: &[Overlay]) -> anyhow::Result<Ctx> {
+        if self.data_prepared {
+            return Ok(Arc::new(self.clone()));
+        }
+        let (data, dependencies) = self.repository.resolve_inputs_many(self, overlays)?;
+        Ok(Arc::new(Self {
+            data_prepared: true,
+            resolved_dependencies: Arc::new(dependencies),
+            current_target: None,
+            overlay: overlays
+                .first()
+                .filter(|first| overlays.iter().all(|overlay| overlay.name == first.name))
+                .cloned(),
+            data,
+            ..self.clone()
+        }))
     }
 
     /// Create a new [`ContextBuilder`] with default values.

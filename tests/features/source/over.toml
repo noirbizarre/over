@@ -1,1 +1,3 @@
 # Keep the fixture independent of host paths and external repositories.
+# Feature installation/initialization must not implicitly apply this default.
+default_overlay = 'smoke'

@@ -42,6 +42,44 @@ fn templates_consume_recursively_merged_inherited_and_dependency_data(#[case] ch
     );
 }
 
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn explicitly_composed_roots_render_from_one_recursively_merged_context(#[case] checkout: bool) {
+    let fixture = Fixture::new(checkout);
+    fs::write(fixture.source.join("over.yaml"), format!("mode: {}\ndata: {{config: {{inherited: root}}}}\nrules:\n  - {{path: '**/*.jinja', template: true, strip_extension: true}}\n", if checkout { "checkout" } else { "symlink" })).unwrap();
+    for (name, data) in [("left", "left: l"), ("right", "right: r")] {
+        let root = fixture.source.join(name);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("over.yaml"),
+            format!("data: {{config: {{{data}}}}}\n"),
+        )
+        .unwrap();
+        fs::write(
+            root.join(format!("{name}.jinja")),
+            "{{ data.config.inherited }} {{ data.config.left }} {{ data.config.right }}",
+        )
+        .unwrap();
+    }
+    commit_all(&fixture.repo());
+    for _ in 0..2 {
+        fixture
+            .command("apply")
+            .args(["left", "right", "--no-prompt", "--target"])
+            .arg(&fixture.target)
+            .assert()
+            .success();
+    }
+    for name in ["left", "right"] {
+        assert_eq!(
+            fs::read_to_string(fixture.target.join(name)).unwrap(),
+            "root l r"
+        );
+    }
+    assert!(!fixture.target.join("config").exists());
+}
+
 struct Fixture {
     temp: TempDir,
     source: PathBuf,

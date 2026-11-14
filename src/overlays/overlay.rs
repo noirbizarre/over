@@ -372,9 +372,18 @@ impl Overlay {
     }
 
     pub async fn apply(&self, ctx: &Ctx) -> Result<()> {
-        let prepared = ctx.prepare_rendering(self)?;
+        Self::apply_many(std::slice::from_ref(self), ctx).await
+    }
+
+    /// Apply ordered roots with graph-wide validation and deferred lifecycle hooks.
+    pub async fn apply_many(overlays: &[Self], ctx: &Ctx) -> Result<()> {
+        anyhow::ensure!(
+            !overlays.is_empty(),
+            "at least one overlay must be selected"
+        );
+        let prepared = ctx.prepare_rendering_many(overlays)?;
         let ctx = &prepared;
-        let mut desired = DesiredTree::build(ctx, self)?;
+        let mut desired = DesiredTree::build_many(ctx, overlays)?;
         let has_virtual_checkouts = desired
             .entries()
             .iter()
@@ -391,7 +400,7 @@ impl Overlay {
         };
         if ownership.is_some() {
             // Waiting for another mutation may have changed effective persisted ownership.
-            desired = DesiredTree::build(ctx, self)?;
+            desired = DesiredTree::build_many(ctx, overlays)?;
         }
         // A flat union has no winner: reject every claim before any participant writes.
         desired.validate_ownership()?;
@@ -421,7 +430,9 @@ impl Overlay {
         let mut visited = HashSet::new();
         let mut stack = Vec::new();
         let mut participants = Vec::new();
-        self.collect_participants(ctx, &mut visited, &mut stack, &mut participants)?;
+        for overlay in overlays {
+            overlay.collect_participants(ctx, &mut visited, &mut stack, &mut participants)?;
+        }
         let root_hooks = ctx.repository.hooks()?;
         let hooks_enabled =
             !root_hooks.is_empty() || participants.iter().any(|overlay| !overlay.hooks.is_empty());
@@ -441,10 +452,24 @@ impl Overlay {
             return Ok(());
         }
         // Defer all hooks until every participant succeeds, including later siblings.
-        let selected_target = self.resolve_target(ctx)?;
-        let selected_ctx = ctx
-            .with_overlay(self.clone())
-            .with_target(selected_target.clone());
+        // Multiple roots have no selected identity; do not attribute repository hooks
+        // to an arbitrary participant. Repeated selection of one root stays compatible.
+        let selected = overlays
+            .first()
+            .filter(|first| overlays.iter().all(|overlay| overlay.name == first.name));
+        let selected_target = selected
+            .map(|overlay| overlay.resolve_target(ctx))
+            .transpose()?;
+        let selected_ctx = match (selected, &selected_target) {
+            (Some(overlay), Some(target)) => ctx
+                .with_overlay(overlay.clone())
+                .with_target(target.clone()),
+            _ => std::sync::Arc::new(crate::exec::Context {
+                overlay: None,
+                current_target: None,
+                ..ctx.as_ref().clone()
+            }),
+        };
         // Installation consumes deployed files; post-apply can then use installed tools.
         let events = [
             ctx.install.then_some(crate::hooks::Event::Install),
@@ -459,7 +484,15 @@ impl Overlay {
                     repository: &ctx.repository.root,
                     cwd: &ctx.repository.root,
                     scope: "repository root",
-                    overlay: Some((&self.name, &self.root, &selected_target)),
+                    overlay: selected
+                        .zip(selected_target.as_ref())
+                        .map(|(overlay, target)| {
+                            (
+                                overlay.name.as_str(),
+                                overlay.root.as_path(),
+                                target.as_path(),
+                            )
+                        }),
                     target_root: Some(&ctx.root),
                 },
             )

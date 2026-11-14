@@ -731,7 +731,12 @@ fn directory_links_use_source_git_and_report_breakage_after_source_deletion() {
     fixture.commit();
     fixture.over("apply", &["--no-prompt"]);
     assert!(fixture.target.join("bundle").is_symlink());
-    fs::write(fixture.target.join("bundle/file"), "directory edit\n").unwrap();
+    // A different size keeps Git's copied-index stat cache from hiding this edit.
+    fs::write(
+        fixture.target.join("bundle/file"),
+        "directory edited content\n",
+    )
+    .unwrap();
     assert_eq!(
         fixture.over("diff", &[]).stdout,
         fixture.git(&["diff", "--", "ov/bundle"]).stdout

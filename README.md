@@ -75,7 +75,7 @@ Use the **Over** Feature to install Over and apply an overlay during container c
     "features": {
         "ghcr.io/noirbizarre/features/over:0": {
             "repository": "https://github.com/user/dotfiles.git",
-            "overlay": "hosts/container"
+            "overlay": "container/base,container/rust"
         }
     }
 }

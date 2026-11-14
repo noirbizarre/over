@@ -83,9 +83,25 @@ jobs:
       - name: Package Feature
         run: devcontainer features package ./devcontainer --output-folder "$RUNNER_TEMP/over-feature"
 
+      - name: Build candidate binary
+        if: inputs.publish != true
+        run: |
+          # latest cannot exercise unreleased CLI changes; build against Debian's glibc.
+          docker build --tag over-feature-candidate .
+          container=$(docker create over-feature-candidate)
+          trap 'docker rm "$container"' EXIT
+          docker cp "$container:/usr/local/bin/over" "$RUNNER_TEMP/over-feature-candidate"
+
+      - name: Check option parsing and local lifecycle
+        env:
+          OVER_FEATURE_TEST_BINARY: ${{ !inputs.publish && format('{0}/over-feature-candidate', runner.temp) || '' }}
+        run: python3 -m unittest discover -s tests/features -p 'test_*.py'
+
       - name: Exercise installation and lifecycle
         env:
           # Release PR metadata may name an image that has not been published yet.
           # A release call instead tests its real default after Docker merges manifests.
           OVER_FEATURE_TEST_VERSION: ${{ !inputs.publish && 'latest' || '' }}
+          # Publication instead exercises the real matching image without substitution.
+          OVER_FEATURE_TEST_BINARY: ${{ !inputs.publish && format('{0}/over-feature-candidate', runner.temp) || '' }}
         run: python3 tests/features/run.py
