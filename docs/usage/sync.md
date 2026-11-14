@@ -100,7 +100,15 @@ their fetch, merge, rebase, push, and conflict recovery with ordinary Git.
 
 A [virtual checkout](../adr/022-virtual-checkout-materialization.md) has no `.git`
 at its target and uses the overlay's source repository. Its reconciliation phase
-is entirely local, after any optional source pull:
+is entirely local, after any optional source pull.
+
+When targets are inside a host Git worktree, sync establishes managed
+`.git/info/exclude` protection before publishing new leaves. It retains prior
+protection if reconciliation fails, then reconciles the inventory after success.
+Malformed managed blocks must be repaired before syncing. Dry-run does not change
+exclusions, and unrelated neighboring files remain visible to host Git.
+
+Reconciliation outcomes:
 
 - Nothing changed anywhere → up to date.
 - Only source content changed → refresh the target automatically. Local

@@ -377,9 +377,17 @@ fn canonical_parent_join(target: &Path) -> Result<PathBuf> {
     let parent = target
         .parent()
         .with_context(|| format!("'{}' has no parent directory", target.display()))?;
-    let canonical_parent = parent
-        .canonicalize()
-        .with_context(|| format!("failed to canonicalize '{}'", parent.display()))?;
+    let canonical_parent = match parent.canonicalize() {
+        Ok(parent) => parent,
+        // Sync protects additions before creating their parent directories.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            canonical_parent_join(parent)?
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to canonicalize '{}'", parent.display()));
+        }
+    };
     let file_name = target
         .file_name()
         .with_context(|| format!("'{}' has no file name", target.display()))?;
@@ -559,6 +567,42 @@ pub fn reconcile_desired(desired: &DesiredTree) -> Result<ExcludeReport> {
         reconcile_expectation(expectation, &mut report)?;
     }
     Ok(report)
+}
+
+/// Add prospective sync protection without dropping paths a failed sync retains.
+pub(crate) fn protect_sync_desired(desired: &DesiredTree) -> Result<()> {
+    let mut prepared = Vec::new();
+    for mut expectation in expectations(discover_desired_groups(desired)?)?.into_values() {
+        let current = match fs::read_to_string(&expectation.exclude_path) {
+            Ok(current) => current,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let previous = match partial::find_block(&current, &expectation.marker) {
+            BlockState::Malformed => {
+                anyhow::bail!("malformed host Git exclusion block; repair it before syncing")
+            }
+            BlockState::Absent => "",
+            BlockState::Found(content) => content,
+        };
+        // Preflight every marker before any target publication, and retain old
+        // protection until all checkout updates have completed successfully.
+        let patterns: BTreeSet<_> = previous
+            .lines()
+            .chain(expectation.expected_content.lines())
+            .collect();
+        expectation.expected_content = patterns.into_iter().collect::<Vec<_>>().join("\n");
+        prepared.push(expectation);
+    }
+    let mut report = ExcludeReport::default();
+    for expectation in prepared {
+        reconcile_expectation(expectation, &mut report)?;
+    }
+    anyhow::ensure!(
+        report.malformed.is_empty(),
+        "host Git exclusion block changed during sync preparation"
+    );
+    Ok(())
 }
 
 fn discover_desired_groups(desired: &DesiredTree) -> Result<DiscoveredGroups> {

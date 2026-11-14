@@ -256,6 +256,18 @@ async fn sync_entries(
 ) -> Result<Vec<SyncOutcome>> {
     let state_file: StateFile<SyncState> = state::state_file()?;
 
+    let maintain_exclusions = opts.pull
+        && !opts.abort
+        && !opts.dry_run
+        && desired
+            .entries()
+            .iter()
+            .any(|entry| entry.intent.is_virtual_checkout());
+    if maintain_exclusions {
+        let desired = desired.clone();
+        tokio::task::spawn_blocking(move || crate::git_exclude::protect_sync_desired(&desired))
+            .await??;
+    }
     let mut outcomes = Vec::new();
     for entry in desired.entries() {
         match &entry.intent {
@@ -291,6 +303,11 @@ async fn sync_entries(
         }
     }
 
+    if maintain_exclusions && !outcomes.iter().any(SyncOutcome::needs_attention) {
+        let desired = desired.clone();
+        tokio::task::spawn_blocking(move || crate::git_exclude::reconcile_desired(&desired))
+            .await??;
+    }
     Ok(outcomes)
 }
 

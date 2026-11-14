@@ -90,6 +90,80 @@ struct Fixture {
 #[rstest]
 #[case(false)]
 #[case(true)]
+fn sync_protects_new_nested_checkout_leaves_without_hiding_neighbors(#[case] generated: bool) {
+    let fixture = Fixture::new(true);
+    if !generated {
+        fs::write(fixture.source.join("app/over.yaml"), "mode: checkout\n").unwrap();
+    }
+    commit_all(&fixture.repo());
+    let host = git2::Repository::init(&fixture.target).unwrap();
+    fixture.apply();
+    let exclude = host.commondir().join("info/exclude");
+    let before = fs::read(&exclude).unwrap();
+    fs::create_dir_all(fixture.source.join("app/nested")).unwrap();
+    fs::write(
+        fixture.source.join(if generated {
+            "app/nested/new.jinja"
+        } else {
+            "app/nested/new"
+        }),
+        "new\n",
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    fixture
+        .sync()
+        .args(["--pull-only", "--dry-run"])
+        .assert()
+        .success();
+    assert_eq!(fs::read(&exclude).unwrap(), before);
+    assert!(!fixture.target.join("nested/new").exists());
+    fixture.sync().arg("--pull-only").assert().success();
+    assert!(fixture.target.join("nested/new").exists());
+    assert!(host.is_path_ignored(Path::new("nested/new")).unwrap());
+    fs::write(fixture.target.join("nested/neighbor"), "host\n").unwrap();
+    assert!(!host.is_path_ignored(Path::new("nested/neighbor")).unwrap());
+}
+
+#[test]
+fn sync_refuses_malformed_exclusions_before_publishing_new_checkout_content() {
+    let fixture = Fixture::new(true);
+    let host = git2::Repository::init(&fixture.target).unwrap();
+    fixture.apply();
+    fs::write(fixture.source.join("app/new.jinja"), "new\n").unwrap();
+    commit_all(&fixture.repo());
+    fs::write(
+        host.commondir().join("info/exclude"),
+        "# >>> over: exclude:app >>>\n",
+    )
+    .unwrap();
+    fixture.sync().arg("--pull-only").assert().failure();
+    assert!(!fixture.target.join("new").exists());
+}
+
+#[test]
+fn partially_conflicting_sync_keeps_both_new_and_retained_checkout_leaves_protected() {
+    let fixture = Fixture::new(true);
+    let host = git2::Repository::init(&fixture.target).unwrap();
+    fixture.apply();
+    fs::write(fixture.target.join("config"), "local conflict\n").unwrap();
+    fs::write(fixture.source.join("app/config.jinja"), "source conflict\n").unwrap();
+    fs::write(fixture.source.join("app/new.jinja"), "new\n").unwrap();
+    commit_all(&fixture.repo());
+    fixture.sync().arg("--pull-only").assert().failure();
+    assert_eq!(
+        fs::read(fixture.target.join("config")).unwrap(),
+        b"local conflict\n"
+    );
+    assert!(fixture.target.join("new").exists());
+    for path in ["config", "new"] {
+        assert!(host.is_path_ignored(Path::new(path)).unwrap());
+    }
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
 fn reapply_keeps_unsynchronized_historical_checkout_leaves_excluded(#[case] local_edit: bool) {
     let fixture = Fixture::new(true);
     fs::write(fixture.source.join("app/over.yaml"), "mode: checkout\n").unwrap();
