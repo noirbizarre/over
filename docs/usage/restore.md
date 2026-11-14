@@ -31,6 +31,9 @@ Paths are literal files, including deleted tracked files; directories and globs 
 
 ## Sources and destinations
 
+The following source table describes ordinary checkout files. Generated
+destinations use the [recorded generated snapshot](#generated-checkout-files).
+
 The index is the backing source repository's existing Git index, shared with
 [`over add`](add.md) and [`over commit`](commit.md). Each linked source worktree
 uses its own index. The worktree destination is the materialized target, not the
@@ -62,6 +65,26 @@ old-generation ciphertext are rejected, even when `REV` is otherwise valid.
 Restore historical plaintext into the worktree, then use `over add` to stage it
 under the current protection policy. Recovering old-generation ciphertext first
 requires that generation's trusted key; the current key alone cannot decrypt it.
+
+## Generated checkout files
+
+For a generated destination, plain `over restore PATH` or explicit `--worktree`
+accepts the **recorded generated desired snapshot**. This is the checkout's
+recorded generated base, not the source index or a fresh render of the current
+template. Use the deployed destination path, relative to the current directory
+or absolute, including its stripped extension if configured.
+
+Restore writes the snapshot bytes, or removes the destination if it is absent
+from that snapshot, and clears that path's generated conflict bookkeeping.
+`--dry-run` validates the request without writing. `--staged` and every
+`--source REV` combination are rejected for generated destinations; edit the
+source template to change generated source content. Interrupted sync or reverse
+commit publication must finish before generated restore can proceed.
+
+Ordinary siblings in the same checkout retain the index/revision semantics
+above. Generated restore replaces files using recorded permissions, or private
+defaults with recorded executability. Unlike ordinary restore, it does not
+preserve existing inode identity or native ownership, ACLs, and xattrs.
 
 ## Select files and an overlay
 
@@ -133,7 +156,8 @@ checkout smudge-filter or line-ending conversion. Over's native encryption is an
 exception: protected blobs undergo its materialization transform, producing
 decrypted worktree content with the matching local repository key.
 
-Existing files retain private access permissions and native metadata. On Linux,
+Existing ordinary files retain private access permissions and native metadata.
+Generated restore has the replacement semantics described above. On Linux,
 shared hard links are detached using a metadata-preserving replacement. On macOS,
 shared hard links require filesystem support for native cloning (for example,
 APFS); the replacement retains extended attributes, resource forks, and the exact
