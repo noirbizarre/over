@@ -2,8 +2,8 @@
 
 Over stores protected Git blobs as deterministic authenticated ciphertext while
 presenting ordinary files in unlocked working trees. Git attributes are the
-versioned policy; Over maintains them through `crypt` commands. The native
-[key-value secret store](secrets.md) uses the same repository key.
+versioned policy; manage them through `crypt` commands or edit them directly.
+The native [key-value secret store](secrets.md) uses the same repository key.
 
 ## Set up and unlock
 
@@ -72,6 +72,9 @@ over crypt list
 over add --crypt <file>...
 ```
 
+`crypt list` inspects the canonical policy, effective attributes, filter setup,
+and protected content in storage; it does not change policy or stage files.
+
 `crypt add` edits canonical `.gitattributes`, runs existing content through Git's
 clean filter, verifies ciphertext, and publishes policy plus encrypted index
 entries together. Existing plaintext commits are not rewritten. Literal files
@@ -100,6 +103,112 @@ Removing protection does not remove historical ciphertext or plaintext.
 Bootstrap `.gitattributes` and `.over/crypt/` access metadata must remain readable
 without the filter. Do not protect them with broad overriding rules.
 
+## Manage attributes manually
+
+Editing `.gitattributes` directly is also a first-class way to manage encryption
+policy. It uses exactly the same Over Git filter as `crypt add`. For example,
+add these rules to the source repository's root `.gitattributes`:
+
+```gitattributes
+.env filter=over
+.env.* filter=over
+secrets/** filter=over
+```
+
+Patterns follow [Git attributes syntax](https://git-scm.com/docs/gitattributes),
+including its directory and precedence rules. Check nested `.gitattributes`,
+global attributes, and `.git/info/attributes` for overrides. Keep bootstrap
+attributes and `.over/crypt/` outside protection.
+
+### Configure the driver
+
+`filter=over` selects a driver; it does **not** install or configure one. Initialize
+[user access](#set-up-and-unlock) if the repository has none yet. On each clone,
+use an authorized identity and run from that repository:
+
+```sh
+over unlock --identity ~/.config/age/over-alice.txt
+```
+
+This installs all four repository-local settings and unlocks the repository.
+Repeating it repairs the driver. It does not require `over crypt add` or change
+your manually managed rules.
+
+For direct Git configuration, the equivalent driver settings are below. Replace
+`/home/alice/.cargo/bin/over` with your installed executable's absolute path,
+retaining the inner shell quotes (escape any apostrophes in the path):
+
+```sh
+git config --local filter.over.clean "'/home/alice/.cargo/bin/over' git filter clean"
+git config --local filter.over.smudge "'/home/alice/.cargo/bin/over' git filter smudge"
+git config --local filter.over.process "'/home/alice/.cargo/bin/over' git filter-process"
+git config --local filter.over.required true
+```
+
+Git evaluates these command strings through a shell. Over's setup records its
+own absolute executable path with shell quoting. Using just `over` instead
+requires it on every Git client's `PATH`, including editors and services;
+storage diagnostics expect the settings installed by `over unlock`. These Git
+settings alone neither create user/access metadata nor acquire a repository key.
+
+Keep `required=true`: a failed required filter must stop the Git operation rather
+than silently stage plaintext. Never disable or bypass filters to work around an
+error; resolve the error and retry. Attributes alone cannot enforce this on an
+unconfigured Git client: a clone without the driver configuration can stage
+plaintext. Configure every writer before staging protected files.
+
+### Re-stage already tracked plaintext
+
+Declaring an attribute does not rewrite existing index blobs or history. Use this
+procedure from the source repository root, with a backup and a reviewed clean
+index/worktree. It stages the current content of the selected files, including
+any edits you make before re-staging.
+
+1. Set up the first user/key if needed and run `over unlock` **before** adding new
+   protection rules. Commit/review the initial access metadata separately.
+2. Edit `.gitattributes`, for example with the rules above. Check effective rules
+   for each selected file, then stage the policy:
+
+   ```sh
+   git check-attr filter -- .env secrets/example.conf
+   git add -- .gitattributes
+   ```
+
+   Each protected file should report `filter: over`. Resolve any conflicting
+   overrides before continuing.
+3. Force Git to run clean again on the specific already tracked files:
+
+   ```sh
+   git add --renormalize -- .env secrets/example.conf
+   ```
+
+   `--renormalize` only re-adds tracked files. Stage new files separately with
+   `git add -- <new-path>` after verifying their effective attributes. Do not
+   include unrelated files unless you intend to stage their changes too.
+4. Verify storage while unlocked:
+
+   ```sh
+   over crypt list
+   git diff --cached --stat
+   ```
+
+   Look for an authenticated **index** finding for every selected file, such as
+   `.env index: ciphertext (authenticated)`. `crypt list` (or `over doctor`)
+   reads the raw indexed blob and authenticates it with the local key; unlocked
+   working-tree plaintext is expected. A policy line alone is insufficient.
+   Do not print raw blobs to a terminal or logs to inspect them: a missed rule
+   could expose plaintext. A ciphertext header alone would not authenticate it.
+
+   Before the commit, findings about plaintext in `HEAD` are expected for files
+   being converted; they are distinct from the index you will commit. Resolve
+   index, policy, or driver errors before proceeding. Review the complete staged
+   change, including `.gitattributes` and any necessary access metadata, then
+   commit it. Recheck storage afterward: `HEAD` should now contain ciphertext,
+   but historical exposure findings can remain.
+
+This protects the newly staged versions only. Earlier plaintext commits, clones,
+backups, and remotes remain exposed; rotate any credentials already disclosed.
+
 ## Transparent Git and explicit lock
 
 Flat applications can share a virtual-checkout destination while retaining distinct
@@ -113,9 +222,13 @@ Over installs only local `filter.over.clean`, `filter.over.smudge`,
 filter protocol; one-shot clean/smudge remain available as compatible fallback
 commands. Plumbing stdout contains only payload/protocol bytes.
 
-Once unlocked, ordinary Git add/commit/checkout/pull/merge/rebase invoke the
-filters without credential prompts. Filters reread repository/generation-matched
-local key state for every request, including long-lived processes. Required
+Git runs clean when staging files (`git add`, including staging by `commit -a`),
+and smudge when populating working files during checkout and relevant
+pull/merge/rebase operations. An ordinary `git commit` records the existing index;
+it does not re-clean unchanged index entries. The long-lived process driver takes
+precedence over the one-shot commands. These filters never prompt for credentials.
+Filters reread repository/generation-matched local key state for every request,
+including long-lived processes. Required
 filter errors never silently pass plaintext through. Without a key, clean rejects
 plaintext and directs you to `over unlock`; supported ciphertext may pass through
 without authentication. Locked smudge retains ciphertext. Malformed/unsupported
@@ -133,6 +246,10 @@ the local key. It preserves staged content rather than resetting to `HEAD`.
 Filters remain configured while locked. Unlock refreshes the linked worktrees
 together. Different access metadata must be reconciled before a common rotation.
 
+The native secret store shares this key: its operations fail while locked.
+Unlock restores access to it without converting its stored ciphertext into a
+plaintext working-tree file. See [native secrets](secrets.md#unlock-once).
+
 Untracked protected plaintext, policy overrides, symlinked protected ancestry,
 and unstaged protection declarations prevent lock. Representation changes retain
 executability and supported native access metadata; read-only destinations are
@@ -143,6 +260,9 @@ other programs, snapshots, backups, or keys already copied elsewhere. Delete doe
 not promise physical erasure from storage. Ordinary protected virtual diffs remain
 in Git's ciphertext domain. Generated-checkout comparisons explicitly decode
 protected snapshots while unlocked, and requested diffs can display rendered values.
+
+For opt-in systemd/Sway and macOS examples, see
+[lock/unlock automation recipes](crypt-automation.md).
 
 ## Protected generated snapshots
 
