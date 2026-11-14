@@ -88,6 +88,71 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn git(&self, arguments: &[&str]) {
+        let output = std::process::Command::new("git")
+            .current_dir(&self.source)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", self.temp.path().join("gitconfig"))
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn protect(&self) {
+        self.git(&["config", "user.name", "Snapshot tests"]);
+        self.git(&["config", "user.email", "snapshots@example.invalid"]);
+        self.command("user")
+            .current_dir(&self.source)
+            .args(["add", "owner", "--identity-output"])
+            .arg(self.temp.path().join("identity.age"))
+            .assert()
+            .success();
+        // Use new content: the ordinary fixture's public initial commit is intentionally retained.
+        fs::write(self.source.join("app/config.jinja"), "host={{ data.hostname }}\nfirst=protected-snapshot-sentinel\nmiddle=stable\nlast=base\n").unwrap();
+        fs::write(
+            self.source.join("app/plain"),
+            "protected-ordinary-sentinel\n",
+        )
+        .unwrap();
+        self.command("crypt")
+            .current_dir(&self.source)
+            .args(["add", "app/config.jinja", "app/plain"])
+            .assert()
+            .success();
+        self.git(&["add", "--all"]);
+        self.git(&["commit", "-qm", "protect snapshot sources"]);
+    }
+
+    fn assert_no_protected_plaintext(&self) {
+        let repo = self.repo();
+        let odb = repo.odb().unwrap();
+        odb.foreach(&mut |id: &git2::Oid| {
+            let object = odb.read(*id).unwrap();
+            if object.kind() == git2::ObjectType::Blob {
+                for sentinel in [
+                    "protected-snapshot-sentinel",
+                    "protected-ordinary-sentinel",
+                    "protected-reverse-sentinel",
+                ] {
+                    assert!(
+                        !object
+                            .data()
+                            .windows(sentinel.len())
+                            .any(|bytes| bytes == sentinel.as_bytes()),
+                        "persistent plaintext blob {id}"
+                    );
+                }
+            }
+            true
+        })
+        .unwrap();
+    }
+
     fn new(checkout: bool) -> Self {
         let temp = TempDir::new().unwrap();
         let source = temp.path().join("source");
@@ -111,13 +176,17 @@ impl Fixture {
     }
 
     fn command(&self, verb: &str) -> Command {
+        self.command_at(&self.source, verb)
+    }
+
+    fn command_at(&self, source: &Path, verb: &str) -> Command {
         let mut command = Command::cargo_bin("over").unwrap();
         command
             .env("XDG_STATE_HOME", self.temp.path().join("state"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", self.temp.path().join("gitconfig"))
             .arg("--home")
-            .arg(&self.source)
+            .arg(source)
             .arg(verb);
         command
     }
@@ -179,6 +248,1052 @@ impl Fixture {
         assert_eq!(ids.len(), 1);
         ids[0]
     }
+}
+
+#[test]
+fn generated_snapshots_protect_templates_and_ordinary_siblings_through_lock_and_unlock() {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("plain")).unwrap(),
+        "protected-ordinary-sentinel\n"
+    );
+    let repo = fixture.repo();
+    let snapshot = fixture.snapshot();
+    let tree = repo.find_commit(snapshot).unwrap().tree().unwrap();
+    for path in ["config", "plain"] {
+        let blob = repo
+            .find_blob(tree.get_path(Path::new(path)).unwrap().id())
+            .unwrap();
+        assert!(over::crypt::format::recognized(blob.content()));
+    }
+    fixture.assert_no_protected_plaintext();
+    fixture.sync().assert().success();
+    assert_eq!(
+        fixture.snapshot(),
+        snapshot,
+        "deterministic protected publication must be a no-op"
+    );
+    fixture.command("lock").assert().success();
+    assert!(!fixture.source.join(".git/over-crypt/key").exists());
+    fixture.sync().assert().failure();
+    fixture
+        .command("unlock")
+        .args(["--identity"])
+        .arg(fixture.temp.path().join("identity.age"))
+        .assert()
+        .success();
+    fixture.sync().assert().success();
+    assert_eq!(fixture.snapshot(), snapshot);
+    fixture.assert_no_protected_plaintext();
+}
+
+#[test]
+fn protected_reconciliation_merges_plaintext_and_publishes_only_ciphertext() {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    let target = fixture.target.join("config");
+    let edited = fs::read_to_string(&target)
+        .unwrap()
+        .replace("last=base", "last=local");
+    fs::write(&target, edited).unwrap();
+    let source = fixture.source.join("app/config.jinja");
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "first=protected-snapshot-sentinel",
+            "first=protected-snapshot-sentinel-upstream",
+        ),
+    )
+    .unwrap();
+    fixture.git(&["add", "app/config.jinja"]);
+    fixture.git(&["commit", "-qm", "update protected source"]);
+    fixture.sync().assert().success();
+    let merged = fs::read_to_string(&target).unwrap();
+    assert!(merged.contains("first=protected-snapshot-sentinel-upstream"));
+    assert!(merged.contains("last=local"));
+    fixture.assert_no_protected_plaintext();
+    fixture.restore("config", &[]);
+    assert!(!fs::read_to_string(&target).unwrap().contains("last=local"));
+    fixture.assert_no_protected_plaintext();
+}
+
+#[test]
+fn reverse_patches_keep_protected_sources_and_both_generated_journal_trees_encrypted() {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    let target = fixture.target.join("config");
+    fs::write(
+        &target,
+        fs::read_to_string(&target)
+            .unwrap()
+            .replace("last=base", "last=protected-reverse-sentinel"),
+    )
+    .unwrap();
+    fixture
+        .commit()
+        .args(["-m", "reverse protected edit"])
+        .assert()
+        .success();
+    assert!(
+        fs::read_to_string(fixture.source.join("app/config.jinja"))
+            .unwrap()
+            .contains("last=protected-reverse-sentinel")
+    );
+    let repo = fixture.repo();
+    let source_tree = repo.head().unwrap().peel_to_tree().unwrap();
+    let blob = repo
+        .find_blob(
+            source_tree
+                .get_path(Path::new("app/config.jinja"))
+                .unwrap()
+                .id(),
+        )
+        .unwrap();
+    assert!(over::crypt::format::recognized(blob.content()));
+    fixture.assert_no_protected_plaintext();
+    let head = repo.head().unwrap().target().unwrap();
+    fixture
+        .commit()
+        .args(["-m", "do not replay"])
+        .assert()
+        .success();
+    assert_eq!(fixture.repo().head().unwrap().target().unwrap(), head);
+    fixture.sync().assert().success();
+    fixture.command("lock").assert().success();
+    fixture
+        .command("unlock")
+        .arg("--identity")
+        .arg(fixture.temp.path().join("identity.age"))
+        .assert()
+        .success();
+    fixture.assert_no_protected_plaintext();
+}
+
+#[test]
+fn key_rotation_refuses_to_strand_protected_snapshot_bases_before_publishing_anything() {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    let key = fs::read(fixture.source.join(".git/over-crypt/key")).unwrap();
+    let registry = fs::read(fixture.source.join(".over/crypt/access.json")).unwrap();
+    let index = fs::read(fixture.source.join(".git/index")).unwrap();
+    let snapshot = fixture.snapshot();
+    fixture
+        .command("key")
+        .args(["rotate"])
+        .assert()
+        .failure()
+        .stderr(contains("would strand protected generated snapshots"));
+    assert_eq!(
+        fs::read(fixture.source.join(".git/over-crypt/key")).unwrap(),
+        key
+    );
+    assert_eq!(
+        fs::read(fixture.source.join(".over/crypt/access.json")).unwrap(),
+        registry
+    );
+    assert_eq!(fs::read(fixture.source.join(".git/index")).unwrap(), index);
+    assert_eq!(fixture.snapshot(), snapshot);
+}
+
+fn legacy_snapshot(fixture: &Fixture) -> git2::Oid {
+    let repo = fixture.repo();
+    let name = repo
+        .references_glob("refs/over/generated/*")
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .name()
+        .unwrap()
+        .to_owned();
+    legacy_snapshot_ref(fixture, &name)
+}
+
+fn legacy_snapshot_ref(fixture: &Fixture, reference: &str) -> git2::Oid {
+    fn rewrite(
+        repo: &git2::Repository,
+        id: git2::Oid,
+        key: Option<&over::crypt::format::RepositoryKey>,
+        replacements: &mut Vec<(git2::Oid, git2::Oid)>,
+    ) -> git2::Oid {
+        if let Some((_, new)) = replacements.iter().find(|(old, _)| *old == id) {
+            return *new;
+        }
+        let commit = repo.find_commit(id).unwrap();
+        let parents = commit
+            .parent_ids()
+            .map(|id| rewrite(repo, id, key, replacements))
+            .collect::<Vec<_>>();
+        let tree = commit.tree().unwrap();
+        let mut builder = git2::build::TreeUpdateBuilder::new();
+        for leaf in tree.iter() {
+            let blob = repo.find_blob(leaf.id()).unwrap();
+            if over::crypt::format::recognized(blob.content()) {
+                let plaintext = key.unwrap().decrypt(blob.content(), 0).unwrap();
+                builder.upsert(
+                    leaf.name().unwrap(),
+                    repo.blob(&plaintext).unwrap(),
+                    git2::FileMode::Blob,
+                );
+            }
+        }
+        let tree = repo
+            .find_tree(builder.create_updated(repo, &tree).unwrap())
+            .unwrap();
+        let parents = parents
+            .iter()
+            .map(|id| repo.find_commit(*id).unwrap())
+            .collect::<Vec<_>>();
+        let new = repo
+            .commit(
+                None,
+                &commit.author(),
+                &commit.committer(),
+                commit.summary().unwrap().unwrap(),
+                &tree,
+                &parents.iter().collect::<Vec<_>>(),
+            )
+            .unwrap();
+        replacements.push((id, new));
+        new
+    }
+    let repo = fixture.repo();
+    let key = over::crypt::access::local_key(&repo).ok();
+    let old = repo.refname_to_id(reference).unwrap();
+    let mut replacements = Vec::new();
+    let new = rewrite(&repo, old, key.as_ref(), &mut replacements);
+    repo.reference(reference, new, true, "legacy fixture")
+        .unwrap();
+    let state = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let mut text = fs::read_to_string(&state).unwrap();
+    for (old, new) in replacements {
+        text = text.replace(&old.to_string(), &new.to_string());
+    }
+    fs::write(state, text).unwrap();
+    new
+}
+
+#[rstest]
+#[case("loose")]
+#[case("packed")]
+#[case("alternate")]
+fn legacy_migration_rewrites_history_but_does_not_claim_unreachable_plaintext_was_erased(
+    #[case] storage: &str,
+) {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    let legacy = legacy_snapshot(&fixture);
+    if storage == "packed" {
+        fixture.git(&["repack", "-ad"]);
+    } else if storage == "alternate" {
+        let alternate =
+            git2::Repository::init_bare(fixture.temp.path().join("alternate.git")).unwrap();
+        let repo = fixture.repo();
+        let odb = repo.odb().unwrap();
+        odb.foreach(&mut |id: &git2::Oid| {
+            let object = odb.read(*id).unwrap();
+            if object.kind() == git2::ObjectType::Blob
+                && object
+                    .data()
+                    .windows(b"sentinel".len())
+                    .any(|bytes| bytes == b"sentinel")
+            {
+                alternate.blob(object.data()).unwrap();
+            }
+            true
+        })
+        .unwrap();
+        fs::write(
+            fixture.source.join(".git/objects/info/alternates"),
+            format!("{}\n", alternate.path().join("objects").display()),
+        )
+        .unwrap();
+    }
+    let key = fs::read(fixture.source.join(".git/over-crypt/key")).unwrap();
+    fixture
+        .command("lock")
+        .assert()
+        .failure()
+        .stderr(contains("known protected plaintext Git objects remain"));
+    assert_ne!(fixture.snapshot(), legacy);
+    assert_eq!(
+        fs::read(fixture.source.join(".git/over-crypt/key")).unwrap(),
+        key
+    );
+    let migrated = fixture.snapshot();
+    fixture
+        .command("unlock")
+        .assert()
+        .failure()
+        .stderr(contains("known protected plaintext Git objects remain"));
+    assert_eq!(
+        fixture.snapshot(),
+        migrated,
+        "migration must be idempotent while cleanup is pending"
+    );
+    fixture
+        .command("crypt")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(contains("known protected plaintext Git objects remain"));
+    // Only this isolated fixture deliberately expires Git recovery data to verify actual erasure.
+    fixture.git(&["reflog", "expire", "--expire=now", "--all"]);
+    fixture.git(&["gc", "--prune=now"]);
+    if storage == "alternate" {
+        fixture
+            .command("lock")
+            .assert()
+            .failure()
+            .stderr(contains("known protected plaintext Git objects remain"));
+        fs::remove_file(fixture.source.join(".git/objects/info/alternates")).unwrap();
+    }
+    fixture.command("lock").assert().success();
+    fixture
+        .command("unlock")
+        .arg("--identity")
+        .arg(fixture.temp.path().join("identity.age"))
+        .assert()
+        .success();
+    fixture.sync().assert().success();
+    fixture.assert_no_protected_plaintext();
+}
+
+#[test]
+fn protected_reverse_patches_preserve_independent_unstaged_source_edits() {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    let target = fixture.target.join("config");
+    fs::write(
+        &target,
+        fs::read_to_string(&target).unwrap().replace(
+            "first=protected-snapshot-sentinel",
+            "first=protected-reverse-sentinel",
+        ),
+    )
+    .unwrap();
+    let source = fixture.source.join("app/config.jinja");
+    fs::write(
+        &source,
+        fs::read_to_string(&source)
+            .unwrap()
+            .replace("last=base", "last=unstaged"),
+    )
+    .unwrap();
+    fixture
+        .commit()
+        .args(["-m", "preserve unstaged source edits"])
+        .assert()
+        .success();
+    let physical = fs::read_to_string(&source).unwrap();
+    assert!(physical.contains("first=protected-reverse-sentinel"));
+    assert!(physical.contains("last=unstaged"));
+    let repo = fixture.repo();
+    let index = repo.index().unwrap();
+    let blob = repo
+        .find_blob(index.get_path(Path::new("app/config.jinja"), 0).unwrap().id)
+        .unwrap();
+    let key = over::crypt::access::local_key(&repo).unwrap();
+    let canonical = key.decrypt(blob.content(), 0).unwrap();
+    let text = std::str::from_utf8(&canonical).unwrap();
+    assert!(text.contains("first=protected-reverse-sentinel"));
+    assert!(text.contains("last=base"));
+    fixture.assert_no_protected_plaintext();
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn failed_protected_reverse_patches_do_not_publish_plaintext_or_overwrite_sources(
+    #[case] publication_failure: bool,
+) {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    let source = fs::read(fixture.source.join("app/config.jinja")).unwrap();
+    let index = fs::read(fixture.source.join(".git/index")).unwrap();
+    let snapshot = fixture.snapshot();
+    let target = fixture.target.join("config");
+    let text = fs::read_to_string(&target).unwrap();
+    let edited = if publication_failure {
+        let repo = fixture.repo();
+        let reference = repo.head().unwrap().name().unwrap().to_owned();
+        fs::write(
+            repo.path().join(format!("{reference}.lock")),
+            b"concurrent writer",
+        )
+        .unwrap();
+        text.replace(
+            "first=protected-snapshot-sentinel",
+            "first=protected-reverse-sentinel",
+        )
+    } else {
+        text.replace("host=first", "host=protected-reverse-sentinel")
+    };
+    fs::write(&target, &edited).unwrap();
+    fixture
+        .commit()
+        .args(["-m", "rejected protected edit"])
+        .assert()
+        .failure();
+    assert_eq!(
+        fs::read(fixture.source.join("app/config.jinja")).unwrap(),
+        source
+    );
+    assert_eq!(fs::read(fixture.source.join(".git/index")).unwrap(), index);
+    assert_eq!(fixture.snapshot(), snapshot);
+    assert_eq!(fs::read_to_string(target).unwrap(), edited);
+    fixture.assert_no_protected_plaintext();
+}
+
+#[rstest]
+#[case(false, false, false)]
+#[case(true, false, false)]
+#[case(false, true, false)]
+#[case(true, true, false)]
+#[case(true, true, true)]
+fn interrupted_snapshot_migration_recovers_both_ref_and_state_publication(
+    #[case] ref_published: bool,
+    #[case] state_published: bool,
+    #[case] cleanup_locked: bool,
+) {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    let old = legacy_snapshot(&fixture);
+    let state_path = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let old_text = fs::read_to_string(&state_path).unwrap();
+    let old_state: toml::Value = toml::from_str(&old_text).unwrap();
+    fixture.command("lock").assert().failure();
+    let new = fixture.snapshot();
+    let new_text = fs::read_to_string(&state_path).unwrap();
+    let new_state: toml::Value = toml::from_str(&new_text).unwrap();
+    let repo = fixture.repo();
+    let reference = repo
+        .references_glob("refs/over/generated/*")
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .name()
+        .unwrap()
+        .to_owned();
+    let ledger_path = fixture
+        .source
+        .join(".git/over-crypt/generated-snapshots.json");
+    let mut ledger: serde_json::Value =
+        serde_json::from_slice(&fs::read(&ledger_path).unwrap()).unwrap();
+    let mut refs = serde_json::Map::new();
+    refs.insert(
+        reference.clone(),
+        serde_json::json!([old.to_string(), new.to_string()]),
+    );
+    let retained = format!(
+        "refs/over/generated-retained/{}/{old}",
+        reference.strip_prefix("refs/over/generated/").unwrap()
+    );
+    let retained_lock = repo.path().join(format!("{retained}.lock"));
+    if cleanup_locked {
+        repo.reference(&retained, new, true, "retained ref awaiting cleanup")
+            .unwrap();
+        refs.insert(
+            retained.clone(),
+            serde_json::json!([old.to_string(), new.to_string()]),
+        );
+        fs::write(&retained_lock, b"cleanup is temporarily blocked").unwrap();
+    }
+    let records: serde_json::Map<String, serde_json::Value> = old_state["state"]["checkouts"]
+        .as_table()
+        .unwrap()
+        .iter()
+        .map(|(name, old)| {
+            (
+                name.clone(),
+                serde_json::json!([old, new_state["state"]["checkouts"][name].clone()]),
+            )
+        })
+        .collect();
+    ledger["pending"] = serde_json::json!({
+        "administrative": fs::canonicalize(repo.commondir()).unwrap(),
+        "refs": refs,
+        "records": records,
+        "replacements": [new.to_string()],
+    });
+    fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+    repo.reference(
+        &format!("refs/over/crypt-migration/{new}"),
+        new,
+        true,
+        "migration recovery fixture",
+    )
+    .unwrap();
+    if !ref_published {
+        repo.reference(&reference, old, true, "interrupted migration")
+            .unwrap();
+    }
+    if !state_published {
+        fs::write(&state_path, old_text).unwrap();
+    }
+    let before_ref = fixture.snapshot();
+    let before_state = fs::read(&state_path).unwrap();
+    for verb in ["sync", "commit", "unapply"] {
+        let mut command = match verb {
+            "sync" => fixture.sync(),
+            "commit" => fixture.commit(),
+            _ => {
+                let mut command = fixture.command(verb);
+                command.args(["app", "--target"]).arg(&fixture.target);
+                command
+            }
+        };
+        command
+            .assert()
+            .failure()
+            .stderr(contains("generated snapshot migration interrupted"));
+        assert_eq!(fixture.snapshot(), before_ref);
+        assert_eq!(fs::read(&state_path).unwrap(), before_state);
+    }
+    let recovered = fixture.command("crypt").arg("recover").assert().failure();
+    if !cleanup_locked {
+        recovered.stderr(contains("known protected plaintext Git objects remain"));
+    }
+    assert_eq!(fixture.snapshot(), new);
+    assert_eq!(fs::read_to_string(&state_path).unwrap(), new_text);
+    let ledger: serde_json::Value =
+        serde_json::from_slice(&fs::read(ledger_path).unwrap()).unwrap();
+    assert!(ledger["pending"].is_null());
+    if cleanup_locked {
+        assert!(
+            repo.find_reference(&retained).is_ok(),
+            "unfinished cleanup must not invalidate a pending intent"
+        );
+        fs::remove_file(retained_lock).unwrap();
+        fixture
+            .command("unlock")
+            .assert()
+            .failure()
+            .stderr(contains("known protected plaintext Git objects remain"));
+        assert!(repo.find_reference(&retained).is_err());
+    }
+    assert!(
+        repo.find_reference(&format!("refs/over/crypt-migration/{new}"))
+            .is_err()
+    );
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn a_renamed_public_template_cannot_declassify_older_protected_renderings(
+    #[case] lost_source_ancestry: bool,
+) {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    let original = fs::read(fixture.target.join("config")).unwrap();
+    let exposed = git2::Oid::hash_object(git2::ObjectType::Blob, &original).unwrap();
+    fs::remove_file(fixture.source.join("app/config.jinja")).unwrap();
+    fs::write(
+        fixture.source.join("app/config.tmpl"),
+        "host={{ data.hostname }}\npublic=output\n",
+    )
+    .unwrap();
+    let descriptor = fixture.source.join("app/over.yaml");
+    fs::write(
+        &descriptor,
+        fs::read_to_string(&descriptor)
+            .unwrap()
+            .replace("**/*.jinja", "**/*.tmpl"),
+    )
+    .unwrap();
+    if lost_source_ancestry {
+        fixture
+            .command("crypt")
+            .current_dir(&fixture.source)
+            .args(["remove", "app/plain", "--yes"])
+            .assert()
+            .success();
+        fs::write(fixture.source.join("app/plain"), "a new public sibling\n").unwrap();
+    }
+    fixture.git(&["add", "--all"]);
+    if lost_source_ancestry {
+        let repo = fixture.repo();
+        let tree = repo
+            .find_tree(repo.index().unwrap().write_tree().unwrap())
+            .unwrap();
+        let signature = git2::Signature::now("Test", "test@example.invalid").unwrap();
+        let orphan = repo
+            .commit(
+                None,
+                &signature,
+                &signature,
+                "replacement source history",
+                &tree,
+                &[],
+            )
+            .unwrap();
+        let mut head = repo.head().unwrap();
+        head.set_target(orphan, "simulate replaced source ancestry")
+            .unwrap();
+    } else {
+        fixture.git(&[
+            "commit",
+            "-qm",
+            "replace the protected template with a public source",
+        ]);
+    }
+    fixture.sync().assert().success();
+    let legacy = legacy_snapshot(&fixture);
+    fixture
+        .command("lock")
+        .assert()
+        .failure()
+        .stderr(contains("known protected plaintext Git objects remain"));
+    assert_ne!(fixture.snapshot(), legacy);
+    assert!(fixture.source.join(".git/over-crypt/key").exists());
+    let repo = fixture.repo();
+    let tip = repo.find_commit(fixture.snapshot()).unwrap();
+    let blob = repo
+        .find_blob(
+            tip.tree()
+                .unwrap()
+                .get_path(Path::new("config"))
+                .unwrap()
+                .id(),
+        )
+        .unwrap();
+    assert!(
+        over::crypt::format::recognized(blob.content()),
+        "unknown historical renderings must be conservatively protected"
+    );
+    let ledger: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            fixture
+                .source
+                .join(".git/over-crypt/generated-snapshots.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        ledger["leaked"]
+            .as_array()
+            .unwrap()
+            .contains(&exposed.to_string().into())
+    );
+}
+
+#[test]
+fn legacy_snapshot_migration_uses_each_linked_worktrees_own_source_root() {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    legacy_snapshot(&fixture);
+    let linked = fixture.temp.path().join("linked");
+    fixture.git(&["worktree", "add", "-qb", "linked", linked.to_str().unwrap()]);
+    let descriptor = linked.join("app/over.yaml");
+    fs::write(
+        &descriptor,
+        fs::read_to_string(&descriptor)
+            .unwrap()
+            .replace("hostname: first", "hostname: linked"),
+    )
+    .unwrap();
+    let output = std::process::Command::new("git")
+        .current_dir(&linked)
+        .args(["commit", "-qam", "linked rendering context"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let target = fixture.temp.path().join("linked-target");
+    fixture
+        .command_at(&linked, "apply")
+        .args(["app", "--no-prompt", "--target"])
+        .arg(&target)
+        .assert()
+        .success();
+    let repo = fixture.repo();
+    let references = repo
+        .references_glob("refs/over/generated/*")
+        .unwrap()
+        .map(|reference| reference.unwrap().name().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(references.len(), 2);
+    for reference in &references {
+        legacy_snapshot_ref(&fixture, reference);
+    }
+    fixture
+        .command("lock")
+        .assert()
+        .failure()
+        .stderr(contains("known protected plaintext Git objects remain"));
+    fixture.git(&["reflog", "expire", "--expire=now", "--all"]);
+    fixture.git(&["gc", "--prune=now"]);
+    fixture.command_at(&linked, "lock").assert().success();
+    fixture
+        .command_at(&linked, "unlock")
+        .arg("--identity")
+        .arg(fixture.temp.path().join("identity.age"))
+        .assert()
+        .success();
+    fixture.sync().assert().success();
+    fixture
+        .command_at(&linked, "sync")
+        .args(["app", "--no-prompt", "--target"])
+        .arg(&target)
+        .assert()
+        .success();
+    assert!(
+        fs::read_to_string(target.join("config"))
+            .unwrap()
+            .contains("host=linked")
+    );
+    fixture.assert_no_protected_plaintext();
+}
+
+#[cfg(unix)]
+#[test]
+fn legacy_snapshot_provenance_resolves_logical_source_aliases() {
+    let mut fixture = Fixture::new(true);
+    let alias = fixture.temp.path().join("source-alias");
+    std::os::unix::fs::symlink(&fixture.source, &alias).unwrap();
+    fixture.source = alias;
+    fixture.protect();
+    fixture.apply();
+    legacy_snapshot(&fixture);
+    fixture
+        .command("lock")
+        .assert()
+        .failure()
+        .stderr(contains("known protected plaintext Git objects remain"));
+}
+
+#[test]
+fn unencrypted_legacy_snapshots_support_no_op_ordinary_and_reverse_commits_without_a_key() {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    legacy_snapshot(&fixture);
+    fixture
+        .commit()
+        .assert()
+        .success()
+        .stdout(contains("nothing to commit"));
+    fs::write(fixture.target.join("plain"), "ordinary sibling edit\n").unwrap();
+    fixture.stage("plain");
+    fixture
+        .commit()
+        .arg(fixture.target.join("plain"))
+        .assert()
+        .success();
+    legacy_snapshot(&fixture);
+    let target = fixture.target.join("config");
+    fs::write(
+        &target,
+        fs::read_to_string(&target)
+            .unwrap()
+            .replace("first=base", "first=edited"),
+    )
+    .unwrap();
+    fixture.commit().arg(&target).assert().success();
+    assert!(
+        fs::read_to_string(fixture.source.join("app/config.jinja"))
+            .unwrap()
+            .contains("first=edited")
+    );
+    assert!(!fixture.source.join(".over/crypt/access.json").exists());
+    assert!(!fixture.source.join(".git/over-crypt/key").exists());
+}
+
+#[test]
+fn interrupted_unencrypted_legacy_sync_finishes_without_enabling_encryption() {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    let source = fixture.source.join("app/config.jinja");
+    fs::write(
+        &source,
+        fs::read_to_string(&source)
+            .unwrap()
+            .replace("last=base", "last=upstream"),
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    fixture.sync().assert().success();
+    let pending = legacy_snapshot(&fixture);
+    let repo = fixture.repo();
+    let base = repo.find_commit(pending).unwrap().parent_id(0).unwrap();
+    let path = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let mut metadata: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let generated = metadata["state"]["checkouts"]
+        .as_table_mut()
+        .unwrap()
+        .iter_mut()
+        .next()
+        .unwrap()
+        .1["generated"]
+        .as_table_mut()
+        .unwrap();
+    generated.insert("base".into(), base.to_string().into());
+    generated.insert("pending".into(), pending.to_string().into());
+    fs::write(path, toml::to_string(&metadata).unwrap()).unwrap();
+    repo.references_glob("refs/over/generated/*")
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .set_target(base, "interrupted legacy pending sync")
+        .unwrap();
+    fixture.sync().assert().success();
+    assert_eq!(fixture.snapshot(), pending);
+    fixture.sync().assert().success();
+    assert!(
+        fs::read_to_string(fixture.target.join("config"))
+            .unwrap()
+            .contains("last=upstream")
+    );
+    assert!(!fixture.source.join(".over/crypt/access.json").exists());
+}
+
+#[test]
+fn an_orphan_legacy_snapshot_blocks_lifecycle_without_guessing_its_protection() {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    let legacy = legacy_snapshot(&fixture);
+    fs::remove_file(fixture.temp.path().join("state/over/virtual_checkout.toml")).unwrap();
+    fixture
+        .command("lock")
+        .assert()
+        .failure()
+        .stderr(contains("orphan legacy generated snapshot"));
+    assert_eq!(fixture.snapshot(), legacy);
+    assert!(fixture.source.join(".git/over-crypt/key").exists());
+    fixture
+        .command("crypt")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(contains(
+            "legacy generated snapshots need provenance migration",
+        ));
+}
+
+#[test]
+fn an_unreferenced_legacy_snapshot_left_by_failed_publication_is_still_diagnosed() {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    let legacy = legacy_snapshot(&fixture);
+    fs::remove_file(fixture.temp.path().join("state/over/virtual_checkout.toml")).unwrap();
+    let repo = fixture.repo();
+    repo.references_glob("refs/over/generated/*")
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .delete()
+        .unwrap();
+    assert!(repo.find_commit(legacy).is_ok());
+    fixture
+        .command("lock")
+        .assert()
+        .failure()
+        .stderr(contains("orphan legacy generated snapshot").and(contains("object database")));
+    assert!(fixture.source.join(".git/over-crypt/key").exists());
+}
+
+#[test]
+fn legacy_migration_preserves_reverse_snapshot_parentage_and_source_history() {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    let target = fixture.target.join("config");
+    fs::write(
+        &target,
+        fs::read_to_string(&target)
+            .unwrap()
+            .replace("last=base", "last=protected-reverse-sentinel"),
+    )
+    .unwrap();
+    fixture.commit().assert().success();
+    let head = fixture.repo().head().unwrap().target();
+    let legacy = legacy_snapshot(&fixture);
+    assert_eq!(
+        fixture.repo().find_commit(legacy).unwrap().parent_count(),
+        2
+    );
+    fixture
+        .command("lock")
+        .assert()
+        .failure()
+        .stderr(contains("known protected plaintext Git objects remain"));
+    assert_eq!(
+        fixture
+            .repo()
+            .find_commit(fixture.snapshot())
+            .unwrap()
+            .parent_count(),
+        2
+    );
+    assert_eq!(fixture.repo().head().unwrap().target(), head);
+    fixture.git(&["reflog", "expire", "--expire=now", "--all"]);
+    fixture.git(&["gc", "--prune=now"]);
+    fixture.command("lock").assert().success();
+    fixture
+        .command("unlock")
+        .arg("--identity")
+        .arg(fixture.temp.path().join("identity.age"))
+        .assert()
+        .success();
+    fixture.sync().assert().success();
+    fixture.assert_no_protected_plaintext();
+}
+
+#[test]
+fn pending_protected_snapshots_survive_object_cleanup_until_publication_finishes() {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    let repo = fixture.repo();
+    let parent = repo.find_commit(fixture.snapshot()).unwrap();
+    let tree = parent.tree().unwrap();
+    let key = over::crypt::access::local_key(&repo).unwrap();
+    let rendered = fs::read_to_string(fixture.target.join("config"))
+        .unwrap()
+        .replace("middle=stable", "middle=pending");
+    let mut builder = git2::build::TreeUpdateBuilder::new();
+    builder.upsert(
+        "config",
+        repo.blob(&key.encrypt(rendered.as_bytes(), 0).unwrap())
+            .unwrap(),
+        git2::FileMode::Blob,
+    );
+    let tree = repo
+        .find_tree(builder.create_updated(&repo, &tree).unwrap())
+        .unwrap();
+    let pending = repo
+        .commit(
+            None,
+            &parent.author(),
+            &parent.committer(),
+            parent.message().unwrap(),
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+    let path = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let mut state: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let generated = &mut state["state"]["checkouts"]
+        .as_table_mut()
+        .unwrap()
+        .iter_mut()
+        .next()
+        .unwrap()
+        .1["generated"];
+    generated
+        .as_table_mut()
+        .unwrap()
+        .insert("pending".into(), pending.to_string().into());
+    fs::write(&path, toml::to_string(&state).unwrap()).unwrap();
+    fixture.command("lock").assert().success();
+    fixture.git(&["reflog", "expire", "--expire=now", "--all"]);
+    fixture.git(&["gc", "--prune=now"]);
+    assert!(
+        fixture.repo().find_commit(pending).is_ok(),
+        "XDG-only pending content needs a retention ref during cleanup"
+    );
+    fixture
+        .command("unlock")
+        .arg("--identity")
+        .arg(fixture.temp.path().join("identity.age"))
+        .assert()
+        .success();
+    fixture.sync().assert().success();
+    assert_eq!(fixture.snapshot(), pending);
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("config")).unwrap(),
+        rendered
+    );
+    // Completing a pending operation precedes reconciliation with the current source/context.
+    fixture.sync().assert().success();
+    fixture
+        .command("unapply")
+        .args(["app", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .success();
+    assert_eq!(
+        fixture
+            .repo()
+            .references_glob("refs/over/generated-retained/*")
+            .unwrap()
+            .count(),
+        0
+    );
+    fixture.assert_no_protected_plaintext();
+}
+
+#[test]
+fn ciphertext_authentication_failure_never_replaces_local_rendered_content() {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fixture.apply();
+    let target = fs::read(fixture.target.join("config")).unwrap();
+    let repo = fixture.repo();
+    let parent = repo.find_commit(fixture.snapshot()).unwrap();
+    let old_tree = parent.tree().unwrap();
+    let mut ciphertext = repo
+        .find_blob(old_tree.get_path(Path::new("config")).unwrap().id())
+        .unwrap()
+        .content()
+        .to_vec();
+    *ciphertext.last_mut().unwrap() ^= 1;
+    let mut builder = git2::build::TreeUpdateBuilder::new();
+    builder.upsert(
+        "config",
+        repo.blob(&ciphertext).unwrap(),
+        git2::FileMode::Blob,
+    );
+    let tree = repo
+        .find_tree(builder.create_updated(&repo, &old_tree).unwrap())
+        .unwrap();
+    let corrupt = repo
+        .commit(
+            None,
+            &parent.author(),
+            &parent.committer(),
+            parent.message().unwrap(),
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+    let mut reference = repo
+        .references_glob("refs/over/generated/*")
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    reference.set_target(corrupt, "tampered fixture").unwrap();
+    let state_path = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let state = fs::read_to_string(&state_path)
+        .unwrap()
+        .replace(&parent.id().to_string(), &corrupt.to_string());
+    fs::write(&state_path, &state).unwrap();
+    fixture.sync().assert().failure();
+    fixture.command("lock").assert().failure();
+    assert_eq!(fs::read(fixture.target.join("config")).unwrap(), target);
+    assert_eq!(fs::read_to_string(state_path).unwrap(), state);
+    fixture.assert_no_protected_plaintext();
 }
 
 fn commit_all(repo: &git2::Repository) {
@@ -859,19 +1974,36 @@ fn checkout_templates_store_complete_snapshots_and_merge_disjoint_local_edits() 
     );
 }
 
-#[test]
-fn overlapping_checkout_edits_remain_conflicted_after_the_desired_ref_advances() {
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn overlapping_checkout_edits_remain_conflicted_after_the_desired_ref_advances(
+    #[case] protected: bool,
+) {
     let fixture = Fixture::new(true);
+    if protected {
+        fixture.protect();
+    }
     fixture.apply();
     let first = fixture.snapshot();
     let source = fixture.source.join("app/config.jinja");
     let original = fs::read_to_string(&source).unwrap();
-    fs::write(&source, original.replace("first=base", "first=upstream")).unwrap();
-    commit_all(&fixture.repo());
+    let first_line = if protected {
+        "first=protected-snapshot-sentinel"
+    } else {
+        "first=base"
+    };
+    fs::write(&source, original.replace(first_line, "first=upstream")).unwrap();
+    if protected {
+        fixture.git(&["add", "app/config.jinja"]);
+        fixture.git(&["commit", "-qm", "update protected source"]);
+    } else {
+        commit_all(&fixture.repo());
+    }
     let destination = fixture.target.join("config");
     let local = fs::read_to_string(&destination)
         .unwrap()
-        .replace("first=base", "first=local");
+        .replace(first_line, "first=local");
     fs::write(&destination, &local).unwrap();
     fixture
         .sync()
@@ -881,6 +2013,16 @@ fn overlapping_checkout_edits_remain_conflicted_after_the_desired_ref_advances()
     let second = fixture.snapshot();
     assert_ne!(first, second);
     assert_eq!(fs::read_to_string(&destination).unwrap(), local);
+    if protected {
+        fixture.command("lock").assert().success();
+        fixture
+            .command("unlock")
+            .arg("--identity")
+            .arg(fixture.temp.path().join("identity.age"))
+            .assert()
+            .success();
+        fixture.assert_no_protected_plaintext();
+    }
     fixture.sync().assert().failure();
     assert_eq!(fixture.snapshot(), second);
     assert_eq!(fs::read_to_string(&destination).unwrap(), local);
@@ -906,9 +2048,14 @@ fn overlapping_checkout_edits_remain_conflicted_after_the_desired_ref_advances()
     fixture.sync().assert().success();
 }
 
-#[test]
-fn reporting_and_previews_do_not_write_generated_objects_or_state() {
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn reporting_and_previews_do_not_write_generated_objects_or_state(#[case] protected: bool) {
     let fixture = Fixture::new(true);
+    if protected {
+        fixture.protect();
+    }
     let repo = fixture.repo();
     let count = || {
         let mut count = 0;
@@ -935,7 +2082,9 @@ fn reporting_and_previews_do_not_write_generated_objects_or_state() {
         .assert()
         .success();
     assert_eq!(count(), before);
-    assert!(!fixture.temp.path().join("state").exists());
+    if !protected {
+        assert!(!fixture.temp.path().join("state").exists());
+    }
     fixture.apply();
     let before = count();
     let state = fixture.temp.path().join("state/over/virtual_checkout.toml");
@@ -948,7 +2097,12 @@ fn reporting_and_previews_do_not_write_generated_objects_or_state() {
             .replace("last=base", "last=upstream"),
     )
     .unwrap();
-    commit_all(&repo);
+    if protected {
+        fixture.git(&["add", "app/config.jinja"]);
+        fixture.git(&["commit", "-qm", "update protected source"]);
+    } else {
+        commit_all(&repo);
+    }
     let after_commit = count();
     assert!(after_commit > before);
     fixture
@@ -967,6 +2121,9 @@ fn reporting_and_previews_do_not_write_generated_objects_or_state() {
     fixture.sync().arg("--dry-run").assert().success();
     assert_eq!(count(), after_commit);
     assert_eq!(fs::read(state).unwrap(), metadata);
+    if protected {
+        fixture.assert_no_protected_plaintext();
+    }
     assert!(
         fs::read_to_string(fixture.target.join("config"))
             .unwrap()

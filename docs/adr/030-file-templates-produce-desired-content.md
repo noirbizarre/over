@@ -56,7 +56,21 @@ Rendering is deterministic for fixed source/inputs and leaves source templates
 untouched. Context-only changes can update a checkout without a source commit.
 Local modifications are distinct from generated desired history.
 
-Rendered artifacts and Git snapshots may contain plaintext secrets. Local refs
-neither encrypt nor protect them; explicit refspecs or mirror pushes can publish
-the generated namespace. Over does not configure automatic publication. Removing
-a ref does not securely erase its objects.
+Generated snapshot entries inherit source encryption policy, including ordinary
+siblings. A versioned commit-message manifest retains per-entry provenance without
+reserving a destination filename. Shared strict storage boundaries encrypt before
+persistent blob publication and authenticate before plaintext reconciliation or
+reverse patching. Both desired and consumed-render snapshots use this boundary.
+
+Lock/unlock migrate known legacy snapshots recoverably, retaining a ledger of
+leaked object IDs until actual object cleanup is verified. Unknown historical
+ownership blocks completion; output without affirmative public-source evidence is
+conservatively encrypted rather than silently classified as public. Key-independent
+legacy comparisons do not certify inherited history through a new manifest.
+Key rotation refuses to strand operational protected snapshots.
+
+Rendered physical artifacts and snapshots from unprotected sources may contain
+plaintext secrets. Local refs themselves neither encrypt nor protect content;
+explicit refspecs or mirror pushes can publish the generated namespace. Over does
+not configure automatic publication. Removing a ref does not securely erase its
+objects.

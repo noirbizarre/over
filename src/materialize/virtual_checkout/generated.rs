@@ -13,7 +13,7 @@ use crate::desired::{DesiredEntry, Provenance};
 use crate::materialize::disposal::{PathGuard, validate_relative_ancestors};
 use crate::plan::{ActualState, Operation, actual};
 
-use super::{git, state};
+use super::{generated_snapshot, git, state};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GeneratedState {
@@ -140,27 +140,17 @@ fn same(left: Option<&RenderedFile>, right: Option<&RenderedFile>) -> bool {
     }
 }
 
-fn tree_inventory(
+pub(crate) fn tree_inventory(
     repo: &Repository,
     commit: &str,
-    sources: &BTreeMap<PathBuf, PathBuf>,
+    record: &state::VirtualCheckoutRecord,
 ) -> Result<RenderedInventory> {
-    let tree = repo.find_commit(Oid::from_str(commit)?)?.tree()?;
-    git::tracked_entries(&tree)?
-        .into_iter()
-        .map(|(path, (id, mode))| {
-            let bytes = repo.find_blob(id)?.content().to_vec().into();
-            let file = RenderedFile {
-                source: sources.get(&path).cloned().unwrap_or_default(),
-                bytes,
-                mode,
-                identity: id.to_string(),
-                generated: sources.contains_key(&path),
-                permissions: None,
-            };
-            Ok((path, file))
-        })
-        .collect()
+    if let Some(inventory) = generated_snapshot::read(repo, Oid::from_str(commit)?)? {
+        return Ok(inventory);
+    }
+    let commit = repo.find_commit(Oid::from_str(commit)?)?;
+    let manifest = super::generated_migration::legacy_plain_manifest(repo, &commit, record)?;
+    generated_snapshot::inventory(repo, &commit, manifest)
 }
 
 fn desired(entry: &DesiredEntry, repo: &Repository, managed: &Path) -> Result<RenderedInventory> {
@@ -173,9 +163,16 @@ fn desired(entry: &DesiredEntry, repo: &Repository, managed: &Path) -> Result<Re
     git::scoped_entries(repo, &head, managed, &entry.intent.checkout_scope())?
         .into_iter()
         .map(|(path, (id, mode))| {
+            let protection =
+                crate::crypt::protection::Protection::for_path(repo, &managed.join(&path))?;
             let file = RenderedFile {
+                protection,
+                source_revision: Some(repo.head()?.peel_to_commit()?.id().to_string()),
                 source: root.join(&path),
-                bytes: repo.find_blob(id)?.content().to_vec().into(),
+                bytes: protection
+                    .decode(repo, repo.find_blob(id)?.content())?
+                    .to_vec()
+                    .into(),
                 mode,
                 identity: id.to_string(),
                 generated: false,
@@ -214,6 +211,8 @@ fn local(root: &Path, path: &Path) -> Result<Option<RenderedFile>> {
         i32::from(git::on_disk_filemode(&target)?)
     };
     Ok(Some(RenderedFile {
+        protection: Default::default(),
+        source_revision: None,
         source: target,
         bytes: bytes.into(),
         identity: String::new(),
@@ -280,10 +279,7 @@ pub(crate) fn analyze(
         let mut inventory = tree_inventory(
             &repo,
             pending,
-            generated
-                .pending_sources
-                .as_ref()
-                .unwrap_or(&generated.sources),
+            record.context("missing pending snapshot association")?,
         )?;
         for (path, permissions) in &generated.permissions {
             if let Some(file) = inventory.get_mut(path) {
@@ -296,7 +292,11 @@ pub(crate) fn analyze(
     };
     let mut base = if let Some(generated) = generated.filter(|generated| !generated.base.is_empty())
     {
-        tree_inventory(&repo, &generated.base, &generated.sources)?
+        tree_inventory(
+            &repo,
+            &generated.base,
+            record.context("missing generated snapshot association")?,
+        )?
     } else if let Some(record) =
         record.filter(|record| !record.initializing && !record.base_oid.is_empty())
     {
@@ -305,11 +305,18 @@ pub(crate) fn analyze(
         git::scoped_entries(&repo, &tree, &managed, &record.scope)?
             .into_iter()
             .map(|(path, (id, mode))| {
+                let protection =
+                    crate::crypt::protection::Protection::for_path(&repo, &managed.join(&path))?;
                 Ok((
                     path.clone(),
                     RenderedFile {
+                        protection,
+                        source_revision: Some(record.base_oid.clone()),
                         source: root.join(path),
-                        bytes: repo.find_blob(id)?.content().to_vec().into(),
+                        bytes: protection
+                            .decode(&repo, repo.find_blob(id)?.content())?
+                            .to_vec()
+                            .into(),
                         identity: id.to_string(),
                         mode,
                         generated: false,
@@ -323,7 +330,12 @@ pub(crate) fn analyze(
     };
     if let Some(generated) = generated {
         for (path, commit) in &generated.reverse_observed {
-            if let Some(observed) = tree_inventory(&repo, commit, &generated.sources)?.remove(path)
+            if let Some(observed) = tree_inventory(
+                &repo,
+                commit,
+                record.context("missing consumed snapshot association")?,
+            )?
+            .remove(path)
             {
                 base.insert(path.clone(), observed);
             }
@@ -371,7 +383,12 @@ pub(crate) fn analyze(
         }
         let previous_conflict = generated.and_then(|generated| generated.conflicts.get(&path));
         if let Some(commit) = previous_conflict.filter(|commit| !commit.is_empty()) {
-            base = tree_inventory(&repo, commit, &BTreeMap::new())?.remove(&path);
+            base = tree_inventory(
+                &repo,
+                commit,
+                record.context("missing conflict snapshot association")?,
+            )?
+            .remove(&path);
         }
         if let Some(generated) = generated
             && generated.pending.is_some()
@@ -510,12 +527,7 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
     }
     let (overlay, root) = source(entry)?;
     let (repo, managed) = git::discover_source(root)?;
-    let entries = analysis
-        .desired
-        .iter()
-        .map(|(path, file)| Ok((path.clone(), (repo.blob(&file.bytes)?, file.mode))))
-        .collect::<Result<_>>()?;
-    let tree = git::build_content_tree(&repo, &entries)?;
+    let (tree, manifest) = generated_snapshot::write(&repo, &analysis.desired)?;
     let mut record = previous.unwrap_or_else(|| state::VirtualCheckoutRecord {
         overlay: overlay.to_owned(),
         managed_path: managed,
@@ -543,18 +555,13 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
         repo.find_commit(Oid::from_str(&old.base)?)?
     } else {
         // Legacy source commits need a destination-relative baseline; initial checkouts use an empty one.
-        let baseline_entries = analysis
-            .base
-            .iter()
-            .map(|(path, file)| Ok((path.clone(), (repo.blob(&file.bytes)?, file.mode))))
-            .collect::<Result<_>>()?;
-        let baseline = git::build_content_tree(&repo, &baseline_entries)?;
+        let (baseline, baseline_manifest) = generated_snapshot::write(&repo, &analysis.base)?;
         let signature = git2::Signature::now("Over", "over@localhost")?;
         let id = repo.commit(
             None,
             &signature,
             &signature,
-            "Generated checkout migration base",
+            &baseline_manifest.message("Generated checkout migration base")?,
             &baseline,
             &[],
         )?;
@@ -562,12 +569,18 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
     };
     let commit = if let Some(pending) = old.as_ref().and_then(|old| old.pending.as_ref()) {
         let pending = repo.find_commit(Oid::from_str(pending)?)?;
+        let pending_manifest = match generated_snapshot::Manifest::read(&pending)? {
+            Some(manifest) => manifest,
+            None => super::generated_migration::legacy_plain_manifest(&repo, &pending, &record)?,
+        };
         ensure!(
-            pending.tree_id() == tree.id(),
+            pending.tree_id() == tree.id() && pending_manifest == manifest,
             "pending generated snapshot does not match its journal"
         );
         pending.id()
-    } else if parent.tree_id() == tree.id() {
+    } else if parent.tree_id() == tree.id()
+        && generated_snapshot::Manifest::read(&parent)?.as_ref() == Some(&manifest)
+    {
         parent.id()
     } else {
         let signature = git2::Signature::now("Over", "over@localhost")?;
@@ -575,7 +588,7 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
             None,
             &signature,
             &signature,
-            "Generated checkout desired state",
+            &manifest.message("Generated checkout desired state")?,
             &tree,
             &[&parent],
         )?
@@ -861,7 +874,7 @@ pub(crate) fn restore(entry: &DesiredEntry, paths: &[PathBuf], dry_run: bool) ->
     );
     let (_, source) = source(entry)?;
     let (repo, _) = git::discover_source(source)?;
-    let inventory = tree_inventory(&repo, &generated.base, &generated.sources)?;
+    let inventory = tree_inventory(&repo, &generated.base, &record)?;
     let mut prepared = Vec::new();
     for path in paths {
         ensure!(
@@ -962,5 +975,6 @@ pub(crate) fn remove(entry: &DesiredEntry) -> Result<()> {
         "generated ref changed during removal"
     );
     reference.delete()?;
+    super::generated_migration::release(&repo, &record)?;
     Ok(())
 }

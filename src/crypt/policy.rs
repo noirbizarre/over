@@ -111,7 +111,7 @@ fn tracked(repo: &git2::Repository) -> Result<Vec<PathBuf>> {
         .collect()
 }
 
-fn attribute_map(
+pub(crate) fn attribute_map(
     repo: &git2::Repository,
     paths: &[PathBuf],
     source: Option<&str>,
@@ -387,7 +387,25 @@ pub(crate) fn finish(repo: &git2::Repository) -> Result<()> {
 }
 
 pub fn recover(repo: &git2::Repository) -> Result<()> {
+    // Check migration state only after ownership: it can become pending while waiting for crypto.
+    let _ownership =
+        crate::materialize::virtual_checkout::generated_migration::ownership_guard(repo)?;
     let _guard = access::raw_guard(repo, true)?;
+    if crate::materialize::virtual_checkout::generated_migration::recover(repo)?
+        && !access::private_dir(repo)
+            .join("transaction.json")
+            .try_exists()?
+    {
+        return crate::materialize::virtual_checkout::generated_migration::verify_exposure(repo);
+    }
+    let key = access::recovery_key(repo)?;
+    recover_locked(repo, &key)
+}
+
+pub(crate) fn recover_source(repo: &git2::Repository) -> Result<()> {
+    // Source rollback may already own checkout mutation; it never recovers generated migrations.
+    let _guard = access::raw_guard(repo, true)?;
+    crate::materialize::virtual_checkout::generated_migration::ensure_ready(repo)?;
     let key = access::recovery_key(repo)?;
     recover_locked(repo, &key)
 }
@@ -1025,7 +1043,7 @@ fn update_with_ingestion(
     drop(lock);
     drop(_guard);
     if let Err(error) = result {
-        recover(repo).with_context(|| {
+        recover_source(repo).with_context(|| {
             format!("crypt ingestion failed ({error:#}) and rollback requires recovery")
         })?;
         return Err(error);
@@ -1291,8 +1309,11 @@ pub fn unlock(
     user: Option<&str>,
     name: Option<&str>,
 ) -> Result<()> {
-    let _guard = access::guard(repo, true)?;
+    let _ownership =
+        crate::materialize::virtual_checkout::generated_migration::ownership_guard(repo)?;
+    let _guard = access::lifecycle_guard(repo, true)?;
     let key = access::unwrap_key(repo, identity, passphrase, user, name)?;
+    crate::materialize::virtual_checkout::generated_migration::migrate(repo, &key)?;
     let prepared = Refresh::prepare(repo, &key, false)?;
     access::configure_filters(repo)?;
     let previous = if access::local_key_missing(repo)? {
@@ -1319,8 +1340,11 @@ pub fn unlock(
 }
 
 pub fn refresh(repo: &git2::Repository, locking: bool) -> Result<()> {
-    let _guard = access::guard(repo, true)?;
+    let _ownership =
+        crate::materialize::virtual_checkout::generated_migration::ownership_guard(repo)?;
+    let _guard = access::lifecycle_guard(repo, true)?;
     let key = access::local_key(repo)?;
+    crate::materialize::virtual_checkout::generated_migration::migrate(repo, &key)?;
     let prepared = Refresh::prepare(repo, &key, locking)?;
     // A successful lock must leave required fail-closed filters, not merely remove a key.
     access::configure_filters(repo)?;
@@ -1387,6 +1411,13 @@ pub fn inspect(repo: &git2::Repository) -> Result<Vec<Diagnostic>> {
             None
         }
     };
+    if let Err(error) =
+        crate::materialize::virtual_checkout::generated_migration::inspect(repo, key.as_ref())
+    {
+        findings.push(Diagnostic::Error(format!(
+            "ERROR generated snapshot protection: {error:#}"
+        )));
+    }
     let mut paths: std::collections::BTreeSet<_> = tracked(repo)?.into_iter().collect();
     if let Some(head) = &head {
         head.walk(git2::TreeWalkMode::PreOrder, |prefix, entry| {
@@ -1586,7 +1617,10 @@ pub fn rotate(
     revoke: Option<(&str, Option<&str>)>,
     mut password: impl FnMut(&str) -> Result<age::secrecy::SecretString>,
 ) -> Result<()> {
+    let _ownership =
+        crate::materialize::virtual_checkout::generated_migration::ownership_guard(repo)?;
     let _guard = access::guard(repo, true)?;
+    crate::materialize::virtual_checkout::generated_migration::rotation_preflight(repo)?;
     let old = access::local_key(repo)?;
     let mut new = format::RepositoryKey::generate()?;
     new.repository = old.repository;

@@ -273,6 +273,27 @@ pub(crate) fn record_for_entry(
 /// Lock order is ownership mutation, source index, then short state publication locks.
 /// Read-only commands never create this sentinel or acquire publication locks.
 pub(crate) fn mutation_guard() -> Result<std::fs::File> {
+    let guard = raw_mutation_guard()?;
+    let snapshot = state_file()?.inspect_blocking()?;
+    let sources: std::collections::BTreeSet<_> = snapshot
+        .checkouts
+        .values()
+        .filter(|record| record.generated.is_some())
+        .filter_map(|record| record.source_repository.as_ref())
+        .collect();
+    for source in sources {
+        match git2::Repository::open(source) {
+            Ok(repo) => super::generated_migration::ensure_ready(&repo)?,
+            // An absent unrelated source cannot currently publish a migration in this state directory.
+            Err(error) if error.code() == git2::ErrorCode::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(guard)
+}
+
+/// Lifecycle recovery must acquire ownership before inspecting or completing its persistent fence.
+pub(crate) fn raw_mutation_guard() -> Result<std::fs::File> {
     let directory = XdgDirs::new()?.state_dir().to_path_buf();
     std::fs::create_dir_all(&directory)?;
     let file = std::fs::OpenOptions::new()

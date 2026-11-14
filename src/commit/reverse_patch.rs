@@ -9,10 +9,21 @@ use similar::TextDiff;
 use crate::desired::{DesiredEntry, Provenance};
 use crate::exec::Context;
 use crate::materialize::disposal::{PathGuard, validate_relative_ancestors};
-use crate::materialize::virtual_checkout::{git, state};
+use crate::materialize::virtual_checkout::{generated_snapshot, git, state};
 use crate::overlays::Overlay;
 
 use super::CommitOptions;
+
+fn snapshot_message(
+    manifest: Option<&generated_snapshot::Manifest>,
+    title: &str,
+) -> Result<String> {
+    // Reading a legacy base must not certify its unchanged historical leaves as public.
+    match manifest {
+        Some(manifest) => manifest.message(title),
+        None => Ok(title.to_owned()),
+    }
+}
 
 #[derive(Clone, Debug)]
 struct Edit {
@@ -223,6 +234,8 @@ pub(crate) struct File {
     pub rendered_mode: i32,
     pub expected: (git2::Oid, i32),
     pub local: Vec<u8>,
+    stored_rendered: Vec<u8>,
+    stored_local: Vec<u8>,
 }
 
 struct Check {
@@ -239,6 +252,7 @@ pub(crate) struct Prepared {
     pub selected_sources: std::collections::BTreeSet<PathBuf>,
     checks: Vec<Check>,
     records: Vec<(DesiredEntry, state::VirtualCheckoutRecord)>,
+    manifests: std::collections::BTreeMap<String, Option<generated_snapshot::Manifest>>,
 }
 
 impl Prepared {
@@ -259,11 +273,16 @@ impl Prepared {
                 .as_mut()
                 .context("missing generated snapshot")?;
             let parent = repo.find_commit(git2::Oid::from_str(&generated.base)?)?;
+            let mut manifest = self
+                .manifests
+                .get(&generated.base)
+                .context("missing prepared snapshot provenance")?
+                .clone();
             let mut builder = git2::build::TreeUpdateBuilder::new();
             for file in &files {
                 builder.upsert(
                     &file.destination,
-                    repo.blob(&file.rendered)?,
+                    repo.blob(&file.stored_rendered)?,
                     git::filemode_from_raw(file.rendered_mode)
                         .context("unsupported rendered mode")?,
                 );
@@ -274,7 +293,7 @@ impl Prepared {
             for file in &files {
                 observed_builder.upsert(
                     &file.destination,
-                    repo.blob(&file.local)?,
+                    repo.blob(&file.stored_local)?,
                     git::filemode_from_raw(file.rendered_mode)
                         .context("unsupported rendered mode")?,
                 );
@@ -285,16 +304,25 @@ impl Prepared {
                 None,
                 &signature,
                 &signature,
-                "Reverse-patch consumed rendering",
+                &snapshot_message(manifest.as_ref(), "Reverse-patch consumed rendering")?,
                 &observed_tree,
                 &[&parent],
             )?;
             let observed_parent = repo.find_commit(observed_commit)?;
+            if let Some(manifest) = &mut manifest {
+                for file in &files {
+                    manifest
+                        .entries
+                        .get_mut(&file.destination)
+                        .context("missing reverse snapshot provenance")?
+                        .source_revision = Some(source_commit.to_string());
+                }
+            }
             let generated_commit = repo.commit(
                 None,
                 &signature,
                 &signature,
-                "Reverse-patched generated checkout",
+                &snapshot_message(manifest.as_ref(), "Reverse-patched generated checkout")?,
                 &tree,
                 &[&parent, &observed_parent],
             )?;
@@ -519,6 +547,17 @@ pub(crate) fn prepare(
         let snapshot = repo
             .find_commit(git2::Oid::from_str(&generated.base)?)?
             .tree()?;
+        let inventory = crate::materialize::virtual_checkout::generated::tree_inventory(
+            &repo,
+            &generated.base,
+            &record,
+        )?;
+        prepared.manifests.insert(
+            generated.base.clone(),
+            generated_snapshot::Manifest::read(
+                &repo.find_commit(git2::Oid::from_str(&generated.base)?)?,
+            )?,
+        );
         for (destination, template_source) in &generated.sources {
             let target = entry.target.join(destination);
             if !opts.paths.is_empty()
@@ -534,28 +573,37 @@ pub(crate) fn prepare(
                 validate_relative_ancestors(&entry.target, &target)?;
                 let local = prepared.capture(&target)?;
                 let base_entry = snapshot.get_path(destination)?;
-                let base = repo.find_blob(base_entry.id())?;
+                let base_file = inventory
+                    .get(destination)
+                    .context("missing generated snapshot entry")?;
+                let base = &base_file.bytes;
                 let mode = i32::from(git::on_disk_filemode(&target)?);
                 ensure!(
                     mode == base_entry.filemode(),
                     "rendered file mode changes are unsupported"
                 );
-                if base.content() == local {
+                if base.as_ref() == local {
                     return Ok(None);
                 }
                 if let Some(observed) = generated.reverse_observed.get(destination) {
-                    let tree = repo.find_commit(git2::Oid::from_str(observed)?)?.tree()?;
-                    let consumed = tree.get_path(destination)?.id();
-                    if git2::Oid::hash_object(git2::ObjectType::Blob, &local)? == consumed {
+                    let consumed_inventory =
+                        crate::materialize::virtual_checkout::generated::tree_inventory(
+                            &repo, observed, &record,
+                        )?;
+                    let consumed = &consumed_inventory
+                        .get(destination)
+                        .context("missing consumed rendering")?
+                        .bytes;
+                    if local.as_slice() == consumed.as_ref() {
                         return Ok(None);
                     }
                     ensure!(
-                        base_entry.id() == consumed,
+                        base.as_ref() == consumed.as_ref(),
                         "rendered file has unapplied independent source changes; sync before reverse-patching further edits"
                     );
                 }
                 prepared.selected_sources.insert(template_source.clone());
-                if let (Ok(before), Ok(after)) = (text(base.content()), text(&local)) {
+                if let (Ok(before), Ok(after)) = (text(base), text(&local)) {
                     hunks = edits(before, after)
                         .iter()
                         .enumerate()
@@ -584,9 +632,10 @@ pub(crate) fn prepare(
                 );
                 // Keep logical aliases for selection, but index names are repository-relative physical paths.
                 let path = managed.join(template_source.strip_prefix(source)?);
+                let protection = crate::crypt::protection::Protection::for_path(&repo, &path)?;
                 ensure!(
-                    !crate::crypt::policy::protected(&repo, &path)?,
-                    "reverse patches for encrypted templates are unsupported"
+                    protection == base_file.protection,
+                    "source protection changed; sync before reverse patching"
                 );
                 validate_relative_ancestors(workdir, &workdir.join(&path))?;
                 let physical = prepared.capture(template_source)?;
@@ -601,7 +650,7 @@ pub(crate) fn prepare(
                     "source template is not a regular file"
                 );
                 // Canonical Git blobs keep clean filters out of textual source coordinates.
-                let old = repo.find_blob(old_entry.id())?;
+                let old = protection.decode(&repo, repo.find_blob(old_entry.id())?.content())?;
                 let index = repo.index()?;
                 ensure!(
                     !index
@@ -618,7 +667,8 @@ pub(crate) fn prepare(
                         && indexed.flags_extended & 0x2000 == 0,
                     "unsupported source index entry"
                 );
-                let indexed_blob = repo.find_blob(indexed.id)?;
+                let indexed_blob =
+                    protection.decode(&repo, repo.find_blob(indexed.id)?.content())?;
                 let canonical =
                     crate::materialize::virtual_checkout::snapshot::canonical_source_entry(
                         &repo, &path,
@@ -631,18 +681,19 @@ pub(crate) fn prepare(
                     cleaned == canonical.0,
                     "source clean filter produced inconsistent content"
                 );
-                let canonical_blob = scratch.repo.find_blob(cleaned)?;
+                let canonical_blob =
+                    protection.decode(&repo, scratch.repo.find_blob(cleaned)?.content())?;
                 ensure!(
                     canonical.1 == indexed.mode as i32,
                     "source template mode has unstaged changes"
                 );
                 ensure!(
                     ![
-                        old.content(),
-                        base.content(),
+                        old.as_slice(),
+                        base.as_ref(),
                         &local,
-                        indexed_blob.content(),
-                        canonical_blob.content()
+                        indexed_blob.as_slice(),
+                        canonical_blob.as_slice()
                     ]
                     .iter()
                     .any(|bytes| bytes.contains(&0)),
@@ -654,16 +705,16 @@ pub(crate) fn prepare(
                     ctx,
                     overlay,
                     relative,
-                    old.content(),
+                    &old,
                     old_entry.filemode(),
                 )?;
                 ensure!(
                     old_destination.strip_prefix(source.strip_prefix(&overlay.root)?)?
                         == destination
-                        && old_render.bytes.as_ref() == base.content(),
+                        && old_render.bytes.as_ref() == base.as_ref(),
                     "recorded rendering cannot be reproduced with the current context or rules"
                 );
-                let original = text(old.content())?;
+                let original = text(&old)?;
                 // MiniJinja removes one final newline; match literals in that same view,
                 // then restore the source-only terminator before computing source edits.
                 let literal_source = if policy.template {
@@ -674,12 +725,8 @@ pub(crate) fn prepare(
                 } else {
                     original
                 };
-                let translated = translate(
-                    literal_source,
-                    text(base.content())?,
-                    text(&local)?,
-                    policy.template,
-                )?;
+                let translated =
+                    translate(literal_source, text(base)?, text(&local)?, policy.template)?;
                 let candidate =
                     apply(&lines(literal_source), &translated) + &original[literal_source.len()..];
                 let translated = edits(original, &candidate);
@@ -696,22 +743,10 @@ pub(crate) fn prepare(
                 );
                 let head = repo.head()?.peel_to_tree()?.get_path(&path)?.id();
                 // Check each independently selected layer, rather than accidentally staging worktree edits.
-                let head_blob = repo.find_blob(head)?;
-                merge(
-                    text(old.content())?,
-                    text(head_blob.content())?,
-                    &translated,
-                )?;
-                let indexed_text = merge(
-                    text(old.content())?,
-                    text(indexed_blob.content())?,
-                    &translated,
-                )?;
-                let worktree_text = merge(
-                    text(old.content())?,
-                    text(canonical_blob.content())?,
-                    &translated,
-                )?;
+                let head_blob = protection.decode(&repo, repo.find_blob(head)?.content())?;
+                merge(text(&old)?, text(&head_blob)?, &translated)?;
+                let indexed_text = merge(text(&old)?, text(&indexed_blob)?, &translated)?;
+                let worktree_text = merge(text(&old)?, text(&canonical_blob)?, &translated)?;
                 let (_, rendered) = crate::desired::content::transform(
                     ctx,
                     overlay,
@@ -719,8 +754,14 @@ pub(crate) fn prepare(
                     indexed_text.as_bytes(),
                     indexed.mode as i32,
                 )?;
-                let worktree_id = repo.blob(worktree_text.as_bytes())?;
-                let worktree = git::source_worktree_blob(&repo, &path, worktree_id)?;
+                let worktree_stored = protection.encode(&repo, worktree_text.as_bytes())?;
+                let worktree_id = scratch.repo.blob(&worktree_stored)?;
+                let worktree =
+                    git::source_worktree_blob_in(&repo, &path, worktree_id, Some(&scratch))?;
+                // Journal callbacks execute under exclusive crypto ownership: encode before entering it.
+                let stored_rendered = protection.encode(&repo, &rendered.bytes)?;
+                let stored_local = protection.encode(&repo, &local)?;
+                let stored_indexed = protection.encode(&repo, indexed_text.as_bytes())?;
                 // Capture raw bytes too: equivalent canonical content must not hide a prompt-time edit.
                 ensure!(
                     std::fs::read(template_source)? == physical,
@@ -732,12 +773,14 @@ pub(crate) fn prepare(
                     source: template_source.clone(),
                     path,
                     mode: indexed.mode,
-                    indexed: indexed_text.into_bytes(),
+                    indexed: stored_indexed,
                     worktree,
                     rendered: rendered.bytes.to_vec(),
                     rendered_mode: rendered.mode,
                     expected: canonical,
                     local,
+                    stored_rendered,
+                    stored_local,
                 }))
             })();
             match result {

@@ -11,6 +11,8 @@ use crate::overlays::Overlay;
 
 #[derive(Clone)]
 pub struct RenderedFile {
+    pub protection: crate::crypt::protection::Protection,
+    pub source_revision: Option<String>,
     pub source: PathBuf,
     pub bytes: Arc<[u8]>,
     pub identity: String,
@@ -161,6 +163,8 @@ pub(crate) fn transform(
         return Ok((
             relative.to_path_buf(),
             RenderedFile {
+                protection: Default::default(),
+                source_revision: None,
                 source: overlay.root.join(relative),
                 bytes: bytes.to_vec().into(),
                 identity: git2::Oid::hash_object(git2::ObjectType::Blob, bytes)?.to_string(),
@@ -235,6 +239,8 @@ pub(crate) fn transform(
     Ok((
         destination,
         RenderedFile {
+            protection: Default::default(),
+            source_revision: None,
             source: overlay.root.join(relative),
             bytes: output.into(),
             identity,

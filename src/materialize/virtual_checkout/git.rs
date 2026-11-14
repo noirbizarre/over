@@ -1306,7 +1306,7 @@ pub(crate) fn commit_staged_prepared(
                 // Release the exclusive guard before the recovery routine reacquires it.
                 drop(crypt_guard.take());
                 drop(index_lock.take());
-                crate::crypt::policy::recover(repo)?;
+                crate::crypt::policy::recover_source(repo)?;
             }
             Err(error)
         }
@@ -1316,6 +1316,15 @@ pub(crate) fn commit_staged_prepared(
 /// Native Git applies external/process smudge filters as well as EOL conversion;
 /// raw blobs belong at virtual targets, never in the source's real worktree.
 pub(crate) fn source_worktree_blob(repo: &Repository, path: &Path, oid: Oid) -> Result<Vec<u8>> {
+    source_worktree_blob_in(repo, path, oid, None)
+}
+
+pub(crate) fn source_worktree_blob_in(
+    repo: &Repository,
+    path: &Path,
+    oid: Oid,
+    scratch: Option<&crate::actions::git::diff::Scratch>,
+) -> Result<Vec<u8>> {
     // Smudge filters own inherited stderr until their subprocess exits.
     let _pause = crate::ui::progress::pause()?;
     let mut command = std::process::Command::new("git");
@@ -1331,6 +1340,12 @@ pub(crate) fn source_worktree_blob(repo: &Repository, path: &Path, oid: Oid) -> 
         "GIT_PREFIX",
     ] {
         command.env_remove(name);
+    }
+    if let Some(scratch) = scratch {
+        // Conversion may need a prepared plaintext object, which must never enter the source ODB.
+        for (name, value) in scratch.environment() {
+            command.env(name, value);
+        }
     }
     let output = command
         .args(["cat-file", "--filters"])

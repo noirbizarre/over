@@ -154,9 +154,11 @@ checkout/provenance/ref/conflict metadata, not duplicate snapshot contents.
 Status and explicitly requested diffs compare generated output; diffs can display
 the rendered values. Reporting and dry-run do not publish objects or refs.
 
-Snapshots may contain locally rendered secrets in plaintext Git objects. They
-are subject to the machine's repository/filesystem security and are not
-encrypted by these refs. Over never configures a push refspec for the generated
+Snapshots preserve their source entries' [encryption policy](crypt.md#protected-generated-snapshots).
+Protected templates and ordinary protected siblings are encrypted in Git objects;
+reconciliation decodes them transiently with the unlocked key. Unprotected
+templates can still place locally rendered secrets in plaintext Git objects.
+The refs themselves do not encrypt anything. Over never configures a push refspec for the generated
 namespace. It is private by convention, not an access-control boundary: explicit
 refspecs and `git push --mirror` can publish it. Removing a checkout/ref is not
 secure erasure of Git objects or their history.
