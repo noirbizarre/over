@@ -235,7 +235,10 @@ the actual user's home, the source repository root, and the current overlay's
 effective base destination, respectively. Install and post-apply hooks can
 read the selected overlay's resolved `data`, including inherited and host data.
 Each participant sees its own `overlay`, retaining the selected data snapshot;
-root install and post-apply hooks see the selected overlay.
+root install and post-apply hooks see the selected overlay only when one distinct
+root is selected. With multiple distinct roots they retain composed data and
+repository context, but have no `overlay` or `paths.target`; guard optional
+target access with `paths.target is defined`.
 
 Init hooks have machine/environment/repository context but no selected overlay
 or composed data: bootstrap never discovers children before unlock hooks run.
@@ -339,9 +342,12 @@ reserved: attempting to override one is a configuration error.
 | `OVER_OVERLAY_ROOT` | Install and post-apply: absolute overlay source directory |
 | `OVER_OVERLAY_TARGET` | Install and post-apply: absolute resolved base target |
 
-For root install and post-apply hooks, overlay variables identify the selected overlay; for
-overlay hooks, they identify that hook's overlay. Init events remove the four
-apply-only variables even if inherited from the caller.
+For root install and post-apply hooks with one distinct selected root, overlay
+variables identify that selected overlay. With multiple distinct roots, root
+hooks remove all three `OVER_OVERLAY_*` variables, including inherited values;
+`OVER_TARGET_ROOT` remains available. Overlay hooks identify that hook's own
+overlay regardless of root selection. Init events remove the four apply-only
+variables even if inherited from the caller.
 
 ### Failures and retries
 

@@ -2,9 +2,10 @@
 //!
 //! Fills the registry seam ADR-012 documented but deliberately left empty:
 //! [`MaterializationIntent::Checkout`] entries now have a real
-//! [`Materializer`]. Content-level bidirectional synchronization (fetch/
-//! merge/push) is *not* implemented here — that's `over sync`
-//! (`crate::sync`). This backend only owns the same "ensure the repository
+//! [`Materializer`]. Manage declared repositories' fetch/merge/push with
+//! ordinary Git; the `over sync` CLI does not manage their lifecycle. The
+//! broader [`crate::sync::sync`] library API retains separate synchronization
+//! support. This backend only owns the same "ensure the repository
 //! is present in its configured form" concern
 //! `actions::git::clone_repositories` already implements, wired into the
 //! `DesiredTree` → `Plan` → `Materializer` pipeline like every other intent.

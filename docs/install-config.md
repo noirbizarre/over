@@ -43,8 +43,11 @@ or `windows`; select Linux distributions with `machine.distro_id`.
 `paths.home` is the actual user's home, `paths.over` the source repository root,
 and `paths.target` the current overlay's effective destination. Use
 `cwd: "{{ paths.target }}"` for work in deployed configuration. Root hooks see
-the selected overlay; each overlay hook sees its own target and the selected
-consumer's resolved data. Default cwd is the declaring overlay's source directory,
+the selected overlay only when one distinct root is selected. With multiple
+distinct roots, root hooks have no `overlay`, `paths.target`, or `OVER_OVERLAY_*`
+variables; `OVER_TARGET_ROOT` remains available. Guard optional target access
+with `paths.target is defined`. Each overlay hook sees its own target and the
+composed consumer data. Default cwd is the declaring overlay's source directory,
 or the repository root for root hooks. Explicit relative cwd is repository-root-relative.
 
 Hooks do not inherit through ancestor descriptors. Put shared steps in root

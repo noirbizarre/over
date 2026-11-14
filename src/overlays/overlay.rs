@@ -315,9 +315,9 @@ impl Overlay {
     }
 
     /// Resolve permissions independently through the same ordered rules.
-    /// Only meaningful for entries `over`
-    /// writes content for directly (`PartialFile`, #65); symlinked entries
-    /// share their source's permission and are never looked up this way.
+    /// Applies to partial/decrypted files and generated outputs, including
+    /// generated checkout leaves and artifacts behind rendered links. Ordinary
+    /// source links share their source's permissions and cannot apply this policy.
     pub fn permission_for(&self, rel_path: &Path) -> Option<FileMode> {
         permissions::resolve(self, rel_path)
     }

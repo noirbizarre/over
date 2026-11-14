@@ -453,27 +453,31 @@ impl TreeChanges {
                     .with_context(|| format!("failed to create '{}'", parent.display()))?;
             }
             crate::actions::fs::replace_file(&on_disk, content, |permissions| {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    // Git records executability, not private access bits such as 0600.
-                    let existing = permissions.mode();
-                    let bits = if mode & 0o111 != 0 {
-                        existing | ((existing & 0o444) >> 2)
-                    } else {
-                        existing & !0o111
-                    };
-                    fs::Permissions::from_mode(bits)
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = mode;
-                    permissions
-                }
+                executable_permissions(permissions, mode)
             })
             .with_context(|| format!("failed to write '{}'", on_disk.display()))?;
         }
         Ok(())
+    }
+}
+
+pub(crate) fn executable_permissions(permissions: fs::Permissions, mode: i32) -> fs::Permissions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Git records executability, not private access bits such as 0600.
+        let existing = permissions.mode();
+        let bits = if mode & 0o111 != 0 {
+            existing | ((existing & 0o444) >> 2)
+        } else {
+            existing & !0o111
+        };
+        fs::Permissions::from_mode(bits)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+        permissions
     }
 }
 

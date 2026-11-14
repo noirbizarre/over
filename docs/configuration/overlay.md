@@ -101,10 +101,13 @@ These values are filesystem paths serialized as absolute native path strings.
 They retain symlink spelling and do not require the destination to exist. Paths
 that cannot be represented as UTF-8 produce an error rather than a lossy string.
 Each dependency and its hooks see its own target; repository install/post-apply hooks
-see the selected overlay's target.
+see the selected overlay's target when one distinct root is selected. With
+multiple distinct selected roots, repository hooks have no `overlay` or
+`paths.target`; their `OVER_TARGET_ROOT` still identifies the execution target root.
 
 Unavailable fields are undefined, not null. `paths.target` is unavailable during
-init, default-overlay selection, and evaluation of the target definition itself.
+init, multi-root repository hooks, default-overlay selection, and evaluation of
+the target definition itself.
 `paths.home` is unavailable if home detection fails; `paths.over` is unavailable
 for library contexts with no repository. No unrelated directory is substituted.
 Guard optional inputs with `paths.target is defined`, or provide an explicit
@@ -250,7 +253,9 @@ fails.
 ## Overlay Rules
 
 Use one ordered `rules` list for source-path configuration. Each rule has a
-`path` selector and any supported subset of `target`, `mode`, and `permissions`:
+`path` selector and at least one non-null assignment among `target`, `mode`,
+`permissions`, `template`, and `strip_extension`. Explicit boolean `false`
+counts as an assignment, so rendering-only rules need no extra mode or target:
 
 ```yaml
 # ~/.dotfiles/workspace/client/over.yaml
@@ -373,15 +378,24 @@ path = "ssh/agent"
 permissions = "600"
 ```
 
-Permissions manage **partial-file and decrypted-file targets**. Symlinks share the source
-inode, so applying permissions there would mutate source files. This setting
-does not independently chmod virtual checkout content.
+Permissions manage **partial-file, decrypted-file, and generated-file outputs**,
+including templates and extension-stripped files. Ordinary source symlinks share
+their source inode, so applying permissions there would mutate source files.
+Generated symlink-mode files instead link to an artifact whose permissions are
+managed independently. Generated physical checkout files also enforce explicit
+permission assignments, including permission-only drift during sync. Ordinary
+virtual-checkout files retain Git executability and existing access permissions;
+this policy does not independently chmod them.
 
 For partials, the selector matches the sidecar's own stem (`ssh/agent` for
 `ssh/agent.partial.toml`), not its rendered destination. Encrypted files use the
 decrypted logical name, without `.age`. Without an assignment, partial permissions
-remain unmanaged and decrypted files default to `0600`. Permission drift is a
-pending change fixed by apply, not a blocking content conflict.
+remain unmanaged and decrypted files default to `0600`. New generated outputs
+default to `0600` with the source executable bits retained; existing generated
+checkout files preserve access permissions unless explicitly assigned. Generated
+selectors use the source path before extension stripping. Permission drift is a
+pending change fixed by apply or generated-checkout sync, not a blocking content
+conflict.
 
 ## Link sidecars
 

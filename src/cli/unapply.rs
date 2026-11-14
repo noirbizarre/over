@@ -129,13 +129,15 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     // #147: this overlay's own entries are unapplied — remove its exclude
     // block from every repo `desired` says it touched, reusing the same
     // `desired` tree `Report::build` used above. Retained plaintext is the
-    // exception: keep its exclusion rather than exposing it to accidental staging.
+    // exception, including unverifiable generated links: keep its exclusion
+    // rather than exposing retained output to accidental staging.
     // Dry-run must not alter either block.
     if !ctx.dry_run
         && !report.entries().iter().any(|outcome| {
             matches!(
                 outcome.entry.intent,
                 crate::desired::MaterializationIntent::EncryptedFile(_)
+                    | crate::desired::MaterializationIntent::RenderedFile(_)
             ) && !matches!(outcome.outcome, Outcome::Removed | Outcome::AlreadyAbsent)
         })
     {

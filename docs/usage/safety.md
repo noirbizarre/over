@@ -23,6 +23,9 @@ objects, indexes, or refs. It is a snapshot, not a reservation of those paths.
 - **Legacy `.age` files** offer only skip or explicitly authorized overwrite, never
   Absorb or plaintext diff. Authentication completes before target writes, and
   unapply retains changed or unverifiable plaintext. See [Age encryption](secrets.md).
+- **Generated symlink-mode files** have no interactive conflict menu or Absorb.
+  Unmanaged destinations require explicit `--force` for non-directory replacement;
+  directory obstructions must be moved aside manually, even with force.
 - **Repository crypt protection** uses required local Git filters and one
   persistent local key. `over lock` refuses unsafe edits before restoring clean
   protected Git-worktree files to ciphertext and removing the key. Policy removal
@@ -50,6 +53,7 @@ Blocked migrations fail apply and suppress install and post-apply hooks.
 | Operation | Affected data and authorization | Safeguards and preview |
 | --- | --- | --- |
 | Apply ordinary/sidecar links | Conflicting target file, link, or whole directory; interactive overwrite/absorb or `--force` | No-prompt refuses; checkout-specific checks precede generic recursive replacement; preview names target and replacement policy. |
+| Apply generated artifact links | Existing unmanaged non-directory target; explicit `--force` | No interactive menu or Absorb; directories refuse even with force. |
 | Apply encrypted files | Final plaintext destination; explicit overwrite or `--force` for differing files | Authenticate in memory before writes; default Unix mode `0600`; no plaintext staging files. Existing destinations update in place. Hard links and directory obstructions refuse. |
 | Apply scaffold replacement | Conflicting node at a required directory; confirmation or `--force` | Unlinks a conflicting directory link rather than changing its referent; refusal stops descendants. |
 | Absorb | Copies target content over overlay/sidecar source, then replaces target with a link; explicit Absorb choice | Rejects overlapping trees, prepares copies before replacing the source, and copies links without traversing their referents. Diff/Skip do not modify either input. |
@@ -64,7 +68,7 @@ Blocked migrations fail apply and suppress install and post-apply hooks.
 | Source sync push | Configured source upstream branch; root `sync.push` or `--push` | Non-force push only after successful local reconciliation; never stages or commits. Failure does not roll back completed local work. Dry-run performs no network I/O. |
 | Virtual checkout commit | Selected source working-tree paths and HEAD; explicit commit, or confirmed sync commit | Preflight, prepared source updates and limited backup/restore; unrelated index entries and target edits survive. Inspect selection with `diff --staged`; commit has no dry-run flag. |
 | Reverse add/staging | Selected deployment/source paths or selected source-index entries; explicit `add`/`git add` | Source selection, checkout association and mapping checks apply. Virtual staging preserves source working files and unrelated staging. Ordinary reverse-add moves content into the source: inspect paths before running. |
-| Host Git excludes | Only the overlay's marker block in `.git/info/exclude` | Does not alter the host index or tracked files; malformed blocks remain intact. Unapply removes its own block unless encrypted destinations are retained. Dry-run leaves excludes untouched. |
+| Host Git excludes | Only the overlay's marker block in `.git/info/exclude` | Does not alter the host index or tracked files; malformed blocks remain intact. Unapply retains its block when encrypted destinations or unverifiable generated links remain. Dry-run leaves excludes untouched. |
 | Lifecycle hooks/external diff tools | Arbitrary effects of trusted repository commands | Lifecycle hooks run only at their documented events, stop on failure and are suppressed under dry-run; their effects are outside Over's filesystem ownership model. External inspection tools can have their own side effects. |
 | Install hooks | Arbitrary repository-provided commands, including package-manager/system changes; explicit `apply --install` | Run only after all reconciliation succeeds, before post-apply. Dry-run skips execution. Child commands have their own prompt/privilege policies and must be safe to repeat. |
 
