@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/noirbizarre/over/compare/0.2.1..0.3.0) - 2026-11-14
+
+### 💫 Features
+
+- **checkout** Compose disjoint overlays at shared targets ([#274](https://github.com/noirbizarre/over/issues/274)) - ([0ba794f](https://github.com/noirbizarre/over/commit/0ba794f1c833bc205731d0d352f694035c0be132))
+- **crypt** Support Age plugins and independent access keys ([#285](https://github.com/noirbizarre/over/issues/285)) - ([d8f5b31](https://github.com/noirbizarre/over/commit/d8f5b3196f0db7cf7a40d7c8575919ba8250dcf0))
+- **devcontainer** Support comma-separated overlay composition ([#278](https://github.com/noirbizarre/over/issues/278)) - ([8ef6a81](https://github.com/noirbizarre/over/commit/8ef6a81d6ca6a0d9611dbeb134fd6de5afb1d117))
+- **init** Offer virtual checkout as the repository default ([#273](https://github.com/noirbizarre/over/issues/273)) - ([cb140f5](https://github.com/noirbizarre/over/commit/cb140f5c607cd64dc9ebe7850bfb267df0947a6a))
+- **templates** Reverse patch rendered edits into source templates ([#281](https://github.com/noirbizarre/over/issues/281)) - ([65cde9c](https://github.com/noirbizarre/over/commit/65cde9c4ddf624c8293d01234c9f95e8d1a5230a))
+- **templates** Render files through desired state ([#279](https://github.com/noirbizarre/over/issues/279)) - ([3aa33e7](https://github.com/noirbizarre/over/commit/3aa33e71f35c4fea83bd3a061d9f41d717b8393c))
+
+### 🐛 Bug Fixes
+
+- **checkout** Preserve filesystem safeguards in generated checkouts - ([336ff2f](https://github.com/noirbizarre/over/commit/336ff2fd4d91d91ff57a189dd2ad098f9be45eb7))
+- **crypt** Protect generated snapshots at rest ([#282](https://github.com/noirbizarre/over/issues/282)) - ([cf10a45](https://github.com/noirbizarre/over/commit/cf10a45df1047ff9a43c3517313f60454e5e4e68))
+- **exclude** Aggregate linked worktree block contributions - ([4ba571f](https://github.com/noirbizarre/over/commit/4ba571f8572bb37bc2c831c90a458845d88a66f3))
+- **exclude** Retain historical checkout leaf protection - ([abefb04](https://github.com/noirbizarre/over/commit/abefb048af03a0e4256a73f2eccae6c12e246308))
+- **sync** Preserve generated conflict outcomes in previews - ([7618152](https://github.com/noirbizarre/over/commit/7618152343badd33baaf4c1b181888d3654ecf4b))
+- **sync** Protect new checkout leaves with host exclusions - ([cd2fed1](https://github.com/noirbizarre/over/commit/cd2fed153afa871428ca4d92594417fbd7012b45))
+- **unapply** Retain unverifiable rendered links with attention - ([e556200](https://github.com/noirbizarre/over/commit/e556200284cc6c4416d5cd22d1ed77016f4e1ba1))
+- Align generated checkout safety and lifecycle behavior ([#283](https://github.com/noirbizarre/over/issues/283)) - ([29672d9](https://github.com/noirbizarre/over/commit/29672d9ede2fbfb76ce2f2a871385c6b5b99ceb2))
+
+### 📚 Documentation
+
+- **apply** Describe generated artifact conflict handling - ([f9713ba](https://github.com/noirbizarre/over/commit/f9713baf34ba7781fedbb2d5bed98b458c53a765))
+- **crypt** Document manual filters and session automation ([#286](https://github.com/noirbizarre/over/issues/286)) - ([2754d73](https://github.com/noirbizarre/over/commit/2754d73f31d785ba7f20c2acf8512dcb0a3be935))
+- **hooks** Clarify context for multiple selected roots - ([71ecce0](https://github.com/noirbizarre/over/commit/71ecce09037de0ae527ec74760645b3bf29a648b))
+- **permissions** Clarify policy for generated outputs - ([3721767](https://github.com/noirbizarre/over/commit/37217673b3bc4812d45d99f4f13c0da3ea67a715))
+- **restore** Explain generated checkout recovery - ([4e67f85](https://github.com/noirbizarre/over/commit/4e67f85159de2f28b0b70edb885fe77adf2a19c9))
+- **rules** Document rendering-only assignments - ([acbe742](https://github.com/noirbizarre/over/commit/acbe7421c131070110a5fbabfec0b962fa5e3f2f))
+- **sync** Distinguish declared repository library APIs - ([f1c3018](https://github.com/noirbizarre/over/commit/f1c3018a78ff5df053c051bb907019cb4f3dd15c))
+
 ## [0.2.1](https://github.com/noirbizarre/over/compare/0.2.0..0.2.1) - 2026-11-13
 
 ### 🐛 Bug Fixes
