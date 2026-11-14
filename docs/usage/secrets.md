@@ -65,7 +65,9 @@ credential-provider | over secret add github-token
 ```
 
 Unlock before using noninteractive secret commands. Avoid typing literal secret
-values in shell commands; standard Age identity files support noninteractive unlock.
+values in shell commands; unencrypted software Age identity files support
+noninteractive unlock. Encrypted identity files and hardware plugins may require
+terminal interaction during unlock, never for each subsequent native-secret read.
 
 An existing secret requires explicit `--replace`; the flag is the replacement
 authorization and does not cause another confirmation prompt. Failed encryption

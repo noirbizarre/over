@@ -14,7 +14,7 @@ Options:
       --no-config    Continue without creating missing root configuration
       --set-origin   Set an existing checkout's canonical origin without prompting
       --unlock       Explicitly unlock repository encryption during initialization
-      --identity <IDENTITY>  Use a standard Age identity when unlocking
+  -i, --identity <IDENTITY>  Use a standard Age identity when unlocking
   -d, --debug        Toggle debug traces
   -v, --verbose      Toggle verbose output
   -h, --help         Print help
@@ -144,7 +144,11 @@ it in private Git common administrative storage. This key survives terminal
 closure and reboot until `over lock`; filters never prompt.
 
 Fresh noninteractive clones remain locked unless explicitly requested with `--unlock`.
-Use `--unlock --identity <standard-age-identity-file>` for noninteractive access.
+Use `--unlock --identity <standard-age-identity-file>` for explicit identity access.
+Repeat `--identity` for multiple files. Encrypted identity files and plugin-backed
+identities can request a password, PIN, touch or confirmation; unattended unlock
+requires an available credential that needs no interaction. See
+[Age and hardware-key compatibility](crypt.md#users-and-keys).
 Declining unlock keeps ciphertext. If an encrypted repository declares bootstrap
 hooks, initialization stops before executing any of them and explains how to
 unlock. Retrying an existing checkout runs post-init, not post-clone; put

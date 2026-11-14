@@ -31,22 +31,28 @@ pub enum Commands {
 #[derive(Args, Debug)]
 pub struct Unlock {
     /// Read a standard Age identity file
-    #[arg(long)]
-    pub identity: Option<PathBuf>,
+    #[arg(short = 'i', long)]
+    pub identity: Vec<PathBuf>,
     #[arg(long)]
     pub user: Option<String>,
     #[arg(long)]
     pub key: Option<String>,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Clone, Debug)]
 pub struct NewKey {
     pub user: String,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "name_prefix")]
     pub name: Option<String>,
+    /// Name imported recipients PREFIX-1, PREFIX-2, in input order
+    #[arg(long)]
+    pub name_prefix: Option<String>,
     /// Wrap with an existing standard Age public recipient
-    #[arg(long, conflicts_with = "identity_output")]
-    pub recipient: Option<String>,
+    #[arg(short = 'r', long, conflicts_with_all = ["identity_output", "passphrase"])]
+    pub recipient: Vec<String>,
+    /// Import one independently named key per recipient from a standard Age list
+    #[arg(short = 'R', long, conflicts_with_all = ["identity_output", "passphrase"])]
+    pub recipients_file: Vec<PathBuf>,
     /// Create a standard software identity at this private local path
     #[arg(long, conflicts_with = "passphrase")]
     pub identity_output: Option<PathBuf>,
@@ -272,6 +278,7 @@ fn passphrase(label: &str) -> Result<age::secrecy::SecretString> {
 }
 
 fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> {
+    let mut opt = opt.clone();
     if access::configured(repo)? {
         let registry = access::load(repo)?;
         ensure!(
@@ -282,15 +289,77 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
             unlock_repository(
                 repo,
                 &Unlock {
-                    identity: None,
+                    identity: Vec::new(),
                     user: None,
                     key: None,
                 },
             )?;
         }
     }
+    if opt.recipient.is_empty()
+        && opt.recipients_file.is_empty()
+        && opt.identity_output.is_none()
+        && !opt.passphrase
+    {
+        ensure!(
+            can_prompt(),
+            "select --recipient, --recipients-file, --identity-output or --passphrase"
+        );
+        match dialoguer::Select::new()
+            .with_prompt("First key type")
+            .items([
+                "Generate Age software identity",
+                "Existing Age/plugin recipient",
+                "Age recipient file",
+                "Passphrase",
+            ])
+            .default(0)
+            .interact()?
+        {
+            0 => {
+                opt.identity_output = Some(
+                    dialoguer::Input::<String>::new()
+                        .with_prompt("Private identity output path")
+                        .interact_text()?
+                        .into(),
+                )
+            }
+            1 => opt.recipient.push(
+                dialoguer::Input::new()
+                    .with_prompt("Age recipient")
+                    .interact_text()?,
+            ),
+            2 => opt.recipients_file.push(
+                dialoguer::Input::<String>::new()
+                    .with_prompt("Age recipient file")
+                    .interact_text()?
+                    .into(),
+            ),
+            _ => opt.passphrase = true,
+        }
+    }
+    let mut recipients = opt.recipient.clone();
+    for path in &opt.recipients_file {
+        recipients.extend(crate::crypt::age::recipients_file(
+            path,
+            crate::ui::age::Callbacks,
+        )?);
+    }
+    if recipients.len() > 1 && opt.name_prefix.is_none() && opt.name.is_none() && can_prompt() {
+        opt.name_prefix = Some(
+            dialoguer::Input::new()
+                .with_prompt("Imported key name prefix")
+                .interact_text()?,
+        );
+    }
+    ensure!(
+        recipients.len() <= 1 || opt.name_prefix.is_some(),
+        "supply --name-prefix when importing multiple recipients"
+    );
     let name = if let Some(name) = &opt.name {
         name.clone()
+    } else if let Some(prefix) = &opt.name_prefix {
+        format!("{prefix}-1")
     } else if new_user {
         "default".to_owned()
     } else {
@@ -299,7 +368,7 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
             .with_prompt("Key name")
             .interact_text()?
     };
-    let mut recipient = opt.recipient.clone();
+    let mut recipient = recipients.first().cloned();
     let mut password = None;
     let mut generated = None;
     if let Some(path) = &opt.identity_output {
@@ -333,25 +402,6 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
         generated = Some((path, identity));
     } else if opt.passphrase {
         password = Some(passphrase("New Age key passphrase")?);
-    } else if recipient.is_none() {
-        ensure!(
-            can_prompt(),
-            "select --recipient, --identity-output or --passphrase"
-        );
-        let selection = dialoguer::Select::new()
-            .with_prompt("First key type")
-            .items(["Age software recipient", "Passphrase"])
-            .default(0)
-            .interact()?;
-        if selection == 0 {
-            recipient = Some(
-                dialoguer::Input::new()
-                    .with_prompt("Age recipient")
-                    .interact_text()?,
-            );
-        } else {
-            password = Some(passphrase("New Age key passphrase")?);
-        }
     }
     // Publish a generated identity before granting access; a failure leaves recovery material.
     if let Some((path, identity)) = &generated {
@@ -370,16 +420,45 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
         writeln!(file, "{}", identity.to_string().expose_secret())?;
         file.sync_all()?;
     }
-    access::add_key(
+    let entries: Vec<_> = if recipients.len() > 1 {
+        recipients
+            .into_iter()
+            .enumerate()
+            .map(|(index, recipient)| {
+                (
+                    format!(
+                        "{}-{}",
+                        opt.name_prefix.as_deref().expect("validated prefix"),
+                        index + 1
+                    ),
+                    Some(recipient),
+                    None,
+                )
+            })
+            .collect()
+    } else {
+        vec![(name, recipient, password)]
+    };
+    let names: Vec<_> = entries.iter().map(|(name, _, _)| name.clone()).collect();
+    access::add_keys(
         repo,
         &opt.user,
-        &name,
-        recipient.as_deref(),
-        password,
+        entries,
         new_user,
+        crate::ui::age::Callbacks,
     )?;
-    if let Some((path, identity)) = generated {
-        access::remember_identity(repo, &identity.to_public().to_string(), path)?;
+    if names.len() > 1 {
+        for name in names {
+            eprintln!("Added key {}/{name}", opt.user);
+        }
+    }
+    if let Some((path, identity)) = generated
+        && access::remember_identity(repo, &identity.to_public().to_string(), path).is_err()
+    {
+        // Optional hint persistence happens after the complete user/key has been published.
+        eprintln!(
+            "User/key created, but its local identity hint could not be saved; supply --identity when unlocking."
+        );
     }
     Ok(())
 }
@@ -389,7 +468,12 @@ pub fn user(cli: &super::CLI, command: &UserCommands) -> Result<()> {
     match command {
         UserCommands::Add(opt) => add_key(&repo, opt, true),
         UserCommands::Delete { user } => access::delete_user(&repo, user),
-        UserCommands::Revoke { user } => policy::rotate(&repo, Some((user, None)), passphrase),
+        UserCommands::Revoke { user } => policy::rotate_with(
+            &repo,
+            Some((user, None)),
+            passphrase,
+            crate::ui::age::Callbacks,
+        ),
         UserCommands::Key(UserKeyCommands::Add(opt)) => add_key(&repo, opt, false),
         UserCommands::Key(UserKeyCommands::Detach { user, key }) => {
             eprintln!(
@@ -397,9 +481,12 @@ pub fn user(cli: &super::CLI, command: &UserCommands) -> Result<()> {
             );
             access::detach(&repo, user, key)
         }
-        UserCommands::Key(UserKeyCommands::Revoke { user, key }) => {
-            policy::rotate(&repo, Some((user, Some(key))), passphrase)
-        }
+        UserCommands::Key(UserKeyCommands::Revoke { user, key }) => policy::rotate_with(
+            &repo,
+            Some((user, Some(key))),
+            passphrase,
+            crate::ui::age::Callbacks,
+        ),
         command => {
             let registry = access::load(&repo)?;
             if let UserCommands::Show { user } | UserCommands::Key(UserKeyCommands::List { user }) =
@@ -431,7 +518,12 @@ pub fn user(cli: &super::CLI, command: &UserCommands) -> Result<()> {
 }
 
 pub fn key(cli: &super::CLI, _command: &KeyCommands) -> Result<()> {
-    policy::rotate(&repository(cli)?, None, passphrase)
+    policy::rotate_with(
+        &repository(cli)?,
+        None,
+        passphrase,
+        crate::ui::age::Callbacks,
+    )
 }
 
 pub fn unlock(cli: &super::CLI, opt: &Unlock) -> Result<()> {
@@ -444,7 +536,7 @@ pub fn unlock_repository(repo: &git2::Repository, opt: &Unlock) -> Result<()> {
     {
         let _inspection = access::lifecycle_guard(repo, false)?;
     }
-    if opt.identity.is_none()
+    if opt.identity.is_empty()
         && opt.user.is_none()
         && opt.key.is_none()
         && access::local_key(repo).is_ok()
@@ -464,76 +556,49 @@ pub fn unlock_repository(repo: &git2::Repository, opt: &Unlock) -> Result<()> {
         })
         .collect();
     ensure!(!candidates.is_empty(), "no matching repository key");
-    if let Some(identity) = &opt.identity {
-        access::unlock(
+    let mut sources = opt.identity.clone();
+    for (_, _, key) in candidates.iter().filter(|_| opt.identity.is_empty()) {
+        if let Some(recipient) = &key.recipient {
+            match access::identity_hint(repo, recipient) {
+                Ok(Some(path)) if !sources.contains(&path) => sources.push(path),
+                Ok(_) => (),
+                // Local hints are conveniences, not a reason to suppress recovery credentials.
+                Err(_) => {
+                    eprintln!("A local identity hint is unavailable; continuing with other keys.")
+                }
+            }
+        }
+    }
+    if sources.is_empty()
+        && candidates.iter().any(|(_, _, key)| key.recipient.is_some())
+        && can_prompt()
+    {
+        let path: String = dialoguer::Input::new()
+            .with_prompt("Age identity file (leave empty to use passphrase keys)")
+            .allow_empty(true)
+            .interact_text()?;
+        if !path.is_empty() {
+            sources.push(path.into());
+        }
+    }
+    let mut used_identity = None;
+    policy::unlock_with(repo, |repo| {
+        access::unwrap_sources_with(
             repo,
-            Some(identity),
-            None,
+            &sources,
             opt.user.as_deref(),
             opt.key.as_deref(),
-        )?;
-    } else {
-        // Locally generated standard identities can be reused without re-entering a path.
-        let known = candidates
-            .iter()
-            .find_map(|(_, _, key)| {
-                key.recipient
-                    .as_ref()
-                    .and_then(|recipient| access::identity_hint(repo, recipient).transpose())
-            })
-            .transpose()?;
-        if let Some(identity) = known {
-            access::unlock(
-                repo,
-                Some(&identity),
-                None,
-                opt.user.as_deref(),
-                opt.key.as_deref(),
-            )?;
-        } else {
-            let selected = if candidates.len() == 1 {
-                0
-            } else {
-                ensure!(
-                    can_prompt(),
-                    "choose --identity or select --user/--key before interactive unlock"
-                );
-                let labels: Vec<_> = candidates
-                    .iter()
-                    .map(|(user, key, _)| format!("{user}/{key}"))
-                    .collect();
-                dialoguer::Select::with_theme(&crate::ui::style::DialogTheme::default())
-                    .with_prompt("Unlock with key")
-                    .items(&labels)
-                    .default(0)
-                    .interact()?
-            };
-            let (user, name, key) = candidates[selected];
-            if key.recipient.is_some() {
-                ensure!(
-                    can_prompt(),
-                    "supply --identity <standard-age-identity-file>"
-                );
-                let identity: String =
-                    dialoguer::Input::with_theme(&crate::ui::style::DialogTheme::default())
-                        .with_prompt("Age identity file")
-                        .interact_text()?;
-                access::unlock(
-                    repo,
-                    Some(std::path::Path::new(&identity)),
-                    None,
-                    Some(user),
-                    Some(name),
-                )?;
-            } else {
-                access::unlock(
-                    repo,
-                    None,
-                    Some(passphrase("Age key passphrase")?),
-                    Some(user),
-                    Some(name),
-                )?;
-            }
+            crate::ui::age::Callbacks,
+            passphrase,
+            |recipient, path| used_identity = Some((recipient.to_owned(), path.to_path_buf())),
+        )
+    })?;
+    if let Some((recipient, path)) = used_identity {
+        // Credential convenience metadata must not turn a completed unlock into an apparent failure.
+        if access::remember_identity(repo, &recipient, &path).is_err() {
+            eprintln!(
+                "Repository unlocked, but the local identity hint could not be saved; supply --identity next time."
+            );
         }
     }
     Ok(())
