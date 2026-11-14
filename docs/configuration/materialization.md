@@ -169,8 +169,10 @@ Checkout-to-recursive-link changes require unapplying the old layout first.
 See [Safety and recovery](../usage/safety.md) for the full contract.
 
 Template-containing checkouts use complete generated Git snapshots and preserve
-local edits through three-way sync. Generated output cannot be staged back into
-the source template. See [Generated checkouts](../usage/sync.md#generated-checkouts)
+local edits through three-way sync. Generated output cannot be staged with
+`over add`; [`over commit`](../usage/commit.md#rendered-file-edits) can translate
+unambiguous literal edits into source-template patches. See
+[Generated checkouts](../usage/sync.md#generated-checkouts)
 for snapshot storage, conflict resolution, and local-data security.
 
 ## Migrating older descriptors

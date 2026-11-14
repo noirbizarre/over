@@ -138,8 +138,12 @@ The desired snapshot advances after reconciliation, including when local files
 conflict. Merged/local content remains outside that desired snapshot. To accept
 the generated desired version and clear a conflict, use `over restore PATH`.
 Alternatively, edit the source template and sync a compatible result. Generated
-destinations cannot be ingested through add, patch-add, commit, or Absorb; edit
-the source template manually. Reverse patches are a separate follow-up (#276).
+destinations cannot be ingested through add, patch-add, or Absorb.
+[`over commit`](commit.md#rendered-file-edits) can reverse-patch unambiguous
+literal edits into source templates. Sync's offer to commit ordinary staged
+files does not select rendered edits. After a reverse commit preserves independent
+source changes, sync applies their committed rendering without replaying the
+consumed local patch.
 Ordinary non-template siblings retain their source staging workflow. A recursive
 add containing generated destinations fails before staging anything.
 
