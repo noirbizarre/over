@@ -43,6 +43,7 @@ nav = [
     { "over show (alias)" = "usage/show.md" },
     { "over data" = "usage/data.md" },
     { "Repository encryption" = "usage/crypt.md" },
+    { "Lock/unlock automation" = "usage/crypt-automation.md" },
     { "Native secrets / legacy Age" = "usage/secrets.md" },
     { "over apply" = "usage/apply.md" },
     { "over lint" = "usage/lint.md" },
