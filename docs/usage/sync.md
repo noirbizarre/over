@@ -107,6 +107,8 @@ When targets are inside a host Git worktree, sync establishes managed
 protection if reconciliation fails, then reconciles the inventory after success.
 Malformed managed blocks must be repaired before syncing. Dry-run does not change
 exclusions, and unrelated neighboring files remain visible to host Git.
+Known generated conflicts require attention and a nonzero exit status in both
+dry-run and real sync; preview still preserves files, Git objects/refs, and state.
 
 Reconciliation outcomes:
 

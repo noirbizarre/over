@@ -169,7 +169,9 @@ impl Materializer for VirtualCheckoutMaterializer {
         if step.entry.intent.checkout_scope().rendered.is_some() {
             if !ctx.dry_run {
                 let entry = step.entry.clone();
-                tokio::task::spawn_blocking(move || generated::reconcile(&entry, false)).await??;
+                tokio::task::spawn_blocking(move || generated::reconcile(&entry, false))
+                    .await??
+                    .ensure_clean()?;
             }
             return Ok(());
         }

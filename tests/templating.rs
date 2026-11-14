@@ -87,6 +87,61 @@ struct Fixture {
     target: PathBuf,
 }
 
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn generated_conflicts_require_attention_in_preview_without_changing_files_or_git_state(
+    #[case] protected: bool,
+) {
+    let fixture = Fixture::new(true);
+    if protected {
+        fixture.protect();
+    }
+    fixture.apply();
+    fs::write(fixture.target.join("config"), "local conflict\n").unwrap();
+    fs::write(fixture.source.join("app/config.jinja"), "source conflict\n").unwrap();
+    if protected {
+        fixture.git(&["add", "app/config.jinja"]);
+        fixture.git(&["commit", "-qm", "update protected template"]);
+    } else {
+        commit_all(&fixture.repo());
+    }
+    let snapshot = || -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        walkdir::WalkDir::new(fixture.temp.path())
+            .into_iter()
+            .map(Result::unwrap)
+            .filter(|item| item.file_type().is_file())
+            .map(|item| {
+                (
+                    item.path()
+                        .strip_prefix(fixture.temp.path())
+                        .unwrap()
+                        .to_path_buf(),
+                    fs::read(item.path()).unwrap(),
+                )
+            })
+            .collect()
+    };
+    let before = snapshot();
+    fixture
+        .sync()
+        .args(["--pull-only", "--dry-run"])
+        .assert()
+        .failure()
+        .stdout(contains("would conflict").and(contains("blocked")));
+    assert_eq!(snapshot(), before);
+    fixture
+        .sync()
+        .arg("--pull-only")
+        .assert()
+        .failure()
+        .stdout(contains("blocked"));
+    assert_eq!(
+        fs::read(fixture.target.join("config")).unwrap(),
+        b"local conflict\n"
+    );
+}
+
 #[cfg(unix)]
 #[rstest]
 #[case("template")]

@@ -474,7 +474,43 @@ pub(crate) fn persist(entry: &DesiredEntry, record: &state::VirtualCheckoutRecor
     })
 }
 
-pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
+pub(crate) struct ReconcileOutcome {
+    conflicts: Vec<ReconcileConflict>,
+}
+
+struct ReconcileConflict {
+    target: PathBuf,
+    source: Option<PathBuf>,
+}
+
+impl ReconcileOutcome {
+    pub(crate) fn ensure_clean(self) -> Result<()> {
+        if !self.conflicts.is_empty() {
+            let paths = self
+                .conflicts
+                .iter()
+                .map(|conflict| {
+                    format!(
+                        "'{}' (source template '{}')",
+                        conflict.target.display(),
+                        conflict
+                            .source
+                            .as_ref()
+                            .map(|source| source.display().to_string())
+                            .unwrap_or_default()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "generated checkout conflicts; local files preserved: {paths}; edit the source template or restore the desired output"
+            );
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<ReconcileOutcome> {
     state::verify_live_target(entry)?;
     let previous = state::record_for_entry(entry)?;
     ensure!(
@@ -488,6 +524,25 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
         state::verify(entry, record)?;
     }
     let analysis = analyze(entry, previous.as_ref())?;
+    // Preview and execution must carry the same attention decision; logging a
+    // conflict is insufficient for callers deciding whether sync may continue.
+    let outcome = ReconcileOutcome {
+        conflicts: analysis
+            .conflicts
+            .keys()
+            .map(|path| ReconcileConflict {
+                target: entry.target.join(path),
+                source: analysis
+                    .template_source(
+                        previous
+                            .as_ref()
+                            .and_then(|record| record.generated.as_ref()),
+                        path,
+                    )
+                    .map(Path::to_path_buf),
+            })
+            .collect(),
+    };
     let local_paths: BTreeSet<_> = analysis.base.keys().chain(analysis.local.keys()).collect();
     for path in local_paths {
         if !same(analysis.local.get(path), analysis.base.get(path)) {
@@ -539,7 +594,7 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
                     .unwrap_or_default()
             ))?;
         }
-        return Ok(());
+        return Ok(outcome);
     }
     let (overlay, root) = source(entry)?;
     let (repo, managed) = git::discover_source(root)?;
@@ -793,27 +848,7 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<()> {
     record.generated = Some(generated);
     record.initializing = false;
     persist(entry, &record)?;
-    if !analysis.conflicts.is_empty() {
-        let paths = analysis
-            .conflicts
-            .keys()
-            .map(|path| {
-                let template = analysis.template_source(record.generated.as_ref(), path);
-                format!(
-                    "'{}' (source template '{}')",
-                    entry.target.join(path).display(),
-                    template
-                        .map(|source| source.display().to_string())
-                        .unwrap_or_default()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        anyhow::bail!(
-            "generated checkout conflicts; local files preserved: {paths}; edit the source template or restore the desired output"
-        )
-    }
-    Ok(())
+    Ok(outcome)
 }
 
 pub(crate) fn inspection(

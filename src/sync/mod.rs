@@ -664,7 +664,7 @@ async fn sync_generated_virtual_checkout(
             crate::materialize::virtual_checkout::generated::reconcile(&reconcile_entry, dry_run)
         })
         .await?;
-        if let Err(error) = result {
+        if let Err(error) = result.and_then(|outcome| outcome.ensure_clean()) {
             return Ok(SyncOutcome::Blocked {
                 path,
                 reason: error.to_string(),
