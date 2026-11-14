@@ -481,6 +481,36 @@ type DiscoveredGroups = (
     BTreeMap<(PathBuf, String), BTreeSet<PathBuf>>,
 );
 
+/// Compute worktree-relative patterns before merging their shared physical block.
+fn expectations(
+    (repos, groups): DiscoveredGroups,
+) -> Result<BTreeMap<(PathBuf, String), GroupExpectation>> {
+    let mut expectations = BTreeMap::<(PathBuf, String), GroupExpectation>::new();
+    for ((repo_key, overlay), targets) in groups {
+        let mut expectation = compute_expectation(&repos[&repo_key], &overlay, &targets)?;
+        // Alias spellings and linked worktrees still write one physical marker.
+        expectation.exclude_path = repos[&repo_key]
+            .commondir()
+            .canonicalize()?
+            .join("info/exclude");
+        let key = (expectation.exclude_path.clone(), overlay);
+        if let Some(existing) = expectations.get_mut(&key) {
+            let lines: BTreeSet<_> = existing
+                .expected_content
+                .lines()
+                .chain(expectation.expected_content.lines())
+                .collect();
+            existing.expected_content = lines.into_iter().collect::<Vec<_>>().join("\n");
+            existing
+                .tracked_conflicts
+                .extend(expectation.tracked_conflicts);
+        } else {
+            expectations.insert(key, expectation);
+        }
+    }
+    Ok(expectations)
+}
+
 /// Discover the enclosing repository for each target and group targets by
 /// `(repo identity, overlay)` — shared by [`reconcile`] and [`unreconcile`]
 /// so both use identical discovery/grouping semantics; only what happens
@@ -514,13 +544,8 @@ fn discover_groups(targets: &[ManagedTarget]) -> Result<DiscoveredGroups> {
 /// never touches another's.
 pub fn reconcile(targets: &[ManagedTarget]) -> Result<ExcludeReport> {
     let mut report = ExcludeReport::default();
-    let (repos, groups) = discover_groups(targets)?;
-
-    for ((repo_key, overlay), abs_targets) in &groups {
-        let repo = repos
-            .get(repo_key)
-            .expect("every group key was inserted alongside its repo handle above");
-        reconcile_group(repo, overlay, abs_targets, &mut report)?;
+    for expectation in expectations(discover_groups(targets)?)?.into_values() {
+        reconcile_expectation(expectation, &mut report)?;
     }
 
     Ok(report)
@@ -529,10 +554,9 @@ pub fn reconcile(targets: &[ManagedTarget]) -> Result<ExcludeReport> {
 /// Include scaffolding as discovery anchors, so an entirely ignored overlay
 /// can remove its old block without excluding the scaffolding itself.
 pub fn reconcile_desired(desired: &DesiredTree) -> Result<ExcludeReport> {
-    let (repos, groups) = discover_desired_groups(desired)?;
     let mut report = ExcludeReport::default();
-    for ((repo_key, overlay), targets) in groups {
-        reconcile_group(&repos[&repo_key], &overlay, &targets, &mut report)?;
+    for expectation in expectations(discover_desired_groups(desired)?)?.into_values() {
+        reconcile_expectation(expectation, &mut report)?;
     }
     Ok(report)
 }
@@ -586,10 +610,9 @@ fn discover_existing_groups(desired: &DesiredTree) -> Result<DiscoveredGroups> {
 
 /// Diagnose exclusions for desired artifacts currently on disk, including dangling symlinks.
 pub fn diagnose_existing(desired: &DesiredTree) -> Result<Vec<ExcludeDiagnosis>> {
-    let (repos, groups) = discover_existing_groups(desired)?;
-    groups
+    expectations(discover_existing_groups(desired)?)?
         .into_iter()
-        .map(|((repo_key, overlay), targets)| diagnose_group(&repos[&repo_key], &overlay, &targets))
+        .map(|((_, overlay), expectation)| diagnose_expectation(expectation, &overlay))
         .collect()
 }
 
@@ -664,32 +687,17 @@ pub fn repair_existing(desired: &DesiredTree) -> Result<RepairReport> {
 
 /// Aggregate shared worktree blocks before repairing any of their markers.
 pub fn repair_existing_batch(desired: &[&DesiredTree]) -> Result<RepairReport> {
-    let mut expectations = BTreeMap::<(PathBuf, String), GroupExpectation>::new();
+    let mut repos = HashMap::new();
+    let mut groups = BTreeMap::<(PathBuf, String), BTreeSet<PathBuf>>::new();
     for desired in desired {
-        let (repos, groups) = discover_existing_groups(desired)?;
-        for ((repo_key, overlay), targets) in groups {
-            let mut expectation = compute_expectation(&repos[&repo_key], &overlay, &targets)?;
-            // Alias spellings of one common directory still own a single physical block.
-            expectation.exclude_path = repos[&repo_key]
-                .commondir()
-                .canonicalize()?
-                .join("info/exclude");
-            let key = (expectation.exclude_path.clone(), overlay);
-            if let Some(existing) = expectations.get_mut(&key) {
-                // Worktrees share one block; collect every contribution before its first rewrite.
-                let lines: BTreeSet<_> = existing
-                    .expected_content
-                    .lines()
-                    .chain(expectation.expected_content.lines())
-                    .collect();
-                existing.expected_content = lines.into_iter().collect::<Vec<_>>().join("\n");
-            } else {
-                expectations.insert(key, expectation);
-            }
+        let (found_repos, found_groups) = discover_existing_groups(desired)?;
+        repos.extend(found_repos);
+        for (key, targets) in found_groups {
+            groups.entry(key).or_default().extend(targets);
         }
     }
     let mut report = RepairReport::default();
-    for ((_, overlay), expectation) in expectations {
+    for ((_, overlay), expectation) in expectations((repos, groups))? {
         repair_expectation(expectation, &overlay, &mut report)?;
     }
     Ok(report)
@@ -698,12 +706,7 @@ pub fn repair_existing_batch(desired: &[&DesiredTree]) -> Result<RepairReport> {
 /// Newly ignored deployments still need their old host exclude block removed,
 /// even when no selected file remains to identify the enclosing repository.
 pub fn unreconcile_desired(desired: &DesiredTree) -> Result<ExcludeReport> {
-    let (repos, groups) = discover_desired_groups(desired)?;
-    let mut report = ExcludeReport::default();
-    for (repo_key, overlay) in groups.keys() {
-        remove_group_block(&repos[repo_key], overlay, &mut report)?;
-    }
-    Ok(report)
+    remove_discovered_blocks(discover_desired_groups(desired)?)
 }
 
 /// Remove this overlay's exclude block from every repository its (now
@@ -724,22 +727,27 @@ pub fn unreconcile_desired(desired: &DesiredTree) -> Result<ExcludeReport> {
 /// disk by walking up to the nearest existing ancestor, so this works
 /// whether it's called before or after the files are actually gone.
 pub fn unreconcile(targets: &[ManagedTarget]) -> Result<ExcludeReport> {
-    let mut report = ExcludeReport::default();
-    let (repos, groups) = discover_groups(targets)?;
+    remove_discovered_blocks(discover_groups(targets)?)
+}
 
+fn remove_discovered_blocks((repos, groups): DiscoveredGroups) -> Result<ExcludeReport> {
+    let mut report = ExcludeReport::default();
+    let mut removed = BTreeSet::new();
     for (repo_key, overlay) in groups.keys() {
-        let repo = repos
-            .get(repo_key)
-            .expect("every group key was inserted alongside its repo handle above");
-        remove_group_block(repo, overlay, &mut report)?;
+        let repo = &repos[repo_key];
+        // Whole-overlay teardown removes each shared marker once, independent
+        // of how many worktree groups discovered its physical exclusion file.
+        if removed.insert((repo.commondir().canonicalize()?, overlay)) {
+            remove_group_block(repo, overlay, &mut report)?;
+        }
     }
 
     Ok(report)
 }
 
 /// What a (repository, overlay) group's exclude block *should* contain —
-/// computed once, shared by the write path ([`reconcile_group`]) and the
-/// read-only diagnostic path ([`diagnose_group`], #148) so the two can
+/// computed once, shared by the write path ([`reconcile_expectation`]) and the
+/// read-only diagnostic path ([`diagnose_expectation`], #148) so the two can
 /// never drift apart.
 struct GroupExpectation {
     /// The repository's working directory, for reporting.
@@ -805,14 +813,7 @@ fn compute_expectation(
 }
 
 /// Reconcile a single (repository, overlay) group's exclude block.
-fn reconcile_group(
-    repo: &Repository,
-    overlay: &str,
-    targets: &BTreeSet<PathBuf>,
-    report: &mut ExcludeReport,
-) -> Result<()> {
-    let expectation = compute_expectation(repo, overlay, targets)?;
-
+fn reconcile_expectation(expectation: GroupExpectation, report: &mut ExcludeReport) -> Result<()> {
     for conflict in &expectation.tracked_conflicts {
         ui::warn(format!(
             "'{}' is already tracked by the repository at '{}' — not excluding it \
@@ -887,28 +888,15 @@ fn reconcile_group(
 /// repository an overlay no longer manages *any* target in at all is
 /// undiscoverable here too.
 pub fn diagnose(targets: &[ManagedTarget]) -> Result<Vec<ExcludeDiagnosis>> {
-    let (repos, groups) = discover_groups(targets)?;
-    let mut diagnoses = Vec::with_capacity(groups.len());
-
-    for ((repo_key, overlay), abs_targets) in &groups {
-        let repo = repos
-            .get(repo_key)
-            .expect("every group key was inserted alongside its repo handle above");
-        diagnoses.push(diagnose_group(repo, overlay, abs_targets)?);
-    }
-
-    Ok(diagnoses)
+    expectations(discover_groups(targets)?)?
+        .into_iter()
+        .map(|((_, overlay), expectation)| diagnose_expectation(expectation, &overlay))
+        .collect()
 }
 
 /// Diagnose a single (repository, overlay) group — see [`diagnose`].
-fn diagnose_group(
-    repo: &Repository,
-    overlay: &str,
-    targets: &BTreeSet<PathBuf>,
-) -> Result<ExcludeDiagnosis> {
-    let expectation = compute_expectation(repo, overlay, targets)?;
-
-    // Read-only: unlike `reconcile_group`, never creates the parent
+fn diagnose_expectation(expectation: GroupExpectation, overlay: &str) -> Result<ExcludeDiagnosis> {
+    // Read-only: unlike `reconcile_expectation`, never creates the parent
     // directory just to find it empty — a missing file simply means an
     // empty current block.
     let current = if expectation.exclude_path.exists() {
@@ -960,28 +948,11 @@ pub struct RepairReport {
 /// job, run by `over apply`).
 pub fn repair(targets: &[ManagedTarget]) -> Result<RepairReport> {
     let mut report = RepairReport::default();
-    let (repos, groups) = discover_groups(targets)?;
-
-    for ((repo_key, overlay), abs_targets) in &groups {
-        let repo = repos
-            .get(repo_key)
-            .expect("every group key was inserted alongside its repo handle above");
-        repair_group(repo, overlay, abs_targets, &mut report)?;
+    for ((_, overlay), expectation) in expectations(discover_groups(targets)?)? {
+        repair_expectation(expectation, &overlay, &mut report)?;
     }
 
     Ok(report)
-}
-
-/// Repair a single (repository, overlay) group's exclude block — see
-/// [`repair`].
-fn repair_group(
-    repo: &Repository,
-    overlay: &str,
-    targets: &BTreeSet<PathBuf>,
-    report: &mut RepairReport,
-) -> Result<()> {
-    let expectation = compute_expectation(repo, overlay, targets)?;
-    repair_expectation(expectation, overlay, report)
 }
 
 fn repair_expectation(
@@ -1034,7 +1005,7 @@ fn repair_expectation(
 
 /// Unconditionally remove `overlay`'s exclude block from `repo`'s
 /// `.git/info/exclude` — a no-op if the marker is already absent. Never
-/// computes or compares expected content (unlike [`reconcile_group`]):
+/// computes or compares expected content (unlike [`reconcile_expectation`]):
 /// [`unreconcile`] calls this once per (repo, overlay) group without
 /// caring which individual targets survived unapply.
 fn remove_group_block(repo: &Repository, overlay: &str, report: &mut ExcludeReport) -> Result<()> {
@@ -1431,6 +1402,66 @@ mod tests {
         assert!(main_exclude.exists());
         assert!(!wt_exclude.exists());
         assert_eq!(main_repo.commondir(), wt_repo.commondir());
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn linked_worktrees_share_one_union_for_reconciliation_diagnosis_and_repair(
+        #[case] desired_api: bool,
+    ) {
+        let (td, repo) = temp_git_repo();
+        let sig = git2::Signature::now("test", "test@example.com").unwrap();
+        let tree = repo
+            .find_tree(repo.index().unwrap().write_tree().unwrap())
+            .unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let linked = td.path().join("linked");
+        repo.worktree("linked", &linked, None).unwrap();
+        let a = td.path().join("a");
+        let b = linked.join("b");
+        fs::write(&a, "a").unwrap();
+        fs::write(&b, "b").unwrap();
+        let desired = DesiredTree::from_entries(vec![
+            symlink_file(a, "demo"),
+            symlink_file(b.clone(), "demo"),
+        ]);
+        let targets = managed_targets(&desired).unwrap();
+        let apply = || {
+            if desired_api {
+                reconcile_desired(&desired)
+            } else {
+                reconcile(&targets)
+            }
+        };
+        apply().unwrap();
+        let expected = exclude_content(&repo);
+        assert!(expected.contains("/a\n/b"), "{expected}");
+        assert!(apply().unwrap().updated.is_empty());
+        assert!(
+            diagnose(&targets)
+                .unwrap()
+                .iter()
+                .all(|item| item.status == ExcludeStatus::Ok)
+        );
+        assert!(
+            diagnose_existing(&desired)
+                .unwrap()
+                .iter()
+                .all(|item| item.status == ExcludeStatus::Ok)
+        );
+        let path = repo.commondir().join("info/exclude");
+        fs::write(&path, "# >>> over: exclude:demo >>>\n").unwrap();
+        repair_existing(&desired).unwrap();
+        assert!(exclude_content(&repo).contains("/a\n/b"));
+        fs::write(&path, "# >>> over: exclude:demo >>>\n").unwrap();
+        repair(&targets).unwrap();
+        assert!(exclude_content(&repo).contains("/a\n/b"));
+        reconcile_desired(&DesiredTree::from_entries(vec![symlink_file(b, "demo")])).unwrap();
+        let content = exclude_content(&repo);
+        assert!(!content.contains("/a\n"));
+        assert!(content.contains("/b\n"));
     }
 
     #[test]
