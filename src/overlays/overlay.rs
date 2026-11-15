@@ -75,9 +75,13 @@ pub struct Overlay {
 
     pub description: Option<String>,
 
-    /// Consumer-owned metadata, inherited just like other descriptor fields.
+    /// Consumer-owned metadata declared by this overlay, never inherited.
     #[serde(default)]
     pub data: super::DataMap,
+
+    /// Local machine defaults; the configured host overlay may override these.
+    #[serde(default)]
+    pub host: super::DataMap,
 
     pub target: String,
 
@@ -168,6 +172,8 @@ impl Overlay {
         sources.reverse();
 
         let mut local_hooks = crate::hooks::Hooks::default();
+        let mut local_data = super::DataMap::new();
+        let mut local_host = super::DataMap::new();
         let mut scopes = Vec::new();
         let mut scoped_sources = Vec::new();
         let mut target_origin = root.to_path_buf();
@@ -261,6 +267,19 @@ impl Overlay {
             }
             super::data::validate_source(source)
                 .with_context(|| format!("invalid data in descriptor source {source:?}"))?;
+            // Remove local namespaces before cascading so absent child keys cannot inherit.
+            let data = values.remove("data");
+            let host = values.remove("host");
+            if index + 1 == sources.len() {
+                local_data = data
+                    .map(|value| value.try_deserialize())
+                    .transpose()?
+                    .unwrap_or_default();
+                local_host = host
+                    .map(|value| value.try_deserialize())
+                    .transpose()?
+                    .unwrap_or_default();
+            }
             scoped_sources.push(super::paths::ScopedSource(values));
         }
 
@@ -279,6 +298,8 @@ impl Overlay {
             )
         })?;
         overlay.hooks = local_hooks;
+        overlay.data = local_data;
+        overlay.host = local_host;
         overlay.scopes = scopes;
         overlay.target_origin = target_origin;
         overlay.field_origins = field_origins;
@@ -286,6 +307,10 @@ impl Overlay {
     }
 
     pub fn resolve_target(&self, ctx: &exec::Context) -> Result<PathBuf> {
+        if ctx.data_prepared && !ctx.rendering_prepared {
+            // Metadata-only callers still need dependency targets before rendering their own.
+            return self.resolve_target(ctx.prepare_rendering(self)?.as_ref());
+        }
         // Its own target cannot exist until this definition has finished rendering.
         let base = ctx.with_overlay(self.clone());
         super::mapping::resolve_path(&self.target, &self.target_origin, &base)
@@ -295,7 +320,8 @@ impl Overlay {
         &self,
         ctx: &exec::Context,
     ) -> Result<super::mapping::ResolvedMappings> {
-        super::mapping::ResolvedMappings::new(self, ctx)
+        let prepared = ctx.prepare_rendering(self)?;
+        super::mapping::ResolvedMappings::new(self, &prepared)
     }
 
     pub fn has_target_rules(&self) -> bool {

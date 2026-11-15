@@ -62,14 +62,14 @@ The list uses the same flat-union composition as an overlay's `uses`:
   either order; later names do **not** override earlier files.
 - Validate every reference and the combined ownership before deploying any files.
   An invalid later name cannot leave earlier overlays deployed.
-- Merge metadata after repository defaults in dependency-first traversal order:
-  mappings merge recursively, while later scalar/list values replace earlier ones.
-  A listed dependency already visited through another name is not merged again.
-  A single distinct selected root retains its existing highest metadata precedence.
+- Keep each participant's `data` local. Resolve `host` from that overlay's own
+  defaults plus the configured host's own overrides; expose dependencies explicitly
+  through the nested `overlays` namespace. No package or list aggregation is implicit.
 - Run repository hooks once, then participant hooks in dependency order, only after
   every participant successfully materializes. Multiple distinct roots give repository
   hooks no selected `overlay` or `OVER_OVERLAY_*` environment variables; participant
-  hooks still receive their own overlay identity and target.
+  hooks still receive their own overlay identity and target. Multi-root repository
+  hooks receive empty `data`, host overrides, and the union of roots and dependencies.
 
 This is one `over apply --no-prompt -- container/base container/rust container/project-tools`
 operation. A `version` override must support multi-name `over apply` to use a list;

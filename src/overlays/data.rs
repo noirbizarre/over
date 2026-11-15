@@ -1,4 +1,4 @@
-//! Consumer-owned metadata, composed independently of filesystem operations.
+//! Local metadata, explicit dependency namespaces, and host defaults/overrides.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -16,12 +16,141 @@ pub type DataMap = BTreeMap<String, DataValue>;
 
 /// Validate before cascading so a child cannot hide an invalid ancestor field.
 pub(crate) fn validate_source(source: &impl Source) -> Result<()> {
-    if let Some(value) = source.collect()?.get("data")
-        && !matches!(value.kind, ValueKind::Table(_))
-    {
-        bail!("`data` must be a mapping");
+    let values = source.collect()?;
+    for field in ["data", "host"] {
+        if let Some(value) = values.get(field)
+            && !matches!(value.kind, ValueKind::Table(_))
+        {
+            bail!("`{field}` must be a mapping");
+        }
     }
     Ok(())
+}
+
+/// Stable public scope shared by command output, file templates, and hooks.
+#[derive(Clone, Default, serde::Serialize)]
+pub struct DataContext {
+    pub data: DataMap,
+    pub overlays: DataMap,
+    pub host: DataMap,
+}
+
+pub(crate) fn merge_host(defaults: &DataMap, overrides: &DataMap) -> DataMap {
+    let mut merged = defaults.clone();
+    for (key, value) in overrides {
+        if let Some(previous) = merged.get_mut(key) {
+            merge_value(previous, value.clone());
+        } else {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    merged
+}
+
+#[derive(Default)]
+struct NamespaceNode<'a> {
+    overlay: Option<&'a Overlay>,
+    children: BTreeMap<String, NamespaceNode<'a>>,
+}
+
+impl NamespaceNode<'_> {
+    fn value(&self, targets: &std::collections::HashMap<String, String>) -> Result<DataValue> {
+        let mut attributes = DataMap::new();
+        if let Some(overlay) = self.overlay {
+            attributes.insert("name".into(), DataValue::String(overlay.name.clone()));
+            attributes.insert(
+                "root".into(),
+                noyalib::compat::serde_yaml::to_value(&overlay.root)?,
+            );
+            attributes.insert(
+                "data".into(),
+                noyalib::compat::serde_yaml::to_value(&overlay.data)?,
+            );
+            attributes.insert(
+                "host".into(),
+                noyalib::compat::serde_yaml::to_value(&overlay.host)?,
+            );
+            if let Some(target) = targets.get(&overlay.name) {
+                attributes.insert("target".into(), DataValue::String(target.clone()));
+            }
+        }
+        for (name, child) in &self.children {
+            if let Some(overlay) = self.overlay {
+                // Reserve target even before binding it, so validation is phase-independent.
+                anyhow::ensure!(
+                    !["name", "root", "target", "data", "host"].contains(&name.as_str()),
+                    "overlay namespace collision: child '{}/{name}' conflicts with attribute '{name}' of overlay '{}'",
+                    overlay.name,
+                    overlay.name
+                );
+            }
+            attributes.insert(name.clone(), child.value(targets)?);
+        }
+        Ok(noyalib::compat::serde_yaml::to_value(attributes)?)
+    }
+}
+
+/// Present canonical identities without changing their graph or filesystem meaning.
+pub(crate) fn namespace(
+    selected: Option<&Overlay>,
+    overlays: &[Overlay],
+    targets: &std::collections::HashMap<String, String>,
+) -> Result<DataMap> {
+    fn collect<'a>(
+        name: &str,
+        overlays: &'a [Overlay],
+        included: &mut BTreeMap<String, &'a Overlay>,
+    ) -> Result<()> {
+        if included.contains_key(name) {
+            return Ok(());
+        }
+        let overlay = overlays
+            .iter()
+            .find(|overlay| overlay.name == name)
+            .with_context(|| {
+                format!("overlay '{name}' is not in the prepared dependency snapshot")
+            })?;
+        included.insert(name.to_owned(), overlay);
+        for dependency in overlay.uses.iter().flatten() {
+            collect(dependency, overlays, included)?;
+        }
+        Ok(())
+    }
+
+    let mut included = BTreeMap::new();
+    if let Some(selected) = selected {
+        let selected = overlays
+            .iter()
+            .find(|overlay| overlay.name == selected.name)
+            .with_context(|| {
+                format!(
+                    "overlay '{}' is not in the prepared dependency snapshot",
+                    selected.name
+                )
+            })?;
+        for dependency in selected.uses.iter().flatten() {
+            collect(dependency, overlays, &mut included)?;
+        }
+    } else {
+        included.extend(
+            overlays
+                .iter()
+                .map(|overlay| (overlay.name.clone(), overlay)),
+        );
+    }
+    let mut tree = NamespaceNode::default();
+    for (name, overlay) in included {
+        let mut node = &mut tree;
+        // Splitting the empty canonical root retains it at overlays[''] without an alias.
+        for segment in name.split('/') {
+            node = node.children.entry(segment.to_owned()).or_default();
+        }
+        node.overlay = Some(overlay);
+    }
+    let DataValue::Mapping(mapping) = tree.value(targets)? else {
+        unreachable!("namespace nodes serialize as mappings")
+    };
+    Ok(mapping.into_iter().collect())
 }
 
 fn merge_value(current: &mut DataValue, incoming: DataValue) {
@@ -41,7 +170,7 @@ fn merge_value(current: &mut DataValue, incoming: DataValue) {
 
 fn visit(
     repo: &Repository,
-    overlay: Overlay,
+    mut overlay: Overlay,
     visited: &mut HashSet<String>,
     stack: &mut HashSet<String>,
     ordered: &mut Vec<Overlay>,
@@ -53,6 +182,7 @@ fn visit(
         return Ok(());
     }
     stack.insert(overlay.name.clone());
+    let mut canonical_dependencies = Vec::new();
     for name in overlay.uses.iter().flatten() {
         let dependency = repo.get(name).with_context(|| {
             format!(
@@ -60,8 +190,11 @@ fn visit(
                 overlay.name
             )
         })?;
+        canonical_dependencies.push(dependency.name.clone());
         visit(repo, dependency, visited, stack, ordered)?;
     }
+    // Later snapshot lookups must not depend on authored aliases such as ./apps/ssh/.
+    overlay.uses = overlay.uses.map(|_| canonical_dependencies);
     stack.remove(&overlay.name);
     visited.insert(overlay.name.clone());
     ordered.push(overlay);
@@ -69,12 +202,8 @@ fn visit(
 }
 
 impl Repository {
-    /// Resolve host/default metadata plus an optional command target's metadata.
-    ///
-    /// Dependencies merge before their parent, in `uses` order. The default
-    /// closure precedes the selected closure; shared overlays contribute once.
-    /// The selected root always merges last, even if the default uses it.
-    /// `ctx.no_uses` affects operations, never this metadata closure.
+    /// Return only the selected overlay's local data (or the configured default's).
+    /// Use execution context preparation for the complete three-part scope.
     ///
     /// ```no_run
     /// # fn main() -> anyhow::Result<()> {
@@ -102,8 +231,7 @@ impl Repository {
         self.resolve_inputs_many(ctx, selected.map(std::slice::from_ref).unwrap_or_default())
     }
 
-    /// Merge ordered roots like a `uses` composition, after repository defaults.
-    /// A single selected root retains its historical highest precedence.
+    /// Return local data for one unique root; a composition has no local data.
     pub fn resolve_data_many(&self, ctx: &exec::Context, selected: &[Overlay]) -> Result<DataMap> {
         Ok(self.resolve_inputs_many(ctx, selected)?.0)
     }
@@ -113,17 +241,20 @@ impl Repository {
         ctx: &exec::Context,
         selected: &[Overlay],
     ) -> Result<(DataMap, Vec<Overlay>)> {
-        // Repeating a root must not discard its single-root precedence guarantee.
+        // Repeating one root must retain its local scope rather than invent a composition.
         let mut selected_names = HashSet::new();
-        let selected: Vec<_> = selected
+        let default = self.default_overlay(ctx)?;
+        let mut selected: Vec<_> = selected
             .iter()
             .filter(|overlay| selected_names.insert(&overlay.name))
             .collect();
         let mut ordered = Vec::new();
         let mut visited = HashSet::new();
         let mut stack = HashSet::new();
-        if let Some(default) = self.default_overlay(ctx)? {
-            visit(self, default, &mut visited, &mut stack, &mut ordered)?;
+        if selected.is_empty()
+            && let Some(default) = &default
+        {
+            selected.push(default);
         }
         for selected in &selected {
             visit(
@@ -134,24 +265,10 @@ impl Repository {
                 &mut ordered,
             )?;
         }
-        if let [selected] = selected.as_slice() {
-            // A host may use the command target: deduplication must not reverse
-            // the explicitly selected root's promised precedence.
-            if let Some(index) = ordered.iter().position(|o| o.name == selected.name) {
-                let selected = ordered.remove(index);
-                ordered.push(selected);
-            }
-        }
-        let mut data = DataMap::new();
-        for overlay in &ordered {
-            for (key, value) in overlay.data.clone() {
-                if let Some(previous) = data.get_mut(&key) {
-                    merge_value(previous, value);
-                } else {
-                    data.insert(key, value);
-                }
-            }
-        }
+        let data = match selected.as_slice() {
+            [selected] => selected.data.clone(),
+            _ => DataMap::new(),
+        };
         Ok((data, ordered))
     }
 }
@@ -177,19 +294,202 @@ mod tests {
         serde_yaml::from_str(yaml).unwrap()
     }
 
+    #[test]
+    fn host_overrides_merge_only_local_defaults_without_visiting_the_host_graph() {
+        let temp = TempDir::new().unwrap();
+        descriptor(
+            &temp,
+            "",
+            "default_overlay: machine\nhost: {ancestor: forbidden}\ndata: {ancestor: forbidden}",
+        );
+        descriptor(
+            &temp,
+            "machine",
+            "uses: [missing]\nhost: {ssh: {agent: override}, list: [host], scalar: {new: true}, cleared: null}",
+        );
+        descriptor(
+            &temp,
+            "dependency",
+            "host: {dependency: forbidden}\ndata: {packages: [dependency]}",
+        );
+        descriptor(
+            &temp,
+            "selected",
+            "uses: [dependency]\nhost: {ssh: {agent: default, socket: retained}, list: [default], scalar: old, cleared: old}\ndata: {packages: [local]}",
+        );
+        let repo = Repository::new(temp.path().into());
+        let ctx = Context::builder()
+            .repository(repo.clone())
+            .overlay(repo.get("selected").unwrap())
+            .build()
+            .resolve_data()
+            .unwrap();
+        assert_eq!(ctx.data, mapping("packages: [local]"));
+        assert_eq!(
+            ctx.host,
+            mapping(
+                "ssh: {agent: override, socket: retained}\nlist: [host]\nscalar: {new: true}\ncleared: null"
+            )
+        );
+        let scope = ctx.data_context().unwrap();
+        assert_eq!(
+            scope.overlays.keys().collect::<Vec<_>>(),
+            vec!["dependency"]
+        );
+        let dependency = ctx.with_overlay(repo.get("dependency").unwrap());
+        assert_eq!(dependency.data, mapping("packages: [dependency]"));
+        assert_eq!(
+            dependency.host["dependency"],
+            DataValue::String("forbidden".into())
+        );
+        assert_eq!(
+            dependency.host["ssh"],
+            serde_yaml::from_str::<DataValue>("{agent: override}").unwrap()
+        );
+        // A later descriptor edit cannot change participant defaults or host overrides.
+        descriptor(
+            &temp,
+            "dependency",
+            "host: {dependency: changed}\ndata: {packages: [changed]}",
+        );
+        assert_eq!(
+            ctx.with_overlay(repo.get("dependency").unwrap()).data,
+            dependency.data
+        );
+    }
+
+    #[test]
+    fn without_a_host_only_current_defaults_apply_and_descriptorless_children_are_empty() {
+        let temp = TempDir::new().unwrap();
+        descriptor(
+            &temp,
+            "",
+            "host: {ancestor: forbidden}\ndata: {ancestor: forbidden}",
+        );
+        descriptor(
+            &temp,
+            "parent",
+            "host: {local: retained}\ndata: {local: retained}",
+        );
+        temp.child("parent/child").create_dir_all().unwrap();
+        let repo = Repository::new(temp.path().into());
+        let ctx = Context::builder()
+            .repository(repo.clone())
+            .overlay(repo.get("parent").unwrap())
+            .build()
+            .resolve_data()
+            .unwrap();
+        assert_eq!(ctx.host, mapping("local: retained"));
+        let child = repo.get("parent/child").unwrap();
+        assert!(child.data.is_empty());
+        assert!(child.host.is_empty());
+        let empty = Context::default().data_context().unwrap();
+        assert_eq!(
+            serde_json::to_value(empty).unwrap(),
+            serde_json::json!({"data": {}, "host": {}, "overlays": {}})
+        );
+    }
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    fn nested_dependency_namespaces_preserve_prefix_overlays_and_bracket_only_names(
+        #[case] reverse: bool,
+    ) {
+        let temp = TempDir::new().unwrap();
+        descriptor(&temp, "apps", "data: {prefix: true}");
+        descriptor(&temp, "apps/ssh-agent", "data: {packages: [openssh]}");
+        let uses = if reverse {
+            "[apps/ssh-agent, apps]"
+        } else {
+            "[apps, ./apps/ssh-agent/]"
+        };
+        descriptor(&temp, "selected", &format!("uses: {uses}"));
+        let repo = Repository::new(temp.path().into());
+        let ctx = Context::builder()
+            .repository(repo.clone())
+            .overlay(repo.get("selected").unwrap())
+            .build()
+            .resolve_data()
+            .unwrap();
+        assert_eq!(
+            exec::templates::render_content(
+                "{{ overlays.apps.data.prefix }} {{ overlays.apps['ssh-agent'].data.packages[0] }}",
+                &ctx
+            )
+            .unwrap(),
+            "True openssh"
+        );
+        assert_eq!(ctx.data_context().unwrap().overlays.len(), 1);
+    }
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    fn overlay_attributes_cannot_be_overwritten_by_child_namespaces(#[case] reverse: bool) {
+        let temp = TempDir::new().unwrap();
+        descriptor(&temp, "apps", "{}");
+        descriptor(&temp, "apps/data", "{}");
+        let uses = if reverse {
+            "[apps/data, apps]"
+        } else {
+            "[apps, apps/data]"
+        };
+        descriptor(&temp, "selected", &format!("uses: {uses}"));
+        let repo = Repository::new(temp.path().into());
+        let error = Context::builder()
+            .repository(repo.clone())
+            .overlay(repo.get("selected").unwrap())
+            .build()
+            .resolve_data()
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("apps/data"));
+        // Without an apps overlay node, data is simply an ordinary directory segment.
+        descriptor(&temp, "selected", "uses: [apps/data]");
+        assert!(
+            Context::builder()
+                .repository(repo.clone())
+                .overlay(repo.get("selected").unwrap())
+                .build()
+                .resolve_data()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn an_explicit_root_dependency_has_an_empty_string_namespace_key() {
+        let temp = TempDir::new().unwrap();
+        descriptor(&temp, "", "data: {root: accessible}");
+        descriptor(&temp, "selected", "uses: ['']");
+        let repo = Repository::new(temp.path().into());
+        let ctx = Context::builder()
+            .repository(repo.clone())
+            .overlay(repo.get("selected").unwrap())
+            .build()
+            .resolve_data()
+            .unwrap();
+        assert_eq!(
+            exec::templates::render_content("{{ overlays[''].data.root }}", &ctx).unwrap(),
+            "accessible"
+        );
+    }
+
     #[rstest]
     #[case("data: null")]
     #[case("data: []")]
     #[case("data: text")]
     #[case("data: 42")]
     #[case("data: true")]
-    fn non_mapping_data_is_rejected_even_when_a_child_overrides_it(#[case] invalid: &str) {
+    fn non_mapping_namespaces_are_rejected_even_when_a_child_overrides_them(
+        #[case] invalid: &str,
+        #[values("data", "host")] field: &str,
+    ) {
         let temp = TempDir::new().unwrap();
-        descriptor(&temp, "", invalid);
-        descriptor(&temp, "selected", "data: {valid: true}");
+        descriptor(&temp, "", &invalid.replace("data", field));
+        descriptor(&temp, "selected", &format!("{field}: {{valid: true}}"));
         let repo = Repository::new(temp.path().into());
         let error = repo.get("selected").unwrap_err();
-        assert!(format!("{error:#}").contains("`data` must be a mapping"));
+        assert!(format!("{error:#}").contains(&format!("`{field}` must be a mapping")));
         assert!(crate::lint::lint_repository(&repo).has_errors());
     }
 
@@ -212,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn recursive_merging_replaces_lists_and_preserves_explicit_nulls() {
+    fn local_data_replaces_dependency_values_without_implicit_merging() {
         let temp = TempDir::new().unwrap();
         descriptor(
             &temp,
@@ -232,7 +532,7 @@ mod tests {
         assert_eq!(
             data,
             mapping(
-                "nested: {keep: yes, change: new}\nlist: [three]\ncleared: null\nscalar: {new: value}\nmap: replacement"
+                "nested: {change: new}\nlist: [three]\ncleared: null\nscalar: {new: value}\nmap: replacement"
             )
         );
         assert!(data.contains_key("cleared"));
@@ -240,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_inheritance_recursively_merges_nested_maps_and_accumulates_distinct_keys() {
+    fn descriptor_ancestors_do_not_contribute_local_data() {
         let temp = TempDir::new().unwrap();
         descriptor(
             &temp,
@@ -251,7 +551,7 @@ mod tests {
         let repo = Repository::new(temp.path().into());
         assert_eq!(
             repo.get("selected").unwrap().data,
-            mapping("app: {inherited: old, changed: new}\nretained: true")
+            mapping("app: {changed: new}")
         );
     }
 
@@ -275,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn host_and_selected_closures_deduplicate_shared_dependencies_in_uses_order() {
+    fn host_and_dependency_data_do_not_leak_into_selected_data() {
         let temp = TempDir::new().unwrap();
         descriptor(&temp, "", "default_overlay: 'hosts/{{ machine.hostname }}'");
         descriptor(&temp, "shared", "data: {priority: shared, shared: true}");
@@ -302,16 +602,9 @@ mod tests {
             .build();
         let selected = repo.get("selected").unwrap();
         let data = repo.resolve_data(&ctx, Some(&selected)).unwrap();
-        // Replaying shared while visiting either sibling would erase host priority.
-        assert_eq!(
-            data,
-            mapping("priority: host\nshared: true\nhost: true\nsibling: second\nselected: true")
-        );
+        assert_eq!(data, mapping("selected: true"));
         let host_only = repo.resolve_data(&ctx, None).unwrap();
-        assert_eq!(
-            host_only,
-            mapping("priority: host\nshared: true\nhost: true")
-        );
+        assert_eq!(host_only, mapping("priority: host\nhost: true"));
     }
 
     #[rstest]
@@ -340,13 +633,10 @@ mod tests {
     }
 
     #[rstest]
-    #[case(vec!["parent", "dependency"], "parent")]
-    #[case(vec!["dependency", "parent"], "parent")]
-    #[case(vec!["parent", "sibling", "dependency"], "sibling")]
-    fn multiple_explicit_roots_merge_in_dependency_order_without_replaying_contributors(
-        #[case] names: Vec<&str>,
-        #[case] winner: &str,
-    ) {
+    #[case(vec!["parent", "dependency"])]
+    #[case(vec!["dependency", "parent"])]
+    #[case(vec!["parent", "sibling", "dependency"])]
+    fn multiple_distinct_roots_have_no_local_data(#[case] names: Vec<&str>) {
         let temp = TempDir::new().unwrap();
         descriptor(&temp, "", "default_overlay: host");
         descriptor(&temp, "host", "data: {host: true, priority: host}");
@@ -365,11 +655,11 @@ mod tests {
         let ctx = Context::builder().repository(repo.clone()).build();
         let roots: Vec<_> = names.iter().map(|name| repo.get(name).unwrap()).collect();
         let data = repo.resolve_data_many(&ctx, &roots).unwrap();
-        assert_eq!(data, mapping(&format!("host: true\npriority: {winner}")));
+        assert!(data.is_empty());
     }
 
     #[test]
-    fn selected_inherited_values_override_host_values() {
+    fn empty_local_data_does_not_inherit_ancestor_or_host_values() {
         let temp = TempDir::new().unwrap();
         descriptor(
             &temp,
@@ -383,7 +673,7 @@ mod tests {
         assert_eq!(
             repo.resolve_data(&ctx, Some(&repo.get("selected").unwrap()))
                 .unwrap(),
-            mapping("priority: inherited")
+            DataMap::new()
         );
     }
 
@@ -403,14 +693,13 @@ mod tests {
         assert_eq!(
             repo.resolve_data(&ctx, Some(&repo.get("selected").unwrap()))
                 .unwrap(),
-            mapping("dependency: true\nselected: true")
+            mapping("selected: true")
         );
     }
 
     #[rstest]
     #[case("default_overlay: missing", "data: {}")]
     #[case("default_overlay: '{{ broken'", "data: {}")]
-    #[case("default_overlay: host", "uses: [missing]")]
     fn broken_defaults_fail_even_with_an_explicit_target(#[case] root: &str, #[case] host: &str) {
         let temp = TempDir::new().unwrap();
         descriptor(&temp, "", root);
@@ -457,7 +746,6 @@ mod tests {
             .unwrap();
         assert!(repo.get("legacy").unwrap().data.is_empty());
         let copies = [
-            ctx.with_overlay(repo.get("legacy").unwrap()),
             ctx.with_progress(indicatif::ProgressBar::hidden()),
             ctx.with_multiprogress(indicatif::MultiProgress::new()),
             ctx.with_resolved_overlay("legacy".into(), "/target".into()),
@@ -465,7 +753,7 @@ mod tests {
         for copy in copies {
             assert_eq!(copy.data, ctx.data);
             assert_eq!(
-                exec::templates::render_string("{{ data.nested.value }}", copy.as_ref()).unwrap(),
+                exec::templates::render_content("{{ data.nested.value }}", &copy).unwrap(),
                 "available"
             );
             assert_eq!(
@@ -474,5 +762,10 @@ mod tests {
                 "available"
             );
         }
+        assert!(
+            ctx.with_overlay(repo.get("legacy").unwrap())
+                .data_context()
+                .is_err()
+        );
     }
 }

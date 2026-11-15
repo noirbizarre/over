@@ -866,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn consumer_metadata_is_resolved_independently_for_each_composition() {
+    fn dependency_targets_do_not_consume_their_consumers_local_metadata() {
         let (temp, context) = fixture();
         write(
             &temp,
@@ -883,16 +883,6 @@ mod tests {
             write(&temp, &format!("{name}/file"), name);
         }
         let result = lint_repository_with_context(&context);
-        assert_eq!(conflicts(&result).len(), 2, "{result:?}");
-        assert!(conflicts(&result).iter().any(|diag| {
-            diag.message
-                .replace('\\', "/")
-                .contains("target/first/file")
-        }));
-        assert!(conflicts(&result).iter().any(|diag| {
-            diag.message
-                .replace('\\', "/")
-                .contains("target/second/file")
-        }));
+        assert!(conflicts(&result).is_empty(), "{result:?}");
     }
 }

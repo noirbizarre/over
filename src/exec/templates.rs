@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -12,7 +11,8 @@ pub(crate) struct TemplateContext<'a> {
     #[serde(flatten)]
     ctx: &'a crate::exec::Context,
     env: &'a std::collections::BTreeMap<String, String>,
-    overlays: &'a HashMap<String, String>,
+    #[serde(flatten)]
+    scope: crate::overlays::data::DataContext,
     paths: TemplatePaths,
 }
 
@@ -51,7 +51,7 @@ impl<'a> TemplateContext<'a> {
         Ok(Self {
             ctx,
             env: &ctx.path_inputs.environment,
-            overlays: ctx.resolved_overlays.as_ref(),
+            scope: ctx.data_context()?,
             paths,
         })
     }

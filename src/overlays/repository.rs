@@ -330,7 +330,15 @@ impl Repository {
         let Some(raw) = self.root_config()?.default_overlay else {
             return Ok(None);
         };
-        let base = ctx.without_target();
+        // Host selection must not depend on the host scope it is about to establish.
+        let base = exec::Context {
+            overlay: None,
+            current_target: None,
+            data: super::DataMap::new(),
+            host: super::DataMap::new(),
+            data_prepared: false,
+            ..ctx.without_target().as_ref().clone()
+        };
         let state = exec::templates::TemplateContext::new(&base)?;
         let name = exec::templates::render_path(&raw, &state)
             .context("failed to render default_overlay template")?;

@@ -222,7 +222,7 @@ pub(crate) fn transform(
     // Canonical JSON orders map keys; identity never persists the inputs themselves.
     let state = serde_json::to_value(templates::TemplateContext::new(ctx)?)?;
     // UI flags must not change artifact identity when the rendered result is identical.
-    let inputs = serde_json::json!({"data": ctx.data, "machine": ctx.machine, "env": state["env"], "paths": state["paths"], "overlays": state["overlays"]});
+    let inputs = serde_json::json!({"data": state["data"], "host": state["host"], "machine": ctx.machine, "env": state["env"], "paths": state["paths"], "overlays": state["overlays"]});
     let fingerprint = serde_json::to_vec(&(
         &overlay.root,
         relative,
@@ -356,6 +356,38 @@ mod tests {
             assert_eq!(destination, Path::new(expected));
             assert_eq!(file.bytes.as_ref(), b"{{ missing }}");
         }
+    }
+
+    #[test]
+    fn host_inputs_change_artifact_identity_without_ui_state_affecting_it() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        temp.child("over.yaml")
+            .write_str("rules:\n  - {path: '**', template: true}\n")
+            .unwrap();
+        let repository = crate::overlays::Repository::new(temp.path().into());
+        let overlay = repository.get("").unwrap();
+        let mut ctx = Context::default();
+        ctx.host.insert(
+            "value".into(),
+            crate::overlays::DataValue::String("first".into()),
+        );
+        // Constant output isolates the input fingerprint from rendered-byte changes.
+        let identity = |ctx: &Context| {
+            transform(ctx, &overlay, Path::new("config"), b"constant", 0o100644)
+                .unwrap()
+                .1
+                .identity
+        };
+        let first = identity(&ctx);
+        assert_eq!(
+            identity(&ctx.with_progress(indicatif::ProgressBar::hidden())),
+            first
+        );
+        ctx.host.insert(
+            "value".into(),
+            crate::overlays::DataValue::String("second".into()),
+        );
+        assert_ne!(identity(&ctx), first);
     }
 
     #[test]

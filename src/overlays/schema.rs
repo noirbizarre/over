@@ -15,6 +15,7 @@ pub(crate) const OVERLAY_KEYS: &[&str] = &[
     "format",
     "git",
     "hooks",
+    "host",
     "mode",
     "overlays",
     "permissions",

@@ -270,7 +270,6 @@ mod tests {
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use rstest::rstest;
-    use std::sync::Arc;
 
     /// Install a tracing subscriber so `tracing::warn!` etc. bodies are executed during tests.
     fn init_test_tracing() {
@@ -332,12 +331,22 @@ mod tests {
 
     #[test]
     fn render_symlink_target_with_overlays() {
-        let mut overlays = HashMap::new();
-        overlays.insert("apps/nvim".to_string(), "/opt/nvim".to_string());
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("apps/nvim")).unwrap();
+        fs::write(
+            temp.path().join("apps/nvim/over.toml"),
+            "target = '/opt/nvim'",
+        )
+        .unwrap();
+        let repo = crate::overlays::Repository::new(temp.path().into());
         let ctx = crate::exec::Context::builder()
-            .resolved_overlays(Arc::new(overlays))
-            .build();
-        let result = render_symlink_target("{{ overlays['apps/nvim'] }}/init.lua", &ctx).unwrap();
+            .repository(repo.clone())
+            .root(temp.path().join("target"))
+            .build()
+            .prepare_rendering_many(&[repo.get("apps/nvim").unwrap(), repo.get("apps").unwrap()])
+            .unwrap();
+        let result =
+            render_symlink_target("{{ overlays.apps.nvim.target }}/init.lua", &ctx).unwrap();
         assert_eq!(result, "/opt/nvim/init.lua");
     }
 
@@ -690,14 +699,25 @@ mod tests {
         unsafe {
             std::env::set_var("OVER_TEST_USER", "testuser");
         }
-        let mut overlays = HashMap::new();
-        overlays.insert("apps/tool".to_string(), "/opt/tool".to_string());
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("apps/tool")).unwrap();
+        fs::write(
+            temp.path().join("apps/tool/over.toml"),
+            "target = '/opt/tool'",
+        )
+        .unwrap();
+        let repo = crate::overlays::Repository::new(temp.path().into());
         let ctx = crate::exec::Context::builder()
-            .resolved_overlays(Arc::new(overlays))
-            .build();
-        let result =
-            render_symlink_target("{{ env.OVER_TEST_USER }}/{{ overlays['apps/tool'] }}", &ctx)
-                .unwrap();
+            .repository(repo.clone())
+            .root(temp.path().join("target"))
+            .build()
+            .prepare_rendering_many(&[repo.get("apps/tool").unwrap(), repo.get("apps").unwrap()])
+            .unwrap();
+        let result = render_symlink_target(
+            "{{ env.OVER_TEST_USER }}/{{ overlays.apps.tool.target }}",
+            &ctx,
+        )
+        .unwrap();
         assert_eq!(result, "testuser//opt/tool");
     }
 }

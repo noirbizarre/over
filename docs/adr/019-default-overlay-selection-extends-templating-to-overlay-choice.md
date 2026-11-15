@@ -5,7 +5,13 @@
 **Amended by #228:** [Contextual overlay selection](../usage/selection.md) now
 precedes the configured default. Missing single-overlay selection reports an
 actionable error instead of prompting; ambiguous context never falls through.
-The default metadata-composition contract below remains in effect.
+
+**Amended by #300:** `data` and `host` are local declarations. Only the configured
+default's own `host` mapping overrides each overlay's own host defaults; dependency
+data is accessed explicitly through nested `overlays` namespaces. `over data`
+prefers the configured host before contextual inference. This supersedes the
+historical metadata-composition paragraph below; see
+[data scopes](../configuration/overlay.md#resolution-and-precedence).
 
 ## Context
 
@@ -73,7 +79,7 @@ even with an explicit target or `--all`: a misconfigured default now fails
 that preparation step. Explicit selection continues to determine the command
 target; the default supplies metadata rather than extra operational entries.
 
-Descriptor `data` inherits through the existing ancestor cascade, then composes
+Historically (#179, superseded by #300), descriptor `data` inherited through the ancestor cascade, then composed
 over the default and selected dependency closures. Each closure uses dependency-first
 DFS in declared `uses` order, default closure first, with shared overlays visited
 once. The explicitly selected root contributes last even if it was reached from

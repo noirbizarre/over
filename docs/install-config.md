@@ -47,7 +47,7 @@ the selected overlay only when one distinct root is selected. With multiple
 distinct roots, root hooks have no `overlay`, `paths.target`, or `OVER_OVERLAY_*`
 variables; `OVER_TARGET_ROOT` remains available. Guard optional target access
 with `paths.target is defined`. Each overlay hook sees its own target and the
-composed consumer data. Default cwd is the declaring overlay's source directory,
+local `data`, effective `host`, and explicit dependency `overlays`. Default cwd is the declaring overlay's source directory,
 or the repository root for root hooks. Explicit relative cwd is repository-root-relative.
 
 Hooks do not inherit through ancestor descriptors. Put shared steps in root
@@ -55,6 +55,43 @@ Hooks do not inherit through ancestor descriptors. Put shared steps in root
 `--no-uses` includes only root and selected-overlay hooks. A diamond dependency
 participates once; identical commands in different overlays still both run.
 Initialization and read-only commands never run install hooks.
+
+## Explicit package aggregation
+
+An overlay hook can consume only its own complete package list:
+
+```yaml
+# apps/ssh/over.yaml
+data:
+  archlinux:
+    packages: [openssh]
+hooks:
+  install:
+    - command: "sudo pacman -S --needed {{ data.archlinux.packages | join(' ') }}"
+      when: machine.distro_id == "arch"
+```
+
+For host provisioning, select the host overlay whose `uses` lists all desired
+overlays. A provisioning script can collect local packages from that host and
+every dependency, add the effective host-specific list, and deduplicate explicitly:
+
+```sh
+over data | jq -r '
+  def overlay_packages:
+    if (.name? | type) == "string" then
+      (.data.archlinux.packages // []),
+      (del(.name, .root, .target, .data, .host)[] | overlay_packages)
+    else .[] | overlay_packages end;
+  [(.data.archlinux.packages // [])[],
+   (.host.archlinux.packages // [])[],
+   (.overlays | overlay_packages)[]]
+  | unique | .[]
+'
+```
+
+This prints a deduplicated package list for the provisioning layer to install.
+Neither `data` nor the host deep merge aggregates package lists automatically.
+See [data scopes and migration](configuration/overlay.md#resolution-and-precedence).
 
 ## Failures, retries, and trust
 

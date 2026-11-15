@@ -429,7 +429,7 @@ fn no_uses_and_metadata_only_dependencies_do_not_participate_in_hooks(
 #[case(false, false, "root\nshared\nleft\nright\n")]
 #[case(true, false, "root\nshared\nright\nleft\n")]
 #[case(false, true, "root\nleft\nright\n")]
-fn multiple_roots_share_validation_data_and_deferred_hooks(
+fn multiple_roots_share_validation_but_hooks_receive_local_data(
     #[case] reverse: bool,
     #[case] no_uses: bool,
     #[case] expected: &str,
@@ -437,7 +437,7 @@ fn multiple_roots_share_validation_data_and_deferred_hooks(
     let fixture = Fixture::new();
     fixture.config("over.yaml", json!({"target": "~", "hooks": {"post-apply": [{
         "command": "test -f \"$TEST_TARGET/left/file\" && test -f \"$TEST_TARGET/right/file\" && test -z \"${OVER_OVERLAY_NAME+x}\" && test -z \"${OVER_OVERLAY_ROOT+x}\" && test -z \"${OVER_OVERLAY_TARGET+x}\" && echo root >> \"$HOOK_TRACE\"",
-        "when": "overlay is none"
+        "when": "overlay is none and data == {} and host == {} and overlays.left.data.winner == 'left' and overlays.right.data.winner == 'right' and overlays.shared.data.winner == 'shared'"
     }]}}));
     for (name, uses) in [
         ("shared", vec![]),
@@ -448,7 +448,7 @@ fn multiple_roots_share_validation_data_and_deferred_hooks(
             "target": format!("~/{name}"), "uses": uses,
             "data": {"winner": name},
             "hooks": {"post-apply": [{
-                "command": format!("test \"$OVER_OVERLAY_NAME\" = {name} && test \"$WINNER\" = \"$EXPECTED_WINNER\" && echo {name} >> \"$HOOK_TRACE\""),
+                "command": format!("test \"$OVER_OVERLAY_NAME\" = {name} && test \"$WINNER\" = {name} && echo {name} >> \"$HOOK_TRACE\""),
                 "env": {"WINNER": "{{ data.winner }}"}
             }]}
         }));
@@ -460,7 +460,6 @@ fn multiple_roots_share_validation_data_and_deferred_hooks(
         ["left", "right", "left"]
     };
     let mut command = fixture.apply(names[0]);
-    command.env("EXPECTED_WINNER", if reverse { "left" } else { "right" });
     command.args(&names[1..]);
     if no_uses {
         command.arg("--no-uses");
@@ -476,6 +475,60 @@ fn multiple_roots_share_validation_data_and_deferred_hooks(
         "right"
     );
     assert_eq!(fixture.target.join("shared/file").exists(), !no_uses);
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn package_hooks_and_files_receive_only_their_own_data_and_host_defaults(#[case] no_uses: bool) {
+    let fixture = Fixture::new();
+    fixture.config("over.yaml", json!({"default_overlay": "machine"}));
+    fixture.config(
+        "machine/over.yaml",
+        json!({
+            "uses": ["missing"], "data": {"packages": ["unrelated"]}, "host": {"agent": "override"}
+        }),
+    );
+    for (name, package) in [("apps/ssh", "openssh"), ("selected", "local")] {
+        fixture.config(&format!("{name}/over.yaml"), json!({
+            "target": format!("~/{name}"),
+            "uses": if name == "selected" { vec!["./apps/ssh/"] } else { vec![] },
+            "data": {"packages": [package]},
+            "host": {"agent": "default", "owner": package},
+            "rules": [{"path": "config.jinja", "template": true, "strip_extension": true}],
+            "hooks": {"install": [{
+                "command": "printf '%s\\n' '{{ data.packages | join(\",\") }}:{{ host.owner }}:{{ host.agent }}' >> \"$HOOK_TRACE\"",
+            }]},
+        }));
+        fixture.write(
+            &format!("{name}/config.jinja"),
+            "{{ data.packages | join(',') }}:{{ host.owner }}:{{ host.agent }}",
+        );
+    }
+    let mut command = fixture.apply("selected");
+    command.arg("--install");
+    if no_uses {
+        command.arg("--no-uses");
+    }
+    command.assert().success();
+    assert_eq!(
+        fixture.trace(),
+        if no_uses {
+            "local:local:override\n"
+        } else {
+            "openssh:openssh:override\nlocal:local:override\n"
+        }
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("selected/config")).unwrap(),
+        "local:local:override"
+    );
+    if !no_uses {
+        assert_eq!(
+            fs::read_to_string(fixture.target.join("apps/ssh/config")).unwrap(),
+            "openssh:openssh:override"
+        );
+    }
 }
 
 #[rstest]
@@ -1072,10 +1125,12 @@ fn structured_hooks_share_data_and_machine_context_and_isolate_environment_overr
 ) {
     let fixture = Fixture::new();
     fixture.config("over.yaml", json!({"data": {"inherited": "parent"}}));
+    fixture.config("parent/over.yaml", json!({"data": {"inherited": "parent"}}));
     fixture.config("selected/over.yaml", json!({
+        "uses": ["parent"],
         "data": {"value": "consumer"},
         "hooks": {(event): [
-            {"command": "printf '%s\\n' '{{ data.inherited }}' '{{ machine.os }}' \"$VALUE\" \"$EMPTY\" >> \"$HOOK_TRACE\"; test \"$PWD\" -ef \"$OVER_REPOSITORY_ROOT\"",
+            {"command": "printf '%s\\n' '{{ overlays.parent.data.inherited }}' '{{ machine.os }}' \"$VALUE\" \"$EMPTY\" >> \"$HOOK_TRACE\"; test \"$PWD\" -ef \"$OVER_REPOSITORY_ROOT\"",
              "env": {"VALUE": "{{ data.value }}", "EMPTY": ""}, "cwd": ".", "when": "machine.os != 'windows'"},
             "printf '%s\\n' \"$VALUE\" '{{ overlay.name }}' >> \"$HOOK_TRACE\"",
             {"command": "test \"$PWD\" -ef \"$OVER_REPOSITORY_ROOT\"", "cwd": "{{ paths.over }}"}
@@ -1212,7 +1267,7 @@ fn init_hooks_template_machine_and_repository_paths_without_child_discovery() {
         "over.yaml",
         json!({"hooks": {"post-init": [{
             "command": "printf '%s' '{{ machine.os }}' >> \"$HOOK_TRACE\"",
-            "when": "paths.target is not defined and paths.home is defined",
+            "when": "paths.target is not defined and paths.home is defined and data == {} and host == {} and overlays == {}",
             "cwd": "{{ paths.over }}", "env": {"BOOTSTRAP": "{{ machine.hostname }}"}
         }]}}),
     );
