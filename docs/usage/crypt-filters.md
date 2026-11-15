@@ -5,10 +5,10 @@ configuration. Usually invoke [`over unlock`](crypt.md#set-up-and-unlock) rather
 manually. See [Repository encryption](crypt.md) for attributes and setup.
 
 ```text
-over git filter clean
-over git filter smudge
-over git filter-process
-over git textconv <FILE>
+over crypt filter clean
+over crypt filter smudge
+over crypt filter-process
+over crypt textconv <FILE>
 ```
 
 All accept parser-level global diagnostic/home options, but repository discovery
@@ -16,6 +16,11 @@ uses Git's invocation environment (`GIT_DIR`/`GIT_WORK_TREE`) then cwd, not Over
 home or overlay selection. There are no helper-specific options. Helpers never
 prompt or acquire credentials. Stdout is exclusively payload/protocol bytes;
 errors go to stderr with nonzero status.
+
+The `.gitattributes` driver names stay `filter=over` and `diff=over`: Git maps
+those names to the configured helper commands. `over git` is the mounted-repository
+namespace. Its former helper entry points remain hidden compatibility aliases;
+`over unlock` refreshes existing local driver settings to use `over crypt`.
 
 ## Clean, smudge, and process
 

@@ -15,11 +15,17 @@ decrypted content beyond the repository's explicit lock transition.
 
 ## Decision
 
-Use Git's textconv interface, exposed as `over git textconv <FILE>`, and select it
+Use Git's textconv interface, exposed as `over crypt textconv <FILE>`, and select it
 with `diff=over` alongside `filter=over -text`. Continue delegating patch rendering
 to Git. Install the absolute shell-quoted helper command and
 `diff.over.cachetextconv=false` atomically with required filter configuration.
 Reject effective conflicting worktree/include settings during setup.
+
+Encryption plumbing belongs under `over crypt`, alongside policy management;
+`over git` remains the mounted-repository namespace. Driver identifiers in
+`.gitattributes` are independent of the configured CLI commands, so `filter=over`
+and `diff=over` remain unchanged. Hidden Git-prefixed compatibility aliases keep
+installed configurations usable until unlock refreshes them.
 
 The helper discovers the invoking repository, not the temporary input's directory.
 It authenticates an entire ciphertext before emitting exact decrypted payload

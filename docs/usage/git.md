@@ -10,7 +10,6 @@ repository is distinct from the source overlay repository selected by `--home`.
 | [`over git mount`](over-git-mount.md) | Associate the current repository with an overlay and export selected Git properties |
 | [`over git add`](over-git-add.md) | Add host-repository files to that overlay |
 | [`over git status`](over-git-status.md) | Inspect the associated overlay from the host repository |
-| [Encryption filters and textconv](git-crypt.md) | Git-invoked encryption and readable diff helpers |
 
 Mount records the selected overlay in the host's Git config as `over.overlay`.
 Mount and add accept `--overlay` to override this association, then use

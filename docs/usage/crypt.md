@@ -144,16 +144,23 @@ This installs the repository-local filter and diff settings and unlocks the repo
 Repeating it repairs the driver. It does not require `over crypt add` or change
 your manually managed rules.
 
+The attribute names are independent of Over's CLI namespace: `filter=over` uses
+the `filter.over.*` settings, and `diff=over` uses `diff.over.textconv`. These
+settings invoke helpers under `over crypt`; `over git` manages mounted repositories.
+Existing Git-prefixed helper commands remain hidden compatibility aliases for
+installed configurations. Run `over unlock` to refresh them to the crypt namespace
+without changing `.gitattributes`.
+
 For direct Git configuration, the equivalent driver settings are below. Replace
 `/home/alice/.cargo/bin/over` with your installed executable's absolute path,
 retaining the inner shell quotes (escape any apostrophes in the path):
 
 ```sh
-git config --local filter.over.clean "'/home/alice/.cargo/bin/over' git filter clean"
-git config --local filter.over.smudge "'/home/alice/.cargo/bin/over' git filter smudge"
-git config --local filter.over.process "'/home/alice/.cargo/bin/over' git filter-process"
+git config --local filter.over.clean "'/home/alice/.cargo/bin/over' crypt filter clean"
+git config --local filter.over.smudge "'/home/alice/.cargo/bin/over' crypt filter smudge"
+git config --local filter.over.process "'/home/alice/.cargo/bin/over' crypt filter-process"
 git config --local filter.over.required true
-git config --local diff.over.textconv "'/home/alice/.cargo/bin/over' git textconv --"
+git config --local diff.over.textconv "'/home/alice/.cargo/bin/over' crypt textconv --"
 git config --local diff.over.cachetextconv false
 ```
 
@@ -303,7 +310,7 @@ caches with its installed configuration. Diffs can still disclose plaintext to
 pagers, redirected output, and external tools; lock does not erase those copies
 or previously created caches. Git textconv patches are for human review, not
 applying; `git format-patch` does not generate them. External difftools retain
-their own behavior. See [Git helper reference](git-crypt.md#textconv).
+their own behavior. See [Git helper reference](crypt-filters.md#textconv).
 
 ## Protected generated snapshots
 

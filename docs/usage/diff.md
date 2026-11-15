@@ -105,7 +105,7 @@ There is no separate Over tool configuration. Git's ordinary difftool prompts
 and tool options apply. Temporary inputs remain available until Git exits.
 
 For protected paths selecting `diff=over`, the installed
-[encrypted textconv driver](git-crypt.md#textconv) provides readable plaintext
+[encrypted textconv driver](crypt-filters.md#textconv) provides readable plaintext
 while unlocked, including source and virtual-checkout staged/unstaged views.
 Ciphertext conversion fails while locked or when its generation is unavailable.
 Over disables persistent Git textconv caches during its comparisons. Plaintext

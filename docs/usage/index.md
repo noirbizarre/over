@@ -14,6 +14,7 @@ workflows.
 | [`over list`](list.md) (`ls`) | List known overlays |
 | [`over data`](data.md) | Export resolved overlay data as JSON |
 | [`over crypt`, `over unlock`, `over lock`](crypt.md) | Manage transparent repository encryption |
+| [`over crypt` Git helpers](crypt-filters.md) | Git-invoked encryption filters and readable diff conversion |
 | [`over user`, `over key`](crypt.md#users-and-keys) | Manage logical users, Age keys, and rotation |
 | [`over secret`](secrets.md) | Manage the repository-key-protected native secret store |
 | [`over completion`](completion.md) | Generate shell completion scripts |
@@ -48,7 +49,6 @@ See the [Git group overview](git.md) for host-repository discovery and associati
 | [`over git mount`](over-git-mount.md) | Mount the current git repository to an overlay |
 | [`over git add`](over-git-add.md) | Add files from the current git repository to an overlay |
 | [`over git status`](over-git-status.md) | Show overlay status for the current git repository |
-| [Encryption filters and textconv](git-crypt.md) | Git-invoked encryption and readable diff plumbing |
 
 ## Shared options and selection
 
