@@ -61,6 +61,7 @@ nav = [
       { "over git mount" = "usage/over-git-mount.md" },
       { "over git add" = "usage/over-git-add.md" },
       { "over git status" = "usage/over-git-status.md" },
+      { "Encryption filters and textconv" = "usage/git-crypt.md" },
     ] },
   ] },
   { "Dev Containers" = "devcontainer.md" },
@@ -97,6 +98,7 @@ nav = [
     { "027: Install hooks" = "adr/027-installation-is-an-opt-in-hook-event.md" },
     { "028: Repository encryption" = "adr/028-repository-encryption.md" },
     { "029: Checkout file ownership" = "adr/029-virtual-checkouts-project-file-ownership.md" },
+    { "031: Encrypted Git diffs" = "adr/031-encrypted-git-diffs-use-textconv.md" },
   ] },
 ]
 

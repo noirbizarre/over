@@ -48,6 +48,7 @@ See the [Git group overview](git.md) for host-repository discovery and associati
 | [`over git mount`](over-git-mount.md) | Mount the current git repository to an overlay |
 | [`over git add`](over-git-add.md) | Add files from the current git repository to an overlay |
 | [`over git status`](over-git-status.md) | Show overlay status for the current git repository |
+| [Encryption filters and textconv](git-crypt.md) | Git-invoked encryption and readable diff plumbing |
 
 ## Shared options and selection
 

@@ -42,8 +42,8 @@ Repository-root `.over` is reserved administration: overlay discovery and
 materialization always exclude it, even if `.overignore` negations select it.
 Secret commands do not automatically stage or commit this file. Despite its
 filename, `secrets.yaml` contains a versioned binary encrypted payload, including
-in the working tree while unlocked. Only secret operations decrypt its contents
-in memory. Aggregate updates are serialized across processes and atomically
+in the working tree while unlocked. Secret operations and explicit Git textconv
+display decrypt its contents in memory. Aggregate updates are serialized across processes and atomically
 publish ciphertext, preventing lost updates or partial writes.
 
 Names contain 1–128 ASCII letters, digits, underscores, or hyphens, and start
