@@ -1,6 +1,7 @@
 name: 📚 Documentation
 
 on:
+  pull_request:
   push:
     branches: [main]
     paths:
@@ -15,17 +16,6 @@ on:
       - .github/workflows/docs.yaml
   # Same paths as the push trigger: this is a check that the docs still
   # build, not a deploy. Rust inputs affect the schemas published with the site.
-  pull_request:
-    paths:
-      - docs/**
-      - src/**
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - mise.toml
-      - mise.lock
-      - zensical.toml
-      - .github/workflows/docs.yaml
   workflow_dispatch:
 
 permissions:
