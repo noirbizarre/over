@@ -105,6 +105,161 @@ impl Fixture {
 }
 
 #[test]
+fn encrypted_diffs_distinguish_staged_working_and_historical_content_without_caching() {
+    let fixture = Fixture::new();
+    fs::write(fixture.path("protected/token"), b"staged sentinel\n").unwrap();
+    fixture.git(&["add", "protected/token"]);
+    fs::write(fixture.path("protected/token"), b"working sentinel\n").unwrap();
+    for (args, expected, excluded) in [
+        (
+            vec!["diff", "--cached"],
+            "+staged sentinel",
+            "+working sentinel",
+        ),
+        (vec!["diff"], "+working sentinel", "-lifecycle sentinel"),
+    ] {
+        let output = fixture.command("git").args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let patch = String::from_utf8(output.stdout).unwrap();
+        assert!(patch.contains(expected), "{patch}");
+        assert!(!patch.contains(excluded), "{patch}");
+    }
+    fixture.git(&["add", "protected/token"]);
+    fixture.git(&["commit", "-qm", "change protected content"]);
+    let compare = || {
+        fixture
+            .command("git")
+            .args(["diff", "HEAD~", "HEAD"])
+            .output()
+            .unwrap()
+    };
+    assert!(
+        String::from_utf8(compare().stdout)
+            .unwrap()
+            .contains("+working sentinel")
+    );
+    fixture.success(&["lock"]);
+    let output = compare();
+    assert!(!output.status.success());
+    assert!(
+        !output
+            .stdout
+            .windows(b"working sentinel".len())
+            .any(|bytes| bytes == b"working sentinel")
+    );
+    assert!(!fixture.path(".git/refs/notes/textconv").exists());
+    assert!(fixture.unlock().status.success());
+    assert!(compare().status.success());
+}
+
+#[test]
+fn textconv_authenticates_both_domains_before_writing_any_plaintext() {
+    let fixture = Fixture::new();
+    let repo = git2::Repository::open(fixture.root.path()).unwrap();
+    let key = over::crypt::access::local_key(&repo).unwrap();
+    for domain in [0, 1] {
+        let mut ciphertext = key.encrypt(b"exact\0secret\xff\n", domain).unwrap();
+        let path = fixture.path("-quoted ' input");
+        fs::write(&path, &ciphertext).unwrap();
+        let output = fixture.over(&["git", "textconv", "--", path.to_str().unwrap()]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"exact\0secret\xff\n");
+        *ciphertext.last_mut().unwrap() ^= 1;
+        fs::write(&path, ciphertext).unwrap();
+        let output = fixture.over(&["git", "textconv", "--", path.to_str().unwrap()]);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn unlock_repairs_diff_configuration_without_rewriting_tracked_policy() {
+    let fixture = Fixture::new();
+    let before = fs::read(fixture.path(".gitattributes")).unwrap();
+    fixture.git(&["config", "--unset", "diff.over.textconv"]);
+    fixture.git(&["config", "diff.over.cachetextconv", "true"]);
+    assert!(fixture.unlock().status.success());
+    let output = fixture
+        .command("git")
+        .args(["config", "--get", "diff.over.cachetextconv"])
+        .output()
+        .unwrap();
+    assert_eq!(output.stdout, b"false\n");
+    assert_eq!(fs::read(fixture.path(".gitattributes")).unwrap(), before);
+}
+
+#[test]
+fn removed_protection_clears_the_encrypted_diff_driver() {
+    let fixture = Fixture::new();
+    fixture.success(&["crypt", "remove", "protected/token", "--yes"]);
+    let output = fixture
+        .command("git")
+        .args(["check-attr", "diff", "--", "protected/token"])
+        .output()
+        .unwrap();
+    assert_eq!(output.stdout, b"protected/token: diff: unspecified\n");
+}
+
+#[test]
+fn linked_worktree_diffs_resolve_the_common_key_from_a_subdirectory() {
+    let fixture = Fixture::new();
+    let linked = fixture.identity.path().join("linked");
+    fixture.git(&["worktree", "add", "-qb", "linked", linked.to_str().unwrap()]);
+    fs::write(linked.join("protected/token"), b"linked edit\n").unwrap();
+    let output = fixture
+        .command("git")
+        .current_dir(linked.join("protected"))
+        .args(["diff", "--", "token"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("+linked edit")
+    );
+}
+
+#[test]
+fn worktree_cache_overrides_refuse_unlock_without_publishing_common_config() {
+    let fixture = Fixture::new();
+    fixture.git(&["config", "extensions.worktreeConfig", "true"]);
+    fixture.git(&["config", "--worktree", "diff.over.cachetextconv", "true"]);
+    let before = fs::read(fixture.path(".git/config")).unwrap();
+    assert!(!fixture.unlock().status.success());
+    assert_eq!(fs::read(fixture.path(".git/config")).unwrap(), before);
+}
+
+#[test]
+fn unavailable_historical_generations_fail_instead_of_displaying_ciphertext() {
+    let fixture = Fixture::new();
+    let ciphertext = fixture
+        .command("git")
+        .args(["show", "HEAD:protected/token"])
+        .output()
+        .unwrap()
+        .stdout;
+    let path = fixture.identity.path().join("old ciphertext");
+    fs::write(&path, ciphertext).unwrap();
+    fixture.success(&["key", "rotate"]);
+    let output = fixture.over(&["git", "textconv", path.to_str().unwrap()]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
 fn crypto_only_lifecycle_does_not_require_a_checkout_state_directory_beneath_a_file() {
     let fixture = Fixture::new();
     let state = fixture.identity.path().join("obstructed-state");

@@ -189,6 +189,70 @@ fn inventory(root: &Path) -> BTreeMap<PathBuf, Snapshot> {
 #[rstest]
 #[case(false)]
 #[case(true)]
+fn encrypted_views_use_the_installed_driver_without_mutating_comparison_inputs(
+    #[case] checkout: bool,
+) {
+    let fixture = Fixture::new(checkout);
+    let mut enroll = Command::new(assert_cmd::cargo::cargo_bin!("over"));
+    enroll.current_dir(&fixture.source);
+    fixture.environment(&mut enroll);
+    checked(
+        enroll
+            .arg("--home")
+            .arg(&fixture.source)
+            .args(["user", "add", "owner", "--identity-output"])
+            .arg(fixture.temp.path().join("identity"))
+            .output()
+            .unwrap(),
+    );
+    let mut protect = Command::new(assert_cmd::cargo::cargo_bin!("over"));
+    protect.current_dir(&fixture.source);
+    fixture.environment(&mut protect);
+    checked(
+        protect
+            .arg("--home")
+            .arg(&fixture.source)
+            .args(["crypt", "add", "ov/file"])
+            .output()
+            .unwrap(),
+    );
+    fixture.commit();
+    if checkout {
+        fixture.over("sync", &[]);
+    }
+    let deployed = if checkout {
+        fixture.target.clone()
+    } else {
+        fixture.source.join("ov")
+    };
+    fs::write(deployed.join("file"), "encrypted staged\n").unwrap();
+    if checkout {
+        fixture.add_target("file");
+    } else {
+        fixture.git(&["add", "ov/file"]);
+    }
+    fs::write(deployed.join("file"), "encrypted working\n").unwrap();
+    let before_source = inventory(&fixture.source);
+    let before_target = inventory(&fixture.target);
+    let staged = fixture.over("diff", &["--staged"]);
+    let working = fixture.over("diff", &[]);
+    assert!(
+        String::from_utf8(staged.stdout)
+            .unwrap()
+            .contains("+encrypted staged")
+    );
+    assert!(
+        String::from_utf8(working.stdout)
+            .unwrap()
+            .contains("+encrypted working")
+    );
+    assert_eq!(inventory(&fixture.source), before_source);
+    assert_eq!(inventory(&fixture.target), before_target);
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
 fn staged_and_unstaged_views_match_git_and_leave_all_inputs_unchanged(#[case] checkout: bool) {
     let fixture = Fixture::new(checkout);
     let deployed = if checkout {

@@ -16,6 +16,8 @@ pub enum Commands {
     Filter(FilterCommand),
     #[clap(about = "Run the long-lived Git encryption filter")]
     FilterProcess,
+    #[clap(about = "Convert an encrypted Git file for diff display")]
+    Textconv { file: PathBuf },
     #[clap(about = "Mount the current git repository to an overlay")]
     Mount(mount::Params),
 
@@ -38,6 +40,7 @@ pub async fn execute(cli: &CLI, cmd: &Commands) -> Result<()> {
         Commands::Filter(FilterCommand::Clean) => crate::crypt::filter::once(true),
         Commands::Filter(FilterCommand::Smudge) => crate::crypt::filter::once(false),
         Commands::FilterProcess => crate::crypt::filter::process(),
+        Commands::Textconv { file } => crate::crypt::textconv::run(file),
         Commands::Mount(opt) => mount::execute(cli, opt).await,
         Commands::Add(opt) => add::execute(cli, opt).await,
         Commands::Status => status::execute(cli).await,
