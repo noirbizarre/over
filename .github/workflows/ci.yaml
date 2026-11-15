@@ -130,6 +130,11 @@ jobs:
         run: ./.github/actions/setup-windows/verify.ps1
 
       - name: Run tests (with coverage)
+        env:
+          # %m signatures can collide; %b separates builds, but LLVM cannot read build IDs on macOS.
+          LLVM_PROFILE_FILE_NAME: ${{ runner.os == 'macOS' && '%m.profraw' || '%m-%b.profraw' }}
+          # %b requires a build ID in each instrumented binary; Darwin keeps its native linker settings.
+          RUSTFLAGS: ${{ runner.os == 'Windows' && '-C link-arg=/build-id' || runner.os == 'Linux' && '-C link-arg=-Wl,--build-id=sha1' || '' }}
         run: |
           # --no-report also disables automatic cleaning: discard cached workspace artifacts
           # and profiles explicitly so earlier runs cannot contaminate this run's coverage.
