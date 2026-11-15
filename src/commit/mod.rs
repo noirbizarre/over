@@ -327,6 +327,7 @@ fn commit_blocking(
                     path: file.source.strip_prefix(source)?.to_path_buf(),
                     kind: git::FileChangeKind::Modified,
                     local_oid: None,
+                    local_mode: None,
                 });
             }
         }

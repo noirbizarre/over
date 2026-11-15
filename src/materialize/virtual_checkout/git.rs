@@ -507,6 +507,15 @@ pub(crate) fn entries_match(left: Option<(Oid, i32)>, right: Option<(Oid, i32)>)
     }
 }
 
+/// Independent or converged edits are safe; overlapping complete-entry changes are not.
+pub(crate) fn entries_conflict(
+    base: Option<(Oid, i32)>,
+    head: Option<(Oid, i32)>,
+    local: Option<(Oid, i32)>,
+) -> bool {
+    !entries_match(base, head) && !entries_match(local, base) && !entries_match(local, head)
+}
+
 fn file_entry(root: &Path, relative: &Path, label: &str) -> Result<Option<(Oid, i32)>> {
     let mut path = root.to_path_buf();
     for component in relative.components() {
@@ -560,6 +569,8 @@ pub(crate) struct FileChange {
     /// local edit that converged on exactly the source's new content
     /// isn't a real conflict) without re-hashing the file a second time.
     pub local_oid: Option<Oid>,
+    /// Preserve executable identity so equal blobs do not hide incompatible mode edits.
+    pub local_mode: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -603,6 +614,7 @@ fn diff_scoped_target(
                         path: rel_path.clone(),
                         kind: FileChangeKind::Modified,
                         local_oid: Some(local_oid),
+                        local_mode: Some(i32::from(on_disk_filemode(&on_disk)?)),
                     });
                 }
             }
@@ -610,6 +622,7 @@ fn diff_scoped_target(
                 path: rel_path.clone(),
                 kind: FileChangeKind::Deleted,
                 local_oid: None,
+                local_mode: None,
             }),
         }
     }
@@ -622,6 +635,7 @@ fn diff_scoped_target(
         if !tracked.contains_key(&path) && !is_overlay_metadata(&path) {
             let local_oid = hash_file(&target.join(&path))?;
             changes.push(FileChange {
+                local_mode: Some(i32::from(on_disk_filemode(&target.join(&path))?)),
                 path,
                 kind: FileChangeKind::Added,
                 local_oid: Some(local_oid),
@@ -675,6 +689,7 @@ pub(crate) fn diff_canonical_target(
                     _ => FileChangeKind::Modified,
                 },
                 local_oid: local.map(|entry| entry.0),
+                local_mode: local.map(|entry| entry.1),
             });
         }
     }
@@ -734,6 +749,7 @@ pub(crate) fn entry_changes(
                     _ => FileChangeKind::Modified,
                 },
                 local_oid: after.map(|entry| entry.0),
+                local_mode: after.map(|entry| entry.1),
             })
         })
         .collect()
@@ -967,6 +983,7 @@ pub(crate) fn staged_changes_selected(
                     _ => FileChangeKind::Modified,
                 },
                 local_oid: new.map(|(oid, _)| *oid),
+                local_mode: new.map(|(_, mode)| *mode),
             })
         })
         .collect())
@@ -2449,6 +2466,7 @@ mod tests {
             path: PathBuf::from("run.sh"),
             kind: FileChangeKind::Added,
             local_oid: Some(hash_file(&script).unwrap()),
+            local_mode: Some(0o100755),
         }];
         let commit_oid = commit_changes(
             &repo,
@@ -2481,6 +2499,7 @@ mod tests {
             path: PathBuf::from("b.txt"),
             kind: FileChangeKind::Deleted,
             local_oid: None,
+            local_mode: None,
         }];
         let commit_oid =
             commit_changes(&repo, Path::new(""), target_td.path(), &changes, "remove b").unwrap();

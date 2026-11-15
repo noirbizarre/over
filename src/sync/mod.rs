@@ -882,7 +882,7 @@ async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Resu
                 .get_path(&managed_path.join(relative), 0)
                 .map(|entry| (entry.id, entry.mode as i32));
             anyhow::ensure!(
-                vc_git::entries_match(local, base) || vc_git::entries_match(local, head),
+                !vc_git::entries_conflict(base, head, local),
                 "target '{}' changed incompatibly with its source",
                 target.join(relative).display()
             );
@@ -1543,6 +1543,70 @@ mod tests {
             SyncOutcome::UpToDate {
                 path: target_td.path().to_path_buf()
             }
+        );
+    }
+
+    #[cfg(unix)]
+    #[rstest::rstest]
+    #[case("a", 0o755, "b", 0o644, true)]
+    #[case("b", 0o644, "a", 0o755, true)]
+    #[case("b", 0o755, "b", 0o644, true)]
+    #[case("b", 0o755, "b", 0o755, false)]
+    #[case("a", 0o755, "a", 0o644, false)]
+    #[tokio::test]
+    async fn status_and_sync_agree_on_content_and_executable_conflicts(
+        #[case] source_content: &str,
+        #[case] source_mode: u32,
+        #[case] local_content: &str,
+        #[case] local_mode: u32,
+        #[case] conflict: bool,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let _xdg = isolate_xdg_state();
+        let source = TempDir::new().unwrap();
+        source.child("a.txt").write_str("a").unwrap();
+        fs::set_permissions(
+            source.path().join("a.txt"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let repo = init_committed_repo_ret(source.path());
+        let target = TempDir::new().unwrap();
+        materialize_virtual_checkout(source.path(), target.path()).await;
+        source.child("a.txt").write_str(source_content).unwrap();
+        fs::set_permissions(
+            source.path().join("a.txt"),
+            fs::Permissions::from_mode(source_mode),
+        )
+        .unwrap();
+        commit_all(&repo, "source advancement");
+        target.child("a.txt").write_str(local_content).unwrap();
+        fs::set_permissions(
+            target.path().join("a.txt"),
+            fs::Permissions::from_mode(local_mode),
+        )
+        .unwrap();
+        let entry = virtual_checkout_entry(target.path().into(), source.path().into());
+        let inspection =
+            status::virtual_checkout::inspect_tracked_cached(&entry, &mut Default::default())
+                .unwrap();
+        assert_eq!(matches!(inspection.status, Status::Conflict), conflict);
+        let outcome = sync_virtual_checkout(&entry, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(matches!(outcome, SyncOutcome::Conflict { .. }), conflict);
+        target.child("a.txt").assert(if conflict {
+            local_content
+        } else {
+            source_content
+        });
+        assert_eq!(
+            fs::metadata(target.path().join("a.txt"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            if conflict { local_mode } else { source_mode }
         );
     }
 
