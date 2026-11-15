@@ -1,0 +1,72 @@
+//! Explicit committed metadata for the initial checkout's smudge children only.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context as _, Result, ensure};
+use serde::{Deserialize, Serialize};
+
+use super::access;
+
+pub(crate) const ENV: &str = "OVER_CRYPT_INIT_CONTEXT";
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct Context {
+    version: u32,
+    git_dir: PathBuf,
+    worktree: PathBuf,
+    tree: String,
+}
+
+impl Context {
+    pub(crate) fn new(repo: &git2::Repository, tree: git2::Oid) -> Result<Self> {
+        Ok(Self {
+            version: 1,
+            git_dir: repo.path().canonicalize()?,
+            worktree: access::root(repo)?.canonicalize()?,
+            tree: tree.to_string(),
+        })
+    }
+
+    pub(crate) fn encode(&self) -> Result<String> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    pub(crate) fn registry(&self, repo: &git2::Repository) -> Result<access::Registry> {
+        ensure!(self.version == 1, "unsupported initial checkout context");
+        ensure!(
+            self.git_dir == repo.path().canonicalize()?
+                && self.worktree == access::root(repo)?.canonicalize()?,
+            "initial checkout context belongs to another repository"
+        );
+        let tree = git2::Oid::from_str(&self.tree)?;
+        ensure!(
+            repo.head()?.peel_to_tree()?.id() == tree,
+            "HEAD changed during initial checkout"
+        );
+        registry(repo, tree)
+    }
+}
+
+pub(crate) fn registry(repo: &git2::Repository, tree: git2::Oid) -> Result<access::Registry> {
+    let tree = repo.find_tree(tree)?;
+    let entry = tree.get_path(Path::new(".over/crypt/access.json"))?;
+    ensure!(
+        matches!(entry.filemode(), 0o100644 | 0o100755),
+        "committed access metadata must be a regular blob"
+    );
+    // Bound allocation before loading attacker-controlled committed metadata.
+    ensure!(
+        repo.odb()?.read_header(entry.id())?.0 <= access::METADATA_LIMIT,
+        "repository access metadata exceeds the supported size limit"
+    );
+    access::parse_registry(repo.find_blob(entry.id())?.content())
+}
+
+pub(crate) fn environment_registry(repo: &git2::Repository) -> Result<Option<access::Registry>> {
+    std::env::var_os(ENV)
+        .map(|value| {
+            let value = value.to_str().context("invalid initial checkout context")?;
+            serde_json::from_str::<Context>(value)?.registry(repo)
+        })
+        .transpose()
+}

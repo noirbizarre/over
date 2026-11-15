@@ -552,6 +552,49 @@ pub fn unlock_repository(repo: &git2::Repository, opt: &Unlock) -> Result<()> {
         return policy::refresh(repo, false);
     }
     let registry = access::load(repo)?;
+    let mut identity = None;
+    policy::unlock_with(repo, |repo| {
+        let credentials = acquire_repository_key(repo, &registry, opt)?;
+        identity = credentials.identity;
+        Ok(credentials.key)
+    })?;
+    remember_acquired_identity(repo, identity.as_ref());
+    Ok(())
+}
+
+pub(crate) struct AcquiredKey {
+    pub key: crate::crypt::format::RepositoryKey,
+    identity: Option<(String, PathBuf)>,
+}
+
+impl AcquiredKey {
+    pub(crate) fn unlock(self, repo: &git2::Repository) -> Result<()> {
+        policy::unlock_with(repo, |_| Ok(self.key))?;
+        remember_acquired_identity(repo, self.identity.as_ref());
+        Ok(())
+    }
+
+    pub(crate) fn remember(&self, repo: &git2::Repository) {
+        remember_acquired_identity(repo, self.identity.as_ref());
+    }
+}
+
+fn remember_acquired_identity(repo: &git2::Repository, identity: Option<&(String, PathBuf)>) {
+    if let Some((recipient, path)) = identity {
+        // Credential convenience metadata cannot turn a completed unlock into failure.
+        if access::remember_identity(repo, recipient, path).is_err() {
+            eprintln!(
+                "Repository unlocked, but the local identity hint could not be saved; supply --identity next time."
+            );
+        }
+    }
+}
+
+pub(crate) fn acquire_repository_key(
+    repo: &git2::Repository,
+    registry: &access::Registry,
+    opt: &Unlock,
+) -> Result<AcquiredKey> {
     let candidates: Vec<_> = registry
         .users
         .iter()
@@ -589,26 +632,19 @@ pub fn unlock_repository(repo: &git2::Repository, opt: &Unlock) -> Result<()> {
         }
     }
     let mut used_identity = None;
-    policy::unlock_with(repo, |repo| {
-        access::unwrap_sources_with(
-            repo,
-            &sources,
-            opt.user.as_deref(),
-            opt.key.as_deref(),
-            crate::ui::age::Callbacks,
-            passphrase,
-            |recipient, path| used_identity = Some((recipient.to_owned(), path.to_path_buf())),
-        )
-    })?;
-    if let Some((recipient, path)) = used_identity {
-        // Credential convenience metadata must not turn a completed unlock into an apparent failure.
-        if access::remember_identity(repo, &recipient, &path).is_err() {
-            eprintln!(
-                "Repository unlocked, but the local identity hint could not be saved; supply --identity next time."
-            );
-        }
-    }
-    Ok(())
+    let key = access::unwrap_registry_with(
+        registry,
+        &sources,
+        opt.user.as_deref(),
+        opt.key.as_deref(),
+        crate::ui::age::Callbacks,
+        passphrase,
+        |recipient, path| used_identity = Some((recipient.to_owned(), path.to_path_buf())),
+    )?;
+    Ok(AcquiredKey {
+        key,
+        identity: used_identity,
+    })
 }
 
 pub fn lock(cli: &super::CLI) -> Result<()> {

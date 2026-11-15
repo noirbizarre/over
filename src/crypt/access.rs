@@ -326,6 +326,18 @@ pub(crate) fn save(repo: &git2::Repository, registry: &Registry) -> Result<()> {
 }
 
 pub fn local_key(repo: &git2::Repository) -> Result<RepositoryKey> {
+    let key = checked_local_key(repo)?;
+    validate_local_key(key, &load(repo)?)
+}
+
+pub(crate) fn local_key_for_registry(
+    repo: &git2::Repository,
+    registry: &Registry,
+) -> Result<RepositoryKey> {
+    validate_local_key(checked_local_key(repo)?, registry)
+}
+
+fn checked_local_key(repo: &git2::Repository) -> Result<RepositoryKey> {
     let directory = private_dir(repo);
     check_private(repo, &directory, true).context("repository is locked; run over unlock")?;
     ensure!(
@@ -334,8 +346,10 @@ pub fn local_key(repo: &git2::Repository) -> Result<RepositoryKey> {
     );
     let path = directory.join("key");
     check_private(repo, &path, false).context("repository is locked; run over unlock")?;
-    let key = RepositoryKey::decode(read_key_bytes(File::open(path)?)?.as_ref())?;
-    let registry = load(repo)?;
+    RepositoryKey::decode(read_key_bytes(File::open(path)?)?.as_ref())
+}
+
+fn validate_local_key(key: RepositoryKey, registry: &Registry) -> Result<RepositoryKey> {
     ensure!(
         key.repository == registry.repository && key.generation == registry.generation,
         "local key is stale or belongs to another repository; run over unlock for this generation"
@@ -650,10 +664,30 @@ pub fn unwrap_sources_with<C: age::Callbacks>(
     user: Option<&str>,
     name: Option<&str>,
     callbacks: C,
+    password: impl FnMut(&str) -> Result<SecretString>,
+    used_identity: impl FnMut(&str, &Path),
+) -> Result<RepositoryKey> {
+    let registry = load(repo)?;
+    unwrap_registry_with(
+        &registry,
+        sources,
+        user,
+        name,
+        callbacks,
+        password,
+        used_identity,
+    )
+}
+
+pub(crate) fn unwrap_registry_with<C: age::Callbacks>(
+    registry: &Registry,
+    sources: &[PathBuf],
+    user: Option<&str>,
+    name: Option<&str>,
+    callbacks: C,
     mut password: impl FnMut(&str) -> Result<SecretString>,
     mut used_identity: impl FnMut(&str, &Path),
 ) -> Result<RepositoryKey> {
-    let registry = load(repo)?;
     let mut identities = Vec::new();
     let mut failures = FailureSummary::default();
     let mut unmatched = Vec::new();

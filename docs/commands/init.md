@@ -14,6 +14,7 @@ Options:
       --no-config    Continue without creating missing root configuration
       --set-origin   Set an existing checkout's canonical origin without prompting
       --unlock       Explicitly unlock repository encryption during initialization
+      --no-unlock    Skip encryption unlock and continue with a locked checkout
   -i, --identity <IDENTITY>  Use a standard Age identity when unlocking
   -d, --debug        Toggle debug traces
   -v, --verbose      Toggle verbose output
@@ -98,9 +99,12 @@ manage passwords, SSH keys or agents, or render templates.
 
 ## Destination and validation
 
-Fresh clones are inspected for encryption from committed Git objects before the
-first checkout. Valid crypt repositories receive trusted local drivers before
-materialization; ordinary repositories need no crypt setup or unlock prompt.
+Init is the recommended entry point for obtaining an Over repository. It clones
+without checking out tracked files, inspects encryption from committed Git objects,
+and installs trusted repository-local filter and diff drivers for crypt repositories.
+Only after driver setup and the unlock decision does the first checkout begin.
+Ordinary repositories need no crypt setup or unlock prompt. No global Git
+configuration is changed.
 Unsupported, malformed, or incomplete crypt bootstrap metadata stops checkout
 and preserves the clone for repair. Detection requires no key and does not run
 filters or credential helpers. See the
@@ -149,11 +153,24 @@ with the normal `over apply [NAME]` workflow when ready.
 
 ## Repository encryption
 
-Init configures repository-local Over filters before protected refresh or hooks.
-For repositories with access metadata, interactive init offers unlock with
-confirmation defaulting to No. It unwraps the repository key once, then persists
-it in private Git common administrative storage. This key survives terminal
-closure and reboot until `over lock`; filters never prompt.
+Init configures repository-local Over filter and diff drivers before the initial
+checkout, protected refresh, or hooks. The drivers are installed whether unlock
+is accepted, declined, forced, or skipped.
+
+When committed encrypted content exists, interactive init offers unlock with
+confirmation defaulting to No. Choose the unlock policy explicitly with:
+
+- `--unlock`: start credential acquisition immediately, without the yes/no question.
+- `--no-unlock`: suppress both confirmation and credential acquisition, and continue
+  with a locked checkout.
+
+These options are mutually exclusive. Repositories with encryption metadata but
+no encrypted content still receive drivers and never prompt. Supplying `--unlock`
+when there is nothing encrypted reports that there is nothing to unlock.
+
+Successful unlock unwraps the repository key once and persists it in private Git
+common administrative storage before checkout. This key survives terminal closure
+and reboot until `over lock`; filters never prompt.
 
 Fresh noninteractive clones remain locked unless explicitly requested with `--unlock`.
 Use `--unlock --identity <standard-age-identity-file>` for explicit identity access.
@@ -161,12 +178,25 @@ Repeat `--identity` for multiple files. Encrypted identity files and plugin-back
 identities can request a password, PIN, touch or confirmation; unattended unlock
 requires an available credential that needs no interaction. See
 [Age and hardware-key compatibility](../usage/crypt.md#users-and-keys).
-Declining unlock keeps ciphertext. If an encrypted repository declares bootstrap
-hooks, initialization stops before executing any of them and explains how to
-unlock. Retrying an existing checkout runs post-init, not post-clone; put
-repeatable setup in post-init or recover skipped post-clone steps explicitly.
+Declining or skipping unlock keeps ciphertext and completes initialization
+successfully. Unavailable, incorrect, or cancelled credential acquisition also
+continues locked with an explanation. Locked checkouts skip bootstrap hooks
+successfully rather than letting commands consume ciphertext. Run
+`over --home /path/to/checkout unlock`, then
+`over --home /path/to/checkout init` to run post-init hooks. Retrying an existing
+checkout runs post-init, not post-clone; put repeatable setup in post-init or
+recover skipped post-clone steps explicitly.
+
+Driver configuration, private-key storage, invalid metadata, and filtered-checkout
+failures remain errors. Driver setup failure aborts before tracked files are
+materialized. Process termination (for example, Ctrl-C) can leave a preserved
+no-checkout clone; inspect it before choosing a new destination or explicitly
+removing the failed clone. `over unlock` alone does not finish an initial checkout
+that never ran.
+
 An already-unlocked checkout remains unlocked and repairs incomplete ciphertext
-refreshes without another credential prompt, preserving existing plaintext edits.
+refreshes without another credential prompt, preserving existing plaintext edits,
+including with `--no-unlock`; that option does not relock an existing checkout.
 A manual clone can be unlocked later with
 `over unlock`. Bootstrap descriptors and encryption metadata must remain readable
 while locked. See [repository encryption](../usage/crypt.md).

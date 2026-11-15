@@ -2,6 +2,7 @@
 
 pub mod access;
 pub mod age;
+pub(crate) mod bootstrap;
 pub(crate) mod buffer;
 pub mod detect;
 pub mod filter;

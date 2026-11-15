@@ -74,14 +74,25 @@ fn local_bootstrap_sets_an_unreachable_canonical_origin_and_can_be_repeated(
     );
 }
 
-#[test]
-fn cloning_without_a_canonical_remote_preserves_the_source() {
+#[rstest]
+#[case(None)]
+#[case(Some("--unlock"))]
+#[case(Some("--no-unlock"))]
+fn cloning_without_a_canonical_remote_preserves_the_source(#[case] unlock: Option<&str>) {
     let tmp = TempDir::new().unwrap();
     let src = tmp.path().join("source");
     source(&src, "over.toml", "target = '~'\n");
     let dest = tmp.path().join("dotfiles");
     fs::create_dir(&dest).unwrap();
-    command(&dest).arg(&src).assert().success();
+    let mut init = command(&dest);
+    init.arg(&src);
+    if let Some(flag) = unlock {
+        init.arg(flag);
+    }
+    let assertion = init.assert().success();
+    if unlock == Some("--unlock") {
+        assertion.stdout(contains("no encrypted content to unlock"));
+    }
     assert_eq!(
         PathBuf::from(origin(&dest)).canonicalize().unwrap(),
         src.canonicalize().unwrap()
