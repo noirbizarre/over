@@ -43,6 +43,7 @@ nav = [
     { "over show (alias)" = "usage/show.md" },
     { "over data" = "usage/data.md" },
     { "Repository encryption" = "usage/crypt.md" },
+    { "Encryption filters and textconv" = "usage/crypt-filters.md" },
     { "Lock/unlock automation" = "usage/crypt-automation.md" },
     { "Native secrets / legacy Age" = "usage/secrets.md" },
     { "over apply" = "usage/apply.md" },
@@ -97,6 +98,7 @@ nav = [
     { "027: Install hooks" = "adr/027-installation-is-an-opt-in-hook-event.md" },
     { "028: Repository encryption" = "adr/028-repository-encryption.md" },
     { "029: Checkout file ownership" = "adr/029-virtual-checkouts-project-file-ownership.md" },
+    { "031: Encrypted Git diffs" = "adr/031-encrypted-git-diffs-use-textconv.md" },
   ] },
 ]
 

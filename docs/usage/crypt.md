@@ -110,15 +110,25 @@ policy. It uses exactly the same Over Git filter as `crypt add`. For example,
 add these rules to the source repository's root `.gitattributes`:
 
 ```gitattributes
-.env filter=over
-.env.* filter=over
-secrets/** filter=over
+*.secret filter=over diff=over -text
+.env filter=over diff=over -text
+.env.* filter=over diff=over -text
+secrets/** filter=over diff=over -text
+.gitattributes -filter !diff
+.over/crypt/** -filter !diff -text
 ```
 
 Patterns follow [Git attributes syntax](https://git-scm.com/docs/gitattributes),
 including its directory and precedence rules. Check nested `.gitattributes`,
 global attributes, and `.git/info/attributes` for overrides. Keep bootstrap
 attributes and `.over/crypt/` outside protection.
+
+`filter=over` enables encryption on clean (staging) and decryption on smudge
+(unlocked checkout). `diff=over` selects Over's authenticated text conversion so
+Git can display readable encrypted diffs. `-text` prevents Git's text/EOL
+normalization from changing protected bytes. Slashless `*.secret` matches those
+basenames at any depth; a directory rule alone is not recursive, so use `/**`.
+Git attributes do not support negative patterns: use later attribute overrides.
 
 ### Configure the driver
 
@@ -130,19 +140,28 @@ use an authorized identity and run from that repository:
 over unlock --identity ~/.config/age/over-alice.txt
 ```
 
-This installs all four repository-local settings and unlocks the repository.
+This installs the repository-local filter and diff settings and unlocks the repository.
 Repeating it repairs the driver. It does not require `over crypt add` or change
 your manually managed rules.
+
+The attribute names are independent of Over's CLI namespace: `filter=over` uses
+the `filter.over.*` settings, and `diff=over` uses `diff.over.textconv`. These
+settings invoke helpers under `over crypt`; `over git` manages mounted repositories.
+Existing Git-prefixed helper commands remain hidden compatibility aliases for
+installed configurations. Run `over unlock` to refresh them to the crypt namespace
+without changing `.gitattributes`.
 
 For direct Git configuration, the equivalent driver settings are below. Replace
 `/home/alice/.cargo/bin/over` with your installed executable's absolute path,
 retaining the inner shell quotes (escape any apostrophes in the path):
 
 ```sh
-git config --local filter.over.clean "'/home/alice/.cargo/bin/over' git filter clean"
-git config --local filter.over.smudge "'/home/alice/.cargo/bin/over' git filter smudge"
-git config --local filter.over.process "'/home/alice/.cargo/bin/over' git filter-process"
+git config --local filter.over.clean "'/home/alice/.cargo/bin/over' crypt filter clean"
+git config --local filter.over.smudge "'/home/alice/.cargo/bin/over' crypt filter smudge"
+git config --local filter.over.process "'/home/alice/.cargo/bin/over' crypt filter-process"
 git config --local filter.over.required true
+git config --local diff.over.textconv "'/home/alice/.cargo/bin/over' crypt textconv --"
+git config --local diff.over.cachetextconv false
 ```
 
 Git evaluates these command strings through a shell. Over's setup records its
@@ -217,8 +236,9 @@ to acquire a new protected destination file explicitly. Its destination stays an
 ordinary file; its staged and committed source blobs use native ciphertext. Existing
 owned destination files can resolve their source policy through `over crypt add`.
 
-Over installs only local `filter.over.clean`, `filter.over.smudge`,
-`filter.over.process`, and `filter.over.required=true`. Git uses its v2 long-lived
+Over installs local `filter.over.clean`, `filter.over.smudge`,
+`filter.over.process`, `filter.over.required=true`, and the
+[diff settings](#readable-encrypted-diffs). Git uses its v2 long-lived
 filter protocol; one-shot clean/smudge remain available as compatible fallback
 commands. Plumbing stdout contains only payload/protocol bytes.
 
@@ -246,8 +266,8 @@ the local key. It preserves staged content rather than resetting to `HEAD`.
 Filters remain configured while locked. Unlock refreshes the linked worktrees
 together. Different access metadata must be reconciled before a common rotation.
 
-The native secret store shares this key: its operations fail while locked.
-Unlock restores access to it without converting its stored ciphertext into a
+Native secret operations and encrypted textconv diffs fail while locked.
+Unlock restores access to the native store without converting its ciphertext into a
 plaintext working-tree file. See [native secrets](secrets.md#unlock-once).
 
 Untracked protected plaintext, policy overrides, symlinked protected ancestry,
@@ -257,12 +277,40 @@ not silently replaced. An inaccessible worktree blocks the common transition.
 
 Lock cannot erase plaintext deployed to virtual destinations, copies held by
 other programs, snapshots, backups, or keys already copied elsewhere. Delete does
-not promise physical erasure from storage. Ordinary protected virtual diffs remain
-in Git's ciphertext domain. Generated-checkout comparisons explicitly decode
-protected snapshots while unlocked, and requested diffs can display rendered values.
+not promise physical erasure from storage. Requested readable diffs display
+plaintext while unlocked; protect their output like any other decrypted copy.
 
 For opt-in systemd/Sway and macOS examples, see
 [lock/unlock automation recipes](crypt-automation.md).
+
+## Readable encrypted diffs
+
+New encryption policies include `diff=over`. While unlocked, ordinary `git diff`,
+`git diff --cached`, `git show`, and Git-backed Over comparisons use the local
+textconv driver to authenticate and display protected plaintext. Clean/smudge
+storage behavior is unchanged: index and committed protected blobs stay encrypted.
+The native store also supports explicit diff conversion without decrypting its
+working file; its presentation is the serialized map, including numeric byte arrays.
+
+For an existing repository, run `over unlock` to repair/install local driver
+settings, then add `diff=over` to older protection rules and review/commit the
+attribute change. Alternatively, reapply selected policy through `over crypt add`.
+Review `.over/.gitattributes` too: older `secrets.yaml filter=over -text` rules
+need `diff=over` added explicitly. Unlock never rewrites or stages these rules.
+Check effective selections with `git check-attr filter diff -- PATH`.
+
+Conversion never prompts. Locked ciphertext, authentication errors, and
+unavailable generations fail rather than producing a misleading plaintext patch.
+Only the current repository key is retained: older generations, including the
+old `HEAD` side of a staged rotation, cannot be converted. Use
+`git diff --cached --no-textconv --stat` when reviewing a rotation.
+
+Over sets `diff.over.cachetextconv=false`, preventing persistent Git conversion
+caches with its installed configuration. Diffs can still disclose plaintext to
+pagers, redirected output, and external tools; lock does not erase those copies
+or previously created caches. Git textconv patches are for human review, not
+applying; `git format-patch` does not generate them. External difftools retain
+their own behavior. See [Git helper reference](crypt-filters.md#textconv).
 
 ## Protected generated snapshots
 

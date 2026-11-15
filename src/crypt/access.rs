@@ -281,7 +281,7 @@ pub(crate) fn save(repo: &git2::Repository, registry: &Registry) -> Result<()> {
     if !attributes.try_exists()? {
         atomic_write(
             &attributes,
-            b"crypt/** -filter -text\n.gitattributes -filter\nsecrets.yaml filter=over -text\n",
+            b"crypt/** -filter !diff -text\n.gitattributes -filter !diff\nsecrets.yaml filter=over diff=over -text\n",
         )?;
     }
     let bytes = serde_json::to_vec_pretty(registry)?;
@@ -758,7 +758,12 @@ pub fn delete_user(repo: &git2::Repository, user: &str) -> Result<()> {
 }
 
 pub fn configure_filters(repo: &git2::Repository) -> Result<()> {
-    let commands = filter_commands()?;
+    let mut commands = filter_commands()?.to_vec();
+    commands.push(("diff.over.textconv", textconv_command()?));
+    let booleans = [
+        ("filter.over.required", true),
+        ("diff.over.cachetextconv", false),
+    ];
     let path = repo.commondir().join("config");
     check_real(&path, false)?;
     let mut lock = crate::actions::git::index::IndexLock::acquire(&path)
@@ -787,13 +792,15 @@ pub fn configure_filters(repo: &git2::Repository) -> Result<()> {
                     Err(error) => return Err(error.into()),
                 }
             }
-            match config.get_bool("filter.over.required") {
-                Ok(value) => ensure!(
-                    value,
-                    "worktree-local config disables required encryption filters"
-                ),
-                Err(error) if error.code() == git2::ErrorCode::NotFound => (),
-                Err(error) => return Err(error.into()),
+            for (name, expected) in booleans {
+                match config.get_bool(name) {
+                    Ok(value) => ensure!(
+                        value == expected,
+                        "worktree-local config overrides safe encryption setting {name}"
+                    ),
+                    Err(error) if error.code() == git2::ErrorCode::NotFound => (),
+                    Err(error) => return Err(error.into()),
+                }
             }
         }
     }
@@ -807,7 +814,9 @@ pub fn configure_filters(repo: &git2::Repository) -> Result<()> {
     for (name, command) in &commands {
         config.set_str(name, command)?;
     }
-    config.set_bool("filter.over.required", true)?;
+    for (name, value) in booleans {
+        config.set_bool(name, value)?;
+    }
     // Included later values must not silently shadow commands written to the copy.
     for (name, command) in &commands {
         ensure!(
@@ -815,10 +824,12 @@ pub fn configure_filters(repo: &git2::Repository) -> Result<()> {
             "included Git config overrides encryption filters"
         );
     }
-    ensure!(
-        config.get_bool("filter.over.required")?,
-        "included Git config disables required encryption filters"
-    );
+    for (name, expected) in booleans {
+        ensure!(
+            config.get_bool(name)? == expected,
+            "included Git config overrides safe encryption setting {name}"
+        );
+    }
     drop(config);
     lock.publish(&path, &fs::read(&copy)?)?;
     #[cfg(unix)]
@@ -826,25 +837,33 @@ pub fn configure_filters(repo: &git2::Repository) -> Result<()> {
     Ok(())
 }
 
-pub fn filter_commands() -> Result<[(&'static str, String); 3]> {
+fn quoted_executable() -> Result<String> {
     // Git evaluates filter commands through a shell, including executable paths.
     let executable = std::env::current_exe()?;
     let executable = executable
         .to_str()
         .context("Over executable path is not UTF-8")?;
-    let executable = format!("'{}'", executable.replace('\'', "'\\''"));
+    Ok(format!("'{}'", executable.replace('\'', "'\\''")))
+}
+
+pub fn textconv_command() -> Result<String> {
+    Ok(format!("{} crypt textconv --", quoted_executable()?))
+}
+
+pub fn filter_commands() -> Result<[(&'static str, String); 3]> {
+    let executable = quoted_executable()?;
     Ok([
         (
             "filter.over.clean",
-            format!("{executable} git filter clean"),
+            format!("{executable} crypt filter clean"),
         ),
         (
             "filter.over.smudge",
-            format!("{executable} git filter smudge"),
+            format!("{executable} crypt filter smudge"),
         ),
         (
             "filter.over.process",
-            format!("{executable} git filter-process"),
+            format!("{executable} crypt filter-process"),
         ),
     ])
 }

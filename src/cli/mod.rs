@@ -59,7 +59,7 @@ pub struct CLI {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    #[clap(subcommand, about = "Manage repository encryption policy")]
+    #[clap(subcommand, about = "Manage repository encryption and Git drivers")]
     Crypt(crypt::Commands),
     #[clap(subcommand, about = "Manage repository users and their Age keys")]
     User(crypt::UserCommands),
@@ -184,7 +184,11 @@ pub async fn main() -> Result<()> {
         Some(Commands::New(_)) => Some("Creating overlay"),
         Some(Commands::Diff(_)) => Some("Comparing overlay files"),
         Some(Commands::Log(_)) => Some("Reading overlay history"),
-        Some(Commands::Git(git::Commands::Filter(_) | git::Commands::FilterProcess)) => None,
+        Some(Commands::Git(
+            git::Commands::Filter(_)
+            | git::Commands::FilterProcess
+            | git::Commands::Textconv { .. },
+        )) => None,
         Some(Commands::Git(_)) => Some("Inspecting git overlay"),
         _ => None,
     };

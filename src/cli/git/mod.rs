@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use clap::Subcommand;
 
 use crate::cli::CLI;
+use crate::cli::crypt::FilterCommand;
 use crate::overlays::{Overlay, Repository};
 
 mod add;
@@ -12,10 +13,17 @@ mod status;
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    #[clap(subcommand, about = "Run the repository encryption filter")]
+    // Existing local Git configs must keep working until unlock refreshes their commands.
+    #[clap(
+        subcommand,
+        hide = true,
+        about = "Run the repository encryption filter"
+    )]
     Filter(FilterCommand),
-    #[clap(about = "Run the long-lived Git encryption filter")]
+    #[clap(hide = true, about = "Run the long-lived Git encryption filter")]
     FilterProcess,
+    #[clap(hide = true, about = "Convert an encrypted Git file for diff display")]
+    Textconv { file: PathBuf },
     #[clap(about = "Mount the current git repository to an overlay")]
     Mount(mount::Params),
 
@@ -26,18 +34,13 @@ pub enum Commands {
     Status,
 }
 
-#[derive(Subcommand, Debug)]
-pub enum FilterCommand {
-    Clean,
-    Smudge,
-}
-
 /// Dispatch a `over git <subcommand>` invocation.
 pub async fn execute(cli: &CLI, cmd: &Commands) -> Result<()> {
     match cmd {
         Commands::Filter(FilterCommand::Clean) => crate::crypt::filter::once(true),
         Commands::Filter(FilterCommand::Smudge) => crate::crypt::filter::once(false),
         Commands::FilterProcess => crate::crypt::filter::process(),
+        Commands::Textconv { file } => crate::crypt::textconv::run(file),
         Commands::Mount(opt) => mount::execute(cli, opt).await,
         Commands::Add(opt) => add::execute(cli, opt).await,
         Commands::Status => status::execute(cli).await,

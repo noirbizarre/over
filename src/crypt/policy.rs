@@ -62,12 +62,17 @@ pub fn is_policy_extension(before: &[u8], after: &[u8]) -> bool {
         if line.is_empty()
             || matches!(
                 line,
-                ".gitattributes -filter" | ".over/crypt/** -filter -text"
+                ".gitattributes -filter"
+                    | ".over/crypt/** -filter -text"
+                    | ".gitattributes -filter !diff"
+                    | ".over/crypt/** -filter !diff -text"
             )
         {
             return true;
         }
         line.strip_suffix(" filter=over -text")
+            .or_else(|| line.strip_suffix(" filter=over diff=over -text"))
+            .or_else(|| line.strip_suffix(" -filter !diff -text"))
             .or_else(|| line.strip_suffix(" -filter -text"))
             .is_some_and(|pattern| serde_json::from_str::<String>(pattern).is_ok())
     })
@@ -116,6 +121,15 @@ pub(crate) fn attribute_map(
     paths: &[PathBuf],
     source: Option<&str>,
 ) -> Result<BTreeMap<PathBuf, bool>> {
+    selected_attribute_map(repo, paths, source, "filter")
+}
+
+fn selected_attribute_map(
+    repo: &git2::Repository,
+    paths: &[PathBuf],
+    source: Option<&str>,
+    attribute: &str,
+) -> Result<BTreeMap<PathBuf, bool>> {
     let mut command = git_command(repo)?;
     command.args(["check-attr", "-z", "--stdin"]);
     if let Some(source) = source {
@@ -126,7 +140,7 @@ pub(crate) fn attribute_map(
         }
     }
     let mut child = command
-        .arg("filter")
+        .arg(attribute)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -828,7 +842,11 @@ fn update_with_ingestion(
         let quoted = serde_json::to_string(&rule)?;
         proposed.push_str(&format!(
             "{quoted} {} -text\n",
-            if add { "filter=over" } else { "-filter" }
+            if add {
+                "filter=over diff=over"
+            } else {
+                "-filter !diff"
+            }
         ));
         let pathspec = if literal {
             format!(":(literal){pattern}")
@@ -851,7 +869,7 @@ fn update_with_ingestion(
             paths.push(PathBuf::from(std::str::from_utf8(path)?));
         }
     }
-    proposed.push_str(".gitattributes -filter\n.over/crypt/** -filter -text\n");
+    proposed.push_str(".gitattributes -filter !diff\n.over/crypt/** -filter !diff -text\n");
     paths.sort();
     paths.dedup();
     paths.extend(inputs.keys().cloned());
@@ -1410,6 +1428,17 @@ pub fn inspect(repo: &git2::Repository) -> Result<Vec<Diagnostic>> {
     for (name, expected) in access::filter_commands()? {
         filter_ok &= native_setting(repo, name, false)?.as_deref() == Some(expected.as_str());
     }
+    if native_setting(repo, "diff.over.textconv", false)?.as_deref()
+        != Some(access::textconv_command()?.as_str())
+    {
+        findings.push(Diagnostic::Warning("Over diff driver missing/incorrect; run over unlock to configure readable encrypted diffs".into()));
+    }
+    // Invalid booleans are also unsafe; report them without aborting the remaining inspection.
+    if native_setting(repo, "diff.over.cachetextconv", true)
+        .map_or(true, |value| value.as_deref() != Some("false"))
+    {
+        findings.push(Diagnostic::Warning("Over diff cache is not explicitly disabled; run over unlock to prevent persistent plaintext textconv caching".into()));
+    }
     let index = repo.index()?;
     let head = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
     let key = match access::local_key(repo) {
@@ -1444,6 +1473,7 @@ pub fn inspect(repo: &git2::Repository) -> Result<Vec<Diagnostic>> {
     }
     let paths: Vec<_> = paths.into_iter().collect();
     let effective = attribute_map(repo, &paths, None)?;
+    let diff_attributes = selected_attribute_map(repo, &paths, None, "diff")?;
     let committed = if head.is_some() {
         attribute_map(repo, &paths, Some("HEAD"))?
     } else {
@@ -1485,6 +1515,16 @@ pub fn inspect(repo: &git2::Repository) -> Result<Vec<Diagnostic>> {
     let mut history_budget = 256usize;
     for path in paths {
         let actual = effective.get(&path).copied().unwrap_or(false);
+        let diff_selected = diff_attributes.get(&path).copied().unwrap_or(false);
+        let bootstrap = path
+            .file_name()
+            .is_some_and(|name| name == ".gitattributes")
+            || path.starts_with(".over/crypt");
+        if diff_selected && bootstrap {
+            findings.push(Diagnostic::Warning(format!("WARNING {}: bootstrap metadata selects the encrypted diff driver; clear its diff attribute", path.display())));
+        } else if actual && !diff_selected {
+            findings.push(Diagnostic::Warning(format!("WARNING {}: protected path does not select diff=over; review attribute overrides or add diff=over for readable diffs", path.display())));
+        }
         let declared = intended.get(&path).copied().unwrap_or(false)
             || path == Path::new(".over/secrets.yaml");
         let previously_protected = committed.get(&path).copied().unwrap_or(false);

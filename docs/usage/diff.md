@@ -104,6 +104,15 @@ and pager-specific settings remain Git's responsibility. A configured
 There is no separate Over tool configuration. Git's ordinary difftool prompts
 and tool options apply. Temporary inputs remain available until Git exits.
 
+For protected paths selecting `diff=over`, the installed
+[encrypted textconv driver](crypt-filters.md#textconv) provides readable plaintext
+while unlocked, including source and virtual-checkout staged/unstaged views.
+Ciphertext conversion fails while locked or when its generation is unavailable.
+Over disables persistent Git textconv caches during its comparisons. Plaintext
+patches can still be retained by pagers, external tools, or output redirection.
+External difftools keep their own conversion behavior; they are not automatically
+given decrypted files. See [encrypted diff usage](crypt.md#readable-encrypted-diffs).
+
 Repository/scope headers and deployment diagnostics go to stderr; Git patches
 go to stdout. Finding changes is successful; Git/tool failures are errors.
 Partial-file blocks retain their existing block-level diagnostics. Declared

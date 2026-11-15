@@ -147,7 +147,7 @@ fn plugin_envelopes_unlock_once_and_filters_do_not_invoke_the_plugin() {
     fixture.run(&["unlock", "--identity", fixture.identity.to_str().unwrap()]);
     let log = fs::read(&fixture.log).unwrap();
     assert!(String::from_utf8_lossy(&log).contains("identity-v1"));
-    let mut command = fixture.command(&["git", "filter", "clean"]);
+    let mut command = fixture.command(&["crypt", "filter", "clean"]);
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -162,7 +162,7 @@ fn plugin_envelopes_unlock_once_and_filters_do_not_invoke_the_plugin() {
     let encrypted = success(child.wait_with_output().unwrap()).stdout;
     over::crypt::format::inspect(&encrypted).unwrap();
     let mut child = fixture
-        .command(&["git", "filter", "smudge"])
+        .command(&["crypt", "filter", "smudge"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -207,7 +207,7 @@ fn plugin_envelopes_unlock_once_and_filters_do_not_invoke_the_plugin() {
     assert_eq!(fs::read(&fixture.log).unwrap(), log);
     fixture.run(&["lock"]);
     let mut child = fixture
-        .command(&["git", "filter", "clean"])
+        .command(&["crypt", "filter", "clean"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
