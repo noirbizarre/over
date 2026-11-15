@@ -337,18 +337,15 @@ pub(crate) fn select_commit(ctx: &Context, name: Option<&str>) -> Result<Overlay
                 .get(&directory.strip_prefix(&collection)?.to_string_lossy());
         }
     }
-    if let Some(overlay) = ctx.repository.default_overlay(ctx)? {
-        return Ok(overlay);
-    }
-    bail!("cannot infer an overlay; specify --overlay NAME or configure default_overlay")
+    bail!("cannot infer an overlay; specify --overlay NAME or run from an active overlay context")
 }
 
-/// Select explicitly, then contextually, then optionally by configured default.
+/// Select explicitly, then contextually, then optionally by host context.
 pub fn select(
     ctx: &Context,
     name: Option<&str>,
     paths: &[PathBuf],
-    use_default: bool,
+    use_host: bool,
 ) -> Result<Overlay> {
     if let Some(name) = name {
         return ctx.repository.get(name);
@@ -356,23 +353,46 @@ pub fn select(
     if let Some(overlay) = infer(ctx, paths)? {
         return Ok(overlay);
     }
-    if use_default && let Some(overlay) = ctx.repository.default_overlay(ctx)? {
+    if use_host && let Some(overlay) = ctx.repository.host_overlay(ctx)? {
         return Ok(overlay);
     }
     bail!(
         "cannot infer an overlay; provide NAME or --overlay NAME explicitly{}",
-        if use_default {
-            " or configure default_overlay"
+        if use_host {
+            " or configure host_overlay"
         } else {
             ""
         }
     )
 }
 
-/// Resolve a reporting command's contextual selection before its default.
-pub fn infer_or_default(ctx: &Context) -> Result<Option<Overlay>> {
+/// Resolve a reporting command's active context before its host context.
+pub fn infer_or_host(ctx: &Context) -> Result<Option<Overlay>> {
     match infer(ctx, &[])? {
         Some(overlay) => Ok(Some(overlay)),
-        None => ctx.repository.default_overlay(ctx),
+        None => ctx.repository.host_overlay(ctx),
     }
+}
+
+/// Select a mutation target without turning machine identity into deployment intent.
+pub fn select_context(ctx: &Context, name: Option<&str>, paths: &[PathBuf]) -> Result<Overlay> {
+    select(ctx, name, paths, false)
+}
+
+/// Apply has its own opt-in for using the host without explicit or active selection.
+pub fn select_apply(ctx: &Context, name: Option<&str>) -> Result<Overlay> {
+    if let Some(name) = name {
+        return ctx.repository.get(name);
+    }
+    if let Some(overlay) = infer(ctx, &[])? {
+        return Ok(overlay);
+    }
+    if ctx.repository.apply_config()?.default_to_host
+        && let Some(overlay) = ctx.repository.host_overlay(ctx)?
+    {
+        return Ok(overlay);
+    }
+    bail!(
+        "cannot infer an overlay; run `over apply NAME`, use an active overlay context, or configure host_overlay and apply.default_to_host = true"
+    )
 }

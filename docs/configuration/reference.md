@@ -28,8 +28,10 @@ Defaults below apply when no inherited value or matching rule supplies a value.
 | `$schema` | Both | String | None | Document-local editor schema URL; ignored by Over and never inherited. Use a schema comment directive for TOML. |
 | `format` | Root | `toml` or `yaml` | `toml` | Format for newly written descriptors; does not restrict reading. `--format` takes precedence. |
 | `repository` | Root | String | Preserve cloned origin | Canonical literal Git remote used by `over init`. |
-| `sync` | Root | [Sync object](#source-synchronization-sync) | Both operations disabled | Remote synchronization policy for the Over source repository. |
-| `default_overlay` | Root | String | None | Repository-relative overlay identifier; bootstrap templates are supported. |
+| `sync` | Root | [Sync object](#source-synchronization-sync) | Host fallback and remote operations disabled | Sync target selection and remote policy for the Over source repository. |
+| `host_overlay` | Root | String | None | Repository-relative machine context; bootstrap templates are supported. |
+| `apply` | Root | Mapping | `{}` | Apply-specific settings; see `apply.default_to_host`. |
+| `apply.default_to_host` | Root | Boolean | `false` | Allow apply to select the host when no explicit or active overlay exists. |
 | `overlays` | Root | List of strings | No additional declarations | Repository-relative directories or globs added to descriptor-based discovery. |
 | `description` | Both | String | None | Human-readable overlay description. |
 | `target` | Both | String | `~` | Base destination path; supports destination templates. |
@@ -49,10 +51,10 @@ Defaults below apply when no inherited value or matching rule supplies a value.
   paths. Relative local paths are repository-root-relative. It must be a
   nonempty literal string without surrounding whitespace, control characters,
   or template expressions. See [Canonical Git repository](root.md#canonical-git-repository).
-- **`default_overlay`** is resolved before metadata composition and cannot
+- **`host_overlay`** is resolved before metadata composition and cannot
   depend on the `data` it selects or on `paths.target`. An invalid template or
-  missing default overlay is an error even with an explicit selection. Command
-  fallback behavior is described in [Default overlay selection](root.md#default-overlay-selection).
+  missing host overlay is an error during data resolution even with an explicit selection. Command
+  fallback behavior is described in [Host overlay context](root.md#host-overlay-context).
 - **`overlays`** adds existing directories to discovery; it does not replace
   descriptor discovery. Missing literal paths and malformed globs are lint
   errors; unmatched globs are warnings. `.over` administration paths are not
@@ -61,7 +63,9 @@ Defaults below apply when no inherited value or matching rule supplies a value.
 ```yaml
 format: yaml
 repository: git@github.com:your-user/dotfiles.git
-default_overlay: hosts/laptop
+host_overlay: hosts/laptop
+apply:
+  default_to_host: false
 overlays:
   - 'apps/*'
   - hosts/laptop
@@ -71,18 +75,21 @@ overlays:
 
 | Attribute | Scope | Type | Default | Purpose |
 | --- | --- | --- | --- | --- |
+| `sync.default_to_host` | Root | Boolean | `false` | Allow sync to select the host when no explicit or active overlay exists; independent of apply. |
 | `sync.pull` | Root | Boolean | `false` | Fetch and rebase the source branch onto its upstream before fresh selection and local reconciliation. |
 | `sync.push` | Root | Boolean | `false` | Push existing source commits after successful reconciliation. |
 
 ```toml
 [sync]
+default_to_host = false
 pull = true
 push = false
 ```
 
-These settings affect [`over sync`](../commands/sync.md) and the repository
-containing `OVER_HOME`, not repositories declared under `git`. Neither stages
-nor commits changes. CLI pull/push flags override each setting independently;
+`sync.default_to_host` controls the fallback target of [`over sync`](../commands/sync.md).
+The pull/push settings affect the repository containing `OVER_HOME`, not
+repositories declared under `git`. Neither remote operation stages
+nor commits changes. CLI pull/push flags override each remote setting independently;
 dry runs perform no remote operations. See [Source synchronization](root.md#source-synchronization).
 
 ## Shared policy
@@ -421,7 +428,7 @@ namespaces with the value types described above. Schemas do not replace
 [`over lint`](../commands/lint.md) or runtime validation.
 
 Removed attributes `install`, `default`, `defaults`, `materialization`, and
-`link_dirs` are unsupported. Use `hooks.install`, `default_overlay`, scalar
+`link_dirs` are unsupported. Use `hooks.install`, `host_overlay`, scalar
 `mode`/`permissions`, and `rules` as appropriate. Old permission-rule arrays
 are also unsupported; use octal strings and `rules[].permissions`.
 Runtime fields such as overlay name, source root, scopes, and assignment origins

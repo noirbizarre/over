@@ -93,11 +93,13 @@ This does not select the source repository. Consult each page's syntax for suppo
 
 An explicit overlay name selects that overlay. Otherwise commands first try
 [contextual overlay selection](../usage/selection.md): Git associations, source context, destination ownership,
-managed siblings, then target containment. Context precedes a configured default;
-ambiguous contexts require an explicit overlay. Status/diff/sync retain their
-all-overlay fallback outside an inferable/default context (`--all` forces all).
+managed siblings, then target containment. Active context precedes any permitted host fallback;
+ambiguous contexts require an explicit overlay. Status/diff retain their
+all-overlay fallback without active or host context (`--all` forces all).
+Apply and sync can separately opt into host fallback; sync requires explicit
+`--all` to operate repository-wide.
 Lint and doctor retain their broader diagnostic scopes. See
-[default selection](../configuration/root.md#default-overlay-selection).
+[host context](../configuration/root.md#host-overlay-context).
 
 For concepts and your first successful apply, start with
 [Getting started](../usage/index.md). For supported modes and the

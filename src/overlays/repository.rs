@@ -279,7 +279,7 @@ impl Repository {
     /// Returns `None` when no root config exists, the field is absent, or
     /// the root config fails to parse (logged as a warning — this method
     /// has no `Result` to propagate a hard failure through; contrast with
-    /// `default_overlay()`, which does hard-fail on the same condition).
+    /// `host_overlay()`, which does hard-fail on the same condition).
     pub fn preferred_format(&self) -> Option<Format> {
         match self.root_config() {
             Ok(cfg) => cfg.format,
@@ -313,21 +313,21 @@ impl Repository {
         resolve_declared_dirs(&self.root, &declarations, &self.warnings)
     }
 
-    /// Resolve the repository root's configured `default_overlay`, if any
+    /// Resolve the repository root's configured `host_overlay`, if any
     /// (#113/#128), rendering it as a template against `ctx` — the same
     /// `exec::Context` used for `target` (see `Overlay::resolve_target`),
     /// so `{{ machine.hostname }}` etc. can select a machine-specific
     /// overlay — then validating the rendered name actually exists.
     ///
-    /// `Ok(None)` means no `default_overlay` is configured: silent,
+    /// `Ok(None)` means no `host_overlay` is configured: silent,
     /// matching `preferred_format()`'s absent-means-opt-out contract.
     /// `Err` means the root config is configured but broken — either the
-    /// file itself fails to parse, or `default_overlay` names an overlay
-    /// that doesn't exist, or fails to render: a misconfigured default
+    /// file itself fails to parse, or `host_overlay` names an overlay
+    /// that doesn't exist, or fails to render: a misconfigured host
     /// must never silently fall through to another selection method
     /// (never silence errors, AGENTS.md).
-    pub fn default_overlay(&self, ctx: &exec::Context) -> Result<Option<Overlay>> {
-        let Some(raw) = self.root_config()?.default_overlay else {
+    pub fn host_overlay(&self, ctx: &exec::Context) -> Result<Option<Overlay>> {
+        let Some(raw) = self.root_config()?.host_overlay else {
             return Ok(None);
         };
         // Host selection must not depend on the host scope it is about to establish.
@@ -341,11 +341,16 @@ impl Repository {
         };
         let state = exec::templates::TemplateContext::new(&base)?;
         let name = exec::templates::render_path(&raw, &state)
-            .context("failed to render default_overlay template")?;
+            .context("failed to render host_overlay template")?;
         let overlay = self
             .get(&name)
-            .with_context(|| format!("configured default_overlay '{name}' not found"))?;
+            .with_context(|| format!("configured host_overlay '{name}' not found"))?;
         Ok(Some(overlay))
+    }
+
+    /// Read root apply policy independently of the host data used by every command.
+    pub fn apply_config(&self) -> Result<ApplyConfig> {
+        Ok(self.root_config()?.apply)
     }
 
     /// One-shot, non-cascading read of the repository root's own
@@ -358,7 +363,7 @@ impl Repository {
     /// from "root config file exists but fails to parse/deserialize"
     /// (`Err`, with context) — the two used to be conflated via
     /// `.ok().unwrap_or_default()`, which silently treated a malformed
-    /// `over.toml` the same as an absent one and broke `default_overlay`'s
+    /// `over.toml` the same as an absent one and broke `host_overlay`'s
     /// own documented hard-error contract above.
     fn root_config(&self) -> Result<RootConfig> {
         let (values, _) = self.root_source()?;
@@ -391,6 +396,19 @@ impl Repository {
             };
             validate_repository_remote(remote)
                 .with_context(|| format!("invalid `repository` in {}", basename.display()))?;
+        }
+        // Deployment opt-ins must not be enabled by config's string/number coercion.
+        for command in ["apply", "sync"] {
+            if let Some(value) = values.get(command)
+                && let ValueKind::Table(settings) = &value.kind
+                && let Some(value) = settings.get("default_to_host")
+                && !matches!(value.kind, ValueKind::Boolean(_))
+            {
+                bail!(
+                    "`{command}.default_to_host` must be a boolean in {}",
+                    basename.display()
+                );
+            }
         }
         Config::builder()
             .add_source(super::paths::ScopedSource(values))
@@ -435,8 +453,11 @@ pub(super) struct RootConfig {
     format: Option<Format>,
     /// Directories or glob patterns declaring overlays without local descriptors.
     overlays: Option<Vec<String>>,
-    /// Repository-relative overlay selected when no explicit selection is supplied.
-    default_overlay: Option<String>,
+    /// Repository-relative machine context supplying host values and inspection fallback.
+    host_overlay: Option<String>,
+    /// Root-only defaults for applying overlays.
+    #[serde(default)]
+    apply: ApplyConfig,
     /// Canonical literal Git remote; SCP-style remotes and local paths are supported.
     // The root loader validates every present value as literal text before deserialization.
     #[cfg_attr(
@@ -446,14 +467,82 @@ pub(super) struct RootConfig {
     repository: Option<String>,
 }
 
-/// Opt-in remote synchronization of the repository containing Over's source.
+/// Root-only policy for applying overlays.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+pub struct ApplyConfig {
+    /// Allow apply to select the host when neither explicit nor active context exists.
+    pub default_to_host: bool,
+}
+
+/// Root sync target policy and opt-in synchronization of the Over source repository.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 pub struct SyncConfig {
+    /// Allow sync to select the host when neither explicit nor active context exists.
+    pub default_to_host: bool,
     pub pull: bool,
     pub push: bool,
+}
+
+#[cfg(test)]
+mod apply_config_tests {
+    use super::*;
+
+    #[rstest::rstest]
+    #[case("toml", "", false)]
+    #[case("toml", "[apply]", false)]
+    #[case("toml", "[apply]\ndefault_to_host = false", false)]
+    #[case("toml", "[apply]\ndefault_to_host = true", true)]
+    #[case("yaml", "apply: {}", false)]
+    #[case("yaml", "apply:\n  default_to_host: false", false)]
+    #[case("yaml", "apply:\n  default_to_host: true", true)]
+    fn apply_settings_default_to_conservative_selection(
+        #[case] extension: &str,
+        #[case] descriptor: &str,
+        #[case] enabled: bool,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(format!("over.{extension}")), descriptor).unwrap();
+        let repo = Repository::new(temp.path().to_path_buf());
+        assert_eq!(repo.apply_config().unwrap().default_to_host, enabled);
+    }
+
+    #[rstest::rstest]
+    #[case("apply = true")]
+    #[case("apply.default_to_host = []")]
+    fn malformed_apply_settings_cannot_enable_deployment(#[case] descriptor: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("over.toml"), descriptor).unwrap();
+        assert!(
+            Repository::new(temp.path().to_path_buf())
+                .apply_config()
+                .is_err()
+        );
+    }
+
+    #[rstest::rstest]
+    fn host_fallback_settings_reject_non_boolean_values(
+        #[values("apply", "sync")] command: &str,
+        #[values("1", "0", "1.0", "\"true\"", "\"false\"", "[]", "{}")] value: &str,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("over.toml"),
+            format!("{command}.default_to_host = {value}"),
+        )
+        .unwrap();
+        let repo = Repository::new(temp.path().to_path_buf());
+        let error = repo.root_config().unwrap_err().to_string();
+        assert!(
+            error.contains(&format!("{command}.default_to_host` must be a boolean")),
+            "{error}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -477,7 +566,38 @@ mod sync_config_tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join(format!("over.{extension}")), descriptor).unwrap();
         let repo = Repository::new(temp.path().to_path_buf());
-        assert_eq!(repo.sync_config().unwrap(), SyncConfig { pull, push });
+        assert_eq!(
+            repo.sync_config().unwrap(),
+            SyncConfig {
+                pull,
+                push,
+                default_to_host: false
+            }
+        );
+    }
+
+    #[rstest::rstest]
+    #[case("toml", "[sync]\ndefault_to_host = true", true)]
+    #[case("toml", "[sync]\ndefault_to_host = false", false)]
+    #[case("yaml", "sync:\n  default_to_host: true", true)]
+    #[case("yaml", "sync:\n  default_to_host: false", false)]
+    fn sync_host_fallback_is_an_independent_root_opt_in(
+        #[case] extension: &str,
+        #[case] descriptor: &str,
+        #[case] enabled: bool,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(format!("over.{extension}")), descriptor).unwrap();
+        let repo = Repository::new(temp.path().to_path_buf());
+        assert_eq!(
+            repo.sync_config().unwrap(),
+            SyncConfig {
+                default_to_host: enabled,
+                pull: false,
+                push: false
+            }
+        );
+        assert!(!repo.apply_config().unwrap().default_to_host);
     }
 
     #[test]
@@ -757,37 +877,59 @@ mod tests {
     }
 
     #[test]
-    fn default_overlay_returns_none_when_absent() {
+    fn host_overlay_returns_none_when_absent() {
         let tmp = TempDir::new().unwrap();
         let repo = Repository::new(tmp.path().to_path_buf());
         let ctx = exec::Context::builder().repository(repo.clone()).build();
-        assert!(repo.default_overlay(&ctx).unwrap().is_none());
+        assert!(repo.host_overlay(&ctx).unwrap().is_none());
+        assert!(!repo.apply_config().unwrap().default_to_host);
+    }
+
+    #[rstest::rstest]
+    #[case("", false)]
+    #[case("[apply]", false)]
+    #[case("apply.default_to_host = false", false)]
+    #[case("apply.default_to_host = true", true)]
+    fn only_the_root_can_enable_automatic_host_application(
+        #[case] root: &str,
+        #[case] enabled: bool,
+    ) {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("over.toml"), root).unwrap();
+        std::fs::create_dir_all(tmp.path().join("child")).unwrap();
+        std::fs::write(
+            tmp.path().join("child/over.toml"),
+            "apply.default_to_host = true\nsync.default_to_host = true\nhost_overlay = 'child'",
+        )
+        .unwrap();
+        let repo = Repository::new(tmp.path().to_path_buf());
+        let ctx = exec::Context::builder().repository(repo.clone()).build();
+        repo.get("child").unwrap();
+        assert_eq!(repo.apply_config().unwrap().default_to_host, enabled);
+        assert!(!repo.sync_config().unwrap().default_to_host);
+        assert!(repo.host_overlay(&ctx).unwrap().is_none());
     }
 
     #[test]
-    fn default_overlay_resolves_static_name() {
+    fn host_overlay_resolves_static_name() {
         let tmp = TempDir::new().unwrap();
-        fs::write(
-            tmp.path().join("over.toml"),
-            "default_overlay = \"myoverlay\"",
-        )
-        .unwrap();
+        fs::write(tmp.path().join("over.toml"), "host_overlay = \"myoverlay\"").unwrap();
         let ov = tmp.path().join("myoverlay");
         fs::create_dir_all(&ov).unwrap();
         fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
 
         let repo = Repository::new(tmp.path().to_path_buf());
         let ctx = exec::Context::builder().repository(repo.clone()).build();
-        let overlay = repo.default_overlay(&ctx).unwrap().unwrap();
+        let overlay = repo.host_overlay(&ctx).unwrap().unwrap();
         assert_eq!(overlay.name, "myoverlay");
     }
 
     #[test]
-    fn default_overlay_renders_machine_template() {
+    fn host_overlay_renders_machine_template() {
         let tmp = TempDir::new().unwrap();
         fs::write(
             tmp.path().join("over.toml"),
-            "default_overlay = \"hosts/{{ machine.hostname }}\"",
+            "host_overlay = \"hosts/{{ machine.hostname }}\"",
         )
         .unwrap();
         let ov = tmp.path().join("hosts/laptop");
@@ -807,46 +949,46 @@ mod tests {
             .repository(repo.clone())
             .machine(machine)
             .build();
-        let overlay = repo.default_overlay(&ctx).unwrap().unwrap();
+        let overlay = repo.host_overlay(&ctx).unwrap().unwrap();
         assert_eq!(overlay.name, "hosts/laptop");
     }
 
     #[test]
-    fn default_overlay_errors_on_malformed_root_config_instead_of_falling_through() {
+    fn host_overlay_errors_on_malformed_root_config_instead_of_falling_through() {
         let tmp = TempDir::new().unwrap();
         // Syntactically invalid TOML: must be a hard error, never silently
-        // treated as "no default_overlay configured" (see root_config's
+        // treated as "no host_overlay configured" (see root_config's
         // doc comment — this used to regress into `Ok(None)`).
         fs::write(tmp.path().join("over.toml"), "{{{{not valid toml}}}}").unwrap();
         let repo = Repository::new(tmp.path().to_path_buf());
         let ctx = exec::Context::builder().repository(repo.clone()).build();
-        assert!(repo.default_overlay(&ctx).is_err());
+        assert!(repo.host_overlay(&ctx).is_err());
     }
 
     #[test]
-    fn default_overlay_errors_when_named_overlay_missing() {
+    fn host_overlay_errors_when_named_overlay_missing() {
         let tmp = TempDir::new().unwrap();
         fs::write(
             tmp.path().join("over.toml"),
-            "default_overlay = \"does-not-exist\"",
+            "host_overlay = \"does-not-exist\"",
         )
         .unwrap();
         let repo = Repository::new(tmp.path().to_path_buf());
         let ctx = exec::Context::builder().repository(repo.clone()).build();
-        assert!(repo.default_overlay(&ctx).is_err());
+        assert!(repo.host_overlay(&ctx).is_err());
     }
 
     #[test]
-    fn default_overlay_errors_on_invalid_template_syntax() {
+    fn host_overlay_errors_on_invalid_template_syntax() {
         let tmp = TempDir::new().unwrap();
         fs::write(
             tmp.path().join("over.toml"),
-            "default_overlay = \"{{ invalid\"",
+            "host_overlay = \"{{ invalid\"",
         )
         .unwrap();
         let repo = Repository::new(tmp.path().to_path_buf());
         let ctx = exec::Context::builder().repository(repo.clone()).build();
-        assert!(repo.default_overlay(&ctx).is_err());
+        assert!(repo.host_overlay(&ctx).is_err());
     }
 
     #[test]

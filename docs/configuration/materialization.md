@@ -35,7 +35,7 @@ The following root configuration supports applications targeting the same home:
 
 ```yaml
 mode: checkout
-default_overlay: hosts/laptop
+host_overlay: hosts/laptop
 overlays: [apps/*, hosts/*]
 ```
 

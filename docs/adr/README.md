@@ -45,7 +45,7 @@ semantics, use the [configuration reference](../configuration.md) and
 | [016](016-partial-file-managed-blocks.md) | Partial files are managed blocks injected via a sidecar, not a stem-plus-sidecar pair |
 | [017](017-materialization-rules-generalize-link-dirs.md) | Materialization rules generalize `link_dirs` into path/subtree overrides, amending ADR-006 |
 | [018](018-root-declared-overlays-extend-descriptor-discovery.md) | Root-declared `overlays:` paths extend descriptor-glob discovery, amending ADR-002 |
-| [019](019-default-overlay-selection-extends-templating-to-overlay-choice.md) | `default_overlay` extends templating to overlay selection, amending ADR-010 |
+| [019](019-default-overlay-selection-extends-templating-to-overlay-choice.md) | Historical default selection; naming and command policy superseded by ADR-032 |
 | [020](020-file-permissions-are-hierarchical-rules-scoped-to-partial-files.md) | File permissions are hierarchical rules scoped to `PartialFile` entries |
 | [021](021-declared-git-repositories-report-provisioning-not-content-status.md) | Declared (non-root) `git` repositories report provisioning status, not content status, amending ADR-014 |
 | [022](022-virtual-checkout-materialization.md) | Virtual checkout materialization, distinct from `overlay.git`'s `Checkout`, amending ADR-017 |
@@ -58,3 +58,4 @@ semantics, use the [configuration reference](../configuration.md) and
 | [029](029-virtual-checkouts-project-file-ownership.md) | Fresh virtual checkouts project individual files into shared destination directories |
 | [030](030-file-templates-produce-desired-content.md) | File templates produce desired content and generated Git snapshots, superseding ADR-010's path-only scope |
 | [031](031-encrypted-git-diffs-use-textconv.md) | Authenticated encrypted Git diffs use textconv without persistent plaintext caching |
+| [032](032-host-context-is-distinct-from-deployment-selection.md) | Host context is distinct from deployment selection, superseding ADR-019 |

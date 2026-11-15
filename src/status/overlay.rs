@@ -151,7 +151,7 @@ impl OverlayReport {
             // Retain the configuration entry points without quoting rendered metadata values.
             .map_err(|_| {
                 anyhow!(
-                    "cannot resolve overlay '{}': check default_overlay and dependency metadata",
+                    "cannot resolve overlay '{}': check host_overlay and dependency metadata",
                     overlay.name
                 )
             })?;

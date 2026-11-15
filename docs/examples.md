@@ -45,7 +45,7 @@ over status .
 ```
 
 `.` explicitly selects the repository-root overlay. A bare `over apply` tries
-contextual inference, then a configured default, otherwise requires an explicit
+contextual inference, then an opted-in host fallback, otherwise requires an explicit
 selection with an actionable error. It never opens an overlay chooser. Existing
 target files may conflict; inspect the preview before choosing how to handle
 them. Editing an applied symlink edits its source in `~/.dotfiles`.
@@ -75,7 +75,7 @@ Root descriptor, `~/.dotfiles/over.toml`:
 
 ```toml
 target = "~"
-default_overlay = "hosts/laptop"
+host_overlay = "hosts/laptop"
 ```
 
 App descriptors, both `apps/git/over.toml` and `apps/starship/over.toml`:
@@ -107,10 +107,12 @@ The host includes each app dependency once. Each app retains its own target;
 dependencies in larger compositions are not repeated. Names in `uses` are
 explicit identifiers, not globs.
 
-The fixed default makes `over apply` select this host and `over status` report
-its composition. For multiple hosts, add a descriptor for each, then use
-`default_overlay = "hosts/{{ machine.hostname }}"` only after creating a matching
-overlay for every machine that will use the repository. A missing default is an
+The configured host makes `over status` report its composition when no active
+context exists. To let bare `over apply` select it too, set root
+`apply.default_to_host = true`; the option is disabled by default. For multiple
+hosts, add a descriptor for each, then use
+`host_overlay = "hosts/{{ machine.hostname }}"` only after creating a matching
+overlay for every machine that will use the repository. A missing configured host is an
 error, including when selecting another overlay explicitly.
 
 ## Inherit shared policy
@@ -247,7 +249,7 @@ over sync workspace/client --dry-run
 
 Add stages a target snapshot; commit records **only staged changes** in the source
 repository. Further unstaged target edits stay outside that commit. Sync reconciles
-source and target locally by default. Use `over sync --pull --push` to fetch/rebase
+source and target locally by default. Use `over sync workspace/client --pull --push` to fetch/rebase
 the Over source repository first and push its commits after successful reconciliation.
 
 To discard or recover a selected file instead of committing it:

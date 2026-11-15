@@ -17,9 +17,7 @@ use crate::utils::short_path;
 
 #[derive(Args, Debug)]
 pub struct Params {
-    #[clap(
-        help = "Name of the overlay to unapply (otherwise infer context, then use default_overlay)"
-    )]
+    #[clap(help = "Name of the overlay to unapply (otherwise require an active overlay context)")]
     name: Option<String>,
 
     #[clap(

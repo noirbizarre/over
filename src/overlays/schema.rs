@@ -8,8 +8,9 @@ use config::{Map, Value, ValueKind};
 
 pub(crate) const OVERLAY_KEYS: &[&str] = &[
     "$schema",
+    "apply",
     "data",
-    "default_overlay",
+    "host_overlay",
     "description",
     "exclude",
     "format",
@@ -27,7 +28,8 @@ pub(crate) const OVERLAY_KEYS: &[&str] = &[
 ];
 pub(super) const EVENTS: &[&str] = &["install", "post-clone", "post-init", "post-apply"];
 pub(super) const HOOK_FIELDS: &[&str] = &["command", "env", "cwd", "when"];
-pub(super) const SYNC_FIELDS: &[&str] = &["pull", "push"];
+pub(super) const SYNC_FIELDS: &[&str] = &["default_to_host", "pull", "push"];
+pub(super) const APPLY_FIELDS: &[&str] = &["default_to_host"];
 pub(super) const RULE_FIELDS: &[&str] = &[
     "path",
     "mode",
@@ -123,6 +125,11 @@ pub(crate) fn normalize(values: &mut Map<String, Value>, file: &Path) -> Vec<War
     fields(values, OVERLAY_KEYS, "", false, file, &mut warnings);
     for (key, value) in values {
         match key.as_str() {
+            "apply" => {
+                if let ValueKind::Table(table) = &mut value.kind {
+                    fields(table, APPLY_FIELDS, "apply", false, file, &mut warnings);
+                }
+            }
             "sync" => {
                 if let ValueKind::Table(table) = &mut value.kind {
                     fields(table, SYNC_FIELDS, "sync", false, file, &mut warnings);
@@ -234,6 +241,7 @@ fn fields(
         // Hook keys themselves can contain secrets; neither diagnostics nor Debug may retain them.
         let message = if redact { format!("unknown key ignored{suffix} (unknown field #{ignored})") } else { format!("unknown key `{key}` ignored{suffix}") };
         let migration = match (location, key.as_str()) {
+            ("", "default_overlay") => Some("rename `default_overlay` to `host_overlay`; set root `apply.default_to_host = true` separately to opt into applying the host without a target"),
             ("", "install") => Some("top-level `install` is no longer supported; migrate to `hooks.install` and run `over apply --install`"),
             ("", "default" | "defaults" | "materialization" | "link_dirs") => Some("use scalar `mode`/`permissions` and `rules`; directory links use mode: symlink-directory"),
             (_, "materialization") if location.starts_with("rules[") => Some("removed `materialization`; replace it with `mode`"),
@@ -302,6 +310,7 @@ mod tests {
 
     #[rstest]
     #[case("extra: {arbitrary: [1, 2]}", "`extra`")]
+    #[case("apply: {extra: true}", "in apply")]
     #[case("rules: [{path: config, mode: checkout, extra: 1}]", "rules[1]")]
     #[case("rules: [{path: config, target: '~', extra: 1}]", "rules[1]")]
     #[case("git: {url: source, extra: 1}", "in git")]
@@ -375,6 +384,19 @@ git:
         reporter.report(vec![warning.clone()]);
         reporter.clone().report(vec![warning.clone()]);
         assert_eq!(reporter.warnings(), vec![warning]);
+    }
+
+    #[rstest]
+    #[case("default_overlay: old")]
+    #[case("default_overlay: [invalid, legacy, type]\nhost_overlay: current")]
+    fn the_removed_default_key_is_ignored_with_an_actionable_host_migration(#[case] source: &str) {
+        let mut values = File::from_str(source, FileFormat::Yaml).collect().unwrap();
+        let warnings = normalize(&mut values, Path::new("over.yaml"));
+        assert!(!values.contains_key("default_overlay"));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].hint.contains("host_overlay"));
+        assert!(warnings[0].hint.contains("apply.default_to_host"));
+        assert!(normalize(&mut values, Path::new("over.yaml")).is_empty());
     }
 
     #[test]

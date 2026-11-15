@@ -77,7 +77,7 @@ reachable-history audit remains a separate future capability. See
 [storage checks](../usage/crypt.md#storage-checks-and-format).
 
 Doctor checks all runtime overlays unless `NAME` is supplied. Static lint and
-global XDG checks remain repository-wide. `default_overlay` does not narrow the
+global XDG checks remain repository-wide. `host_overlay` does not narrow the
 selection; its [data context](../configuration/overlay.md#consumer-metadata-data)
 still participates in destination resolution. `--no-uses` skips dependency
 runtime entries but retains their data.

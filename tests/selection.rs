@@ -117,7 +117,7 @@ fn same_tier_candidates_are_ambiguous_even_with_a_configured_default(
     fixture
         .temp
         .child("repo/over.toml")
-        .write_str("default_overlay = 'one'")
+        .write_str("host_overlay = 'one'")
         .unwrap();
     let error = selection::select(&fixture.ctx, None, &[fixture.path(path)], true)
         .unwrap_err()
@@ -149,7 +149,7 @@ fn contextual_selection_precedes_default_without_importing_the_defaults_local_da
     fixture
         .temp
         .child("repo/over.toml")
-        .write_str("default_overlay = 'two'")
+        .write_str("host_overlay = 'two'")
         .unwrap();
     let overlay = selection::select(&fixture.ctx, None, &[fixture.path("home/one")], true).unwrap();
     assert_eq!(overlay.name, "one");
@@ -258,7 +258,7 @@ fn overlapping_target_rules_in_one_overlay_do_not_guess_a_source() {
     fixture
         .temp
         .child("repo/over.toml")
-        .write_str("default_overlay = 'one'")
+        .write_str("host_overlay = 'one'")
         .unwrap();
     let error = selection::select(
         &fixture.ctx,
@@ -404,14 +404,18 @@ fn a_bare_worktree_workspace_can_supply_an_explicit_association() {
     );
 }
 
-#[test]
-fn add_does_not_use_the_default_when_its_operands_have_no_context() {
+#[rstest]
+fn add_does_not_use_the_host_when_its_operands_have_no_context(
+    #[values(false, true)] enabled: bool,
+) {
     let fixture = Fixture::new();
     fixture.overlay("one", "target = '~'");
     fixture
         .temp
         .child("repo/over.toml")
-        .write_str("default_overlay = 'one'")
+        .write_str(&format!(
+            "host_overlay = 'one'\napply.default_to_host = {enabled}"
+        ))
         .unwrap();
     fixture
         .temp
@@ -443,7 +447,7 @@ fn broken_source_context_reports_its_configuration_instead_of_falling_back() {
     fixture
         .temp
         .child("repo/over.toml")
-        .write_str("default_overlay = 'one'")
+        .write_str("host_overlay = 'one'")
         .unwrap();
     let error = selection::select(&fixture.ctx, None, &[fixture.path("repo/broken")], true)
         .unwrap_err()
@@ -461,7 +465,7 @@ fn broken_contextual_configuration_never_activates_an_unrelated_default(#[case] 
     fixture
         .temp
         .child("repo/over.toml")
-        .write_str("default_overlay = 'two'")
+        .write_str("host_overlay = 'two'\napply.default_to_host = true")
         .unwrap();
     fixture.temp.child("home/one").create_dir_all().unwrap();
     if source {
@@ -553,7 +557,7 @@ fn the_environment_target_reaches_contextual_selection_before_the_default() {
     fixture
         .temp
         .child("repo/over.toml")
-        .write_str("default_overlay = 'two'")
+        .write_str("host_overlay = 'two'")
         .unwrap();
     fixture.temp.child("home/one").create_dir_all().unwrap();
     let output = fixture
@@ -570,20 +574,273 @@ fn the_environment_target_reaches_contextual_selection_before_the_default() {
 }
 
 #[test]
-fn data_prefers_the_configured_host_before_source_context() {
+fn data_prefers_active_source_context_before_the_configured_host() {
     let fixture = Fixture::new();
     fixture.overlay("one", "target = '~'\n[data]\nowner = 'one'");
     fixture.overlay("two", "target = '~'\n[data]\nowner = 'two'");
     fixture
         .temp
         .child("repo/over.toml")
-        .write_str("default_overlay = 'two'")
+        .write_str("host_overlay = 'two'")
         .unwrap();
     fixture
         .command("data", &fixture.path("repo/one"))
         .assert()
         .success()
-        .stdout(contains("\"owner\":\"two\""));
+        .stdout(contains("\"owner\":\"one\""));
+}
+
+#[rstest]
+fn explicit_and_active_apply_targets_precede_the_host(
+    #[values(false, true)] enabled: bool,
+    #[values(None, Some("two"), Some("host"))] explicit: Option<&str>,
+) {
+    let fixture = Fixture::new();
+    for name in ["one", "two", "host"] {
+        fixture.overlay(name, &format!("target = '~/{name}'"));
+        fixture
+            .temp
+            .child(format!("repo/{name}/file"))
+            .write_str(name)
+            .unwrap();
+    }
+    fixture
+        .temp
+        .child("repo/over.toml")
+        .write_str(&format!(
+            "host_overlay = 'host'\napply.default_to_host = {enabled}"
+        ))
+        .unwrap();
+    let mut command = fixture.command("apply", &fixture.path("repo/one"));
+    if let Some(name) = explicit {
+        command.arg(name);
+    }
+    command
+        .args(["--no-prompt", "--target"])
+        .arg(&fixture.ctx.root)
+        .assert()
+        .success();
+    let selected = explicit.unwrap_or("one");
+    for name in ["one", "two", "host"] {
+        assert_eq!(
+            fixture.path(&format!("home/{name}/file")).exists(),
+            name == selected
+        );
+    }
+}
+
+#[rstest]
+fn explicit_composition_never_gains_the_configured_host(#[values(false, true)] enabled: bool) {
+    let fixture = Fixture::new();
+    for name in ["one", "two", "host"] {
+        fixture.overlay(name, &format!("target = '~/{name}'"));
+        fixture
+            .temp
+            .child(format!("repo/{name}/file"))
+            .write_str(name)
+            .unwrap();
+    }
+    fixture
+        .temp
+        .child("repo/over.toml")
+        .write_str(&format!(
+            "host_overlay = 'host'\napply.default_to_host = {enabled}"
+        ))
+        .unwrap();
+    fixture
+        .command("apply", &fixture.path("repo/host"))
+        .args(["one", "two", "--no-prompt", "--target"])
+        .arg(&fixture.ctx.root)
+        .assert()
+        .success();
+    assert!(fixture.path("home/one/file").exists());
+    assert!(fixture.path("home/two/file").exists());
+    assert!(!fixture.path("home/host/file").exists());
+}
+
+#[test]
+fn host_context_alone_runs_neither_deployment_nor_hooks() {
+    let fixture = Fixture::new();
+    fixture.overlay(
+        "host",
+        &format!(
+            "target = '~'\n[hooks]\npost-apply = ['touch {}']",
+            fixture.path("hook-ran").display()
+        ),
+    );
+    fixture
+        .temp
+        .child("repo/host/file")
+        .write_str("preserved")
+        .unwrap();
+    fixture
+        .temp
+        .child("repo/over.toml")
+        .write_str("host_overlay = 'host'")
+        .unwrap();
+    fixture
+        .command("apply", &fixture.path("outside"))
+        .arg("--target")
+        .arg(&fixture.ctx.root)
+        .assert()
+        .failure()
+        .stderr(contains("apply.default_to_host"));
+    assert!(!fixture.path("hook-ran").exists());
+    assert_eq!(fs::read_dir(&fixture.ctx.root).unwrap().count(), 0);
+}
+
+#[rstest]
+fn apply_refuses_ambiguous_context_even_with_host_deployment_enabled(
+    #[values(false, true)] enabled: bool,
+) {
+    let fixture = Fixture::new();
+    fixture.overlay("one", "target = '~'");
+    fixture.overlay("two", "target = '~'");
+    fixture
+        .temp
+        .child("repo/over.toml")
+        .write_str(&format!(
+            "host_overlay = 'one'\napply.default_to_host = {enabled}"
+        ))
+        .unwrap();
+    fixture
+        .command("apply", &fixture.path("home"))
+        .arg("--target")
+        .arg(&fixture.ctx.root)
+        .assert()
+        .failure()
+        .stderr(contains("ambiguous"));
+    assert_eq!(fs::read_dir(&fixture.ctx.root).unwrap().count(), 0);
+}
+
+#[rstest]
+fn sync_uses_the_host_only_with_its_own_opt_in(
+    #[values(false, true)] enabled: bool,
+    #[values("outside", "repo/one", "home")] cwd: &str,
+    #[values(None, Some("two"), Some("host"))] explicit: Option<&str>,
+) {
+    let fixture = Fixture::new();
+    for name in ["one", "two", "host"] {
+        fixture.overlay(name, "target = '~'");
+    }
+    fixture
+        .temp
+        .child("repo/over.toml")
+        .write_str(&format!(
+            "host_overlay = 'host'\napply.default_to_host = true\nsync.default_to_host = {enabled}"
+        ))
+        .unwrap();
+    let mut command = fixture.command("sync", &fixture.path(cwd));
+    if let Some(name) = explicit {
+        command.arg(name);
+    }
+    let assertion = command
+        .args(["--verbose", "--target"])
+        .arg(&fixture.ctx.root)
+        .env("XDG_STATE_HOME", fixture.path("state"))
+        .assert();
+    if explicit.is_none() && cwd == "home" {
+        assertion.failure().stderr(contains("ambiguous"));
+    } else if explicit.is_none() && cwd == "outside" && !enabled {
+        assertion.failure().stderr(contains("sync.default_to_host"));
+    } else {
+        let selected = explicit.unwrap_or(if cwd == "repo/one" { "one" } else { "host" });
+        assertion.success().stdout(contains(format!(
+            "Overlay {selected} has no virtual checkout"
+        )));
+    }
+}
+
+#[test]
+fn sync_host_opt_in_without_a_host_requires_a_target() {
+    let fixture = Fixture::new();
+    fixture
+        .temp
+        .child("repo/over.toml")
+        .write_str("sync.default_to_host = true")
+        .unwrap();
+    fixture
+        .command("sync", &fixture.path("outside"))
+        .arg("--target")
+        .arg(&fixture.ctx.root)
+        .env("XDG_STATE_HOME", fixture.path("state"))
+        .assert()
+        .failure()
+        .stderr(contains("over sync NAME"))
+        .stderr(contains("host_overlay"));
+}
+
+#[rstest]
+#[case("unapply", &[])]
+#[case("commit", &[])]
+#[case("restore", &["missing"])]
+#[case("sync", &[])]
+fn mutating_commands_require_context_regardless_of_apply_opt_in(
+    #[case] command: &str,
+    #[case] args: &[&str],
+    #[values(false, true)] enabled: bool,
+) {
+    let fixture = Fixture::new();
+    fixture.overlay("host", "target = '~'");
+    fixture
+        .temp
+        .child("repo/over.toml")
+        .write_str(&format!(
+            "host_overlay = 'host'\napply.default_to_host = {enabled}"
+        ))
+        .unwrap();
+    fixture
+        .command(command, &fixture.path("outside"))
+        .args(args)
+        .arg("--target")
+        .arg(&fixture.ctx.root)
+        .env("XDG_STATE_HOME", fixture.path("state"))
+        .assert()
+        .failure()
+        .stderr(contains("cannot infer an overlay"));
+    assert_eq!(fs::read_dir(&fixture.ctx.root).unwrap().count(), 0);
+}
+
+#[rstest]
+#[case("lint")]
+#[case("doctor")]
+fn global_diagnostics_include_unrelated_overlays_despite_active_and_host_context(
+    #[case] command: &str,
+) {
+    let fixture = Fixture::new();
+    fixture.overlay("host", "target = '~'");
+    fixture.overlay("broken", "uses = ['missing']");
+    fixture
+        .temp
+        .child("repo/over.toml")
+        .write_str("host_overlay = 'host'")
+        .unwrap();
+    fixture
+        .command(command, &fixture.path("repo/host"))
+        .env("XDG_STATE_HOME", fixture.path("state"))
+        .assert()
+        .failure()
+        .stdout(contains("broken"));
+}
+
+#[test]
+fn enabling_host_application_without_a_host_is_actionable_and_has_no_effects() {
+    let fixture = Fixture::new();
+    fixture.overlay("one", "target = '~'");
+    fixture
+        .temp
+        .child("repo/over.toml")
+        .write_str("apply.default_to_host = true")
+        .unwrap();
+    fixture
+        .command("apply", &fixture.path("outside"))
+        .arg("--target")
+        .arg(&fixture.ctx.root)
+        .assert()
+        .failure()
+        .stderr(contains("over apply NAME"))
+        .stderr(contains("host_overlay"));
+    assert_eq!(fs::read_dir(&fixture.ctx.root).unwrap().count(), 0);
 }
 
 #[test]

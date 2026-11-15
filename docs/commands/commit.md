@@ -28,11 +28,12 @@ Options:
 ```
 
 When `--overlay` is omitted, infer the current overlay from its source descriptor,
-Git association, or recorded checkout, then use the repository's configured
-`default_overlay`. Missing or ambiguous selection requires `--overlay NAME`.
+Git association, or recorded checkout. The configured `host_overlay` is not a
+fallback, even with `apply.default_to_host` enabled. Missing or ambiguous
+selection requires `--overlay NAME`.
 Commit does not discover every overlay to infer ownership.
 
-An explicit `--overlay NAME` retains the configured default's
+An explicit `--overlay NAME` retains the configured host's
 [data context](../configuration/overlay.md#consumer-metadata-data) for path rendering.
 Only the selected overlay's own checkout entries are committed.
 This also applies when multiple applications project files into the same home:

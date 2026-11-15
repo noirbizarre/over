@@ -11,13 +11,15 @@ their types and defaults, and their availability in root and overlay descriptors
 ```yaml
 # ~/.dotfiles/over.yaml
 format: yaml
-default_overlay: hosts/laptop
+host_overlay: hosts/laptop
+apply:
+  default_to_host: false
 target: "~"
 overlays:
   - 'apps/*'
 ```
 
-`format`, `repository`, `sync`, `default_overlay`, and `overlays` are root-only settings.
+`format`, `repository`, `sync`, `host_overlay`, `apply`, and `overlays` are root-only settings.
 Root hooks are also repository-scoped. Ordinary [overlay fields](overlay.md),
 such as `target` and overlay rules, may appear here as inherited policy.
 Root `data` and `host` belong only to the repository-root overlay and do not
@@ -117,12 +119,18 @@ the Git repository containing `OVER_HOME`, never overlay-declared repositories.
 corresponding settings. Policy is resolved once before pull; updated remote
 defaults take effect on the next invocation. Dry-run performs no remote operation.
 
-## Default overlay selection
+## Host overlay context
 
-`default_overlay` is a repository-relative overlay name. Use a fixed name first:
+`host_overlay` is an optional repository-relative overlay name identifying machine
+configuration. It supplies host values and an inspection fallback. It is distinct
+from the **active overlay** inferred from the invocation context and the overlays
+whose files have actually been **applied**. Configuring a host does not deploy it.
 
 ```toml
-default_overlay = "hosts/laptop"
+host_overlay = "hosts/laptop"
+
+[apply]
+default_to_host = false
 ```
 
 For a multi-host repository, `"hosts/{{ machine.hostname }}"` selects the current
@@ -131,25 +139,51 @@ facts, before metadata composition; it cannot depend on the `data` it selects.
 
 | Commands | Without an explicit name |
 | --- | --- |
-| `apply`, `unapply`, `commit`, `restore` | Infer context, then use the default, otherwise require an explicit overlay |
-| `data` | Use the configured host first, otherwise infer context or require an explicit overlay |
-| `status`, `diff`, `sync` | Infer context, then use the default, otherwise all overlays; `--all` overrides selection |
-| `add`, `git add`, `git mount` | Infer context, otherwise require an explicit overlay; no default fallback |
+| `apply` | Infer active context, then use the host only if `apply.default_to_host` is true; otherwise require an explicit overlay |
+| `sync` | Infer active context, then use the host only if `sync.default_to_host` is true; otherwise require an explicit overlay or `--all` |
+| `data` | Infer active context, then use the host, otherwise require an explicit overlay |
+| `status`, `diff` | Infer active context, then use the host, otherwise all overlays; `--all` overrides selection |
+| `add`, `git add`, `git mount`, `unapply`, `commit`, `restore` | Infer active context, otherwise require an explicit overlay |
 | `log` | Infer context, otherwise source-repository history; no default selection |
-| `lint` | Check the repository; the default does not narrow it |
+| `lint` | Check the repository; the host does not narrow it |
 | `doctor` | Check all runtime overlays unless named; static lint and global checks remain repository-wide |
 
 See [contextual overlay selection](../usage/selection.md) for ranked evidence,
 Git associations, sibling files, and ambiguity errors. Ambiguity does not fall
-through to the default.
+through to the host.
 
-The default's own `host` mapping supplies machine-specific overrides to each
+The host overlay's own `host` mapping supplies machine-specific overrides to each
 overlay's local `host` defaults. Its `data`, ancestors, and dependency graph do not
 contribute to this merge. The host is optional; without one, local defaults apply.
-See [data scopes](overlay.md#consumer-metadata-data). The default's files and hooks
+See [data scopes](overlay.md#consumer-metadata-data). The host's files and hooks
 are not processed just because its host overrides are included.
-An invalid or missing configured default is an error, including with an explicit
+An invalid or missing configured host is an error during data resolution, including with an explicit
 name or `--all`; Over never silently selects something else.
+
+For single-host deployments, explicitly opt into bare `over apply`:
+
+```yaml
+host_overlay: hosts/laptop
+apply:
+  default_to_host: true
+```
+
+This setting defaults to false. Explicit names always take precedence, followed
+by active context. `over apply hosts/laptop` works with either setting. The option
+does not change any other command's targeting or host-data resolution.
+
+Sync has an independent root `sync.default_to_host` option, also false by default.
+Enable it to use the host for bare `over sync` when no active context exists.
+Neither option affects unapply, commit, restore, or add. Both options require
+literal booleans; strings and numbers are rejected.
+
+### Migrate from `default_overlay`
+
+The removed `default_overlay` key is ignored with a migration warning. Rename it
+to `host_overlay`; enable `apply.default_to_host` separately only if you want
+the host deployed by bare apply. Enable `sync.default_to_host` separately for
+bare sync. Other mutations require active or explicit selection; use
+`over sync --all` to select every overlay.
 
 ## Overlay discovery
 
@@ -248,7 +282,7 @@ target access with `paths.target is defined`.
 Init hooks have machine/environment/repository context but no selected overlay
 and empty `data`, `host`, and `overlays`: bootstrap never discovers children before unlock hooks run.
 Their `paths.target` is undefined; use `paths.target is defined` to guard access.
-Default-overlay selection also uses shared context with target unavailable.
+Host-overlay selection also uses shared context with target unavailable.
 See [Targets and templates](overlay.md#targets-and-templates) for path availability
 and serialization semantics.
 Missing template variables and template/function failures fail the operation.

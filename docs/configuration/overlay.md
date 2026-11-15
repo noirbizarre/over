@@ -107,7 +107,7 @@ multiple distinct selected roots, repository hooks have no `overlay` or
 `paths.target`; their `OVER_TARGET_ROOT` still identifies the execution target root.
 
 Unavailable fields are undefined, not null. `paths.target` is unavailable during
-init, multi-root repository hooks, default-overlay selection, and evaluation of
+init, multi-root repository hooks, host-overlay selection, and evaluation of
 the target definition itself.
 `paths.home` is unavailable if home detection fails; `paths.over` is unavailable
 for library contexts with no repository. No unrelated directory is substituted.
@@ -123,7 +123,7 @@ Templates apply to supported path fields, lifecycle hook execution fields, and
 explicitly selected [file templates](#file-templates). Other file bodies,
 partial content, and metadata strings remain literal. See
 [Path resolution](../configuration.md#path-resolution) for relative paths and
-[Default overlay selection](root.md#default-overlay-selection) for bootstrap
+[Host overlay context](root.md#host-overlay-context) for bootstrap
 template limitations.
 
 ### File templates
@@ -557,7 +557,7 @@ All templates and hooks receive three namespaces, also exported by `over data`:
 - **`data`**: only the current overlay's own mapping. Directory ancestors,
   dependencies, and unrelated host-enabled overlays never contribute values.
 - **`host`**: the current overlay's own defaults, recursively merged with the
-  configured `default_overlay`'s own `host` mapping. Host values win. No dependency
+  configured `host_overlay`'s own `host` mapping. Host values win. No dependency
   graph is traversed to obtain host overrides, and ancestor defaults do not inherit.
 - **`overlays`**: the current overlay's transitive `uses` dependencies, each
   retaining its own data. The current overlay itself is excluded.
@@ -578,7 +578,7 @@ host:
 ```
 
 ```yaml
-# hosts/laptop/over.yaml (selected by default_overlay)
+# hosts/laptop/over.yaml (identified by host_overlay)
 host:
   ssh:
     agent: 1password
@@ -622,7 +622,7 @@ are not recursively templated. Explicitly selected file templates can consume
 the same data; partial content remains literal.
 Each dependency's templates and hooks receive its own local data, defaults, and
 dependency namespace, from the same immutable invocation snapshot.
-`default_overlay` is resolved before these scopes and cannot depend on them.
+`host_overlay` is resolved before these scopes and cannot depend on them.
 
 [`over data`](../commands/data.md) exports JSON, preserving types and nulls, with
 diagnostics on stderr. Terminal output is pretty-printed; piped or redirected
@@ -645,7 +645,7 @@ fn example() -> anyhow::Result<()> {
     let context = Context::builder().repository(repository.clone()).build();
     let selected = repository.get("base")?;
     let data = repository.resolve_data(&context, Some(&selected))?;
-    // None selects the configured default's local data.
+    // None selects the configured host's local data.
     let prepared = context.with_overlay(selected).resolve_data()?;
     assert_eq!(prepared.data, data);
     let scope = prepared.data_context()?;

@@ -231,7 +231,7 @@ fn commit_ignores_unrelated_overlays_and_untracked_repository_trees() {
     fixture.apply();
     fs::write(fixture.target.join("file"), "staged").unwrap();
     fixture.add();
-    fs::write(fixture.source.join("over.yaml"), "default_overlay: host\n").unwrap();
+    fs::write(fixture.source.join("over.yaml"), "host_overlay: host\n").unwrap();
     fs::create_dir(fixture.source.join("host")).unwrap();
     // Default metadata may be necessary, but its schema warnings are not this overlay's warnings.
     fs::write(

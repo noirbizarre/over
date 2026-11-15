@@ -582,29 +582,44 @@ fn apply_without_name_empty_repo_fails() -> TestResult {
     Ok(())
 }
 
-/// A configured `default_overlay` (#128) is used without prompting when
-/// `NAME` is omitted.
-#[test]
-fn apply_without_name_uses_configured_default_overlay() -> TestResult {
+/// Host deployment requires a separate opt-in even when machine context exists.
+#[rstest::rstest]
+#[case(None, false)]
+#[case(Some(false), false)]
+#[case(Some(true), true)]
+fn applying_the_host_without_context_requires_opt_in(
+    #[case] enabled: Option<bool>,
+    #[case] succeeds: bool,
+) -> TestResult {
     let repo = setup_overlay_repo();
-    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
-    Command::cargo_bin("over")?
+    let option = enabled
+        .map(|value| format!("\napply.default_to_host = {value}"))
+        .unwrap_or_default();
+    fs::write(
+        repo.path().join("over.toml"),
+        format!("host_overlay = 'dev'{option}"),
+    )?;
+    let assertion = Command::cargo_bin("over")?
         .current_dir(repo.path().parent().unwrap())
         .arg("--home")
         .arg(repo.path())
         .args(["apply", "--dry-run"])
-        .assert()
-        .success()
-        .stdout(contains("dev"));
+        .assert();
+    if succeeds {
+        assertion.success().stdout(contains("dev"));
+    } else {
+        assertion
+            .failure()
+            .stderr(contains("apply.default_to_host"));
+    }
     Ok(())
 }
 
-/// An explicit `NAME` always overrides a configured `default_overlay`
-/// (#128).
+/// Explicit selection takes precedence over machine context.
 #[test]
-fn apply_explicit_name_overrides_default_overlay() -> TestResult {
+fn apply_explicit_name_overrides_host_overlay() -> TestResult {
     let repo = setup_overlay_repo();
-    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    fs::write(repo.path().join("over.toml"), b"host_overlay = \"dev\"")?;
     let other = repo.path().join("other");
     fs::create_dir_all(&other)?;
     fs::write(other.join("over.toml"), b"target = \"~\"")?;
@@ -619,14 +634,14 @@ fn apply_explicit_name_overrides_default_overlay() -> TestResult {
     Ok(())
 }
 
-/// A `default_overlay` naming a nonexistent overlay is a hard error, not
+/// A `host_overlay` naming a nonexistent overlay is a hard error, not
 /// a silent fallback to the interactive prompt (#128).
 #[test]
-fn apply_without_name_misconfigured_default_overlay_fails() -> TestResult {
+fn apply_without_name_misconfigured_host_overlay_fails() -> TestResult {
     let repo = setup_overlay_repo();
     fs::write(
         repo.path().join("over.toml"),
-        b"default_overlay = \"does-not-exist\"",
+        b"host_overlay = \"does-not-exist\"\napply.default_to_host = true",
     )?;
     Command::cargo_bin("over")?
         .current_dir(repo.path().parent().unwrap())
@@ -635,7 +650,7 @@ fn apply_without_name_misconfigured_default_overlay_fails() -> TestResult {
         .args(["apply", "--dry-run"])
         .assert()
         .failure()
-        .stderr(contains("default_overlay"));
+        .stderr(contains("host_overlay"));
     Ok(())
 }
 
@@ -1471,12 +1486,12 @@ fn status_empty_repository_reports_no_overlays() -> TestResult {
     Ok(())
 }
 
-/// A configured `default_overlay` (#128) narrows an omitted `NAME` to
+/// A configured `host_overlay` narrows an omitted `NAME` to
 /// just that overlay instead of reporting on every overlay.
 #[test]
-fn status_without_name_narrows_to_configured_default_overlay() -> TestResult {
+fn status_without_name_narrows_to_configured_host_overlay() -> TestResult {
     let repo = setup_overlay_repo();
-    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    fs::write(repo.path().join("over.toml"), b"host_overlay = \"dev\"")?;
     let other = repo.path().join("other");
     fs::create_dir_all(&other)?;
     fs::write(other.join("over.toml"), b"target = \"~\"")?;
@@ -1495,12 +1510,12 @@ fn status_without_name_narrows_to_configured_default_overlay() -> TestResult {
     Ok(())
 }
 
-/// `--all` recovers "every overlay" even with a `default_overlay`
+/// `--all` recovers "every overlay" even with a `host_overlay`
 /// configured (#128).
 #[test]
-fn status_all_flag_overrides_configured_default_overlay() -> TestResult {
+fn status_all_flag_overrides_configured_host_overlay() -> TestResult {
     let repo = setup_overlay_repo();
-    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    fs::write(repo.path().join("over.toml"), b"host_overlay = \"dev\"")?;
     let other = repo.path().join("other");
     fs::create_dir_all(&other)?;
     fs::write(other.join("over.toml"), b"target = \"~\"")?;
@@ -1635,12 +1650,12 @@ fn diff_empty_repository_reports_no_overlays() -> TestResult {
     Ok(())
 }
 
-/// A configured `default_overlay` (#128) narrows an omitted `NAME` to
+/// A configured `host_overlay` narrows an omitted `NAME` to
 /// just that overlay instead of reporting on every overlay.
 #[test]
-fn diff_without_name_narrows_to_configured_default_overlay() -> TestResult {
+fn diff_without_name_narrows_to_configured_host_overlay() -> TestResult {
     let repo = setup_overlay_repo();
-    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    fs::write(repo.path().join("over.toml"), b"host_overlay = \"dev\"")?;
     let other = repo.path().join("other");
     fs::create_dir_all(&other)?;
     fs::write(other.join("over.toml"), b"target = \"~\"")?;
@@ -1659,12 +1674,12 @@ fn diff_without_name_narrows_to_configured_default_overlay() -> TestResult {
     Ok(())
 }
 
-/// `--all` recovers "every overlay" even with a `default_overlay`
+/// `--all` recovers "every overlay" even with a `host_overlay`
 /// configured (#128).
 #[test]
-fn diff_all_flag_overrides_configured_default_overlay() -> TestResult {
+fn diff_all_flag_overrides_configured_host_overlay() -> TestResult {
     let repo = setup_overlay_repo();
-    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    fs::write(repo.path().join("over.toml"), b"host_overlay = \"dev\"")?;
     let other = repo.path().join("other");
     fs::create_dir_all(&other)?;
     fs::write(other.join("over.toml"), b"target = \"~\"")?;
@@ -1754,7 +1769,7 @@ fn sync_empty_repository_reports_no_overlays() -> TestResult {
         .current_dir(tmp.path().parent().unwrap())
         .arg("--home")
         .arg(tmp.path())
-        .arg("sync")
+        .args(["sync", "--all"])
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
         .success()
@@ -1762,15 +1777,15 @@ fn sync_empty_repository_reports_no_overlays() -> TestResult {
     Ok(())
 }
 
-/// A configured `default_overlay` (#128) narrows an omitted `NAME` to
-/// just that overlay instead of syncing every overlay. `--verbose` makes
-/// a git-entry-less overlay still print its name, so the assertion can
-/// tell which overlay(s) were actually visited.
+/// Machine context alone cannot authorize synchronization.
 #[test]
-fn sync_without_name_narrows_to_configured_default_overlay() -> TestResult {
+fn sync_without_context_rejects_the_configured_host_overlay() -> TestResult {
     let xdg_state_home = TempDir::new()?;
     let repo = setup_overlay_repo();
-    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    fs::write(
+        repo.path().join("over.toml"),
+        b"host_overlay = \"dev\"\napply.default_to_host = true",
+    )?;
     let other = repo.path().join("other");
     fs::create_dir_all(&other)?;
     fs::write(other.join("over.toml"), b"target = \"~\"")?;
@@ -1784,19 +1799,18 @@ fn sync_without_name_narrows_to_configured_default_overlay() -> TestResult {
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
-        .success()
-        .stdout(contains("dev"))
-        .stdout(contains("other").not());
+        .failure()
+        .stderr(contains("over sync --all"));
     Ok(())
 }
 
-/// `--all` recovers "every overlay" even with a `default_overlay`
+/// `--all` explicitly selects "every overlay" even with a `host_overlay`
 /// configured (#128).
 #[test]
-fn sync_all_flag_overrides_configured_default_overlay() -> TestResult {
+fn sync_all_flag_overrides_configured_host_overlay() -> TestResult {
     let xdg_state_home = TempDir::new()?;
     let repo = setup_overlay_repo();
-    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    fs::write(repo.path().join("over.toml"), b"host_overlay = \"dev\"")?;
     let other = repo.path().join("other");
     fs::create_dir_all(&other)?;
     fs::write(other.join("over.toml"), b"target = \"~\"")?;
@@ -2116,12 +2130,14 @@ fn unapply_unknown_overlay_fails() -> TestResult {
     Ok(())
 }
 
-/// A configured `default_overlay` (#128) is used without prompting when
-/// `NAME` is omitted.
+/// Apply opt-in never authorizes implicit unapplication of the host.
 #[test]
-fn unapply_without_name_uses_configured_default_overlay() -> TestResult {
+fn unapply_without_context_rejects_the_configured_host_overlay() -> TestResult {
     let repo = setup_overlay_repo();
-    fs::write(repo.path().join("over.toml"), b"default_overlay = \"dev\"")?;
+    fs::write(
+        repo.path().join("over.toml"),
+        b"host_overlay = \"dev\"\napply.default_to_host = true",
+    )?;
     let root = TempDir::new()?;
     Command::cargo_bin("over")?
         .current_dir(repo.path().parent().unwrap())
@@ -2130,8 +2146,8 @@ fn unapply_without_name_uses_configured_default_overlay() -> TestResult {
         .args(["unapply", "--target"])
         .arg(root.path())
         .assert()
-        .success()
-        .stdout(contains("dev"));
+        .failure()
+        .stderr(contains("cannot infer an overlay"));
     Ok(())
 }
 

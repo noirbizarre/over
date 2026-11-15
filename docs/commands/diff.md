@@ -11,14 +11,14 @@ selected unstaged changes, unstage files, or recover a historical version.
 Usage: over diff [OPTIONS] [NAME]
 
 Arguments:
-  [NAME]  Name of the overlay to check (infer context, then default_overlay, then all overlays)
+  [NAME]  Name of the overlay to check (infer active context, then host_overlay, then all overlays)
 
 Options:
   -H, --home <HOME>      Configuration and overlays root [env: OVER_HOME=]
   -r, --target <TARGET>  Set the target directory (defaults to ~) [env: OVER_TARGET=]
   -d, --debug            Toggle debug traces
       --no-uses          Skip dependency operations, retaining dependency data
-  -a, --all              Diff every overlay, retaining configured default_overlay data
+  -a, --all              Diff every overlay, retaining configured host_overlay data
   -v, --verbose          Toggle verbose output
       --staged           Show staged changes instead of unstaged changes
       --all-changes      Show both staged and unstaged changes
@@ -27,10 +27,10 @@ Options:
 ```
 
 When `NAME` is omitted, [infer from context](../usage/selection.md), then use a configured
-`default_overlay`. With neither, report on every overlay. Ambiguous context
+`host_overlay`. With neither, report on every overlay. Ambiguous context
 requires an explicit name; `--all` selects every overlay regardless of context
 or default.
-Explicit `NAME` and `--all` retain the configured default's
+Explicit `NAME` and `--all` retain the configured host's
 [data context](../configuration/overlay.md#consumer-metadata-data). Each target resolves
 its own metadata separately. `--no-uses` skips dependency entries, not their data.
 

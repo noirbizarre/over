@@ -108,7 +108,7 @@ nav = [
     { "016: Partial files" = "adr/016-partial-file-managed-blocks.md" },
     { "017: Materialization rules" = "adr/017-materialization-rules-generalize-link-dirs.md" },
     { "018: Overlay discovery" = "adr/018-root-declared-overlays-extend-descriptor-discovery.md" },
-    { "019: Default overlay" = "adr/019-default-overlay-selection-extends-templating-to-overlay-choice.md" },
+    { "019: Historical default selection" = "adr/019-default-overlay-selection-extends-templating-to-overlay-choice.md" },
     { "020: Permissions" = "adr/020-file-permissions-are-hierarchical-rules-scoped-to-partial-files.md" },
     { "021: Git provisioning status" = "adr/021-declared-git-repositories-report-provisioning-not-content-status.md" },
     { "022: Virtual checkouts" = "adr/022-virtual-checkout-materialization.md" },
@@ -121,6 +121,7 @@ nav = [
     { "029: Checkout file ownership" = "adr/029-virtual-checkouts-project-file-ownership.md" },
     { "030: File templates" = "adr/030-file-templates-produce-desired-content.md" },
     { "031: Encrypted Git diffs" = "adr/031-encrypted-git-diffs-use-textconv.md" },
+    { "032: Host context and deployment" = "adr/032-host-context-is-distinct-from-deployment-selection.md" },
   ] },
 ]
 

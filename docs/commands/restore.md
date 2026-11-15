@@ -13,7 +13,7 @@ Arguments:
 
 Options:
   -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME=]
-  -o, --overlay <OVERLAY>  Select an overlay (otherwise infer from context, then use default_overlay)
+  -o, --overlay <OVERLAY>  Select an overlay (otherwise require an active overlay context)
   -d, --debug              Toggle debug traces
   -r, --target <TARGET>    Set the target directory (defaults to ~) [env: OVER_TARGET=]
       --source <REV>       Restore from a Git revision instead of the default source
@@ -94,7 +94,7 @@ are not expanded; quote names containing shell metacharacters.
 
 `--overlay NAME` takes priority, followed by [contextual inference](../usage/selection.md)
 from all selected paths, including mapped destinations outside the base target.
-With no contextual candidates, use the configured `default_overlay`. Ambiguous
+With no contextual candidates, require `--overlay NAME`; `host_overlay` is not a fallback. Ambiguous
 selection requires an explicit `--overlay`, even with a default. `--target` sets
 the destination meaning of `~`; it does not change how relative file arguments
 are resolved.

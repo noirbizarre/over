@@ -9,7 +9,7 @@ that inheritance chain.
 | Reference | When to use it |
 | --- | --- |
 | [Configuration reference](configuration/reference.md) | Every attribute, its type and default, and whether it is available in root, overlay, or both scopes |
-| [Root configuration](configuration/root.md) | Repository preferences, overlay discovery, default selection, and lifecycle hooks |
+| [Root configuration](configuration/root.md) | Repository preferences, overlay discovery, host context, and lifecycle hooks |
 | [Overlay configuration](configuration/overlay.md) | Targets, composition, inheritance, mappings, metadata, and sidecars |
 | [Materialization](configuration/materialization.md) | File/directory symlinks, editable checkouts, precedence, and lifecycle |
 | [Install hooks](install-config.md) | Opted-in installation commands and migration guidance |
@@ -66,7 +66,7 @@ For example, root rule `apps/editor/config` and overlay-local rule `config` in
 implicitly select every overlay's `config` directory. Running Over from another
 working directory does not change configured paths.
 
-Overlay names in `uses` and `default_overlay` are repository-relative
+Overlay names in `uses` and `host_overlay` are repository-relative
 identifiers. Git refs, worktree names, transport URLs, arbitrary Git config,
 metadata, and shell commands retain their own semantics. CLI-relative `--home`
 and `--target` refer to the invocation directory. `.overignore` patterns are
@@ -91,9 +91,9 @@ See [Format preference](configuration/root.md#format-preference).
 
 See [Canonical Git repository](configuration/root.md#canonical-git-repository).
 
-### Default overlay selection
+### Host overlay context
 
-See [Default overlay selection](configuration/root.md#default-overlay-selection).
+See [Host overlay context](configuration/root.md#host-overlay-context).
 
 ## Lifecycle hooks
 

@@ -76,7 +76,7 @@ fn explicit_apply_renders_all_path_surfaces_with_host_data_without_applying_host
 ) -> TestResult {
     let repo = TempDir::new()?;
     let target = TempDir::new()?;
-    descriptor(repo.path(), "", "default_overlay: host")?;
+    descriptor(repo.path(), "", "host_overlay: host")?;
     descriptor(
         repo.path(),
         "host",
@@ -174,7 +174,7 @@ fn explicit_apply_renders_all_path_surfaces_with_host_data_without_applying_host
 fn all_targets_keep_host_data_without_leaking_other_targets_metadata() -> TestResult {
     let repo = TempDir::new()?;
     let target = TempDir::new()?;
-    descriptor(repo.path(), "", "default_overlay: host")?;
+    descriptor(repo.path(), "", "host_overlay: host")?;
     descriptor(
         repo.path(),
         "host",
@@ -203,13 +203,12 @@ fn all_targets_keep_host_data_without_leaking_other_targets_metadata() -> TestRe
         .code(1)
         .stdout(contains("alpha-workstation"))
         .stdout(contains("beta-workstation-clean"));
-    // Omitting NAME still selects the default operational target.
-    // The real checkout may have a Git overlay association unrelated to this fixture.
+    // Host context remains explicitly applicable without enabling automatic deployment.
     Command::cargo_bin("over")?
         .current_dir(repo.path())
         .arg("--home")
         .arg(repo.path())
-        .args(["apply", "--no-prompt", "--target"])
+        .args(["apply", "host", "--no-prompt", "--target"])
         .arg(target.path())
         .assert()
         .success();
@@ -232,7 +231,7 @@ fn broken_host_configuration_fails_data_resolution_with_explicit_targets(
 ) -> TestResult {
     let repo = TempDir::new()?;
     let target = TempDir::new()?;
-    descriptor(repo.path(), "", "default_overlay: nonexistent")?;
+    descriptor(repo.path(), "", "host_overlay: nonexistent")?;
     descriptor(repo.path(), "selected", "data: {}")?;
     let mut command = Command::cargo_bin("over")?;
     command.arg("--home").arg(repo.path()).arg(verb);
@@ -244,6 +243,6 @@ fn broken_host_configuration_fails_data_resolution_with_explicit_targets(
         .arg(target.path())
         .assert()
         .failure()
-        .stderr(contains("default_overlay"));
+        .stderr(contains("host_overlay"));
     Ok(())
 }
