@@ -30,7 +30,9 @@ fn scope(data: Value) -> Value {
 }
 
 fn node(repo: &Path, name: &str, data: Value) -> Value {
-    json!({"name": name, "root": repo.join(name), "target": dirs::home_dir().unwrap(), "data": data, "host": {}})
+    // Canonical overlay identifiers use '/', but filesystem paths use native separators.
+    let root: std::path::PathBuf = repo.join(name).components().collect();
+    json!({"name": name, "root": root, "target": dirs::home_dir().unwrap(), "data": data, "host": {}})
 }
 
 fn assert_json(command: &mut Command, expected: Value) -> TestResult {

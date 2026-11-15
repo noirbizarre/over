@@ -333,11 +333,7 @@ mod tests {
     fn render_symlink_target_with_overlays() {
         let temp = TempDir::new().unwrap();
         fs::create_dir_all(temp.path().join("apps/nvim")).unwrap();
-        fs::write(
-            temp.path().join("apps/nvim/over.toml"),
-            "target = '/opt/nvim'",
-        )
-        .unwrap();
+        fs::write(temp.path().join("apps/nvim/over.toml"), "target = '~/nvim'").unwrap();
         let repo = crate::overlays::Repository::new(temp.path().into());
         let ctx = crate::exec::Context::builder()
             .repository(repo.clone())
@@ -347,7 +343,13 @@ mod tests {
             .unwrap();
         let result =
             render_symlink_target("{{ overlays.apps.nvim.target }}/init.lua", &ctx).unwrap();
-        assert_eq!(result, "/opt/nvim/init.lua");
+        assert_eq!(
+            result,
+            format!(
+                "{}/init.lua",
+                temp.path().join("target").join("nvim").display()
+            )
+        );
     }
 
     #[test]
@@ -701,11 +703,7 @@ mod tests {
         }
         let temp = TempDir::new().unwrap();
         fs::create_dir_all(temp.path().join("apps/tool")).unwrap();
-        fs::write(
-            temp.path().join("apps/tool/over.toml"),
-            "target = '/opt/tool'",
-        )
-        .unwrap();
+        fs::write(temp.path().join("apps/tool/over.toml"), "target = '~/tool'").unwrap();
         let repo = crate::overlays::Repository::new(temp.path().into());
         let ctx = crate::exec::Context::builder()
             .repository(repo.clone())
@@ -718,6 +716,12 @@ mod tests {
             &ctx,
         )
         .unwrap();
-        assert_eq!(result, "testuser//opt/tool");
+        assert_eq!(
+            result,
+            format!(
+                "testuser/{}",
+                temp.path().join("target").join("tool").display()
+            )
+        );
     }
 }
