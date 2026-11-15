@@ -31,15 +31,16 @@ behavior, or release preparation names an unpublished image, use
 options still take precedence. Without this override the suite checks that the
 default binary matches the Feature version.
 
-For unreleased multi-name CLI behavior, build a Debian-compatible candidate and
-mount it into lifecycle tests (the image build still tests published installation):
+For unreleased CLI behavior, stage a Debian-compatible candidate with the
+[local image build task](../CONTRIBUTING.md#docker-images) and mount the staged
+binary directly into lifecycle tests. An installed `cross` toolchain keeps the
+binary compatible with the suite's Debian base; native Cargo builds work with a
+compatible Linux toolchain. Installation still exercises the published image:
 
 ```sh
-docker build --tag over-feature-candidate .
-container=$(docker create over-feature-candidate)
-docker cp "$container:/usr/local/bin/over" /tmp/over-feature-candidate
-docker rm "$container"
-OVER_FEATURE_TEST_BINARY=/tmp/over-feature-candidate OVER_FEATURE_TEST_VERSION=latest mise run test:features
+mise run docker:build --cross
+OVER_FEATURE_TEST_BINARY="$PWD/target/docker/$(rustc --print host-tuple)/over" \
+  OVER_FEATURE_TEST_VERSION=latest mise run test:features
 ```
 
 The unittest suite can also exercise the real setup script with a locally built
@@ -50,8 +51,12 @@ cargo build --features vendored
 OVER_FEATURE_TEST_BINARY="$PWD/target/debug/over" python3 -m unittest discover -s tests/features -p 'test_*.py'
 ```
 
-PR/main CI uses this candidate override on both native architectures. Release
-publication tests use the matching published image without substitution.
+PR/main CI downloads the matching Linux binary from the same run's build jobs
+and uses this candidate override on both native architectures. The Docker jobs
+package those artifacts with the runtime-only root Dockerfile; neither consumer
+compiles Rust. Release publication tests use the matching published image without
+substitution. The Feature keeps extracting the selected version's binary from
+that image and can be installed into user-selected base images.
 
 The suite stages this directory as a local `over` Feature and runs real
 `devcontainer up`/`exec` commands against minimal Debian images, using a non-root
@@ -63,7 +68,9 @@ image/build caches remain.
 ## Release publication
 
 Release preparation updates Cargo, Feature metadata and the default binary
-version together. After the release's amd64/arm64 binary image manifest is
+version together. The release build jobs produce archives consumed by both
+GitHub Release upload and Docker image packaging, preserving the exact compiled
+binary in each format. After the release's amd64/arm64 image manifest is
 published, CI tests the matching default on both architectures, then uses the
 same mise-locked CLI to publish this single Feature directory. Exact Feature
 versions are immutable; changes ship with the next Over release through gh-ship.

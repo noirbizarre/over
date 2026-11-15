@@ -213,25 +213,47 @@ jobs:
       - name: Check
         run: cargo check --all-targets
 
-  # Link every target on PRs without paying release optimization/LTO costs.
+  docker:
+    name: 🐳 Docker
+    needs: build
+    uses: ./.github/workflows/docker.yaml
+    permissions:
+      contents: read
+      packages: write
+
+  feature:
+    name: 📦 Dev Container
+    needs: build
+    uses: ./.github/workflows/devcontainer.yaml
+    # The reusable workflow's publishing job requires this ceiling even when skipped.
+    permissions:
+      contents: read
+      packages: write
+
+  # PRs check every target cheaply; main supplies optimized Linux binaries for images.
   build:
     name: 🏗️ Build (${{ matrix.build.label }})
-    if: github.event_name == 'pull_request'
     runs-on: ${{ matrix.build.runner }}
     env:
       # cross's containers do not contain the caller's sccache executable.
       RUSTC_WRAPPER: ""
       RUSTFLAGS: -D warnings
+      PROFILE: ${{ github.event_name == 'pull_request' && 'dev' || 'release' }}
     strategy:
       fail-fast: false
       matrix:
-        build:
-          - { label: linux-amd64, target: x86_64-unknown-linux-gnu, runner: ubuntu-latest, cross: true }
-          - { label: linux-arm64, target: aarch64-unknown-linux-gnu, runner: ubuntu-latest, cross: true }
-          - { label: linux-amd64-musl, target: x86_64-unknown-linux-musl, runner: ubuntu-latest, cross: true }
-          - { label: darwin-amd64, target: x86_64-apple-darwin, runner: macos-latest }
-          - { label: darwin-arm64, target: aarch64-apple-darwin, runner: macos-latest }
-          - { label: windows-amd64, target: x86_64-pc-windows-msvc, runner: windows-latest }
+        # Main only needs the architectures consumed by Docker and Feature tests.
+        build: ${{ fromJSON(github.event_name == 'pull_request' && '[
+          {"label":"linux-amd64","target":"x86_64-unknown-linux-gnu","runner":"ubuntu-latest","cross":true},
+          {"label":"linux-arm64","target":"aarch64-unknown-linux-gnu","runner":"ubuntu-latest","cross":true},
+          {"label":"linux-amd64-musl","target":"x86_64-unknown-linux-musl","runner":"ubuntu-latest","cross":true},
+          {"label":"darwin-amd64","target":"x86_64-apple-darwin","runner":"macos-latest"},
+          {"label":"darwin-arm64","target":"aarch64-apple-darwin","runner":"macos-latest"},
+          {"label":"windows-amd64","target":"x86_64-pc-windows-msvc","runner":"windows-latest"}
+          ]' || '[
+          {"label":"linux-amd64","target":"x86_64-unknown-linux-gnu","runner":"ubuntu-latest","cross":true},
+          {"label":"linux-arm64","target":"aarch64-unknown-linux-gnu","runner":"ubuntu-latest","cross":true}
+          ]') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -245,7 +267,7 @@ jobs:
         if: runner.os == 'Windows'
       - uses: Swatinem/rust-cache@v2
         with:
-          key: pr-build-${{ matrix.build.target }}
+          key: build-${{ env.PROFILE }}-${{ matrix.build.target }}
       - uses: taiki-e/install-action@cross
         if: matrix.build.cross
       # Exercise the same CRT choice as downloaded Windows release binaries.
@@ -262,7 +284,27 @@ jobs:
           CROSS: ${{ matrix.build.cross }}
         run: |
           if [ "${CROSS:-}" = "true" ]; then
-            cross build --locked --target "$TARGET" --features vendored
+            cross build --profile "$PROFILE" --locked --target "$TARGET" --features vendored
           else
-            cargo build --locked --target "$TARGET" --features vendored
+            cargo build --profile "$PROFILE" --locked --target "$TARGET" --features vendored
           fi
+
+      - name: Stage Linux image asset
+        if: startsWith(matrix.build.label, 'linux-') && endsWith(matrix.build.target, '-gnu')
+        env:
+          TARGET: ${{ matrix.build.target }}
+          LABEL: ${{ matrix.build.label }}
+          BUILD_DIRECTORY: ${{ github.event_name == 'pull_request' && 'debug' || 'release' }}
+        # Archives retain executable permissions across Actions artifact transport.
+        run: |
+          mkdir -p dist
+          tar -C "target/$TARGET/$BUILD_DIRECTORY" -czf "dist/over_${LABEL}.tar.gz" over
+
+      - name: Upload Linux image asset
+        if: startsWith(matrix.build.label, 'linux-') && endsWith(matrix.build.target, '-gnu')
+        uses: actions/upload-artifact@v7
+        with:
+          name: asset-${{ matrix.build.label }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7

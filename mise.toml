@@ -252,6 +252,38 @@ git tpl diff --exit-code --stat
 description = "Test Dev Container Feature installation and lifecycle (requires Docker)"
 run = "python3 tests/features/run.py"
 
+[tasks."docker:build"]
+description = "Build and stage a Linux binary, then package the runtime image"
+usage = '''
+flag "--target <target>" help="Linux GNU target (defaults to the Rust host)"
+flag "--tag <tag>" help="Local Docker image tag" default="over:local"
+flag "--cross" help="Use an installed cross toolchain for a Debian-compatible binary"
+'''
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+target=${usage_target:-$(rustc --print host-tuple)}
+case "$target" in
+  x86_64-unknown-linux-gnu) platform=linux/amd64 ;;
+  aarch64-unknown-linux-gnu) platform=linux/arm64 ;;
+  *)
+    # A host binary for macOS or Windows cannot run in the Linux runtime image.
+    echo "Select --target x86_64-unknown-linux-gnu or aarch64-unknown-linux-gnu (and configure cross-compilation)." >&2
+    exit 1
+    ;;
+esac
+builder=cargo
+if [ "${usage_cross:-false}" = true ]; then
+  builder=cross
+fi
+# Pin the output directory so CARGO_TARGET_DIR cannot make staging pick up a stale binary.
+"$builder" build --release --locked --target "$target" --target-dir target --features vendored --bin over
+context="target/docker/$target"
+mkdir -p "$context"
+install -m 755 "target/$target/release/over" "$context/over"
+docker build --platform "$platform" --file Dockerfile --tag "${usage_tag:?}" "$context"
+'''
+
 [tasks."schemas:generate"]
 description = "Regenerate the published configuration schemas"
 run = "cargo run --locked --features schema --example generate_schemas"

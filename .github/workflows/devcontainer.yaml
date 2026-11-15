@@ -1,9 +1,6 @@
 name: 📦 Dev Container
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_call:
     inputs:
       publish:
@@ -83,18 +80,23 @@ jobs:
       - name: Package Feature
         run: devcontainer features package ./devcontainer --output-folder "$RUNNER_TEMP/over-feature"
 
-      - name: Build candidate binary
+      - name: Download candidate binary asset
+        if: inputs.publish != true
+        uses: actions/download-artifact@v8
+        with:
+          name: asset-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/over-asset
+
+      - name: Extract and check candidate binary
         if: inputs.publish != true
         run: |
-          # latest cannot exercise unreleased CLI changes; build against Debian's glibc.
-          docker build --tag over-feature-candidate .
-          container=$(docker create over-feature-candidate)
-          trap 'docker rm "$container"' EXIT
-          docker cp "$container:/usr/local/bin/over" "$RUNNER_TEMP/over-feature-candidate"
+          mkdir -p "$RUNNER_TEMP/over-candidate"
+          tar -xzf "$RUNNER_TEMP"/over-asset/*.tar.gz -C "$RUNNER_TEMP/over-candidate"
+          "$RUNNER_TEMP/over-candidate/over" --version
 
       - name: Check option parsing and local lifecycle
         env:
-          OVER_FEATURE_TEST_BINARY: ${{ !inputs.publish && format('{0}/over-feature-candidate', runner.temp) || '' }}
+          OVER_FEATURE_TEST_BINARY: ${{ !inputs.publish && format('{0}/over-candidate/over', runner.temp) || '' }}
         run: python3 -m unittest discover -s tests/features -p 'test_*.py'
 
       - name: Exercise installation and lifecycle
@@ -103,5 +105,5 @@ jobs:
           # A release call instead tests its real default after Docker merges manifests.
           OVER_FEATURE_TEST_VERSION: ${{ !inputs.publish && 'latest' || '' }}
           # Publication instead exercises the real matching image without substitution.
-          OVER_FEATURE_TEST_BINARY: ${{ !inputs.publish && format('{0}/over-feature-candidate', runner.temp) || '' }}
+          OVER_FEATURE_TEST_BINARY: ${{ !inputs.publish && format('{0}/over-candidate/over', runner.temp) || '' }}
         run: python3 tests/features/run.py

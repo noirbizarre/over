@@ -117,6 +117,41 @@ only the schemas, run `mise run schemas:generate`. Validation uses temporary
 files and does not require previously generated assets. The normal CLI build
 does not enable schema generation.
 
+## Docker images
+
+The root `Dockerfile` only packages a staged Linux binary into the distroless
+Debian 12 runtime. It never compiles Rust. To compile the native Linux GNU
+binary with Cargo, stage it under `target/docker/<target>/over`, and build the
+image with that same Dockerfile:
+
+```sh
+mise run docker:build
+docker run --rm over:local --version
+```
+
+The local toolchain must produce a binary compatible with Debian 12's glibc.
+On newer distributions, use an installed [`cross`](https://github.com/cross-rs/cross)
+toolchain with `mise run docker:build --cross`. The task uses the Rust host
+target by default; other architectures must be selected explicitly:
+
+```sh
+mise run docker:build --cross --target aarch64-unknown-linux-gnu --tag over:arm64
+```
+
+Cross-compilation requires the appropriate toolchain; running another
+architecture's image also requires a matching host or configured emulation.
+On macOS or Windows, explicitly select one of the supported Linux GNU targets.
+To package an existing binary without compiling again, place it at `over`
+inside a staging directory and run
+`docker build --file Dockerfile --tag over:local <staging-directory>`.
+
+CI stages the Linux build jobs' same-run artifacts in exactly this way. PRs
+produce debug candidates; main produces release-profile binaries for the
+`main`, `latest` and commit-SHA image tags. Release image jobs extract the
+exact archives also uploaded to GitHub Releases, so both distribution formats
+contain byte-identical binaries. No image job invokes Cargo or fetches a
+mutable release asset.
+
 ## Commits
 
 [Conventional Commits](https://www.conventionalcommits.org/), enforced by
@@ -146,11 +181,15 @@ Releases are run by [gh-ship](https://github.com/noirbizarre/gh-ship).
    attach the binaries, then makes the
    release public.
 
-The Docker workflow publishes the release's multi-architecture binary image
-before calling the Dev Container Feature workflow. That workflow tests the
-matching binary on amd64 and arm64 before publishing
-`ghcr.io/noirbizarre/features/over`. PR/main Feature tests use an available image
-override so release-preparation metadata can be tested before its image exists.
+The release binary matrix uploads archives once. The release upload job and
+reusable Docker workflow consume those same-run artifacts in parallel. Docker
+publishes the release's multi-architecture binary image before calling the
+Dev Container Feature workflow. That workflow tests the matching binary on
+amd64 and arm64 before publishing `ghcr.io/noirbizarre/features/over`.
+Development tags do not publish immutable Feature versions. PR/main Feature
+tests use the CI build artifacts as their lifecycle candidates and an available
+image override for installation so release-preparation metadata can be tested
+before its image exists.
 See [feature contributor instructions](devcontainer/README.md) for local testing
 and the new GHCR packages' visibility/access requirements.
 

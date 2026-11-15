@@ -34,6 +34,14 @@ env:
 
 jobs:
 
+  docker:
+    name: 🐳 Docker
+    needs: build
+    uses: ./.github/workflows/docker.yaml
+    permissions:
+      contents: read
+      packages: write
+
   build:
     name: 🏗️ Build (${{ matrix.build.label }})
     runs-on: ${{ matrix.build.runner }}
