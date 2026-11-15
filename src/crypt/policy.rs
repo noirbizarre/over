@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{Context as _, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
 use super::{access, atomic_write, format};
@@ -179,10 +179,24 @@ fn selected_attribute_map(
     Ok(result)
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Operation {
+    #[default]
+    Generic,
+    Unlock {
+        // A retained recovery key must not make fresh-unlock retries accept dirty plaintext.
+        repair: bool,
+    },
+}
+
 /// Recovery snapshots are encrypted, including working files and index metadata.
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
     version: u32,
+    // Legacy journals must never become eligible for automatic unlock recovery.
+    #[serde(default)]
+    operation: Operation,
     administrative: PathBuf,
     committed: Option<String>,
     base_head: Option<String>,
@@ -287,9 +301,35 @@ fn begin_states(
     expected_links: BTreeMap<PathBuf, PathBuf>,
     expected_modes: BTreeMap<PathBuf, u32>,
 ) -> Result<()> {
+    begin_operation(
+        repo,
+        key,
+        files,
+        committed,
+        expected,
+        expected_links,
+        expected_modes,
+        Operation::Generic,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn begin_operation(
+    repo: &git2::Repository,
+    key: &format::RepositoryKey,
+    files: &[PathBuf],
+    committed: Option<String>,
+    expected: BTreeMap<PathBuf, Option<Vec<u8>>>,
+    expected_links: BTreeMap<PathBuf, PathBuf>,
+    expected_modes: BTreeMap<PathBuf, u32>,
+    operation: Operation,
+    replacing: bool,
+) -> Result<()> {
     // Own all sensitive buffers before the first fallible read, including partial preparation.
     let mut snapshot = Snapshot {
         version: 1,
+        operation,
         administrative: PathBuf::new(),
         committed,
         base_head: None,
@@ -374,13 +414,17 @@ fn begin_states(
     access::windows_acl(prepared.path(), true)?;
     prepared.write_all(&key.encrypt(&bytes, 1)?)?;
     prepared.as_file().sync_all()?;
-    // Shared filter guards cannot exclude another prepared policy writer. Never replace its journal.
-    prepared
-        .persist_noclobber(directory.join("transaction.json"))
-        .map_err(|error| error.error)
-        .context(
-            "another crypt transaction owns the recovery journal; recover it before retrying",
-        )?;
+    let destination = directory.join("transaction.json");
+    // Only an exclusively owned, restored unlock journal may be replaced on retry.
+    let persisted = if replacing {
+        prepared.persist(destination)
+    } else {
+        // Shared guards cannot exclude other prepared writers; never replace their journal.
+        prepared.persist_noclobber(destination)
+    };
+    persisted.map_err(|error| error.error).context(
+        "another crypt transaction owns the recovery journal; recover it before retrying",
+    )?;
     #[cfg(unix)]
     fs::File::open(directory)?.sync_all()?;
     Ok(())
@@ -425,17 +469,25 @@ pub(crate) fn recover_source(repo: &git2::Repository) -> Result<()> {
 }
 
 pub(crate) fn recover_locked(repo: &git2::Repository, key: &format::RepositoryKey) -> Result<()> {
+    restore_snapshot(repo, load_snapshot(repo, key)?, true)
+}
+
+fn load_snapshot(repo: &git2::Repository, key: &format::RepositoryKey) -> Result<Snapshot> {
     let bytes = key.decrypt(
         &fs::read(access::private_dir(repo).join("transaction.json"))?,
         1,
     )?;
-    let mut snapshot: Snapshot = serde_json::from_slice(&bytes)
+    let snapshot: Snapshot = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow::anyhow!("invalid crypt recovery journal"))?;
     ensure!(snapshot.version == 1, "unsupported crypt recovery version");
     ensure!(
         snapshot.administrative == fs::canonicalize(repo.commondir())?,
         "recovery journal belongs to another local checkout"
     );
+    Ok(snapshot)
+}
+
+fn restore_snapshot(repo: &git2::Repository, mut snapshot: Snapshot, finalize: bool) -> Result<()> {
     let origin = snapshot
         .origin
         .as_ref()
@@ -638,7 +690,10 @@ pub(crate) fn recover_locked(repo: &git2::Repository, key: &format::RepositoryKe
             Err(error) => return Err(error.into()),
         }
     }
-    finish(repo)
+    if finalize {
+        finish(repo)?;
+    }
+    Ok(())
 }
 
 fn stage_blob(
@@ -1082,7 +1137,7 @@ struct Refresh {
     files: Vec<RefreshFile>,
     heads: BTreeMap<PathBuf, Option<String>>,
     // Keep Git writers out between validation and representation publication.
-    _indices: Vec<crate::actions::git::index::IndexLock>,
+    _indices: BTreeMap<PathBuf, crate::actions::git::index::IndexLock>,
 }
 
 impl Refresh {
@@ -1092,10 +1147,20 @@ impl Refresh {
         locking: bool,
     ) -> Result<Self> {
         let already_unlocked = !locking && access::local_key(repo).is_ok();
+        Self::prepare_with(repo, key, locking, already_unlocked, BTreeMap::new())
+    }
+
+    fn prepare_with(
+        repo: &git2::Repository,
+        key: &format::RepositoryKey,
+        locking: bool,
+        already_unlocked: bool,
+        indices: BTreeMap<PathBuf, crate::actions::git::index::IndexLock>,
+    ) -> Result<Self> {
         let mut result = Self {
             files: Vec::new(),
             heads: BTreeMap::new(),
-            _indices: Vec::new(),
+            _indices: indices,
         };
         for worktree in access::worktrees(repo)? {
             let repo = &worktree;
@@ -1104,11 +1169,11 @@ impl Refresh {
                 registry.repository == key.repository && registry.generation == key.generation,
                 "linked worktrees have incompatible repository/key generations; resolve them before lock/unlock"
             );
-            result
-                ._indices
-                .push(crate::actions::git::index::IndexLock::acquire(
-                    &repo.path().join("index"),
-                )?);
+            if !result._indices.contains_key(repo.path()) {
+                result
+                    ._indices
+                    .insert(repo.path().to_path_buf(), reserve_index(repo)?);
+            }
             result
                 .heads
                 .insert(repo.path().to_path_buf(), head_value(repo));
@@ -1116,7 +1181,7 @@ impl Refresh {
             let index = repo.index()?;
             ensure!(
                 !index.has_conflicts(),
-                "resolve protected index conflicts first"
+                "resolve index conflicts before lock/unlock"
             );
             let paths = tracked(repo)?;
             let effective = attribute_map(repo, &paths, None)?;
@@ -1226,6 +1291,10 @@ impl Refresh {
                     permissions: metadata.permissions(),
                 });
             }
+            // Unlock owns tracked representations only; untracked plaintext must stay untouched.
+            if !locking {
+                continue;
+            }
             let others = git(repo, &["ls-files", "--others", "--exclude-standard", "-z"])?;
             let others: Vec<PathBuf> = others
                 .split(|byte| *byte == 0)
@@ -1244,9 +1313,6 @@ impl Refresh {
                     "untracked protected paths must be regular ciphertext files"
                 );
                 let bytes = zeroize::Zeroizing::new(fs::read(physical)?);
-                if already_unlocked && !format::recognized(&bytes) {
-                    continue;
-                }
                 ensure!(
                     format::recognized(&bytes),
                     "untracked protected plaintext at {}; stage or save it before lock/unlock",
@@ -1282,8 +1348,21 @@ impl Refresh {
     }
 
     fn publish(&self, repo: &git2::Repository, key: &format::RepositoryKey) -> Result<()> {
+        self.publish_operation(repo, key, Operation::Generic, false)
+    }
+
+    fn publish_operation(
+        &self,
+        repo: &git2::Repository,
+        key: &format::RepositoryKey,
+        operation: Operation,
+        replacing: bool,
+    ) -> Result<()> {
         self.verify()?;
         if self.files.is_empty() {
+            if replacing {
+                finish(repo)?;
+            }
             return Ok(());
         }
         let paths = self
@@ -1296,7 +1375,17 @@ impl Refresh {
             .iter()
             .map(|file| (file.path.clone(), Some(file.after.to_vec())))
             .collect();
-        begin(repo, key, &paths, expected)?;
+        begin_operation(
+            repo,
+            key,
+            &paths,
+            None,
+            expected,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            operation,
+            replacing,
+        )?;
         let result = (|| {
             for file in &self.files {
                 file.ancestry.verify()?;
@@ -1310,7 +1399,13 @@ impl Refresh {
             finish(repo)
         })();
         if let Err(error) = result {
-            recover_locked(repo, key).with_context(|| {
+            // Retain unlock provenance across rollback so failed retries stay strict.
+            restore_snapshot(
+                repo,
+                load_snapshot(repo, key)?,
+                operation == Operation::Generic,
+            )
+            .with_context(|| {
                 format!("{error:#}; lock/unlock rollback requires over crypt recover")
             })?;
             return Err(error);
@@ -1339,10 +1434,25 @@ pub fn unlock_with(
 ) -> Result<()> {
     let _ownership =
         crate::materialize::virtual_checkout::generated_migration::ownership_guard(repo)?;
-    let _guard = access::lifecycle_guard(repo, true)?;
+    let _guard = access::raw_guard(repo, true)?;
+    let pending = access::private_dir(repo)
+        .join("transaction.json")
+        .try_exists()?;
+    let (repair, indices) = if pending {
+        let (snapshot, repair) = load_unlock_snapshot(repo)?;
+        // Reserve every participating index before rollback, not just before new writes.
+        let indices = access::worktrees(repo)?
+            .iter()
+            .map(|worktree| Ok((worktree.path().to_path_buf(), reserve_index(worktree)?)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        restore_snapshot(repo, snapshot, false)?;
+        (repair, indices)
+    } else {
+        (access::local_key(repo).is_ok(), BTreeMap::new())
+    };
     let key = authenticate(repo)?;
     crate::materialize::virtual_checkout::generated_migration::migrate(repo, &key)?;
-    let prepared = Refresh::prepare(repo, &key, false)?;
+    let prepared = Refresh::prepare_with(repo, &key, false, repair, indices)?;
     access::configure_filters(repo)?;
     let previous = if access::local_key_missing(repo)? {
         None
@@ -1350,7 +1460,9 @@ pub fn unlock_with(
         Some(access::recovery_key(repo)?)
     };
     access::install(repo, &key)?;
-    if let Err(error) = prepared.publish(repo, &key) {
+    if let Err(error) =
+        prepared.publish_operation(repo, &key, Operation::Unlock { repair }, pending)
+    {
         // A remaining journal deliberately retains the recovery key, but denies normal access.
         if !access::private_dir(repo)
             .join("transaction.json")
@@ -1368,6 +1480,19 @@ pub fn unlock_with(
 }
 
 pub fn refresh(repo: &git2::Repository, locking: bool) -> Result<()> {
+    if !locking {
+        return unlock_with(repo, |repo| {
+            // A retained recovery key is usable only within this exclusively guarded transition.
+            if access::private_dir(repo)
+                .join("transaction.json")
+                .try_exists()?
+            {
+                access::recovery_key(repo)
+            } else {
+                access::local_key(repo)
+            }
+        });
+    }
     let _ownership =
         crate::materialize::virtual_checkout::generated_migration::ownership_guard(repo)?;
     let _guard = access::lifecycle_guard(repo, true)?;
@@ -1381,6 +1506,37 @@ pub fn refresh(repo: &git2::Repository, locking: bool) -> Result<()> {
         access::remove_key(repo)?;
     }
     Ok(())
+}
+
+fn reserve_index(repo: &git2::Repository) -> Result<crate::actions::git::index::IndexLock> {
+    crate::actions::git::index::IndexLock::acquire(&repo.path().join("index"))
+        .context("index is locked; if the original process has exited, inspect and remove its stale index.lock before retrying over unlock or over crypt recover")
+}
+
+/// Inspect without weakening the lifecycle guard used by filters and other commands.
+pub(crate) fn unlock_uses_local_key(repo: &git2::Repository) -> Result<bool> {
+    let _guard = access::raw_guard(repo, false)?;
+    if access::private_dir(repo)
+        .join("transaction.json")
+        .try_exists()?
+    {
+        load_unlock_snapshot(repo)?;
+        return Ok(true);
+    }
+    Ok(access::local_key(repo).is_ok())
+}
+
+fn load_unlock_snapshot(repo: &git2::Repository) -> Result<(Snapshot, bool)> {
+    // Missing/corrupt recovery access must still explain why another prompt cannot repair it.
+    let snapshot = (|| {
+        let key = access::recovery_key(repo)?;
+        load_snapshot(repo, &key)
+    })()
+    .context("interrupted crypt transaction; preserve the local key and journal and run over crypt recover")?;
+    let Operation::Unlock { repair } = snapshot.operation else {
+        bail!("interrupted crypt transaction; run over crypt recover before continuing");
+    };
+    Ok((snapshot, repair))
 }
 
 /// Severity is typed so a filename beginning with "ERROR" cannot change exit status.
@@ -2164,6 +2320,201 @@ mod tests {
             b"intervening plaintext"
         );
         assert!(access::local_key(&repo).is_ok());
+        assert!(!access::private_dir(&repo).join("transaction.json").exists());
+    }
+
+    fn interrupt_unlock(repo: &git2::Repository, key: &format::RepositoryKey, published: usize) {
+        let mut index = repo.index().unwrap();
+        let root = access::root(repo).unwrap();
+        fs::write(
+            root.join(".gitattributes"),
+            b"protected* filter=over -text\n",
+        )
+        .unwrap();
+        stage_blob(
+            &mut index,
+            repo,
+            Path::new(".gitattributes"),
+            b"protected* filter=over -text\n",
+        )
+        .unwrap();
+        stage_blob(
+            &mut index,
+            repo,
+            Path::new("protected-second"),
+            &key.encrypt(b"second plaintext", 0).unwrap(),
+        )
+        .unwrap();
+        index.write().unwrap();
+        for name in ["protected", "protected-second"] {
+            let entry = index.get_path(Path::new(name), 0).unwrap();
+            fs::write(root.join(name), repo.find_blob(entry.id).unwrap().content()).unwrap();
+        }
+        let prepared = Refresh::prepare_with(repo, key, false, false, BTreeMap::new()).unwrap();
+        let paths = prepared
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>();
+        let expected = prepared
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), Some(file.after.to_vec())))
+            .collect();
+        begin_operation(
+            repo,
+            key,
+            &paths,
+            None,
+            expected,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Operation::Unlock { repair: false },
+            false,
+        )
+        .unwrap();
+        for file in prepared.files.iter().take(published) {
+            super::super::transaction::worktree_write(&file.path, &file.after, None).unwrap();
+        }
+    }
+
+    #[rstest::rstest]
+    #[case(0, false)]
+    #[case(1, false)]
+    #[case(2, false)]
+    #[case(1, true)]
+    fn interrupted_unlock_retries_without_rewriting_the_index_or_head(
+        #[case] published: usize,
+        #[case] explicit: bool,
+    ) {
+        let (directory, repo, key) = protected_repository();
+        interrupt_unlock(&repo, &key, published);
+        let index = fs::read(repo.path().join("index")).unwrap();
+        let head = head_value(&repo);
+        assert!(unlock_uses_local_key(&repo).unwrap());
+        if explicit {
+            unlock_with(&repo, access::recovery_key).unwrap();
+        } else {
+            refresh(&repo, false).unwrap();
+        }
+        assert_eq!(
+            fs::read(directory.path().join("protected")).unwrap(),
+            b"old plaintext"
+        );
+        assert_eq!(
+            fs::read(directory.path().join("protected-second")).unwrap(),
+            b"second plaintext"
+        );
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+        assert_eq!(head_value(&repo), head);
+        assert!(!access::private_dir(&repo).join("transaction.json").exists());
+        refresh(&repo, false).unwrap();
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+    }
+
+    #[test]
+    fn failed_unlock_retries_never_turn_the_recovery_key_into_a_dirty_plaintext_exemption() {
+        let (directory, repo, key) = protected_repository();
+        interrupt_unlock(&repo, &key, 1);
+        let path = directory.path().join("protected-third");
+        let mut index = repo.index().unwrap();
+        stage_blob(
+            &mut index,
+            &repo,
+            Path::new("protected-third"),
+            &key.encrypt(b"indexed", 0).unwrap(),
+        )
+        .unwrap();
+        index.write().unwrap();
+        fs::write(&path, b"uncommitted plaintext").unwrap();
+        for _ in 0..2 {
+            assert!(refresh(&repo, false).is_err());
+            assert!(access::private_dir(&repo).join("transaction.json").exists());
+            assert_eq!(fs::read(&path).unwrap(), b"uncommitted plaintext");
+            assert!(access::local_key(&repo).is_err());
+        }
+        fs::write(&path, b"indexed").unwrap();
+        refresh(&repo, false).unwrap();
+    }
+
+    #[test]
+    fn automatic_unlock_recovery_preserves_intervening_edits_and_unknown_index_locks() {
+        let (directory, repo, key) = protected_repository();
+        interrupt_unlock(&repo, &key, 1);
+        let path = directory.path().join("protected");
+        let journal = fs::read(access::private_dir(&repo).join("transaction.json")).unwrap();
+        fs::write(repo.path().join("index.lock"), b"another writer").unwrap();
+        let before = fs::read(&path).unwrap();
+        let error = refresh(&repo, false).unwrap_err();
+        assert!(format!("{error:#}").contains("stale index.lock"));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(
+            fs::read(repo.path().join("index.lock")).unwrap(),
+            b"another writer"
+        );
+        fs::remove_file(repo.path().join("index.lock")).unwrap();
+        fs::write(&path, b"intervening edit").unwrap();
+        assert!(refresh(&repo, false).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"intervening edit");
+        assert_eq!(
+            fs::read(access::private_dir(&repo).join("transaction.json")).unwrap(),
+            journal
+        );
+    }
+
+    #[test]
+    fn automatic_unlock_recovery_never_accepts_generic_or_legacy_journals() {
+        let (directory, repo, key) = protected_repository();
+        let path = directory.path().join("protected");
+        begin(
+            &repo,
+            &key,
+            std::slice::from_ref(&path),
+            BTreeMap::from([(path.clone(), Some(b"expected".to_vec()))]),
+        )
+        .unwrap();
+        for legacy in [false, true] {
+            if legacy {
+                let mut value = serde_json::to_value(load_snapshot(&repo, &key).unwrap()).unwrap();
+                value.as_object_mut().unwrap().remove("operation");
+                atomic_write(
+                    &access::private_dir(&repo).join("transaction.json"),
+                    &key.encrypt(&serde_json::to_vec(&value).unwrap(), 1)
+                        .unwrap(),
+                )
+                .unwrap();
+            }
+            let journal = fs::read(access::private_dir(&repo).join("transaction.json")).unwrap();
+            assert!(unlock_uses_local_key(&repo).is_err());
+            assert!(refresh(&repo, false).is_err());
+            assert_eq!(fs::read(&path).unwrap(), b"old plaintext");
+            assert_eq!(
+                fs::read(access::private_dir(&repo).join("transaction.json")).unwrap(),
+                journal
+            );
+        }
+        recover(&repo).unwrap();
+    }
+
+    #[test]
+    fn interrupted_unlock_can_be_retried_from_a_participating_linked_worktree() {
+        let (directory, repo, key) = protected_repository();
+        let other_directory = tempfile::tempdir().unwrap();
+        let other = sibling(&repo, &other_directory.path().join("worktree"));
+        interrupt_unlock(&repo, &key, 1);
+        let first_index = fs::read(repo.path().join("index")).unwrap();
+        let second_index = fs::read(other.path().join("index")).unwrap();
+        refresh(&other, false).unwrap();
+        assert_eq!(
+            fs::read(directory.path().join("protected")).unwrap(),
+            b"old plaintext"
+        );
+        assert_eq!(
+            fs::read(access::root(&other).unwrap().join("protected")).unwrap(),
+            b"old plaintext"
+        );
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), first_index);
+        assert_eq!(fs::read(other.path().join("index")).unwrap(), second_index);
         assert!(!access::private_dir(&repo).join("transaction.json").exists());
     }
 

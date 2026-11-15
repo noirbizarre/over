@@ -35,8 +35,11 @@ The helper never acquires credentials or changes content, index, objects, refs,
 key material, or driver configuration. Existing administrative locking provides
 coordination with lifecycle transitions.
 
-Encrypted conversion requires the current valid local key. Lock state, corruption,
-unsupported formats, unavailable generations, and interrupted transitions fail.
+Plaintext conversion of ciphertext requires the current valid local key. When the
+key is absent, structurally valid ciphertext passes through unchanged so locked
+diffs complete without decryption or authentication. Invalid installed keys,
+malformed/unsupported formats, unavailable generations with an installed key, and
+interrupted transitions still fail.
 No old keys are retained to make historical diffs work. Missing presentation
 attributes/configuration are diagnosed separately from broken encryption policy.
 Unlock repairs local configuration without silently staging attribute upgrades.
@@ -54,3 +57,6 @@ external difftools keep their existing semantics. Disabling caching prevents
 normal persistent textconv cache writes but cannot erase prior patches/caches or
 control user overrides, pagers, logs, and redirection. Multi-file diffs may have
 printed earlier files before a later conversion fails.
+Long-lived filters reload keys for every request. Lock coordinates active
+transformations, but already transformed output may remain buffered outside that
+boundary; it cannot be recalled or securely erased by removing the local key.

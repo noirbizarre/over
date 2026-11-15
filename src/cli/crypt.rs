@@ -545,15 +545,9 @@ pub fn unlock(cli: &super::CLI, opt: &Unlock) -> Result<()> {
 }
 
 pub fn unlock_repository(repo: &git2::Repository, opt: &Unlock) -> Result<()> {
-    // Interrupted operations and unsafe storage cannot be repaired by another password prompt.
-    {
-        let _inspection = access::lifecycle_guard(repo, false)?;
-    }
-    if opt.identity.is_empty()
-        && opt.user.is_none()
-        && opt.key.is_none()
-        && access::local_key(repo).is_ok()
-    {
+    // Only unlock materialization journals may be resumed instead of explicit recovery.
+    let uses_local_key = policy::unlock_uses_local_key(repo)?;
+    if opt.identity.is_empty() && opt.user.is_none() && opt.key.is_none() && uses_local_key {
         // Key presence avoids another credential prompt, but cannot prove filter/checkout health.
         return policy::refresh(repo, false);
     }

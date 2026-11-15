@@ -144,7 +144,11 @@ fn encrypted_diffs_distinguish_staged_working_and_historical_content_without_cac
     );
     fixture.success(&["lock"]);
     let output = compare();
-    assert!(!output.status.success());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(
         !output
             .stdout
@@ -190,6 +194,197 @@ fn textconv_authenticates_both_domains_before_writing_any_plaintext() {
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
     }
+}
+
+#[test]
+fn locked_textconv_preserves_both_domains_and_rejects_an_unusable_installed_key() {
+    let fixture = Fixture::new();
+    let repo = git2::Repository::open(fixture.root.path()).unwrap();
+    let key = over::crypt::access::local_key(&repo).unwrap();
+    fixture.success(&["lock"]);
+    for domain in [0, 1] {
+        let ciphertext = key.encrypt(b"opaque\0sentinel\xff\n", domain).unwrap();
+        let path = fixture.path("textconv-input");
+        fs::write(&path, &ciphertext).unwrap();
+        let output = fixture.over(&["crypt", "textconv", "--", path.to_str().unwrap()]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, ciphertext);
+    }
+    assert!(fixture.unlock().status.success());
+    fs::write(fixture.key(), b"invalid installed key").unwrap();
+    let output = fixture.over(&[
+        "crypt",
+        "textconv",
+        "--",
+        fixture.path("textconv-input").to_str().unwrap(),
+    ]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn unlock_materializes_the_index_without_touching_untracked_files_or_unrelated_edits() {
+    let fixture = Fixture::new();
+    fs::write(fixture.path("unrelated"), b"committed\n").unwrap();
+    fixture.git(&["add", "unrelated"]);
+    fixture.git(&["commit", "-qm", "unrelated baseline"]);
+    fs::write(fixture.path("protected/token"), b"staged protected\n").unwrap();
+    fixture.git(&["add", "protected/token"]);
+    fixture.success(&["lock"]);
+    fs::write(fixture.path("unrelated"), b"staged unrelated\n").unwrap();
+    fixture.git(&["add", "unrelated"]);
+    fs::write(fixture.path("unrelated"), b"unstaged unrelated\n").unwrap();
+    fs::write(
+        fixture.path("protected/untracked"),
+        b"untracked protected plaintext\n",
+    )
+    .unwrap();
+    fs::write(fixture.path("untracked"), b"unrelated untracked\n").unwrap();
+    let index = fs::read(fixture.path(".git/index")).unwrap();
+    let head = fs::read(fixture.path(".git/HEAD")).unwrap();
+    let output = fixture.unlock();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read(fixture.path(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(fixture.path(".git/HEAD")).unwrap(), head);
+    assert_eq!(
+        fs::read(fixture.path("protected/token")).unwrap(),
+        b"staged protected\n"
+    );
+    assert_eq!(
+        fs::read(fixture.path("unrelated")).unwrap(),
+        b"unstaged unrelated\n"
+    );
+    assert_eq!(
+        fs::read(fixture.path("protected/untracked")).unwrap(),
+        b"untracked protected plaintext\n"
+    );
+    assert_eq!(
+        fs::read(fixture.path("untracked")).unwrap(),
+        b"unrelated untracked\n"
+    );
+    fixture.success(&["unlock"]);
+    assert_eq!(fs::read(fixture.path(".git/index")).unwrap(), index);
+    // Lock still refuses to imply protection while untracked plaintext remains exposed.
+    assert!(!fixture.over(&["lock"]).status.success());
+    assert!(fixture.key().exists());
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn unlock_resumes_an_authenticated_materialization_journal_through_both_cli_paths(
+    #[case] explicit: bool,
+) {
+    let fixture = Fixture::new();
+    let repo = git2::Repository::open(fixture.root.path()).unwrap();
+    let key = over::crypt::access::local_key(&repo).unwrap();
+    let entry = repo
+        .index()
+        .unwrap()
+        .get_path(std::path::Path::new("protected/token"), 0)
+        .unwrap();
+    let path = fixture.path("protected/token");
+    let ciphertext = repo.find_blob(entry.id).unwrap().content().to_vec();
+    let head = repo.head().unwrap().target().unwrap().to_string();
+    // Model a stop after plaintext publication but before the durable journal is removed.
+    let snapshot = serde_json::json!({
+        "version": 1,
+        "operation": { "unlock": { "repair": false } },
+        "administrative": fs::canonicalize(repo.commondir()).unwrap(),
+        "committed": null,
+        "base_head": head,
+        "files": std::collections::BTreeMap::from([(path.clone(), Some(ciphertext))]),
+        "expected": std::collections::BTreeMap::from([(path, Some(b"lifecycle sentinel\n".to_vec()))]),
+    });
+    fs::write(
+        fixture.path(".git/over-crypt/transaction.json"),
+        key.encrypt(&serde_json::to_vec(&snapshot).unwrap(), 1)
+            .unwrap(),
+    )
+    .unwrap();
+    let index = fs::read(fixture.path(".git/index")).unwrap();
+    let output = if explicit {
+        fixture.unlock()
+    } else {
+        fixture.over(&["unlock"])
+    };
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(fixture.path("protected/token")).unwrap(),
+        b"lifecycle sentinel\n"
+    );
+    assert_eq!(fs::read(fixture.path(".git/index")).unwrap(), index);
+    assert_eq!(repo.head().unwrap().target().unwrap().to_string(), head);
+    assert!(!fixture.path(".git/over-crypt/transaction.json").exists());
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn locked_checkout_status_and_add_preserve_ciphertext_but_never_stage_plaintext(
+    #[case] process: bool,
+) {
+    let fixture = Fixture::new();
+    fixture.success(&["lock"]);
+    if !process {
+        fixture.git(&["config", "--unset", "filter.over.process"]);
+    }
+    let repo = git2::Repository::open(fixture.root.path()).unwrap();
+    let entry = repo
+        .index()
+        .unwrap()
+        .get_path(std::path::Path::new("protected/token"), 0)
+        .unwrap();
+    let ciphertext = repo.find_blob(entry.id).unwrap().content().to_vec();
+    fs::remove_file(fixture.path("protected/token")).unwrap();
+    fixture.git(&["checkout", "--", "protected/token"]);
+    assert_eq!(
+        fs::read(fixture.path("protected/token")).unwrap(),
+        ciphertext
+    );
+    fixture.git(&["status", "--porcelain"]);
+    fixture.git(&["diff"]);
+    fixture.git(&["show", "--textconv", "HEAD:protected/token"]);
+    fixture.git(&["add", "protected/token"]);
+    assert_eq!(
+        repo.index()
+            .unwrap()
+            .get_path(std::path::Path::new("protected/token"), 0)
+            .unwrap()
+            .id,
+        entry.id
+    );
+    fs::write(
+        fixture.path("protected/token"),
+        b"must never enter the object database",
+    )
+    .unwrap();
+    let output = fixture
+        .command("git")
+        .args(["add", "protected/token"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(
+        repo.index()
+            .unwrap()
+            .get_path(std::path::Path::new("protected/token"), 0)
+            .unwrap()
+            .id,
+        entry.id
+    );
 }
 
 #[test]

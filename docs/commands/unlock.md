@@ -39,5 +39,19 @@ installing a key. Driver repair does not rewrite tracked attributes: existing
 repositories must [select `diff=over`](../usage/crypt.md#readable-encrypted-diffs)
 explicitly on older rules.
 
+Unlock materializes tracked protected files from their indexed ciphertext without
+rewriting the index or `HEAD`. Already matching plaintext is left unchanged;
+untracked files and unrelated local edits are preserved. Save ambiguous protected
+edits before retrying a refused fresh unlock. Each replacement is atomic and
+preserves supported native metadata; multi-file publication uses an encrypted
+recovery journal.
+
+If unlock materialization was interrupted, another unlock restores the recorded
+preparation state and retries safely using the retained recovery key. Intervening
+edits cause refusal and leave the journal intact. Other interrupted crypt
+transactions require `over crypt recover`. If an exited process left `index.lock`,
+inspect it and remove only that stale lock before retrying; Over never deletes
+unknown Git locks automatically.
+
 See [locking and unlocking](../usage/crypt.md#locking-and-unlocking) for the lifecycle and
 [user keys](user.md) for supported access methods.
