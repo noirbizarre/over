@@ -534,6 +534,76 @@ are retained.
 After a completed rotation with a stale local key, unlock through the new
 envelopes.
 
+## Committed metadata and pre-checkout detection
+
+Over can identify repository encryption directly from a committed Git tree,
+including in a bare repository or immediately after `git clone --no-checkout`.
+The existing `.over/crypt/access.json` is the versioned public marker; no extra
+enablement file is required. Commit it, the applicable `.gitattributes` files,
+and protected ciphertext together. A first-user setup without protected files
+still needs its access metadata committed to be discoverable after clone.
+
+### Access registry version 1
+
+The registry is a regular tracked JSON blob, limited to 16 MiB:
+
+| Field | Version 1 representation and meaning |
+| --- | --- |
+| `version` | Integer `1`; selects the registry schema. |
+| `repository` | Array of 16 byte values; stable public repository identity. |
+| `generation` | Array of 16 byte values; current public key-generation identity. |
+| `users` | Object mapping logical user names to objects of named access methods. |
+| `users.<user>.<key>.recipient` | Public Age recipient string, or `null` for a passphrase method. |
+| `users.<user>.<key>.envelope` | Array of bytes containing an Age-encrypted repository key record, at most 16 KiB. |
+
+User and access-method names contain 1–128 ASCII letters, digits, hyphens, or
+underscores. Each independent envelope wraps the same 96-byte record: repository
+identity, generation, and the 64-byte repository key. The public registry contains
+no unencrypted repository key or private identity. Passphrase methods use separate
+scrypt envelopes and have no reusable public recipient.
+
+Readers accept unknown JSON fields in version 1 for additive compatibility;
+writers need not preserve those fields. Changes to required field meanings or
+representations require a new version. Unsupported versions are identified before
+interpreting version-specific fields and require a compatible Over release; they
+are never silently treated as ordinary unencrypted repositories. Malformed JSON,
+invalid names/field shapes, excessive sizes, or a nonregular registry entry are
+invalid metadata, not an absent marker.
+
+### Detection contract
+
+`over init` inspects the cloned committed tree before its first checkout. The
+reusable detector also accepts an explicit tree. It distinguishes:
+
+- **Configured encryption:** a supported registry, even with no protected files.
+- **Active policy:** tracked paths whose committed attributes select `filter=over`.
+  Nested overrides, macros, quoted patterns, and unset/reset rules follow Git
+  semantics. An unmatched future-facing rule alone is not active protection.
+- **Encrypted content:** raw Git blobs with the Over ciphertext magic, including
+  the native secret store, independently of whether a policy or registry exists.
+- **Unlock eligibility:** at least one configured method has a supported public
+  descriptor and structurally parseable Age envelope with a key-sized payload.
+  Passphrase envelopes count; one damaged alternative does not disable a healthy
+  method. This does not authenticate the envelope, prove that a recipient matches
+  it, or guarantee that credentials or a plugin are available locally.
+
+Detection reads no working-tree files or private keys and runs no clean/smudge,
+text conversion, identity lookup, or credential/plugin commands. Attribute
+evaluation uses a disposable bare Git repository sharing read access to the
+source objects, with local/global/system attribute overrides excluded. Scratch
+administrative files are removed afterward; the inspected repository's config,
+index, refs, objects, and private crypt state remain unchanged. Git must support
+`check-attr --source`, as used elsewhere for committed-policy checks.
+
+Empty repositories and repositories without crypt evidence need no crypt setup.
+Policy/ciphertext without access metadata, a registry without any usable access
+method, unsupported/malformed metadata, or inconsistent policy/ciphertext receive
+deterministic diagnostics. Bootstrap attributes and `.over/crypt/` must stay
+unencrypted. Fresh init refuses invalid bootstrap state before materialization
+and preserves the clone for repair. It checks current committed objects, not
+historical commits or authenticated plaintext; use storage diagnostics for a
+broader audit.
+
 ## Storage checks and format
 
 `over doctor` / `over crypt list` inspect effective policy, required local filter

@@ -160,10 +160,21 @@ fn initialize_checkout(
             .with_checkout(checkout)
             .clone(source, &destination)
             .with_context(|| format!("failed to clone into {}; any partial checkout is preserved: repair it or remove it explicitly before retrying", destination.display()))?;
-        // Install trusted local drivers before the first real checkout; locked smudge retains ciphertext.
-        crate::crypt::access::configure_filters(&repo)?;
-        crate::crypt::policy::git(&repo, &["reset", "--hard", "HEAD"])
-            .context("initial filtered checkout failed; partial checkout preserved for recovery")?;
+        let crypt = crate::crypt::detect::inspect(&repo)
+            .context("pre-checkout crypt detection failed; clone preserved for repair")?;
+        crypt
+            .validate_checkout()
+            .context("initial checkout was not started; clone preserved for repair")?;
+        if crypt.is_crypt() {
+            // Locked smudge retains ciphertext, but the trusted driver must exist before checkout.
+            crate::crypt::access::configure_filters(&repo)?;
+        }
+        if crypt.tree.is_some() {
+            // An empty clone has no HEAD to reset; root configuration setup handles it below.
+            crate::crypt::policy::git(&repo, &["reset", "--hard", "HEAD"]).context(
+                "initial filtered checkout failed; partial checkout preserved for recovery",
+            )?;
+        }
     } else if empty {
         bail!(
             "no checkout at {}; supply a Git source: over init <SOURCE>",

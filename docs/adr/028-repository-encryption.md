@@ -56,6 +56,14 @@ passphrase preflight, never just deleting metadata.
 
 ## Consequences
 
+For #302, the existing versioned `.over/crypt/access.json`, committed attributes,
+and raw ciphertext headers form the pre-checkout discovery contract. A second
+marker would duplicate state and could diverge from manually edited policy.
+Detection therefore inspects a pinned Git tree and evaluates its attributes in
+isolated scratch Git state, without keys, filters, or source-repository writes.
+Structural envelope eligibility permits offering unlock but cannot establish
+authenticated access. See the [metadata contract](../usage/crypt.md#committed-metadata-and-pre-checkout-detection).
+
 - Equality and ciphertext length leak; names, history topology, commit messages,
   modes, and other Git metadata remain public. Identical plaintext under a
   different domain/generation does not share ciphertext. File substitution is

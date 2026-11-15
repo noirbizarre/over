@@ -98,6 +98,18 @@ manage passwords, SSH keys or agents, or render templates.
 
 ## Destination and validation
 
+Fresh clones are inspected for encryption from committed Git objects before the
+first checkout. Valid crypt repositories receive trusted local drivers before
+materialization; ordinary repositories need no crypt setup or unlock prompt.
+Unsupported, malformed, or incomplete crypt bootstrap metadata stops checkout
+and preserves the clone for repair. Detection requires no key and does not run
+filters or credential helpers. See the
+[metadata contract](../usage/crypt.md#committed-metadata-and-pre-checkout-detection)
+for versioning, committed-policy evaluation, and unlock eligibility.
+
+An empty clone skips checkout of nonexistent `HEAD` and follows the missing root
+configuration setup flow above.
+
 The destination is `--home`, then `OVER_HOME`, then `~/.dotfiles`. With no source,
 `over init` validates that location, not the current directory. To validate a
 checkout elsewhere, use `over --home /path/to/checkout init`.

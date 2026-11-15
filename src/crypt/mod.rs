@@ -3,6 +3,7 @@
 pub mod access;
 pub mod age;
 pub(crate) mod buffer;
+pub mod detect;
 pub mod filter;
 pub mod format;
 pub(crate) mod ingest;

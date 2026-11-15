@@ -10,6 +10,55 @@ const SECRET: &[u8] = b"bootstrap native secret sentinel";
 #[cfg(target_os = "linux")]
 const PASSPHRASE: &str = "bootstrap-hidden-passphrase-sentinel";
 
+#[rstest::rstest]
+#[case(br#"{"version":99,"future":"format"}"#.as_slice(), "UnsupportedMetadata")]
+#[case(b"not json".as_slice(), "InvalidMetadata")]
+fn invalid_crypt_metadata_stops_init_before_drivers_checkout_or_hooks(
+    #[case] metadata: &[u8],
+    #[case] diagnostic: &str,
+) {
+    let fixture = Fixture::new(false, true);
+    let source = git2::Repository::open(&fixture.source).unwrap();
+    let mut index = source.index().unwrap();
+    let mut entry = index
+        .get_path(Path::new(".over/crypt/access.json"), 0)
+        .unwrap();
+    // Publish a deliberately invalid raw blob without asking clean filters to validate it.
+    entry.id = source.blob(metadata).unwrap();
+    index.add(&entry).unwrap();
+    let tree = source.find_tree(index.write_tree().unwrap()).unwrap();
+    let parent = source.head().unwrap().peel_to_commit().unwrap();
+    let signature = source.signature().unwrap();
+    source
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "invalid bootstrap metadata",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+    let output = run(&mut fixture.init());
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(diagnostic), "{stderr}");
+    assert!(stderr.contains("clone preserved"), "{stderr}");
+    let repo = git2::Repository::open(&fixture.clone).unwrap();
+    assert!(repo.head().is_ok());
+    assert!(
+        repo.config()
+            .unwrap()
+            .get_string("filter.over.smudge")
+            .is_err()
+    );
+    assert!(!fixture.clone.join("token").exists());
+    assert!(!fixture.clone.join("over.yaml").exists());
+    assert!(!repo.path().join("over-crypt").exists());
+    assert!(!repo.path().join("bootstrap-events").exists());
+    assert!(!stderr.contains("Unlock repository"));
+}
+
 struct Fixture {
     directory: tempfile::TempDir,
     source: PathBuf,
