@@ -87,6 +87,31 @@ fn cloning_without_a_canonical_remote_preserves_the_source() {
         src.canonicalize().unwrap()
     );
     command(&dest).assert().success();
+    let repo = Repository::open(&dest).unwrap();
+    let local = repo
+        .config()
+        .unwrap()
+        .open_level(git2::ConfigLevel::Local)
+        .unwrap();
+    assert!(local.get_string("filter.over.smudge").is_err());
+    assert!(!repo.path().join("over-crypt").exists());
+}
+
+#[test]
+fn an_empty_clone_can_create_root_configuration_without_resetting_missing_head() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("source.git");
+    Repository::init_bare(&src).unwrap();
+    let dest = tmp.path().join("dotfiles");
+    command(&dest)
+        .arg(&src)
+        .args(["--mode", "checkout"])
+        .assert()
+        .success();
+    assert!(dest.join("over.toml").exists());
+    let repo = Repository::open(&dest).unwrap();
+    assert!(repo.head().is_err());
+    assert!(!repo.path().join("over-crypt").exists());
 }
 
 #[test]

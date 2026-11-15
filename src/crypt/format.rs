@@ -95,11 +95,20 @@ impl RepositoryKey {
 
 /// Structural validation is not authentication; doctor reports that distinction.
 pub fn inspect(bytes: &[u8]) -> Result<()> {
+    inspect_header(bytes, bytes.len())
+}
+
+/// Validate public structure without buffering a blob's encrypted payload.
+pub(crate) fn inspect_header(bytes: &[u8], length: usize) -> Result<()> {
     ensure!(
         bytes.starts_with(MAGIC),
         "protected blob is plaintext, not Over ciphertext"
     );
-    inspect_len(bytes.len())?;
+    inspect_len(length)?;
+    ensure!(
+        bytes.len() >= HEADER_LEN,
+        "truncated Over ciphertext header"
+    );
     ensure!(bytes[8] == 1, "unsupported Over ciphertext version");
     ensure!(bytes[9] <= 1, "unsupported Over ciphertext domain");
     Ok(())
@@ -142,6 +151,18 @@ mod tests {
         for length in [MAX_BYTES + HEADER_LEN + 17, usize::MAX] {
             assert!(inspect_len(length).is_err());
         }
+    }
+
+    #[test]
+    fn header_only_inspection_checks_total_size_without_requiring_the_payload() {
+        let ciphertext = RepositoryKey::generate()
+            .unwrap()
+            .encrypt(b"content", 0)
+            .unwrap();
+        let header = &ciphertext[..HEADER_LEN];
+        assert!(inspect_header(header, ciphertext.len()).is_ok());
+        assert!(inspect_header(header, MAX_BYTES + HEADER_LEN + 17).is_err());
+        assert!(inspect_header(&header[..HEADER_LEN - 1], ciphertext.len()).is_err());
     }
 
     #[test]

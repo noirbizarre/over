@@ -177,7 +177,9 @@ pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
         .context("origin update task failed")??;
     }
     let git = git2::Repository::open(&result.destination)?;
-    crate::crypt::access::configure_filters(&git)?;
+    if crate::crypt::access::configured(&git)? {
+        crate::crypt::access::configure_filters(&git)?;
+    }
     if crate::crypt::access::configured(&git)? && crate::crypt::access::local_key(&git).is_ok() {
         // A persisted key survives restart; repair any incomplete ciphertext refresh without prompting.
         crate::crypt::policy::refresh(&git, false)?;

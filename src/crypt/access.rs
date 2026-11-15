@@ -13,6 +13,53 @@ use zeroize::Zeroizing;
 use super::{atomic_write, format::RepositoryKey};
 
 const KEY_WRITE_PREFIX: &str = ".over-unlocked-key-";
+pub(crate) const METADATA_LIMIT: usize = 16 * 1024 * 1024;
+
+#[derive(Debug)]
+pub(crate) struct UnsupportedRegistryVersion(pub u64);
+
+impl std::fmt::Display for UnsupportedRegistryVersion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "unsupported repository access metadata version {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for UnsupportedRegistryVersion {}
+
+/// Parse public metadata independently of checkout and private key state.
+pub(crate) fn parse_registry(bytes: &[u8]) -> Result<Registry> {
+    ensure!(
+        bytes.len() <= METADATA_LIMIT,
+        "repository access metadata exceeds the supported size limit"
+    );
+    #[derive(Deserialize)]
+    struct Version {
+        version: u64,
+    }
+    // Future versions may change every other field; do not misreport them as malformed v1.
+    let version: Version = serde_json::from_slice(bytes)
+        .map_err(|_| anyhow::anyhow!("invalid repository access metadata"))?;
+    if version.version != 1 {
+        return Err(UnsupportedRegistryVersion(version.version).into());
+    }
+    let registry: Registry = serde_json::from_slice(bytes)
+        .map_err(|_| anyhow::anyhow!("invalid repository access metadata"))?;
+    for (user, keys) in &registry.users {
+        validate_name(user)?;
+        for (name, key) in keys {
+            validate_name(name)?;
+            ensure!(
+                key.envelope.len() <= super::age::ENVELOPE_LIMIT,
+                "repository key envelope exceeds the supported size limit"
+            );
+        }
+    }
+    Ok(registry)
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Registry {
@@ -238,15 +285,10 @@ pub fn load(repo: &git2::Repository) -> Result<Registry> {
     }
     check_real(&path, false)?;
     ensure!(
-        fs::metadata(&path)?.len() <= 16 * 1024 * 1024,
+        fs::metadata(&path)?.len() <= METADATA_LIMIT as u64,
         "repository access metadata exceeds the supported size limit"
     );
-    let registry: Registry = serde_json::from_slice(&fs::read(path)?)
-        .map_err(|_| anyhow::anyhow!("invalid repository access metadata"))?;
-    ensure!(
-        registry.version == 1,
-        "unsupported repository access metadata version"
-    );
+    let registry = parse_registry(&fs::read(path)?)?;
     ensure!(
         !registry.users.is_empty(),
         "repository has no recovery user"
@@ -255,16 +297,6 @@ pub fn load(repo: &git2::Repository) -> Result<Registry> {
         registry.users.values().any(|keys| !keys.is_empty()),
         "repository has no recovery key"
     );
-    for (user, keys) in &registry.users {
-        validate_name(user)?;
-        for (name, key) in keys {
-            validate_name(name)?;
-            ensure!(
-                key.envelope.len() <= 16 * 1024,
-                "repository key envelope exceeds the supported size limit"
-            );
-        }
-    }
     Ok(registry)
 }
 
