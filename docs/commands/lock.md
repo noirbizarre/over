@@ -21,7 +21,9 @@ An already-locked repository is not an unconditional successful no-op.
 
 Successful lock has no machine-readable payload. Errors are reported on stderr
 with nonzero status. Required filters and the diff driver remain configured;
-native secret operations and encrypted textconv conversion become unavailable.
+native secret operations become unavailable. New smudge and textconv invocations
+preserve ciphertext without decrypting it, so locked checkout and diff remain
+usable. Clean accepts supported ciphertext but refuses plaintext while locked.
 
 ```sh
 over crypt list
@@ -31,3 +33,6 @@ over lock
 Lock does not erase deployed virtual destinations, copies, memory, snapshots, or
 backups. Follow the [locking workflow](../usage/crypt.md#locking-and-unlocking) and
 [automation recipes](../usage/crypt-automation.md) for practical integration.
+Long-lived filters reload key state for every request. Lock waits for active
+transformations, but cannot recall already transformed output buffered by helpers,
+Git, pagers, or other processes; it does not promise secure memory erasure.

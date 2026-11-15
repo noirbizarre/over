@@ -276,9 +276,20 @@ the local key. It preserves staged content rather than resetting to `HEAD`.
 Filters remain configured while locked. Unlock refreshes the linked worktrees
 together. Different access metadata must be reconciled before a common rotation.
 
-Native secret operations and encrypted textconv diffs fail while locked.
+Native secret operations fail while locked. Smudge and textconv preserve supported
+ciphertext byte-for-byte without decryption, so locked checkout and diffs remain
+usable. Ciphertext passthrough cannot authenticate the encrypted payload.
 Unlock restores access to the native store without converting its ciphertext into a
 plaintext working-tree file. See [native secrets](secrets.md#unlock-once).
+
+Unlock explicitly materializes tracked protected files from the index; installing
+drivers alone would not rerun smudge on an existing checkout. Index entries and
+`HEAD` are unchanged. Matching plaintext is left alone, untracked files are not
+touched, and unrelated staged/unstaged edits are preserved. Fresh unlock refuses
+ambiguous protected edits rather than overwriting them; save those edits and retry.
+Repairing an already completed unlock also preserves ordinary protected plaintext
+edits. File replacements are individually atomic and preserve supported metadata;
+multi-file publication is journaled and recoverable.
 
 Untracked protected plaintext, policy overrides, symlinked protected ancestry,
 and unstaged protection declarations prevent lock. Representation changes retain
@@ -289,6 +300,10 @@ Lock cannot erase plaintext deployed to virtual destinations, copies held by
 other programs, snapshots, backups, or keys already copied elsewhere. Delete does
 not promise physical erasure from storage. Requested readable diffs display
 plaintext while unlocked; protect their output like any other decrypted copy.
+Long-lived filter processes keep no repository key between requests. Lock waits
+for active transformations, and subsequent requests reread locked state. Already
+transformed output may still be buffered by helpers or retained by Git, pagers,
+and other processes after lock; removing the key does not promise memory erasure.
 
 For opt-in systemd/Sway and macOS examples, see
 [lock/unlock automation recipes](crypt-automation.md).
@@ -314,8 +329,10 @@ Review `.over/.gitattributes` too: older `secrets.yaml filter=over -text` rules
 need `diff=over` added explicitly. Unlock never rewrites or stages these rules.
 Check effective selections with `git check-attr filter diff -- PATH`.
 
-Conversion never prompts. Locked ciphertext, authentication errors, and
-unavailable generations fail rather than producing a misleading plaintext patch.
+Conversion never prompts. Locked ciphertext passes through unchanged. With an
+installed key, authentication errors and unavailable generations fail rather than
+producing a misleading plaintext patch. Unsafe or corrupt installed keys and
+interrupted transactions also remain errors.
 Only the current repository key is retained: older generations, including the
 old `HEAD` side of a staged rotation, cannot be converted. Use
 `git diff --cached --no-textconv --stat` when reviewing a rotation.
@@ -512,7 +529,11 @@ Back up the repository and identities before changing protection policy or
 rotating keys.
 
 Interrupted publication leaves an encrypted recovery journal and blocks
-cooperating encryption operations. Preserve the local key and journal, then run:
+cooperating encryption operations. Preserve the local key and journal. For an
+interrupted unlock materialization, rerun `over unlock`: it safely restores the
+recorded preparation state and retries, refusing intervening edits. This automatic
+retry applies only to journals explicitly created for unlock; other transactions
+and older journals require:
 
 ```sh
 over crypt recover

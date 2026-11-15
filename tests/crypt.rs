@@ -678,7 +678,12 @@ fn a_long_lived_filter_does_not_retain_key_access_after_explicit_lock() {
             bytes.extend(packet);
         }
     }
-    let (root, _) = repository();
+    let (root, identities) = repository();
+    let repo = git2::Repository::open(root.path()).unwrap();
+    let ciphertext = over::crypt::access::local_key(&repo)
+        .unwrap()
+        .encrypt(b"process sentinel", 0)
+        .unwrap();
     let mut child = Command::new(cargo_bin("over"))
         .current_dir(root.path())
         .env_remove("OVER_HOME")
@@ -703,9 +708,18 @@ fn a_long_lived_filter_does_not_retain_key_access_after_explicit_lock() {
         section(&mut output),
         b"capability=clean\ncapability=smudge\n"
     );
-    for locked in [false, true] {
+    for (transition, locked) in [false, true, false].into_iter().enumerate() {
         if locked {
             over(root.path(), &["lock"]);
+        } else if transition > 0 {
+            over(
+                root.path(),
+                &[
+                    "unlock",
+                    "--identity",
+                    identities.path().join("alice.age").to_str().unwrap(),
+                ],
+            );
         }
         send(&mut input, b"command=clean\n");
         send(&mut input, b"pathname=token\n");
@@ -718,6 +732,23 @@ fn a_long_lived_filter_does_not_retain_key_access_after_explicit_lock() {
         } else {
             assert_eq!(section(&mut output), b"status=success\n");
             over::crypt::format::inspect(&section(&mut output)).unwrap();
+            assert!(section(&mut output).is_empty());
+        }
+        // Failed clean requests must not desynchronize subsequent ciphertext requests.
+        for command in [b"command=smudge\n".as_slice(), b"command=clean\n"] {
+            send(&mut input, command);
+            send(&mut input, b"pathname=other-token\n");
+            input.write_all(b"0000").unwrap();
+            send(&mut input, &ciphertext);
+            input.write_all(b"0000").unwrap();
+            input.flush().unwrap();
+            assert_eq!(section(&mut output), b"status=success\n");
+            let expected = if locked || command == b"command=clean\n" {
+                ciphertext.as_slice()
+            } else {
+                b"process sentinel"
+            };
+            assert_eq!(section(&mut output), expected);
             assert!(section(&mut output).is_empty());
         }
     }

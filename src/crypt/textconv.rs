@@ -19,8 +19,11 @@ pub fn transform(repo: &git2::Repository, input: &[u8]) -> Result<Zeroizing<Vec<
     }
     let _guard = access::guard(repo, false)?;
     let domain = format::file_domain(input)?;
-    // Unlike smudge, conversion must neither pass locked ciphertext through nor
-    // keep the native-store domain encrypted: this boundary is explicit display.
+    // Checkout can visit protected blobs before their access metadata is present.
+    if access::local_key_missing(repo)? {
+        return Ok(Zeroizing::new(input.to_vec()));
+    }
+    // Explicit display decrypts the native store too, but never bypasses authentication.
     access::local_key(repo)?.decrypt(input, domain)
 }
 
@@ -48,15 +51,31 @@ mod tests {
     }
 
     #[test]
-    fn recognizable_truncated_ciphertext_never_becomes_displayable_plaintext() {
+    fn locked_conversion_rejects_truncated_headers_and_authentication_tags() {
         let directory = tempfile::tempdir().unwrap();
         let repo = git2::Repository::init(directory.path()).unwrap();
         let ciphertext = format::RepositoryKey::generate()
             .unwrap()
             .encrypt(b"secret", 0)
             .unwrap();
-        for end in 1..ciphertext.len() {
+        for end in 1..format::HEADER_LEN + 16 {
             assert!(transform(&repo, &ciphertext[..end]).is_err());
         }
+    }
+
+    #[rstest::rstest]
+    #[case(0)]
+    #[case(1)]
+    fn locked_conversion_preserves_both_domains_without_checked_out_metadata(#[case] domain: u8) {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(directory.path()).unwrap();
+        let ciphertext = format::RepositoryKey::generate()
+            .unwrap()
+            .encrypt(b"binary\0secret\xff\n", domain)
+            .unwrap();
+        assert_eq!(
+            transform(&repo, &ciphertext).unwrap().as_slice(),
+            ciphertext
+        );
     }
 }

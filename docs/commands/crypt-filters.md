@@ -34,6 +34,9 @@ Historical plaintext is preserved with an exposure warning, not destroyed.
 `filter-process` implements Git's v2 long-lived clean/smudge packet protocol;
 it is not an ordinary stream-to-stream converter. Git prefers it when configured.
 Every request rereads current key state. Malformed/unsupported payloads fail.
+The process does not cache repository keys between requests. Lock waits for active
+transformations; subsequent requests use locked behavior. Already transformed
+output may still be buffered or held by Git or other processes after lock.
 
 ## Textconv
 
@@ -49,10 +52,13 @@ git show HEAD
 git diff --no-textconv
 ```
 
-Text conversion requires a valid current local key for ciphertext. Locked,
-corrupt, truncated, unsupported, stale-generation, or interrupted-transaction
-inputs fail; helpers do not print partial decrypted bytes. Other files may already
-have been printed before a later file fails in a multi-file diff.
+When the local key is absent, structurally valid ciphertext passes through
+byte-for-byte without decryption or authentication, allowing locked Git diffs to
+complete. With an installed key, conversion requires successful authentication.
+Malformed/unsupported payloads, invalid installed keys, unavailable generations,
+and interrupted transactions still fail; helpers never print partial decrypted
+bytes. Other files may already have been printed before a later file fails in a
+multi-file diff.
 
 Generated attributes select `diff=over`; setup installs
 `diff.over.textconv` and `diff.over.cachetextconv=false`. No persistent Git
