@@ -107,7 +107,10 @@ and tool options apply. Temporary inputs remain available until Git exits.
 For protected paths selecting `diff=over`, the installed
 [encrypted textconv driver](crypt-filters.md#textconv) provides readable plaintext
 while unlocked, including source and virtual-checkout staged/unstaged views.
-Ciphertext conversion fails while locked or when its generation is unavailable.
+While locked, structurally valid ciphertext passes through unchanged without
+decryption or authentication. With an installed key, authentication failures and
+unavailable generations fail conversion. Some protected checkout comparisons
+require unlock before presentation, independently of textconv passthrough.
 Over disables persistent Git textconv caches during its comparisons. Plaintext
 patches can still be retained by pagers, external tools, or output redirection.
 External difftools keep their own conversion behavior; they are not automatically
