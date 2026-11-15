@@ -433,6 +433,8 @@ pub async fn run(hooks: &Hooks, event: Event, context: HookContext<'_>) -> Resul
         let failure =
             |field: &str, reason: &str| hook_failure(event, index, context.scope, field, reason);
         let mut command = Command::new("sh");
+        // Initial-checkout metadata is scoped to Git smudge, never bootstrap shell commands.
+        command.env_remove(crate::crypt::bootstrap::ENV);
         command
             .arg("-c")
             .arg(script)

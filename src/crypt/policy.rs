@@ -21,9 +21,10 @@ pub fn git(repo: &git2::Repository, arguments: &[&str]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-fn git_command(repo: &git2::Repository) -> Result<Command> {
+pub(crate) fn git_command(repo: &git2::Repository) -> Result<Command> {
     let mut command = Command::new("git");
     command.arg("-C").arg(access::root(repo)?);
+    command.env_remove(super::bootstrap::ENV);
     // Parent hooks/scratch Git processes must not redirect canonical repository operations.
     for name in [
         "GIT_DIR",

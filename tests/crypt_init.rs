@@ -141,7 +141,7 @@ impl Fixture {
             // Both independent hook processes must observe plaintext, not merely a key file.
             let hook = |event| {
                 format!(
-                    "cat token > .git/{event}.token && \"$CRYPT_INIT_OVER\" --home \"$OVER_REPOSITORY_ROOT\" secret get TOKEN > .git/{event}.secret && printf '{event}\\n' >> .git/bootstrap-events"
+                    "test -z \"${{OVER_CRYPT_INIT_CONTEXT+x}}\" && cat token > .git/{event}.token && \"$CRYPT_INIT_OVER\" --home \"$OVER_REPOSITORY_ROOT\" secret get TOKEN > .git/{event}.secret && printf '{event}\\n' >> .git/bootstrap-events"
                 )
             };
             descriptor["hooks"] = serde_json::json!({
@@ -210,6 +210,17 @@ impl Fixture {
         assert!(!self.clone.join(".git/over-crypt/key").exists());
         over::crypt::format::inspect(&fs::read(self.clone.join("token")).unwrap()).unwrap();
         assert!(!self.clone.join(".git/bootstrap-events").exists());
+        let repo = git2::Repository::open(&self.clone).unwrap();
+        let config = repo.config().unwrap();
+        for name in [
+            "filter.over.clean",
+            "filter.over.smudge",
+            "filter.over.process",
+            "diff.over.textconv",
+        ] {
+            assert!(!config.get_string(name).unwrap().is_empty());
+        }
+        assert!(config.get_bool("filter.over.required").unwrap());
         let rejected = run(self.over(&self.clone).args(["secret", "get", "TOKEN"]));
         assert!(!rejected.status.success());
     }
@@ -258,8 +269,11 @@ impl Fixture {
         // Like patch_add.rs, use a controlling PTY and wait for each prompt before
         // sending input. A second password prompt receives no answer and times out.
         let driver = r#"
-import errno, fcntl, json, os, pty, select, signal, struct, sys, time, termios
+import errno, fcntl, json, os, pty, select, signal, struct, subprocess, sys, time, termios
 steps = json.loads(sys.argv[1])
+# Observe the real clone at the prompt, before allowing initialization to proceed.
+destination = sys.argv[sys.argv.index('--home') + 1]
+fresh = not os.path.exists(os.path.join(destination, '.git'))
 pid, fd = pty.fork()
 if pid == 0:
     os.execv(sys.argv[2], sys.argv[2:])
@@ -282,6 +296,10 @@ while time.monotonic() < deadline:
         output += block
         pending += block
         if sent < len(steps) and steps[sent][0].encode() in pending:
+            if fresh:
+                assert os.listdir(destination) == ['.git'], os.listdir(destination)
+                for name in ['filter.over.clean', 'filter.over.smudge', 'filter.over.process', 'diff.over.textconv']:
+                    subprocess.run(['git', '-C', destination, 'config', '--local', '--get', name], check=True, stdout=subprocess.DEVNULL)
             if 'passphrase' in steps[sent][0]:
                 # Dialoguer prints the label before disabling echo and flushing input.
                 # Wait for its secure terminal mode instead of racing that flush.
@@ -357,10 +375,82 @@ fn explicit_identity_unlocks_a_fresh_noninteractive_init_before_both_bootstrap_h
     let fixture = Fixture::new(false, true);
     checked(run(fixture
         .init()
+        .env(
+            "OVER_CRYPT_INIT_CONTEXT",
+            "inherited context must not reach hooks",
+        )
         .args(["--unlock", "--identity"])
         .arg(&fixture.identity)));
     fixture.assert_hooks(&["post-clone", "post-init"]);
     fixture.assert_persistent_unlock();
+}
+
+#[test]
+fn initial_unlocked_smudge_can_visit_ciphertext_before_access_metadata_is_checked_out() {
+    let fixture = Fixture::new(false, false);
+    fs::write(fixture.source.join("!token"), PLAINTEXT).unwrap();
+    checked(run(fixture
+        .over(&fixture.source)
+        .args(["crypt", "add", "!token"])));
+    fixture.git(&fixture.source, &["add", "."]);
+    fixture.git(&fixture.source, &["commit", "-qm", "early ciphertext"]);
+    checked(run(fixture
+        .init()
+        .args(["--unlock", "--identity"])
+        .arg(&fixture.identity)));
+    assert_eq!(fs::read(fixture.clone.join("!token")).unwrap(), PLAINTEXT);
+    fixture.assert_persistent_unlock();
+}
+
+#[test]
+fn no_unlock_completes_locked_and_conflicts_with_explicit_unlock() {
+    let fixture = Fixture::new(false, true);
+    let conflict = run(fixture.init().args(["--unlock", "--no-unlock"]));
+    assert!(!conflict.status.success());
+    assert!(!fixture.clone.exists());
+    let output = checked(run(fixture.init().arg("--no-unlock")));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Unlock repository encryption"));
+    fixture.assert_locked();
+}
+
+#[test]
+fn metadata_only_repositories_install_drivers_without_attempting_explicit_unlock() {
+    let fixture = Fixture::new(false, false);
+    fixture.git(&fixture.source, &["rm", "token", ".over/secrets.yaml"]);
+    fixture.git(
+        &fixture.source,
+        &["commit", "-qm", "metadata without ciphertext"],
+    );
+    let output = checked(run(fixture.init().arg("--unlock")));
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("no encrypted content to unlock"), "{text}");
+    assert!(!text.contains("credentials unavailable"), "{text}");
+    let repo = git2::Repository::open(&fixture.clone).unwrap();
+    assert!(
+        repo.config()
+            .unwrap()
+            .get_string("diff.over.textconv")
+            .is_ok()
+    );
+    assert!(!repo.path().join("over-crypt/key").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_secret_ciphertext_alone_triggers_the_default_unlock_confirmation() {
+    let fixture = Fixture::new(false, false);
+    fixture.git(&fixture.source, &["rm", "token"]);
+    fixture.git(
+        &fixture.source,
+        &["commit", "-qm", "native ciphertext only"],
+    );
+    checked(fixture.interact(
+        &mut fixture.init(),
+        &[("Unlock repository encryption", "n")],
+    ));
+    over::crypt::format::inspect(&fs::read(fixture.clone.join(".over/secrets.yaml")).unwrap())
+        .unwrap();
+    assert!(!fixture.clone.join(".git/over-crypt/key").exists());
 }
 
 #[test]
@@ -393,11 +483,11 @@ fn noninteractive_init_keeps_ciphertext_until_explicit_identity_unlock_before_po
 }
 
 #[test]
-fn noninteractive_init_unlock_without_a_credential_rejects_without_installing_a_local_key() {
+fn noninteractive_init_without_available_credentials_completes_locked_without_installing_a_key() {
     let fixture = Fixture::new(false, true);
     let output = run(fixture.init().arg("--unlock"));
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("identity"));
+    checked(output.clone());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("identity"));
     fixture.assert_locked();
 }
 
@@ -438,6 +528,29 @@ fn no_argument_unlock_repairs_broken_filters_even_with_an_existing_local_key() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn forced_unlock_starts_credential_acquisition_without_confirmation_before_checkout() {
+    let fixture = Fixture::new(true, true);
+    let output = checked(fixture.interact(
+        fixture.init().arg("--unlock"),
+        &[("passphrase: ", &format!("{PASSPHRASE}\n"))],
+    ));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Unlock repository encryption"));
+    fixture.assert_hooks(&["post-clone", "post-init"]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn no_unlock_suppresses_confirmation_and_credentials_even_with_a_terminal() {
+    let fixture = Fixture::new(true, true);
+    let output = checked(fixture.interact(fixture.init().arg("--no-unlock"), &[]));
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(!text.contains("Unlock repository encryption"));
+    assert!(!text.contains("Age key passphrase"));
+    fixture.assert_locked();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn interactive_fresh_init_offers_unlock_and_accepts_one_hidden_passphrase_before_hooks() {
     let fixture = Fixture::new(true, true);
     checked(fixture.interact(
@@ -453,10 +566,11 @@ fn interactive_fresh_init_offers_unlock_and_accepts_one_hidden_passphrase_before
 
 #[cfg(target_os = "linux")]
 #[rstest::rstest]
-#[case::wrong_password("incorrect-password-sentinel\n")]
-#[case::cancelled_password("\u{3}")]
-fn failed_or_cancelled_interactive_init_leaves_ciphertext_locked_and_skips_hooks(
+#[case::wrong_password("incorrect-password-sentinel\n", true)]
+#[case::terminated_password("\u{3}", false)]
+fn failed_credentials_continue_locked_while_process_termination_preserves_the_unchecked_clone(
     #[case] answer: &str,
+    #[case] completes: bool,
 ) {
     let fixture = Fixture::new(true, true);
     let output = fixture.interact(
@@ -466,8 +580,14 @@ fn failed_or_cancelled_interactive_init_leaves_ciphertext_locked_and_skips_hooks
             ("passphrase: ", answer),
         ],
     );
-    assert!(!output.status.success());
-    fixture.assert_locked();
+    assert_eq!(output.status.success(), completes);
+    if completes {
+        fixture.assert_locked();
+    } else {
+        assert!(!fixture.clone.join("token").exists());
+        assert!(!fixture.clone.join("over.yaml").exists());
+        assert!(!fixture.clone.join(".git/over-crypt/key").exists());
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -492,7 +612,7 @@ fn interrupted_state_refuses_unlock_before_asking_for_another_credential() {
 fn a_locked_noninteractive_init_does_not_start_bootstrap_commands() {
     let fixture = Fixture::new(false, true);
     let output = run(&mut fixture.init());
-    assert!(!output.status.success());
+    checked(output);
     fixture.assert_locked();
     assert!(
         !fixture.clone.join(".git/post-clone.token").exists(),
@@ -508,7 +628,7 @@ fn declining_init_unlock_leaves_bootstrap_commands_unexecuted() {
         &mut fixture.init(),
         &[("Unlock repository encryption", "n")],
     );
-    assert!(!output.status.success());
+    checked(output);
     fixture.assert_locked();
     assert!(!fixture.clone.join(".git/post-clone.token").exists());
 }
@@ -533,6 +653,35 @@ fn init_repairs_a_persisted_unlock_before_running_hooks_again() {
     fixture.assert_persistent_unlock();
 }
 
+#[rstest::rstest]
+#[case::corrupt(b"invalid key".as_slice())]
+#[case::stale([42; 96].as_slice())]
+fn an_existing_invalid_key_never_authorizes_bootstrap_hooks_when_unlock_is_skipped(
+    #[case] invalid_key: &[u8],
+) {
+    let fixture = Fixture::new(false, true);
+    checked(run(fixture
+        .init()
+        .args(["--unlock", "--identity"])
+        .arg(&fixture.identity)));
+    for file in ["post-init.token", "post-init.secret", "bootstrap-events"] {
+        fs::remove_file(fixture.clone.join(".git").join(file)).unwrap();
+    }
+    let ciphertext = fixture.git(&fixture.clone, &["show", "HEAD:token"]).stdout;
+    fs::write(fixture.clone.join("token"), &ciphertext).unwrap();
+    fs::write(fixture.clone.join(".git/over-crypt/key"), invalid_key).unwrap();
+    let output = run(fixture.over(&fixture.clone).args(["init", "--no-unlock"]));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("existing encryption key is invalid"));
+    assert!(!fixture.clone.join(".git/bootstrap-events").exists());
+    assert!(!fixture.clone.join(".git/post-init.token").exists());
+    assert_eq!(fs::read(fixture.clone.join("token")).unwrap(), ciphertext);
+    assert_eq!(
+        fs::read(fixture.clone.join(".git/over-crypt/key")).unwrap(),
+        invalid_key
+    );
+}
+
 #[test]
 fn repairing_an_existing_unlock_preserves_plaintext_working_edits() {
     let fixture = Fixture::new(false, false);
@@ -541,7 +690,9 @@ fn repairing_an_existing_unlock_preserves_plaintext_working_edits() {
         .args(["--unlock", "--identity"])
         .arg(&fixture.identity)));
     fs::write(fixture.clone.join("token"), b"independent working edit").unwrap();
-    checked(run(fixture.over(&fixture.clone).arg("init")));
+    checked(run(fixture
+        .over(&fixture.clone)
+        .args(["init", "--no-unlock"])));
     assert_eq!(
         fs::read(fixture.clone.join("token")).unwrap(),
         b"independent working edit"

@@ -4,13 +4,13 @@ use anyhow::{Context as _, Result, bail};
 use clap::{Args, ValueEnum};
 use dialoguer::{Confirm, Select};
 
-use crate::actions::git::init::prepare;
+use crate::actions::git::init::prepare_with;
 use crate::overlays::MaterializationKind;
 use crate::ui::{self, style::DialogTheme};
 
 use super::CLI;
 
-#[derive(Args, Debug)]
+#[derive(Args, Clone, Debug)]
 pub struct Params {
     /// Clone from a Git URL or local repository path
     source: Option<String>,
@@ -26,8 +26,11 @@ pub struct Params {
     #[arg(long)]
     set_origin: bool,
     /// Explicitly unlock repository encryption during initialization
-    #[arg(long)]
+    #[arg(long, conflicts_with = "no_unlock")]
     unlock: bool,
+    /// Skip encryption unlock and continue with a locked checkout
+    #[arg(long)]
+    no_unlock: bool,
     /// Use a standard Age identity when unlocking
     #[arg(short = 'i', long, requires = "unlock")]
     identity: Vec<std::path::PathBuf>,
@@ -138,14 +141,113 @@ fn setup_configuration(
     Ok(())
 }
 
+fn wants_unlock(params: &Params, encrypted: bool) -> Result<bool> {
+    if !encrypted {
+        if params.unlock {
+            ui::info("There is no encrypted content to unlock.")?;
+        }
+        return Ok(false);
+    }
+    if params.no_unlock {
+        return Ok(false);
+    }
+    if params.unlock {
+        return Ok(true);
+    }
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        return Ok(false);
+    }
+    let _pause = crate::ui::progress::pause()?;
+    match Confirm::with_theme(&DialogTheme::default())
+        .with_prompt("Unlock repository encryption before checkout and bootstrap hooks?")
+        .default(false)
+        .interact()
+    {
+        Ok(consent) => Ok(consent),
+        Err(error) => {
+            ui::info(format!(
+                "Unlock confirmation unavailable or cancelled ({error}); continuing locked."
+            ))?;
+            Ok(false)
+        }
+    }
+}
+
+fn credentials(
+    git: &git2::Repository,
+    registry: &crate::crypt::access::Registry,
+    params: &Params,
+) -> Result<Option<super::crypt::AcquiredKey>> {
+    match super::crypt::acquire_repository_key(
+        git,
+        registry,
+        &super::crypt::Unlock {
+            identity: params.identity.clone(),
+            user: None,
+            key: None,
+        },
+    ) {
+        Ok(key) => Ok(Some(key)),
+        Err(error) => {
+            // Only acquisition errors are recoverable; storage and checkout errors stay fatal.
+            ui::info(format!(
+                "Unlock credentials unavailable ({error:#}); continuing with a locked checkout. Run over --home {} unlock later.",
+                git.workdir().context("missing worktree")?.display()
+            ))?;
+            Ok(None)
+        }
+    }
+}
+
+fn initialize_existing_encryption(destination: &std::path::Path, params: &Params) -> Result<()> {
+    let git = git2::Repository::open(destination)?;
+    if crate::crypt::access::configured(&git)? {
+        crate::crypt::access::configure_filters(&git)?;
+        // Recovery state must be checked before offering or acquiring more credentials.
+        if crate::crypt::policy::unlock_uses_local_key(&git)? {
+            if params.unlock
+                && crate::crypt::detect::inspect(&git)?
+                    .ciphertext_paths
+                    .is_empty()
+            {
+                ui::info("There is no encrypted content to unlock.")?;
+            }
+            return crate::crypt::policy::refresh(&git, false);
+        }
+    }
+    let detection = crate::crypt::detect::inspect(&git)?;
+    if wants_unlock(params, !detection.ciphertext_paths.is_empty())? {
+        let registry = crate::crypt::access::load(&git)?;
+        if let Some(credentials) = credentials(&git, &registry, params)? {
+            credentials.unlock(&git)?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
     tracing::debug!("init command");
     let destination = cli.resolve_home()?;
     let source = params.source.clone();
     let mode = params.mode;
     let no_config = params.no_config;
+    let options = params.clone();
     let mut result = tokio::task::spawn_blocking(move || {
-        let result = prepare(destination, source.as_deref())?;
+        let result = prepare_with(destination, source.as_deref(), |git, detection| {
+            if wants_unlock(&options, !detection.ciphertext_paths.is_empty())? {
+                let tree = detection.tree.context("encrypted repository has no committed tree")?;
+                let registry = crate::crypt::bootstrap::registry(git, tree)?;
+                if let Some(credentials) = credentials(git, &registry, &options)? {
+                    {
+                        let _guard = crate::crypt::access::guard(git, true)?;
+                        crate::crypt::access::install(git, &credentials.key)?;
+                        crate::crypt::access::local_key_for_registry(git, &registry)?;
+                    }
+                    credentials.remember(git);
+                }
+            }
+            Ok(())
+        }).with_context(|| "initialization did not complete; inspect the preserved clone before retrying in a new --home destination")?;
         setup_configuration(&result, mode, no_config)?;
         Ok::<_, anyhow::Error>(result)
     })
@@ -176,40 +278,33 @@ pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
         .await
         .context("origin update task failed")??;
     }
+    if !result.cloned {
+        let destination = result.destination.clone();
+        let options = params.clone();
+        tokio::task::spawn_blocking(move || initialize_existing_encryption(&destination, &options))
+            .await
+            .context("existing encryption initialization task failed")??;
+    }
     let git = git2::Repository::open(&result.destination)?;
-    if crate::crypt::access::configured(&git)? {
-        crate::crypt::access::configure_filters(&git)?;
-    }
-    if crate::crypt::access::configured(&git)? && crate::crypt::access::local_key(&git).is_ok() {
-        // A persisted key survives restart; repair any incomplete ciphertext refresh without prompting.
-        crate::crypt::policy::refresh(&git, false)?;
-    } else if crate::crypt::access::configured(&git)? {
-        let consent = params.unlock
-            || (io::stdin().is_terminal()
-                && io::stderr().is_terminal()
-                && Confirm::new()
-                    .with_prompt("Unlock repository encryption before bootstrap hooks?")
-                    .default(false)
-                    .interact()?);
-        if consent {
-            super::crypt::unlock_repository(
-                &git,
-                &super::crypt::Unlock {
-                    identity: params.identity.clone(),
-                    user: None,
-                    key: None,
-                },
-            )?;
-        }
-    }
     // Do not discover child overlays until bootstrap tools have unlocked them.
     let repository = result.repository.clone();
     let hooks = repository.hooks()?;
-    if crate::crypt::access::configured(&git)?
+    let skip_hooks =
+        crate::crypt::access::configured(&git)? && crate::crypt::access::local_key_missing(&git)?;
+    if crate::crypt::access::configured(&git)? && !skip_hooks {
+        // A stale or corrupt key file is not proof that hooks can safely read protected files.
+        crate::crypt::access::local_key(&git)
+            .context("bootstrap hooks were not run because the existing encryption key is invalid; run over unlock with valid credentials")?;
+    }
+    if skip_hooks
         && (!hooks.post_init.is_empty() || (result.cloned && !hooks.post_clone.is_empty()))
     {
         // Shell hooks cannot declare all file reads; never start them against a locked ciphertext checkout.
-        crate::crypt::access::local_key(&git).context("bootstrap hooks were not run because repository encryption is locked; run over unlock, then retry over init (existing checkouts run post-init)")?;
+        ui::info(format!(
+            "Repository encryption is locked; bootstrap hooks were skipped. Run over --home {} unlock, then over --home {} init (retries run post-init; recover post-clone-only steps explicitly).",
+            result.destination.display(),
+            result.destination.display()
+        ))?;
     }
     // Bootstrap must not discover encrypted children before unlock hooks execute.
     let templates = crate::exec::Context::builder()
@@ -224,6 +319,9 @@ pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
         &[crate::hooks::Event::PostInit]
     };
     for event in events {
+        if skip_hooks {
+            continue;
+        }
         crate::hooks::run(
             &hooks,
             *event,
@@ -257,7 +355,14 @@ pub async fn execute(cli: &CLI, params: &Params) -> Result<()> {
     if let Some(push_url) = result.push_url {
         ui::info(format!("Explicit origin push URL preserved: {push_url}"))?;
     }
-    ui::info("Next: over apply [NAME]")?;
+    if skip_hooks {
+        ui::info(format!(
+            "Next: over --home {} unlock",
+            result.destination.display()
+        ))?;
+    } else {
+        ui::info("Next: over apply [NAME]")?;
+    }
     Ok(())
 }
 

@@ -4,7 +4,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, bail, ensure};
 use git2::{
     FetchOptions, Repository, RepositoryOpenFlags,
     build::{CheckoutBuilder, RepoBuilder},
@@ -118,6 +118,38 @@ fn origin_urls(repo: &Repository) -> Result<(Option<String>, Option<String>)> {
     }
 }
 
+fn head_state(repo: &Repository) -> Result<(Option<String>, Option<git2::Oid>)> {
+    let head = repo.find_reference("HEAD")?;
+    let target = match repo.head() {
+        Ok(head) => head.target(),
+        Err(error) if error.code() == git2::ErrorCode::UnbornBranch => None,
+        Err(error) => return Err(error.into()),
+    };
+    Ok((head.symbolic_target()?.map(str::to_owned), target))
+}
+
+fn index_state(repo: &Repository) -> Result<Option<Vec<u8>>> {
+    match fs::read(repo.path().join("index")) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).context("failed to inspect pending initial index"),
+    }
+}
+
+fn configure_checkout(repo: &Repository) -> Result<crate::crypt::detect::Detection> {
+    let crypt = crate::crypt::detect::inspect(repo)
+        .context("pre-checkout crypt detection failed; clone preserved for repair")?;
+    crypt
+        .validate_checkout()
+        .context("initial checkout was not started; clone preserved for repair")?;
+    if crypt.is_crypt() {
+        // Locked smudge retains ciphertext, but the trusted driver must exist before checkout.
+        crate::crypt::access::configure_filters(repo)
+            .context("driver setup failed before initial checkout; clone preserved for repair")?;
+    }
+    Ok(crypt)
+}
+
 /// Clone into an empty destination, or inspect an existing checkout without fetching.
 pub fn initialize(destination: PathBuf, source: Option<&str>) -> Result<Initialization> {
     initialize_checkout(destination, source, false)
@@ -128,10 +160,28 @@ pub fn prepare(destination: PathBuf, source: Option<&str>) -> Result<Initializat
     initialize_checkout(destination, source, true)
 }
 
+/// Offer credential acquisition only after committed validation and local driver setup.
+pub(crate) fn prepare_with(
+    destination: PathBuf,
+    source: Option<&str>,
+    before_checkout: impl FnOnce(&Repository, &crate::crypt::detect::Detection) -> Result<()>,
+) -> Result<Initialization> {
+    initialize_with(destination, source, true, before_checkout)
+}
+
 fn initialize_checkout(
     destination: PathBuf,
     source: Option<&str>,
     allow_missing: bool,
+) -> Result<Initialization> {
+    initialize_with(destination, source, allow_missing, |_, _| Ok(()))
+}
+
+fn initialize_with(
+    destination: PathBuf,
+    source: Option<&str>,
+    allow_missing: bool,
+    before_checkout: impl FnOnce(&Repository, &crate::crypt::detect::Detection) -> Result<()>,
 ) -> Result<Initialization> {
     let empty = match fs::symlink_metadata(&destination) {
         Ok(metadata) => {
@@ -160,20 +210,39 @@ fn initialize_checkout(
             .with_checkout(checkout)
             .clone(source, &destination)
             .with_context(|| format!("failed to clone into {}; any partial checkout is preserved: repair it or remove it explicitly before retrying", destination.display()))?;
-        let crypt = crate::crypt::detect::inspect(&repo)
-            .context("pre-checkout crypt detection failed; clone preserved for repair")?;
-        crypt
-            .validate_checkout()
-            .context("initial checkout was not started; clone preserved for repair")?;
-        if crypt.is_crypt() {
-            // Locked smudge retains ciphertext, but the trusted driver must exist before checkout.
-            crate::crypt::access::configure_filters(&repo)?;
-        }
-        if crypt.tree.is_some() {
+        let head = head_state(&repo)?;
+        let crypt = configure_checkout(&repo)?;
+        let index = index_state(&repo)?;
+        before_checkout(&repo, &crypt)?;
+        // Consent may take arbitrarily long; never reset files or refs changed meanwhile.
+        ensure!(
+            head_state(&repo)? == head
+                && index_state(&repo)? == index
+                && fs::read_dir(&destination)?
+                    .all(|entry| entry.is_ok_and(|entry| entry.file_name() == ".git")),
+            "clone changed during initialization; initial checkout not started; inspect {} before retrying in a new destination",
+            destination.display()
+        );
+        if let Some(tree) = crypt.tree {
             // An empty clone has no HEAD to reset; root configuration setup handles it below.
-            crate::crypt::policy::git(&repo, &["reset", "--hard", "HEAD"]).context(
-                "initial filtered checkout failed; partial checkout preserved for recovery",
-            )?;
+            let mut command = crate::crypt::policy::git_command(&repo)?;
+            command.args(["reset", "--hard", "HEAD"]);
+            if crypt.is_crypt() {
+                command.env(
+                    crate::crypt::bootstrap::ENV,
+                    crate::crypt::bootstrap::Context::new(&repo, tree)?.encode()?,
+                );
+            }
+            let output = command.output()?;
+            ensure!(
+                output.status.success(),
+                "initial filtered checkout failed; partial checkout preserved at {}: {}; inspect it before choosing a new destination or explicitly removing the failed clone",
+                destination.display(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if crypt.is_crypt() && !crate::crypt::access::local_key_missing(&repo)? {
+                crate::crypt::access::local_key(&repo)?;
+            }
         }
     } else if empty {
         bail!(
@@ -221,6 +290,131 @@ fn finish_initialization(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[rstest::rstest]
+    #[case("worktree")]
+    #[case("index")]
+    #[case("branch")]
+    fn changes_made_while_initialization_waits_abort_checkout_without_overwriting_them(
+        #[case] change: &str,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = Repository::init(directory.path().join("source")).unwrap();
+        let mut builder = source.treebuilder(None).unwrap();
+        builder
+            .insert(
+                "over.toml",
+                source.blob(b"target = '~'\n").unwrap(),
+                0o100644,
+            )
+            .unwrap();
+        let tree = source.find_tree(builder.write().unwrap()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.invalid").unwrap();
+        source
+            .commit(Some("HEAD"), &signature, &signature, "fixture", &tree, &[])
+            .unwrap();
+        let destination = directory.path().join("clone");
+        let error = prepare_with(
+            destination.clone(),
+            source.workdir().unwrap().to_str(),
+            |repo, _| {
+                assert!(!destination.join("over.toml").exists());
+                match change {
+                    "worktree" => fs::write(destination.join("independent"), b"preserve me")?,
+                    "index" => fs::write(repo.path().join("index"), b"independent index")?,
+                    "branch" => {
+                        repo.branch("independent", &repo.head()?.peel_to_commit()?, false)?;
+                        repo.set_head("refs/heads/independent")?;
+                    }
+                    _ => unreachable!(),
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("clone changed during initialization")
+        );
+        assert!(!destination.join("over.toml").exists());
+        match change {
+            "worktree" => assert_eq!(
+                fs::read(destination.join("independent")).unwrap(),
+                b"preserve me"
+            ),
+            "index" => assert_eq!(
+                fs::read(destination.join(".git/index")).unwrap(),
+                b"independent index"
+            ),
+            "branch" => assert_eq!(
+                Repository::open(&destination)
+                    .unwrap()
+                    .head()
+                    .unwrap()
+                    .name()
+                    .unwrap(),
+                "refs/heads/independent"
+            ),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn failed_driver_configuration_preserves_a_clone_without_materializing_tracked_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = Repository::init(directory.path().join("source")).unwrap();
+        let identity = age::x25519::Identity::generate();
+        crate::crypt::access::add_key(
+            &source,
+            "alice",
+            "default",
+            Some(&identity.to_public().to_string()),
+            None,
+            true,
+        )
+        .unwrap();
+        let mut index = source.index().unwrap();
+        index
+            .add_all(["."], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        let tree = source.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.invalid").unwrap();
+        source
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "metadata only",
+                &tree,
+                &[],
+            )
+            .unwrap();
+        let destination = directory.path().join("clone");
+        let mut checkout = CheckoutBuilder::new();
+        checkout.dry_run();
+        let clone = RepoBuilder::new()
+            .with_checkout(checkout)
+            .clone(source.workdir().unwrap().to_str().unwrap(), &destination)
+            .unwrap();
+        let config = fs::read(clone.path().join("config")).unwrap();
+        fs::write(clone.path().join("config.lock"), b"another writer").unwrap();
+        let error = configure_checkout(&clone).unwrap_err();
+        assert!(format!("{error:#}").contains("driver setup failed before initial checkout"));
+        assert_eq!(fs::read(clone.path().join("config")).unwrap(), config);
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+        assert!(!clone.path().join("over-crypt/key").exists());
+        fs::remove_file(clone.path().join("config.lock")).unwrap();
+        assert!(configure_checkout(&clone).unwrap().is_crypt());
+        assert!(
+            clone
+                .config()
+                .unwrap()
+                .get_bool("filter.over.required")
+                .unwrap()
+        );
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+    }
 
     #[test]
     fn a_fresh_https_origin_becomes_ssh_without_contacting_either_remote() {

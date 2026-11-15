@@ -11,6 +11,29 @@ use super::buffer::reserve_secret;
 use super::{access, format};
 
 pub fn transform(repo: &git2::Repository, clean: bool, input: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    transform_with_registry(repo, clean, input, None)
+}
+
+fn transform_for_git(
+    repo: &git2::Repository,
+    clean: bool,
+    input: &[u8],
+) -> Result<Zeroizing<Vec<u8>>> {
+    // Clean must never acquire the bootstrap exception to worktree metadata validation.
+    let registry = if clean {
+        None
+    } else {
+        super::bootstrap::environment_registry(repo)?
+    };
+    transform_with_registry(repo, clean, input, registry.as_ref())
+}
+
+fn transform_with_registry(
+    repo: &git2::Repository,
+    clean: bool,
+    input: &[u8],
+    registry: Option<&access::Registry>,
+) -> Result<Zeroizing<Vec<u8>>> {
     let _guard = access::guard(repo, false)?;
     if format::recognized(input) {
         format::inspect(input)?;
@@ -18,12 +41,19 @@ pub fn transform(repo: &git2::Repository, clean: bool, input: &[u8]) -> Result<Z
         if !clean && access::local_key_missing(repo)? {
             return Ok(Zeroizing::new(input.to_vec()));
         }
-        let registry = access::load(repo)?;
+        let loaded;
+        let registry = match registry {
+            Some(registry) => registry,
+            None => {
+                loaded = access::load(repo)?;
+                &loaded
+            }
+        };
         ensure!(
             input[10..format::HEADER_LEN] == registry.generation,
             "ciphertext has a stale key generation"
         );
-        match access::local_key(repo) {
+        match access::local_key_for_registry(repo, registry) {
             Ok(key) => {
                 let domain = format::file_domain(input)?;
                 let plaintext = key.decrypt(input, domain)?;
@@ -61,7 +91,7 @@ pub fn once(clean: bool) -> Result<()> {
         &mut std::io::stdin().lock(),
         format::MAX_BYTES + format::HEADER_LEN + 16,
     )?;
-    let output = transform(&repo, clean, &input)?;
+    let output = transform_for_git(&repo, clean, &input)?;
     std::io::stdout().write_all(&output)?;
     Ok(())
 }
@@ -198,8 +228,8 @@ fn process_io(
             .find_map(|line| line.strip_prefix(b"command="))
             .context("missing filter command")?;
         let result = match command {
-            b"clean" => transform(repo, true, &bytes),
-            b"smudge" => transform(repo, false, &bytes),
+            b"clean" => transform_for_git(repo, true, &bytes),
+            b"smudge" => transform_for_git(repo, false, &bytes),
             _ => bail!("unsupported Git filter command"),
         };
         match result {
@@ -312,6 +342,57 @@ mod tests {
             bytes.extend_from_slice(b"0000");
         }
         bytes
+    }
+
+    #[test]
+    fn bootstrap_smudge_uses_only_bound_committed_metadata_and_retains_key_safety_checks() {
+        let (_directory, repo, key) = repository(true);
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new(".over/crypt/access.json"))
+            .unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.invalid").unwrap();
+        repo.commit(Some("HEAD"), &signature, &signature, "registry", &tree, &[])
+            .unwrap();
+        let context = crate::crypt::bootstrap::Context::new(&repo, tree.id()).unwrap();
+        std::fs::remove_dir_all(repo.workdir().unwrap().join(".over")).unwrap();
+        let registry = context.registry(&repo).unwrap();
+        let encrypted = key.encrypt(b"secret", 0).unwrap();
+        assert_eq!(
+            transform_with_registry(&repo, false, &encrypted, Some(&registry))
+                .unwrap()
+                .as_slice(),
+            b"secret"
+        );
+        assert!(transform(&repo, false, &encrypted).is_err());
+        assert!(transform(&repo, true, b"plaintext").is_err());
+        let native = key.encrypt(b"native secret", 1).unwrap();
+        assert_eq!(
+            transform_with_registry(&repo, false, &native, Some(&registry))
+                .unwrap()
+                .as_slice(),
+            native
+        );
+        let (_other_directory, other, _) = repository(false);
+        assert!(context.registry(&other).is_err());
+        let wrong_tree = repo.treebuilder(None).unwrap().write().unwrap();
+        assert!(
+            crate::crypt::bootstrap::Context::new(&repo, wrong_tree)
+                .unwrap()
+                .registry(&repo)
+                .is_err()
+        );
+        std::fs::write(
+            access::private_dir(&repo).join("transaction.json"),
+            b"pending",
+        )
+        .unwrap();
+        assert!(transform_with_registry(&repo, false, &encrypted, Some(&registry)).is_err());
+        std::fs::remove_file(access::private_dir(&repo).join("transaction.json")).unwrap();
+        let stale = format::RepositoryKey::decode(&[43; 96]).unwrap();
+        access::install(&repo, &stale).unwrap();
+        assert!(transform_with_registry(&repo, false, &encrypted, Some(&registry)).is_err());
     }
 
     fn request(bytes: &mut Vec<u8>, command: &[u8], content: &[u8]) {
