@@ -13,7 +13,7 @@ The repository defaults to `~/.dotfiles`; select another with `--home` or
 
 There are no overlay-only top-level attributes. Root declarations of shared
 attributes supply inherited policy, except for document-local `$schema` and
-non-inherited `hooks`. Root-only preferences cannot be overridden by children.
+non-inherited `hooks`, `data`, and `host`. Root-only preferences cannot be overridden by children.
 
 Examples below use YAML unless labeled TOML; the same attributes are available
 in both formats. See [Editor support](../configuration.md#editor-support) for
@@ -38,7 +38,8 @@ Defaults below apply when no inherited value or matching rule supplies a value.
 | `mode` | Both | [Materialization mode](#materialization-mode) | `symlink` | Materialization baseline for this scope. |
 | `permissions` | Both | [Octal string](#permissions) | No explicit assignment | Permission baseline for partial and generated outputs. |
 | `rules` | Both | List of [rule objects](#rules) | No local rules | Ordered source-path assignments of target, mode, and permissions. |
-| `data` | Both | Mapping | Empty mapping | Consumer-owned metadata for templates and external tools. |
+| `data` | Both | Mapping | Empty mapping | Local-only consumer metadata for templates and external tools. |
+| `host` | Both | Mapping | Empty mapping | Local host defaults, overridden by the configured host overlay's own mapping. |
 | `git` | Both | URL string, repository object, or placement mapping | No repositories | [Git repositories and worktrees](#git-repositories-git) to provision. |
 | `hooks` | Both | [Hooks object](#lifecycle-hooks-hooks) | No commands | Local lifecycle commands; never inherited. |
 
@@ -96,7 +97,7 @@ selected overlay:
 | `description`, `target` | Nearest declaration wins. |
 | `uses`, `exclude` | Nearest declaration replaces the inherited value; `[]` clears it. |
 | `mode`, `permissions`, `rules` | At each scope, explicit baselines apply before that scope's rules. Rules accumulate; `rules: []` does not clear inherited rules. |
-| `data` | Mappings merge recursively; lists, scalars, and nested nulls replace previous values. Top-level `data` must be a mapping. |
+| `data`, `host` | Local declarations only; never inherited. Both must be mappings. Effective `host` merges local defaults with configured-host overrides; lists, scalars, and nested nulls replace. |
 | `git` | Tables merge by key; nearer conflicting values replace earlier values. |
 | `hooks` | Never inherited. Root hooks remain repository-scoped; child hooks belong to their own overlay. |
 | `$schema` | Document-local; never inherited. |
@@ -105,8 +106,8 @@ selected overlay:
 does not extend descriptor inheritance. Missing dependencies, cycles, and
 conflicting file ownership are errors. `--no-uses` skips dependency operations,
 but retains dependency metadata. See [Composition](overlay.md#composition) and
-[Consumer metadata](overlay.md#consumer-metadata-data) for metadata merge order,
-including the default overlay's context.
+[Consumer metadata](overlay.md#consumer-metadata-data) for local data, explicit
+dependency namespaces, and host defaults/overrides.
 
 ### Paths and templates
 
@@ -414,7 +415,7 @@ For Git-ignore-style exclusions, use a separate
 
 Editor schemas reject unknown attributes in closed configuration objects.
 At runtime, Over warns and ignores unknown attributes; invalid recognized
-values and missing required fields remain errors. `data`, Git option names,
+values and missing required fields remain errors. `data`, `host`, Git option names,
 additional remote options, and hook environment names are intentionally open
 namespaces with the value types described above. Schemas do not replace
 [`over lint`](../commands/lint.md) or runtime validation.

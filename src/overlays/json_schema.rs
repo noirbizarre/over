@@ -39,6 +39,13 @@ struct OverlayDescriptor {
         skip_serializing_if = "Option::is_none"
     )]
     data: Option<BTreeMap<String, Value>>,
+    /// Local host defaults, overridden by the configured host overlay's own host mapping.
+    #[schemars(
+        default,
+        with = "BTreeMap<String, Value>",
+        skip_serializing_if = "Option::is_none"
+    )]
+    host: Option<BTreeMap<String, Value>>,
     /// Destination directory. Omit to inherit the ancestor's target (default: ~).
     #[schemars(default, with = "String", skip_serializing_if = "Option::is_none")]
     target: Option<String>,
@@ -264,6 +271,7 @@ mod tests {
     #[case(json!({"exclude":"*.tmp"}))]
     #[case(json!({"exclude":["*.tmp", "cache"]}))]
     #[case(json!({"data":{"custom":{"nested":[null, true, 1, "text"]}}}))]
+    #[case(json!({"host":{"custom":{"nested":[null, true, 1, "text"]}}}))]
     #[case(json!({"rules":[{"path":"config","target":"~/.config"}]}))]
     #[case(json!({"mode":"checkout", "permissions":"0o600", "rules":[{"path":"config", "permissions":"0644"}]}))]
     #[case(json!({"rules":[{"path":"apps/*", "mode":"symlink-directory"}]}))]
@@ -311,6 +319,8 @@ mod tests {
     #[case(json!({"target":null}))]
     #[case(json!({"data":null}))]
     #[case(json!({"data":[]}))]
+    #[case(json!({"host":null}))]
+    #[case(json!({"host":[]}))]
     #[case(json!({"map":null}))]
     #[case(json!({"map":{"config":{}}}))]
     #[case(json!({"map":{"config":{"target":"~", "extra":true}}}))]

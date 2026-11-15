@@ -139,12 +139,12 @@ fn an_unrelated_single_overlay_is_not_an_implicit_default() {
 }
 
 #[test]
-fn contextual_selection_precedes_default_without_changing_default_metadata() {
+fn contextual_selection_precedes_default_without_importing_the_defaults_local_data() {
     let fixture = Fixture::new();
     fixture.overlay("one", "target = '~/one'\n[data]\nowner = 'one'");
     fixture.overlay(
         "two",
-        "target = '~/two'\n[data]\nowner = 'two'\ndefault_data = true",
+        "target = '~/two'\n[data]\nowner = 'two'\ndefault_data = true\n[host]\nmachine_override = true",
     );
     fixture
         .temp
@@ -156,7 +156,11 @@ fn contextual_selection_precedes_default_without_changing_default_metadata() {
     let ctx = fixture.ctx.with_overlay(overlay).resolve_data().unwrap();
     let data = serde_json::to_value(&ctx.data).unwrap();
     assert_eq!(data["owner"], serde_json::json!("one"));
-    assert_eq!(data["default_data"], serde_json::json!(true));
+    assert!(data.get("default_data").is_none());
+    assert_eq!(
+        serde_json::to_value(&ctx.host).unwrap()["machine_override"],
+        serde_json::json!(true)
+    );
     assert_eq!(
         selection::select(&fixture.ctx, None, &[fixture.path("outside")], true)
             .unwrap()
@@ -566,7 +570,7 @@ fn the_environment_target_reaches_contextual_selection_before_the_default() {
 }
 
 #[test]
-fn data_infers_source_context_before_the_configured_default() {
+fn data_prefers_the_configured_host_before_source_context() {
     let fixture = Fixture::new();
     fixture.overlay("one", "target = '~'\n[data]\nowner = 'one'");
     fixture.overlay("two", "target = '~'\n[data]\nowner = 'two'");
@@ -579,7 +583,7 @@ fn data_infers_source_context_before_the_configured_default() {
         .command("data", &fixture.path("repo/one"))
         .assert()
         .success()
-        .stdout(contains("\"owner\":\"one\""));
+        .stdout(contains("\"owner\":\"two\""));
 }
 
 #[test]

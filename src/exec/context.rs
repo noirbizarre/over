@@ -134,8 +134,16 @@ pub struct Context {
     /// Facts about the current machine, available to all templates.
     pub machine: MachineInfo,
 
-    /// Resolved consumer metadata for the selected execution root.
+    /// The current overlay's local metadata, never inherited or graph-merged.
+    #[serde(skip)]
     pub data: DataMap,
+
+    /// Current local host defaults with configured-host overrides applied.
+    #[serde(skip)]
+    pub host: DataMap,
+
+    #[serde(skip)]
+    pub(crate) host_overrides: Arc<DataMap>,
 
     #[serde(skip)]
     pub progress: Option<Progress>,
@@ -316,6 +324,8 @@ impl ContextBuilder {
             overlay: self.overlay,
             machine: self.machine,
             data: self.data,
+            host: DataMap::new(),
+            host_overrides: Arc::default(),
             progress: self.progress,
             ui_progress: self
                 .ui_progress
@@ -369,28 +379,25 @@ impl Context {
         })
     }
 
-    /// Prepare metadata before rendering paths; dependency context copies keep
-    /// this snapshot so they cannot discard the command target's overrides.
+    /// Capture definitions once; each participant binds its own local scope.
     pub fn resolve_data(&self) -> anyhow::Result<Ctx> {
         if self.data_prepared {
+            self.data_context()?;
             return Ok(Arc::new(self.clone()));
         }
-        let (data, overlays) = self
-            .repository
-            .resolve_inputs(self, self.overlay.as_ref())?;
-        Ok(Arc::new(Self {
-            data_prepared: true,
-            resolved_dependencies: Arc::new(overlays),
-            // Metadata may change the rendered target, invalidating an earlier binding.
-            current_target: None,
-            data,
-            ..self.clone()
-        }))
+        let selected = if let Some(overlay) = &self.overlay {
+            Some(overlay.clone())
+        } else {
+            self.repository.default_overlay(self)?
+        };
+        self.resolve_data_many(selected.as_slice())
     }
 
     pub(crate) fn prepare_rendering(&self, selected: &Overlay) -> anyhow::Result<Ctx> {
         if self.rendering_prepared {
-            return Ok(self.with_overlay(selected.clone()));
+            let bound = self.with_overlay(selected.clone());
+            bound.data_context()?;
+            return Ok(bound);
         }
         self.prepare_rendering_many(std::slice::from_ref(selected))
     }
@@ -407,6 +414,18 @@ impl Context {
                 .cloned(),
             ..self.clone()
         });
+        if self.data_prepared {
+            // Reusing a captured composition changes the view, never the loaded definitions.
+            if let Some(selected) = &prepared.overlay {
+                prepared = prepared.with_overlay(selected.clone());
+            } else {
+                prepared = Arc::new(Self {
+                    data: DataMap::new(),
+                    host: self.host_overrides.as_ref().clone(),
+                    ..prepared.as_ref().clone()
+                });
+            }
+        }
         if !self.repository.root.as_os_str().is_empty() {
             prepared = prepared.resolve_data_many(selected)?;
         }
@@ -416,24 +435,13 @@ impl Context {
             prepared.resolved_dependencies.clone()
         };
         {
-            let mut operational = std::collections::HashSet::new();
-            let mut pending: Vec<_> = selected
-                .iter()
-                .map(|overlay| overlay.name.clone())
-                .collect();
-            while let Some(name) = pending.pop() {
-                if operational.insert(name.clone())
-                    && !self.no_uses
-                    && let Some(overlay) = overlays.iter().find(|overlay| overlay.name == name)
-                {
-                    pending.extend(overlay.uses.iter().flatten().cloned());
-                }
-            }
-            for overlay in overlays
-                .iter()
-                .filter(|overlay| operational.contains(&overlay.name))
-            {
-                let target = overlay.resolve_target(&prepared)?;
+            // Dependency-first order makes explicit .target references available to consumers.
+            for overlay in overlays.iter() {
+                let target = crate::overlays::mapping::resolve_path(
+                    &overlay.target,
+                    &overlay.target_origin,
+                    &prepared.with_overlay(overlay.clone()),
+                )?;
                 prepared = prepared.with_resolved_overlay(
                     overlay.name.clone(),
                     target.to_string_lossy().into_owned(),
@@ -447,6 +455,11 @@ impl Context {
     }
 
     pub(crate) fn resolved_overlay(&self, name: &str) -> anyhow::Result<Overlay> {
+        let name = crate::overlays::mapping::lexical(std::path::Path::new(name));
+        let name = name
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("overlay path is not valid UTF-8"))?
+            .replace('\\', "/");
         if let Some(overlay) = self
             .resolved_dependencies
             .iter()
@@ -454,16 +467,27 @@ impl Context {
         {
             return Ok(overlay.clone());
         }
-        self.repository.get(name)
+        anyhow::ensure!(
+            !self.data_prepared,
+            "overlay '{name}' is not in the prepared dependency snapshot"
+        );
+        self.repository.get(&name)
     }
 
     /// Prepare a shared snapshot without inventing an identity for a composition.
     pub fn resolve_data_many(&self, overlays: &[Overlay]) -> anyhow::Result<Ctx> {
         if self.data_prepared {
+            self.data_context()?;
             return Ok(Arc::new(self.clone()));
         }
+        // Host overrides require only the host descriptor, never its dependency closure.
+        let overrides = self
+            .repository
+            .default_overlay(self)?
+            .map(|overlay| overlay.host)
+            .unwrap_or_default();
         let (data, dependencies) = self.repository.resolve_inputs_many(self, overlays)?;
-        Ok(Arc::new(Self {
+        let prepared = Arc::new(Self {
             data_prepared: true,
             resolved_dependencies: Arc::new(dependencies),
             current_target: None,
@@ -472,8 +496,23 @@ impl Context {
                 .filter(|first| overlays.iter().all(|overlay| overlay.name == first.name))
                 .cloned(),
             data,
+            host: crate::overlays::data::merge_host(
+                &overlays
+                    .first()
+                    .filter(|first| overlays.iter().all(|overlay| overlay.name == first.name))
+                    .map(|overlay| overlay.host.clone())
+                    .unwrap_or_default(),
+                &overrides,
+            ),
+            host_overrides: Arc::new(overrides),
             ..self.clone()
-        }))
+        });
+        // Validate all participant namespaces before any filesystem effects or deferred hooks.
+        prepared.data_context()?;
+        for overlay in prepared.resolved_dependencies.iter() {
+            prepared.with_overlay(overlay.clone()).data_context()?;
+        }
+        Ok(prepared)
     }
 
     /// Create a new [`ContextBuilder`] with default values.
@@ -482,11 +521,38 @@ impl Context {
     }
 
     pub fn with_overlay(&self, overlay: Overlay) -> Arc<Self> {
+        // Captured definitions win over rereads; unknown identities fail at a fallible scope boundary.
+        let overlay = self
+            .resolved_dependencies
+            .iter()
+            .find(|loaded| loaded.name == overlay.name)
+            .cloned()
+            .unwrap_or(overlay);
         Arc::new(Self {
             // Dependencies must not inherit their consumer's destination.
             current_target: None,
+            data: overlay.data.clone(),
+            host: crate::overlays::data::merge_host(&overlay.host, &self.host_overrides),
             overlay: Some(overlay),
             ..self.clone()
+        })
+    }
+
+    /// The same scope is serialized by the CLI and all template consumers.
+    pub fn data_context(&self) -> anyhow::Result<crate::overlays::data::DataContext> {
+        let overlays = if self.data_prepared {
+            crate::overlays::data::namespace(
+                self.overlay.as_ref(),
+                &self.resolved_dependencies,
+                &self.resolved_overlays,
+            )?
+        } else {
+            DataMap::new()
+        };
+        Ok(crate::overlays::data::DataContext {
+            data: self.data.clone(),
+            host: self.host.clone(),
+            overlays,
         })
     }
 

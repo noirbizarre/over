@@ -25,6 +25,16 @@ fn command(repo: &Path) -> Result<Command, Box<dyn Error>> {
     Ok(command)
 }
 
+fn scope(data: Value) -> Value {
+    json!({"data": data, "overlays": {}, "host": {}})
+}
+
+fn node(repo: &Path, name: &str, data: Value) -> Value {
+    // Canonical overlay identifiers use '/', but filesystem paths use native separators.
+    let root: std::path::PathBuf = repo.join(name).components().collect();
+    json!({"name": name, "root": root, "target": dirs::home_dir().unwrap(), "data": data, "host": {}})
+}
+
 fn assert_json(command: &mut Command, expected: Value) -> TestResult {
     let assertion = command.assert().success().stderr("");
     let stdout = &assertion.get_output().stdout;
@@ -49,7 +59,10 @@ fn exported_data_preserves_literal_home_paths() -> TestResult {
         "selected",
         &format!("data: {}", json!({"path": path})),
     )?;
-    assert_json(command(repo.path())?.arg("selected"), json!({"path": path}))
+    assert_json(
+        command(repo.path())?.arg("selected"),
+        scope(json!({"path": path})),
+    )
 }
 
 #[rstest]
@@ -69,7 +82,10 @@ fn an_omitted_name_exports_the_configured_default_context(#[case] default: Strin
     descriptor(repo.path(), "unrelated", "data: {unrelated: true}")?;
     assert_json(
         &mut command(repo.path())?,
-        json!({"host": "workstation", "parent": true, "base": true}),
+        json!({"data": {"host": "workstation"}, "host": {}, "overlays": {
+            "parent": node(repo.path(), "parent", json!({"parent": true})),
+            "base": node(repo.path(), "base", json!({"base": true})),
+        }}),
     )
 }
 
@@ -86,12 +102,15 @@ fn an_explicit_name_without_a_default_includes_only_its_dependency_closure() -> 
     descriptor(repo.path(), "unrelated", "data: {unrelated: true}")?;
     assert_json(
         command(repo.path())?.arg("selected"),
-        json!({"selected": true, "parent": true, "base": true}),
+        json!({"data": {"selected": true}, "host": {}, "overlays": {
+            "parent": node(repo.path(), "parent", json!({"parent": true})),
+            "base": node(repo.path(), "base", json!({"base": true})),
+        }}),
     )
 }
 
 #[test]
-fn an_explicit_name_composes_both_closures_with_canonical_precedence() -> TestResult {
+fn an_explicit_name_exposes_dependencies_without_merging_their_data() -> TestResult {
     let repo = TempDir::new()?;
     descriptor(repo.path(), "", "default_overlay: host")?;
     descriptor(
@@ -117,11 +136,11 @@ fn an_explicit_name_composes_both_closures_with_canonical_precedence() -> TestRe
     )?;
     assert_json(
         command(repo.path())?.arg("selected"),
-        json!({
-            "shared": "host", "host_only": true, "dependency_wins": "selected_dependency",
-            "sibling": "second", "nested": {"retained": true, "host": true, "selected": true},
-            "list": ["new"], "optional": null,
-        }),
+        json!({"data": {"nested": {"selected": true}, "list": ["new"], "optional": null}, "host": {}, "overlays": {
+            "shared": node(repo.path(), "shared", json!({"shared": "dependency", "nested": {"retained": true}, "list": ["old"], "optional": "old"})),
+            "first": node(repo.path(), "first", json!({"sibling": "first"})),
+            "second": node(repo.path(), "second", json!({"sibling": "second", "dependency_wins": "selected_dependency"})),
+        }}),
     )
 }
 
@@ -133,7 +152,7 @@ fn the_selected_root_wins_even_when_the_default_depends_on_it() -> TestResult {
     descriptor(repo.path(), "selected", "data: {value: selected}")?;
     assert_json(
         command(repo.path())?.arg("selected"),
-        json!({"value": "selected"}),
+        scope(json!({"value": "selected"})),
     )
 }
 
@@ -159,12 +178,12 @@ uses: [base]
     descriptor(repo.path(), "base", "data: {replaced: scalar}")?;
     assert_json(
         command(repo.path())?.arg("selected"),
-        json!({
+        json!({"data": {
             "enabled": true, "disabled": false, "count": 42, "negative": -7,
             "ratio": 1.25, "text": "line\n\"quoted\" \\ unicode: é",
             "list": ["one", 2, false, null, {"nested": "value"}],
             "optional": null, "replaced": {"old": true},
-        }),
+        }, "host": {}, "overlays": {"base": node(repo.path(), "base", json!({"replaced": "scalar"}))}}),
     )
 }
 
@@ -172,7 +191,87 @@ uses: [base]
 fn an_overlay_without_data_exports_an_empty_object() -> TestResult {
     let repo = TempDir::new()?;
     descriptor(repo.path(), "selected", "{}")?;
-    assert_json(command(repo.path())?.arg("selected"), json!({}))
+    assert_json(command(repo.path())?.arg("selected"), scope(json!({})))
+}
+
+#[test]
+fn host_overrides_do_not_require_resolving_the_hosts_unrelated_dependencies() -> TestResult {
+    let repo = TempDir::new()?;
+    descriptor(
+        repo.path(),
+        "",
+        "default_overlay: machine\nhost: {ancestor: forbidden}",
+    )?;
+    descriptor(
+        repo.path(),
+        "machine",
+        "uses: [missing]\ndata: {private: unrelated}\nhost: {ssh: {agent: host}, packages: [host]}",
+    )?;
+    descriptor(
+        repo.path(),
+        "apps/ssh",
+        "data: {packages: [openssh]}\nhost: {ssh: {agent: default, socket: retained}, packages: [default]}",
+    )?;
+    assert_json(
+        command(repo.path())?.arg("apps/ssh"),
+        json!({
+            "data": {"packages": ["openssh"]}, "overlays": {},
+            "host": {"ssh": {"agent": "host", "socket": "retained"}, "packages": ["host"]},
+        }),
+    )
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn omitted_selection_prefers_the_host_then_falls_back_to_source_context(
+    #[case] configured: bool,
+) -> TestResult {
+    let repo = TempDir::new()?;
+    descriptor(
+        repo.path(),
+        "",
+        if configured {
+            "default_overlay: machine"
+        } else {
+            "{}"
+        },
+    )?;
+    descriptor(repo.path(), "machine", "data: {selected: host}")?;
+    descriptor(repo.path(), "local", "data: {selected: contextual}")?;
+    assert_json(
+        command(repo.path())?.current_dir(repo.path().join("local")),
+        scope(json!({
+            "selected": if configured { "host" } else { "contextual" },
+        })),
+    )
+}
+
+#[test]
+fn dependency_targets_are_resolved_before_their_consumers() -> TestResult {
+    let repo = TempDir::new()?;
+    descriptor(
+        repo.path(),
+        "apps/ssh-agent",
+        "target: ~/agent\ndata: {packages: [openssh]}",
+    )?;
+    descriptor(
+        repo.path(),
+        "selected",
+        "uses: ['./apps/ssh-agent/']\ntarget: '{{ overlays.apps[\"ssh-agent\"].target }}/consumer'",
+    )?;
+    let mut dependency = node(
+        repo.path(),
+        "apps/ssh-agent",
+        json!({"packages": ["openssh"]}),
+    );
+    dependency["target"] = json!(dirs::home_dir().unwrap().join("agent"));
+    assert_json(
+        command(repo.path())?.arg("selected"),
+        json!({
+            "data": {}, "host": {}, "overlays": {"apps": {"ssh-agent": dependency}},
+        }),
+    )
 }
 
 #[rstest]
@@ -191,7 +290,7 @@ fn redirected_data_stays_compact_and_uncolored_even_with_forced_colors(
     } else {
         command.env_remove("NO_COLOR");
     }
-    assert_json(&mut command, json!({"nested": {"value": true}}))
+    assert_json(&mut command, scope(json!({"nested": {"value": true}})))
 }
 
 #[test]
@@ -204,7 +303,7 @@ fn the_environment_can_select_the_repository() -> TestResult {
             .current_dir(repo.path().parent().unwrap())
             .env("OVER_HOME", repo.path())
             .arg("data"),
-        json!({"source": "environment"}),
+        scope(json!({"source": "environment"})),
     )
 }
 
@@ -220,7 +319,7 @@ fn diagnostic_flags_do_not_contaminate_json_stdout(#[case] flag: &str) -> TestRe
         .success();
     assert_eq!(
         serde_json::from_slice::<Value>(&assertion.get_output().stdout)?,
-        json!({"valid": true})
+        scope(json!({"valid": true}))
     );
     if flag == "--debug" {
         assertion.stderr(contains("CLI args"));

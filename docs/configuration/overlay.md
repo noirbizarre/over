@@ -36,7 +36,7 @@ For TOML, use a schema directive at the top of `over.toml`:
 description = "Laptop configuration"
 ```
 
-Fields may be omitted to inherit their values. Use the
+Policy fields may be omitted to inherit their values; `data`, `host`, and hooks are local. Use the
 [root schema](root.md#editor-support) for repository-only preferences instead.
 See [Editor support](../configuration.md#editor-support) for validation scope.
 
@@ -56,7 +56,8 @@ other's files; overlapping ownership is a conflict.
 | `mode` | Directory materialization baseline | Ordered policy cascade |
 | `permissions` | Octal baseline for directly written content | Ordered policy cascade, independent of mode |
 | `rules` | Ordered path-specific target/mode/permission assignments | All scopes contribute; `[]` does not clear ancestor rules |
-| `data` | Consumer-owned metadata mapping | Recursive mapping merge; other values replace |
+| `data` | Consumer-owned metadata mapping | Local only; never inherited |
+| `host` | Local host defaults | Never inherited; configured host overrides local defaults |
 | `git` | Repositories/worktrees to provision | Tables merge by key; nearer conflicting values replace |
 | `hooks` | Overlay-local install and post-apply commands | Never inherited |
 
@@ -69,7 +70,7 @@ and hooks. Removed settings such as `install`, `default`, `defaults`,
 `materialization`, and `link_dirs` also warn and are ignored, with migration hints.
 Warnings do not prevent application. Invalid values for recognized settings,
 missing required fields, and malformed descriptors remain errors. Arbitrary
-consumer keys inside `data` and supported Git configuration namespaces are allowed.
+consumer keys inside `data`, `host`, and supported Git configuration namespaces are allowed.
 
 ## Targets and templates
 
@@ -81,7 +82,7 @@ source repository instead.
 
 Destination templates can use `machine` facts (`os`, `arch`, `hostname`,
 `username`, `distro`, `distro_id`), shared `paths`, the current `overlay`, and
-resolved `data`:
+local `data`, resolved `host`, and explicit dependency `overlays`:
 
 ```toml
 # ~/.dotfiles/workspaces/over.toml — inherited by workspaces/*
@@ -145,7 +146,7 @@ rules:
 content. For example, `config.toml.jinja` containing
 `hostname = "{{ data.hostname }}"` produces `config.toml` with the resolved
 hostname. `machine.os`, `machine.arch`, and `machine.hostname` provide detected
-machine facts; `data` includes inherited and dependency-provided values.
+machine facts; `data` contains only the owning overlay's own declarations.
 
 `strip_extension` independently removes the final filename extension. It does
 not enable rendering. Extensionless names and dotfiles without another suffix
@@ -551,27 +552,67 @@ namespaces. `target`, `uses`, and other Over settings remain outside `data`.
 
 ### Resolution and precedence
 
-Each overlay first inherits data through its descriptor chain. Execution then
-composes these effective mappings:
+All templates and hooks receive three namespaces, also exported by `over data`:
 
-1. Traverse the configured default's dependencies depth-first in `uses` order,
-   then the default itself.
-2. Traverse the selected overlay's closure in the same order, skipping previously
-   visited overlays. New selected dependencies can override default contributions.
-3. Merge the selected overlay last, even when the default depends on it. Each
-   overlay contributes once.
+- **`data`**: only the current overlay's own mapping. Directory ancestors,
+  dependencies, and unrelated host-enabled overlays never contribute values.
+- **`host`**: the current overlay's own defaults, recursively merged with the
+  configured `default_overlay`'s own `host` mapping. Host values win. No dependency
+  graph is traversed to obtain host overrides, and ancestor defaults do not inherit.
+- **`overlays`**: the current overlay's transitive `uses` dependencies, each
+  retaining its own data. The current overlay itself is excluded.
 
-Later contributions win. Mappings merge recursively; lists replace whole lists,
-scalars replace prior values, and explicit nested nulls replace while retaining
-the key. Absent keys leave earlier values intact. Even an inherited selected
-value can override a host-specific value. For example, merging
-`hardware: {gpu: nvidia}` into `{gpu: integrated, arch: x86_64}` changes only
-`gpu`; merging `packages: [three]` replaces `[one, two]` entirely.
+All three namespaces always exist. A descriptor-less overlay has empty local
+`data` and `host`. Without a configured host, `host` contains only current defaults;
+if neither declares values it is empty. Lists are complete values, never implicitly
+concatenated. `--no-uses` skips operations but retains dependency metadata and targets.
 
-Without a default, only the selected closure contributes. All-overlay commands
-resolve separate contexts per target, not one pooled mapping. `--no-uses` skips
-operations, never metadata dependencies; cycles and missing dependencies still
-fail resolution.
+### Host defaults and overrides (`host`)
+
+```yaml
+# apps/ssh/over.yaml
+host:
+  ssh:
+    agent: ssh-agent
+    socket: /run/user/1000/ssh-agent
+```
+
+```yaml
+# hosts/laptop/over.yaml (selected by default_overlay)
+host:
+  ssh:
+    agent: 1password
+```
+
+For `apps/ssh`, `host.ssh.agent` is `1password` and `host.ssh.socket` retains its
+default. Mappings merge recursively; lists, scalars, and nested nulls replace
+corresponding defaults. Unspecified keys retain their defaults. Top-level `host`
+must be a mapping, just like `data`. An overlay needing a default must declare it
+itself; a dependency's `host` does not supply it.
+
+### Explicit dependency namespaces
+
+If the current overlay uses `apps/ssh`, access its declared packages as
+`overlays.apps.ssh.data.archlinux.packages`. Each canonical path segment becomes
+a mapping key. Directory prefixes need not be overlays themselves. Terminal nodes
+expose `name` (canonical identity), `root` (source directory), `target` (resolved
+destination), and their own declared `data` and `host` mappings. Node `host` is the
+declaration; top-level `host` is the effective current defaults/overrides.
+
+An exposed overlay at `apps` can coexist with `apps/ssh`, retaining both its own
+attributes and the `ssh` child. A child that would overwrite an attribute, such as
+`apps/data` when `apps` is also exposed, fails with a namespace collision error.
+The reserved attributes are `name`, `root`, `target`, `data`, and `host`, only on
+actual overlay nodes. Namespace-only containers do not reserve those names.
+
+Names are preserved literally. Use bracket indexing for segments that are not
+dot-notation identifiers: `overlays.apps['ssh-agent'].data`, or
+`overlays['a.b']['123'].data`. An explicitly used repository-root overlay has
+canonical identity `""` and is accessed with `overlays['']`.
+
+Dependency targets resolve before consumers, so a target can reference
+`overlays.apps.ssh.target`. Self, consumer, and unrelated sibling targets are not
+in scope. Missing dependencies and cycles fail resolution.
 
 ### Templates and external tools
 
@@ -579,7 +620,9 @@ Supported destination templates can read `{{ data.hostname }}` or nested values
 such as `{{ data.hardware.gpu }}`. Metadata is read-only and strings inside it
 are not recursively templated. Explicitly selected file templates can consume
 the same data; partial content remains literal.
-`default_overlay` is resolved before this composition and cannot depend on it.
+Each dependency's templates and hooks receive its own local data, defaults, and
+dependency namespace, from the same immutable invocation snapshot.
+`default_overlay` is resolved before these scopes and cannot depend on them.
 
 [`over data`](../commands/data.md) exports JSON, preserving types and nulls, with
 diagnostics on stderr. Terminal output is pretty-printed; piped or redirected
@@ -587,8 +630,8 @@ output is compact and uncolored:
 
 ```sh
 over data                # Configured default context
-over data apps/editor    # Default context composed with apps/editor
-over data | jq -r '.hostname'
+over data apps/editor    # Editor-local data, its dependencies, and host overrides
+over data | jq -r '.data.hostname'
 ```
 
 External Rust consumers can use the same resolver:
@@ -602,13 +645,28 @@ fn example() -> anyhow::Result<()> {
     let context = Context::builder().repository(repository.clone()).build();
     let selected = repository.get("base")?;
     let data = repository.resolve_data(&context, Some(&selected))?;
-    // None resolves only the configured default/host context.
+    // None selects the configured default's local data.
     let prepared = context.with_overlay(selected).resolve_data()?;
     assert_eq!(prepared.data, data);
+    let scope = prepared.data_context()?;
+    assert_eq!(scope.data, data);
     Ok(())
 }
 ```
 
 `DataMap` and `DataValue` are exported from `over::overlays`. Resolve context data
-before rendering targets or performing library operations; dependency context
-copies retain the selected-root snapshot.
+before rendering targets or performing library operations. Context copies retain
+the loaded snapshot but rebind to each overlay's own scope.
+
+### Migration from merged data
+
+- Move machine-specific overrides to the configured host overlay's `host` mapping.
+  Put sensible `host` defaults directly in every overlay that consumes them.
+- Move inherited local values into each consuming overlay's `data`, or explicitly
+  reference declared dependency values with `overlays.<path>.data`.
+- Declare complete local lists or compose them explicitly in templates; no list
+  inheritance, concatenation, or package aggregation happens automatically.
+- Replace target strings such as `overlays['apps/ssh']` with
+  `overlays.apps.ssh.target`. The selected overlay uses `paths.target` after binding.
+- Update JSON consumers for the stable `data`/`overlays`/`host` envelope; for example,
+  an old `.hostname` query becomes `.data.hostname` or `.host.hostname` by scope.

@@ -18,6 +18,59 @@ fn descriptor(repo: &Path, name: &str, content: &str) -> std::io::Result<()> {
 #[rstest]
 #[case(false)]
 #[case(true)]
+fn explicit_dependency_target_references_work_even_when_dependency_operations_are_disabled(
+    #[case] no_uses: bool,
+) -> TestResult {
+    let repo = TempDir::new()?;
+    let target = TempDir::new()?;
+    descriptor(
+        repo.path(),
+        "apps/ssh",
+        "target: ~/agent\ndata: {label: dependency}",
+    )?;
+    descriptor(
+        repo.path(),
+        "selected",
+        "uses: ['./apps/ssh/']\ntarget: '{{ overlays.apps.ssh.target }}/consumer'\ndata: {label: local}\nrules:\n  - {path: config.jinja, template: true, strip_extension: true}",
+    )?;
+    fs::write(
+        repo.path().join("selected/config.jinja"),
+        "{{ data.label }}:{{ overlays.apps.ssh.data.label }}",
+    )?;
+    fs::write(repo.path().join("apps/ssh/dependency-only"), "dependency")?;
+    let mut command = Command::cargo_bin("over")?;
+    command
+        .arg("--home")
+        .arg(repo.path())
+        .args(["apply", "selected", "--no-prompt", "--target"])
+        .arg(target.path());
+    if no_uses {
+        command.arg("--no-uses");
+    }
+    command.assert().success();
+    assert_eq!(
+        fs::read_to_string(target.path().join("agent/consumer/config"))?,
+        "local:dependency"
+    );
+    assert_eq!(
+        target.path().join("agent/dependency-only").exists(),
+        !no_uses
+    );
+    // Target routing must use the same prepared namespaces in reporting commands.
+    Command::cargo_bin("over")?
+        .arg("--home")
+        .arg(repo.path())
+        .args(["status", "selected", "--target"])
+        .arg(target.path())
+        .args(if no_uses { vec!["--no-uses"] } else { vec![] })
+        .assert()
+        .success();
+    Ok(())
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
 fn explicit_apply_renders_all_path_surfaces_with_host_data_without_applying_host_files(
     #[case] no_uses: bool,
 ) -> TestResult {
@@ -28,7 +81,7 @@ fn explicit_apply_renders_all_path_surfaces_with_host_data_without_applying_host
         repo.path(),
         "host",
         &format!(
-            "uses: [shared]\ntarget: ~/host-files\ndata:\n  destination: host\n  path: '{}'\n",
+            "uses: [shared]\ntarget: ~/host-files\nhost:\n  destination: host\n  path: '{}'\n",
             target.path().display().to_string().replace('\'', "''")
         ),
     )?;
@@ -40,7 +93,7 @@ fn explicit_apply_renders_all_path_surfaces_with_host_data_without_applying_host
     descriptor(
         repo.path(),
         "selected",
-        "uses: [shared]\ntarget: '~/{{ data.destination }}'\ndata: {destination: selected-files}\nrules:\n  - path: config\n    target: '~/{{ data.mapped }}'",
+        "uses: [shared]\ntarget: '~/{{ data.destination }}'\ndata: {destination: selected-files}\nrules:\n  - path: config\n    target: '~/{{ overlays.shared.data.mapped }}'",
     )?;
     fs::write(repo.path().join("host/host-only"), "host")?;
     fs::write(repo.path().join("shared/dependency-only"), "dependency")?;
@@ -50,11 +103,11 @@ fn explicit_apply_renders_all_path_surfaces_with_host_data_without_applying_host
     fs::write(target.path().join("external"), "external")?;
     fs::write(
         repo.path().join("selected/external.link.yaml"),
-        "target: '{{ data.path }}/external'",
+        "target: '{{ host.path }}/external'",
     )?;
     fs::write(
         repo.path().join("selected/block.partial.yaml"),
-        "target: '{{ data.path }}/managed'\ncontent: literal content",
+        "target: '{{ host.path }}/managed'\ncontent: literal content",
     )?;
 
     Command::cargo_bin("over")?
@@ -125,17 +178,17 @@ fn all_targets_keep_host_data_without_leaking_other_targets_metadata() -> TestRe
     descriptor(
         repo.path(),
         "host",
-        "target: ~/host\ndata: {host: workstation}",
+        "target: ~/host\nhost: {name: workstation}",
     )?;
     descriptor(
         repo.path(),
         "alpha",
-        "target: '~/alpha-{{ data.host }}'\ndata: {only_alpha: dirty}",
+        "target: '~/alpha-{{ host.name }}'\ndata: {only_alpha: dirty}",
     )?;
     descriptor(
         repo.path(),
         "beta",
-        "target: '~/beta-{{ data.host }}-{{ data.only_alpha | default(\"clean\") }}'",
+        "target: '~/beta-{{ host.name }}-{{ data.only_alpha | default(\"clean\") }}'",
     )?;
     for name in ["host", "alpha", "beta"] {
         fs::write(repo.path().join(name).join("file"), name)?;

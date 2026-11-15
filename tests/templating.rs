@@ -10,7 +10,7 @@ use tempfile::TempDir;
 #[rstest]
 #[case(false)]
 #[case(true)]
-fn templates_consume_recursively_merged_inherited_and_dependency_data(#[case] checkout: bool) {
+fn templates_explicitly_access_dependency_data_without_inheriting_it(#[case] checkout: bool) {
     let fixture = Fixture::new(checkout);
     fs::write(
         fixture.source.join("over.yaml"),
@@ -29,13 +29,13 @@ fn templates_consume_recursively_merged_inherited_and_dependency_data(#[case] ch
         "uses: [base]\ndata: {hostname: first, config: {selected: local}}",
     );
     fs::write(descriptor, configuration).unwrap();
-    let template = "{{ data.config.root }}/{{ data.config.dependency }}/{{ data.config.selected }}";
+    let template = "{{ data.config.root | default('absent') }}/{{ overlays.base.data.config.dependency }}/{{ data.config.selected }}";
     fs::write(fixture.source.join("app/config.jinja"), template).unwrap();
     commit_all(&fixture.repo());
     fixture.apply();
     assert_eq!(
         fs::read_to_string(fixture.target.join("config")).unwrap(),
-        "inherited/shared/local"
+        "absent/shared/local"
     );
     assert_eq!(
         fs::read_to_string(fixture.source.join("app/config.jinja")).unwrap(),
@@ -46,7 +46,7 @@ fn templates_consume_recursively_merged_inherited_and_dependency_data(#[case] ch
 #[rstest]
 #[case(false)]
 #[case(true)]
-fn explicitly_composed_roots_render_from_one_recursively_merged_context(#[case] checkout: bool) {
+fn explicitly_composed_roots_render_from_their_own_local_contexts(#[case] checkout: bool) {
     let fixture = Fixture::new(checkout);
     fs::write(fixture.source.join("over.yaml"), format!("mode: {}\ndata: {{config: {{inherited: root}}}}\nrules:\n  - {{path: '**/*.jinja', template: true, strip_extension: true}}\n", if checkout { "checkout" } else { "symlink" })).unwrap();
     for (name, data) in [("left", "left: l"), ("right", "right: r")] {
@@ -59,7 +59,7 @@ fn explicitly_composed_roots_render_from_one_recursively_merged_context(#[case] 
         .unwrap();
         fs::write(
             root.join(format!("{name}.jinja")),
-            "{{ data.config.inherited }} {{ data.config.left }} {{ data.config.right }}",
+            "{{ data.config.inherited | default('absent') }} {{ data.config.left | default('absent') }} {{ data.config.right | default('absent') }}",
         )
         .unwrap();
     }
@@ -75,7 +75,11 @@ fn explicitly_composed_roots_render_from_one_recursively_merged_context(#[case] 
     for name in ["left", "right"] {
         assert_eq!(
             fs::read_to_string(fixture.target.join(name)).unwrap(),
-            "root l r"
+            if name == "left" {
+                "absent l absent"
+            } else {
+                "absent absent r"
+            }
         );
     }
     assert!(!fixture.target.join("config").exists());

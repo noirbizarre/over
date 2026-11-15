@@ -269,7 +269,7 @@ fn unapplied_status_resolves_inheritance_composition_mappings_and_rule_provenanc
     fs::write(source.join("over.yaml"), "target: '~/{{ data.destination }}'\nmode: symlink\ndata: {destination: resolved}\nrules:\n  - {path: selected/config, mode: symlink-directory}\n").unwrap();
     fs::write(
         source.join("selected/over.yaml"),
-        "uses: [base]\nrules:\n  - {path: config, target: '~/mapped'}\n",
+        "uses: [base]\ndata: {destination: resolved}\nrules:\n  - {path: config, target: '~/mapped'}\n",
     )
     .unwrap();
     fs::write(source.join("selected/config/file"), "managed").unwrap();

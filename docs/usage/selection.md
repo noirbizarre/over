@@ -43,15 +43,17 @@ without file operands use the invocation directory.
 
 | Commands | Fallback |
 | --- | --- |
-| `apply`, `unapply`, `commit`, `restore`, `data` | Configured `default_overlay`, otherwise an actionable missing-overlay error |
+| `apply`, `unapply`, `commit`, `restore` | Configured `default_overlay`, otherwise an actionable missing-overlay error |
+| `data` | Prefer configured host before inference; without one require a contextual or explicit overlay |
 | `add`, `git add`, `git mount` | Require an explicit overlay |
 | `status` / `show`, `diff`, `sync` | Configured default, otherwise all overlays |
 | `log` | History of the source repository |
 
-Context precedes the default. Ambiguity never invokes a fallback or an overlay
+Except for `data`, context precedes the default. Ambiguity never invokes a fallback or an overlay
 selection prompt. `--all` on status/diff/sync explicitly bypasses inference and
-the default's selection. Defaults still contribute their usual metadata even
-when another overlay is selected; invalid default metadata remains an error.
+the default's selection. The configured host's own `host` overrides still apply
+when another overlay is selected; its data and unrelated dependencies do not.
+Invalid configured defaults remain errors.
 
 `lint` and `doctor` retain their repository-wide diagnostic policies.
 `git status` requires an explicit repository association; it does not prompt.

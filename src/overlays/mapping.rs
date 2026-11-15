@@ -697,7 +697,7 @@ mod tests {
         let temp = assert_fs::TempDir::new().unwrap();
         // Use a built-in environment value without mutating process-global test state.
         temp.child("repo/ov/over.toml").write_str(
-            "target = '{{ root }}/base'\n[[rules]]\npath = 'config'\ntarget = '{{ overlays.shared }}/mapped'\n"
+            "uses = ['shared']\ntarget = '{{ root }}/base'\n[[rules]]\npath = 'config'\ntarget = '{{ overlays.shared.target }}/mapped'\n"
         ).unwrap();
         temp.child("repo/ov/config/file")
             .write_str("content")
@@ -707,8 +707,11 @@ mod tests {
             .unwrap();
         temp.child("repo/ov/block.partial.toml")
             .write_str(
-                "target = '{{ overlays.ov }}/{{ env.PATH | length }}/partial'\ncontent = 'block'\n",
+                "target = '{{ paths.target }}/{{ env.PATH | length }}/partial'\ncontent = 'block'\n",
             )
+            .unwrap();
+        temp.child("repo/shared/over.toml")
+            .write_str("target = '{{ root }}/../shared'")
             .unwrap();
         let repo = Repository::new(temp.path().join("repo"));
         let overlay = repo.get("ov").unwrap();
@@ -717,10 +720,6 @@ mod tests {
         let ctx = Context::builder()
             .repository(repo)
             .root(root.clone())
-            .resolved_overlays(std::sync::Arc::new(std::collections::HashMap::from([(
-                "shared".to_owned(),
-                shared.to_string_lossy().into_owned(),
-            )])))
             .build();
         let tree = crate::desired::DesiredTree::build_own(&ctx, &overlay).unwrap();
         assert!(

@@ -8,7 +8,9 @@ use crate::ui::json::{JsonErrorContext, print_json_with_context};
 
 #[derive(Args, Debug)]
 pub struct Params {
-    #[clap(help = "Name of the overlay to compose with the configured default context")]
+    #[clap(
+        help = "Select an overlay (defaults to the configured host); emit local data, dependency overlays, and resolved host values"
+    )]
     name: Option<String>,
 }
 
@@ -24,10 +26,15 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let explicit = args.name.clone();
     let selection_ctx = ctx.clone();
     let selected = tokio::task::spawn_blocking(move || {
+        if explicit.is_none()
+            && let Some(host) = selection_ctx.repository.default_overlay(&selection_ctx)?
+        {
+            return Ok(host);
+        }
         crate::selection::select(&selection_ctx, explicit.as_deref(), &[], true)
     })
     .await??;
-    let data = repo.resolve_data(&ctx, Some(&selected))?;
+    let data = ctx.prepare_rendering(&selected)?.data_context()?;
 
     print_json_with_context(
         &data,

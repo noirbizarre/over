@@ -1,14 +1,12 @@
 # `over data`
 
-Export resolved overlay data as JSON. This is the supported CLI interface for
-external consumers of the custom data context introduced in
-[#179](https://github.com/noirbizarre/over/issues/179).
+Export the same stable data context used by templates and hooks as JSON.
 
 ```text
 Usage: over data [OPTIONS] [NAME]
 
 Arguments:
-  [NAME]  Name of the overlay to compose with the configured default context
+  [NAME]  Select an overlay (defaults to the configured host)
 
 Options:
   -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
@@ -19,56 +17,59 @@ Options:
 
 ## Selection and Composition
 
-Without `NAME`, [infer from context](../usage/selection.md), then use the configured
-`default_overlay`, including machine-based templates such as
-`{{ machine.hostname }}`. If neither selects an overlay, fail with an actionable
-error. Ambiguity requires an explicit name, even with a default. The selected
-overlay includes its transitive `uses` dependencies. The command never prompts
-or implicitly aggregates all overlays.
+Without `NAME`, select the configured `default_overlay` (the host) first, including
+machine-based selection such as `hosts/{{ machine.hostname }}`. Without a configured
+host, use [contextual selection](../usage/selection.md), failing if no overlay can
+be selected. An explicit name selects that overlay. The command never prompts or
+implicitly selects all overlays.
 
-With `NAME`, the command composes the default context (when configured) with the
-named overlay and both transitive dependency closures. Without a default, only
-the named overlay and its dependencies contribute. An invalid configured default
-is an error even when an explicit name is supplied.
-
-The command uses the same [data resolution rules](../configuration/overlay.md#resolution-and-precedence)
-as templates and the public Rust API: dependencies precede their parents,
-shared dependencies contribute once, and the selected overlay's effective
-inherited mapping merges last. Mappings merge recursively; lists and other
-values replace earlier values, including explicit nulls.
+The selected overlay determines `data` and the transitive `uses` namespace.
+The configured host supplies only its own host overrides; its unrelated dependencies
+are not traversed or included. A missing or malformed configured host remains an error
+even with an explicit selection.
 
 ## Output and Scripting
 
-Successful stdout contains only the resolved data mapping as JSON, followed by a
-newline. Terminals receive pretty-printed JSON using the default foreground.
-Piped or redirected stdout receives compact, uncolored JSON. There is no wrapper object or
-execution-context metadata.
-Booleans, numbers, strings, arrays, objects, and explicit null values retain their
-JSON types. A selected overlay with no data outputs `{}` successfully.
+Every successful invocation emits the same three-part envelope:
 
-Diagnostics, including debug traces, go to stderr. Missing or unknown selections,
-invalid defaults or descriptors, missing dependencies, dependency cycles, and
-serialization failures produce a nonzero exit status. Selection, resolution,
-and serialization failures do not write a JSON payload to stdout.
-
-```sh
-# Dump the contextual overlay data, falling back to default_overlay
-over data
-
-# Compose the host context with another overlay
-over data base
-
-# Select a different repository
-over --home ~/.over data base
-
-# Query values using standard JSON tooling
-over data | jq '.provisioning.archlinux'
-over data | jq -r '.hostname'
-
-# Pretty-print for inspection
-over data | jq .
+```json
+{
+  "data": {},
+  "overlays": {},
+  "host": {}
+}
 ```
 
-Data strings remain literal values; the command does not render them as templates
-or interpret consumer-specific namespaces. Use external tools for querying and
-filtering the JSON output.
+- `data`: the selected overlay's own declarations, with no inheritance or merging.
+- `overlays`: only its transitive `uses` dependencies, with canonical paths presented
+  as nested mappings: `apps/ssh` becomes `overlays.apps.ssh`. Terminal nodes expose
+  `name`, `root`, `target`, and their own declared `data` and `host` mappings.
+- `host`: a recursive merge of selected-local host defaults and the configured
+  host's own overrides, with host values winning. Without a host, only local defaults
+  apply. Maps merge; lists, scalars, and nested nulls replace, never concatenate.
+
+See [data resolution](../configuration/overlay.md#resolution-and-precedence) for
+examples, namespace collisions, bracket indexing, and migration guidance. Dependency
+target attributes are resolved just as for templates; invalid target templates fail.
+
+Stdout contains only JSON followed by a newline. Terminals receive pretty-printed
+JSON; pipes receive compact, uncolored JSON. Values retain their JSON types.
+Diagnostics go to stderr. Selection, resolution, or serialization errors return a
+nonzero exit status without a JSON payload.
+
+```sh
+# Inspect the configured host, or contextual overlay when no host is configured
+over data
+
+# Inspect one overlay's stable scope
+over --home ~/.dotfiles data apps/ssh
+
+# Query each namespace explicitly
+over data apps/ssh | jq '.data.archlinux.packages'
+over data | jq '.overlays.apps.ssh.data.archlinux.packages'
+over data apps/ssh | jq -r '.host.ssh.agent'
+```
+
+Data strings remain literal. Only target/path definitions are rendered; metadata
+values are not recursively templated. Filtering and package aggregation belong to
+the consuming tools, not the generic data resolver.

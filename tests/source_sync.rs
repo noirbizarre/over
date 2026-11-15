@@ -815,14 +815,10 @@ fn all_overlay_discovery_includes_overlays_introduced_by_the_pull() {
 #[test]
 fn pulled_metadata_rebuilds_context_before_resolving_the_target() {
     let f = Fixture::new();
-    fs::write(
-        f.writer.join("over.toml"),
-        "default_overlay='ov'\n[data]\ncheckout_name='checkout'\n",
-    )
-    .unwrap();
+    fs::write(f.writer.join("over.toml"), "default_overlay='ov'\n").unwrap();
     fs::write(
         f.writer.join("ov/over.toml"),
-        "mode='checkout'\ntarget='~/{{ data.checkout_name }}'\n",
+        "mode='checkout'\ntarget='~/{{ data.checkout_name }}'\n[data]\ncheckout_name='checkout'\n",
     )
     .unwrap();
     commit(&f.writer);
@@ -831,8 +827,8 @@ fn pulled_metadata_rebuilds_context_before_resolving_the_target() {
     git(&f.source, &["merge", "--ff-only", "tracking/upstream"]);
     f.apply();
     fs::write(
-        f.writer.join("over.toml"),
-        "default_overlay='ov'\n[data]\ncheckout_name='updated-target'\n",
+        f.writer.join("ov/over.toml"),
+        "mode='checkout'\ntarget='~/{{ data.checkout_name }}'\n[data]\ncheckout_name='updated-target'\n",
     )
     .unwrap();
     f.advance("updated source");

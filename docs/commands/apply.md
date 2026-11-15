@@ -34,11 +34,10 @@ Options:
   For example, `over apply --no-prompt -- container/base container/rust`.
 - `--no-uses` applies only the named overlays, skipping every overlay each
   `uses` operationally. Metadata still includes all transitive dependencies.
-- The configured default's [data context](../configuration/overlay.md#consumer-metadata-data)
-  remains available with an explicit `NAME`; this does not apply the default's files.
-  Multiple roots share one metadata snapshot merged in dependency-first order,
-  like `uses`; already-visited contributors are not replayed. The historical
-  selected-root precedence exception is retained for a single distinct root.
+- The configured default's own `host` overrides remain available with an explicit
+  `NAME`; this does not apply the default's files or include its unrelated dependencies.
+  Each participant receives local `data`, resolved `host`, and its explicit dependency
+  namespace from one loaded snapshot. See [data scopes](../configuration/overlay.md#consumer-metadata-data).
 - `--install` additionally runs `hooks.install` (see
   [Install hooks](../install-config.md)). File materialization, declared
   Git provisioning, and post-apply hooks do not require `--install`.

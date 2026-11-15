@@ -1564,7 +1564,7 @@ mod tests {
     #[rstest]
     #[case("a_consumer", "z_dependency")]
     #[case("z_consumer", "a_dependency")]
-    fn standalone_resolution_errors_do_not_make_valid_consumers_invalid(
+    fn consumers_cannot_supply_missing_local_data_to_their_dependencies(
         #[case] consumer: &str,
         #[case] dependency: &str,
     ) {
@@ -1578,12 +1578,16 @@ mod tests {
             .write_str("target = '~/{{ data.destination }}'")
             .unwrap();
 
-        // The dependency cannot resolve by itself, but the consumer supplies
-        // its missing metadata regardless of alphabetical processing order.
+        // Local data cannot rescue a dependency whose own target is undefined.
         let result = lint_repository(&repo);
-        assert_eq!(result.error_count(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.error_count(), 2, "{:?}", result.diagnostics);
         assert_eq!(result.warning_count(), 0);
-        assert_eq!(result.diagnostics[0].overlay, dependency);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.overlay == dependency)
+        );
         assert!(
             result.diagnostics[0]
                 .message

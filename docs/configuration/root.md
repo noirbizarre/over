@@ -19,8 +19,9 @@ overlays:
 
 `format`, `repository`, `sync`, `default_overlay`, and `overlays` are root-only settings.
 Root hooks are also repository-scoped. Ordinary [overlay fields](overlay.md),
-such as `target`, `data`, and overlay rules, may appear here as
-inherited policy; they are not additional repository preferences.
+such as `target` and overlay rules, may appear here as inherited policy.
+Root `data` and `host` belong only to the repository-root overlay and do not
+inherit into children; they are not additional repository preferences.
 
 ## Default materialization
 
@@ -130,7 +131,8 @@ facts, before metadata composition; it cannot depend on the `data` it selects.
 
 | Commands | Without an explicit name |
 | --- | --- |
-| `apply`, `unapply`, `commit`, `restore`, `data` | Infer context, then use the default, otherwise require an explicit overlay |
+| `apply`, `unapply`, `commit`, `restore` | Infer context, then use the default, otherwise require an explicit overlay |
+| `data` | Use the configured host first, otherwise infer context or require an explicit overlay |
 | `status`, `diff`, `sync` | Infer context, then use the default, otherwise all overlays; `--all` overrides selection |
 | `add`, `git add`, `git mount` | Infer context, otherwise require an explicit overlay; no default fallback |
 | `log` | Infer context, otherwise source-repository history; no default selection |
@@ -141,10 +143,12 @@ See [contextual overlay selection](../usage/selection.md) for ranked evidence,
 Git associations, sibling files, and ambiguity errors. Ambiguity does not fall
 through to the default.
 
-The default also contributes the host [data context](overlay.md#consumer-metadata-data).
-An explicit name or `--all` changes command selection, but retains that context.
-The default's files and hooks are not processed just because its metadata is
-included. An invalid or missing default is an error, including with an explicit
+The default's own `host` mapping supplies machine-specific overrides to each
+overlay's local `host` defaults. Its `data`, ancestors, and dependency graph do not
+contribute to this merge. The host is optional; without one, local defaults apply.
+See [data scopes](overlay.md#consumer-metadata-data). The default's files and hooks
+are not processed just because its host overrides are included.
+An invalid or missing configured default is an error, including with an explicit
 name or `--all`; Over never silently selects something else.
 
 ## Overlay discovery
@@ -233,15 +237,16 @@ the inherited process `env`, resolved `overlays`, and the shared `paths` object
 (`home`, `over`, and `target`), alongside the execution context. The paths mean
 the actual user's home, the source repository root, and the current overlay's
 effective base destination, respectively. Install and post-apply hooks can
-read the selected overlay's resolved `data`, including inherited and host data.
-Each participant sees its own `overlay`, retaining the selected data snapshot;
+read their own local `data`, resolved `host`, and explicit dependency `overlays`.
+Each participant sees its own `overlay` and scope, using the same loaded snapshot;
 root install and post-apply hooks see the selected overlay only when one distinct
-root is selected. With multiple distinct roots they retain composed data and
-repository context, but have no `overlay` or `paths.target`; guard optional
+root is selected. With multiple distinct roots they have empty `data`, the configured
+host's overrides, and a namespace union of roots and dependencies, but no `overlay`
+or `paths.target`; guard optional
 target access with `paths.target is defined`.
 
 Init hooks have machine/environment/repository context but no selected overlay
-or composed data: bootstrap never discovers children before unlock hooks run.
+and empty `data`, `host`, and `overlays`: bootstrap never discovers children before unlock hooks run.
 Their `paths.target` is undefined; use `paths.target is defined` to guard access.
 Default-overlay selection also uses shared context with target unavailable.
 See [Targets and templates](overlay.md#targets-and-templates) for path availability
