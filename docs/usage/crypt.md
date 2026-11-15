@@ -592,8 +592,9 @@ text conversion, identity lookup, or credential/plugin commands. Attribute
 evaluation uses a disposable bare Git repository sharing read access to the
 source objects, with local/global/system attribute overrides excluded. Scratch
 administrative files are removed afterward; the inspected repository's config,
-index, refs, objects, and private crypt state remain unchanged. Git must support
-`check-attr --source`, as used elsewhere for committed-policy checks.
+index, refs, objects, and private crypt state remain unchanged. The pinned tree
+populates only the scratch index; `check-attr --cached` evaluates it without
+requiring newer Git's `--source` option.
 
 Empty repositories and repositories without crypt evidence need no crypt setup.
 Policy/ciphertext without access metadata, a registry without any usable access

@@ -379,6 +379,56 @@ fn inherited_git_configuration_cannot_invent_committed_protection() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn committed_policy_detection_supports_git_without_check_attr_source() {
+    use std::os::unix::fs::PermissionsExt;
+
+    const CHILD_REPO: &str = "OVER_DETECTION_OLD_GIT_REPOSITORY";
+    if let Some(path) = std::env::var_os(CHILD_REPO) {
+        let repo = Repository::open_bare(path).unwrap();
+        let result = detect::inspect(&repo).unwrap();
+        assert_eq!(result.protected_paths, vec![PathBuf::from("token")]);
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let repo = Repository::init_bare(directory.path().join("source.git")).unwrap();
+    commit(
+        &repo,
+        &[
+            (".gitattributes", b"token filter=over\n", 0o100644),
+            ("token", b"partial encryption setup", 0o100644),
+        ],
+    );
+    let bin = directory.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let shim = bin.join("git");
+    // Reproduce Git 2.39's unsupported option in a child, without changing global PATH.
+    fs::write(&shim, "#!/bin/sh\nfor arg in \"$@\"; do\ncase \"$arg\" in --source|--source=*) exit 129 ;; esac\ndone\nexec \"$OVER_DETECTION_REAL_GIT\" \"$@\"\n").unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "committed_policy_detection_supports_git_without_check_attr_source",
+            "--nocapture",
+        ])
+        .env(CHILD_REPO, repo.path())
+        .env("OVER_DETECTION_REAL_GIT", which::which("git").unwrap())
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[rstest]
 #[case(b"".as_slice(), Metadata::Malformed)]
 #[case(b"not json".as_slice(), Metadata::Malformed)]

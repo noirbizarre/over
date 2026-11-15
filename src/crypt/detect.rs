@@ -351,15 +351,19 @@ fn committed_attributes(
     if paths.is_empty() {
         return Ok(BTreeMap::new());
     }
+    // --source requires newer Git than Debian's supported devcontainer image provides.
+    // This index belongs only to the disposable repository, never to the inspected clone.
+    let output = source
+        .command()
+        .args(["read-tree", &tree.to_string()])
+        .output()?;
+    ensure!(
+        output.status.success(),
+        "could not prepare committed attribute inspection"
+    );
     let mut child = source
         .command()
-        .args([
-            "check-attr",
-            &format!("--source={tree}"),
-            "-z",
-            "--stdin",
-            "filter",
-        ])
+        .args(["check-attr", "--cached", "-z", "--stdin", "filter"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -384,7 +388,7 @@ fn committed_attributes(
     })?;
     ensure!(
         output.status.success(),
-        "could not inspect committed encryption attributes (Git with check-attr --source support is required)"
+        "could not inspect committed encryption attributes"
     );
     let fields: Vec<_> = output.stdout.split(|byte| *byte == 0).collect();
     ensure!(
