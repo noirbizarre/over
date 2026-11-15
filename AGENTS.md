@@ -99,8 +99,10 @@ handoff or PR description.
 ## This repository is generated from a template
 
 The toolchain, hooks, CI and release workflows come from
-[rust.tpl](https://github.com/noirbizarre/rust.tpl) and are updated with
-`git tpl update`. Files carrying template-owned content end with a
+[rust.tpl](https://github.com/noirbizarre/rust.tpl). Use `git tpl update` to refresh
+the rendered ref, inspect the diff, then `git tpl merge` to apply it; see the
+[contributor workflow](CONTRIBUTING.md#this-repository-is-generated-from-a-template).
+Files carrying template-owned content end with a
 `# --- project-specific ---` marker: add below it. Global mise tools instead go
 between the begin/end project-specific tools markers inside `[tools]`.
 
