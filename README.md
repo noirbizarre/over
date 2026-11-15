@@ -128,9 +128,14 @@ Start flat or split reusable app overlays from host composition:
 ```
 
 The root descriptor can set `target = "~"` and
-`default_overlay = "hosts/laptop"`; the host descriptor selects
+`host_overlay = "hosts/laptop"`; the host descriptor selects
 `uses = ["apps/git", "apps/editor"]`. Each app inherits configuration from its
 own ancestors. Composition includes independent trees, not a file override stack.
+
+The host supplies machine context, not an implicit deployment target. Apply it
+explicitly with `over apply hosts/laptop`, or set root `apply.default_to_host = true`
+to opt into that fallback when no active context exists (disabled by default).
+Sync has its own independent `sync.default_to_host` opt-in, also disabled by default.
 
 See [Examples](docs/examples.md) for complete descriptors, content, commands,
 multi-destination mappings, and checkout staging. Supported destination fields

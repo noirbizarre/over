@@ -31,7 +31,7 @@ the candidates and asks for an explicit overlay. Conflicting Git association
 values and stale associations also require correction or an explicit override.
 
 Multiple valid source explanations within one overlay are also ambiguous.
-Neither an explicit overlay nor a configured default chooses between its rules.
+Neither an explicit overlay nor a configured host chooses between its rules.
 
 File-taking commands infer from their operands, including missing literal paths
 that represent tracked deletions. Inferred operands must agree on one overlay;
@@ -43,17 +43,18 @@ without file operands use the invocation directory.
 
 | Commands | Fallback |
 | --- | --- |
-| `apply`, `unapply`, `commit`, `restore` | Configured `default_overlay`, otherwise an actionable missing-overlay error |
-| `data` | Prefer configured host before inference; without one require a contextual or explicit overlay |
-| `add`, `git add`, `git mount` | Require an explicit overlay |
-| `status` / `show`, `diff`, `sync` | Configured default, otherwise all overlays |
+| `apply` | Configured `host_overlay` only with root `apply.default_to_host` enabled (false by default), otherwise an actionable missing-overlay error |
+| `sync` | Configured host only with root `sync.default_to_host` enabled (false by default), otherwise require an explicit overlay or `--all` |
+| `data` | Configured host, otherwise require an explicit overlay |
+| `add`, `git add`, `git mount`, `unapply`, `commit`, `restore` | Require an explicit overlay |
+| `status` / `show`, `diff` | Configured host, otherwise all overlays |
 | `log` | History of the source repository |
 
-Except for `data`, context precedes the default. Ambiguity never invokes a fallback or an overlay
+Active context precedes the host. Ambiguity never invokes a fallback or an overlay
 selection prompt. `--all` on status/diff/sync explicitly bypasses inference and
-the default's selection. The configured host's own `host` overrides still apply
+host selection. The configured host's own `host` overrides still apply
 when another overlay is selected; its data and unrelated dependencies do not.
-Invalid configured defaults remain errors.
+Invalid configured hosts remain errors during data resolution.
 
 `lint` and `doctor` retain their repository-wide diagnostic policies.
 `git status` requires an explicit repository association; it does not prompt.

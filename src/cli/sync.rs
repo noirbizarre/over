@@ -17,7 +17,7 @@ use crate::utils::short_path;
 #[derive(Args, Debug)]
 pub struct Params {
     #[clap(
-        help = "Name of the overlay to sync (infer context, then default_overlay, then all overlays)"
+        help = "Name of the overlay to sync (infer active context; host_overlay requires sync.default_to_host)"
     )]
     name: Option<String>,
 
@@ -37,7 +37,7 @@ pub struct Params {
         long,
         short,
         conflicts_with = "name",
-        help = "Sync every overlay, retaining configured default_overlay data"
+        help = "Sync every overlay, retaining configured host_overlay data"
     )]
     all: bool,
 
@@ -112,6 +112,7 @@ impl Params {
         SyncConfig {
             pull: self.pull || (config.pull && !self.no_pull),
             push: self.push || (config.push && !self.no_push),
+            ..config
         }
     }
 
@@ -143,6 +144,13 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let source = SourceRepository::discover(home.clone()).await?;
     let repo = Repository::new(home);
     let remote = args.source_options(repo.sync_config()?);
+    let root = args
+        .root
+        .clone()
+        .or_else(home_dir)
+        .ok_or_else(|| anyhow!("could not determine home directory"))?;
+    // Reject absent/ambiguous intent before an optional pull mutates the source repository.
+    let selection = sync_selection(&repo, &root, args.name.as_deref(), args.all).await?;
     let upstream = if remote.pull || remote.push {
         Some(
             source
@@ -171,33 +179,19 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             repo.sync_config()?;
         }
     }
-    let root = args
-        .root
-        .clone()
-        .or_else(home_dir)
-        .ok_or_else(|| anyhow!("could not determine home directory"))?;
-
-    let overlays = match (&args.name, args.all) {
-        (Some(name), _) => vec![repo.get(name)?],
-        (None, true) => repo
-            .inspect_overlays()?
-            .into_iter()
-            .collect::<Result<Vec<_>>>()?,
-        (None, false) => {
-            let ctx = Context::builder()
-                .root(root.clone())
-                .repository(repo.clone())
-                .build();
-            match tokio::task::spawn_blocking(move || crate::selection::infer_or_default(&ctx))
-                .await??
-            {
-                Some(overlay) => vec![overlay],
-                None => repo
-                    .inspect_overlays()?
-                    .into_iter()
-                    .collect::<Result<Vec<_>>>()?,
-            }
+    let overlays = if remote.pull && !args.dry_run {
+        // A pull can change descriptors; never execute the preflight snapshot afterward.
+        let refreshed = sync_selection(&repo, &root, args.name.as_deref(), args.all).await?;
+        if args.name.is_none() && !args.all {
+            anyhow::ensure!(
+                selection.first().map(|overlay| &overlay.name)
+                    == refreshed.first().map(|overlay| &overlay.name),
+                "inferred overlay selection changed after pulling; specify NAME explicitly and rerun"
+            );
         }
+        refreshed
+    } else {
+        selection
     };
 
     if overlays.is_empty() {
@@ -209,7 +203,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     for overlay in &overlays {
         needs_attention |= sync_overlay(cli, &repo, &root, overlay, args.no_uses, &opts).await?;
     }
-
     if needs_attention {
         bail!("one or more checkouts need attention — see `conflict`/`blocked` entries above");
     }
@@ -229,6 +222,40 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn sync_selection(
+    repo: &Repository,
+    root: &Path,
+    name: Option<&str>,
+    all: bool,
+) -> Result<Vec<Overlay>> {
+    match (name, all) {
+        (Some(name), _) => Ok(vec![repo.get(name)?]),
+        (None, true) => repo.inspect_overlays()?.into_iter().collect(),
+        (None, false) => {
+            let ctx = Context::builder()
+                .root(root.to_path_buf())
+                .repository(repo.clone())
+                .build();
+            let overlay = tokio::task::spawn_blocking(move || -> Result<Option<Overlay>> {
+                if let Some(overlay) = crate::selection::infer(&ctx, &[])? {
+                    return Ok(Some(overlay));
+                }
+                // Sync has its own opt-in; enabling bare apply must not authorize sync.
+                if ctx.repository.sync_config()?.default_to_host {
+                    ctx.repository.host_overlay(&ctx)
+                } else {
+                    Ok(None)
+                }
+            })
+                .await??
+                .ok_or_else(|| {
+                    anyhow!("cannot infer an overlay; use `over sync NAME`, `over sync --all`, or configure host_overlay and sync.default_to_host = true")
+                })?;
+            Ok(vec![overlay])
+        }
+    }
 }
 
 async fn sync_overlay(
@@ -383,13 +410,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_empty_repository() {
+    async fn sync_an_empty_repository_requires_explicit_all() {
         if crate::cli::common::run_in_isolated_process() {
             return;
         }
         let tmp = TempDir::new().unwrap();
         let cli = make_cli(tmp.path().to_path_buf());
-        let result = execute(&cli, &params(None, tmp.path().to_path_buf())).await;
+        let mut args = params(None, tmp.path().to_path_buf());
+        args.all = true;
+        let result = execute(&cli, &args).await;
         assert!(result.is_ok());
     }
 
@@ -406,7 +435,7 @@ mod tests {
         fs::write(ov.join("over.toml"), "target = \"~\"").unwrap();
 
         let cli = make_cli(tmp.path().to_path_buf());
-        let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
+        let result = execute(&cli, &params(Some("plain"), root.path().to_path_buf())).await;
         assert!(result.is_ok());
     }
 
@@ -462,15 +491,14 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// An omitted `NAME` narrows to just the configured `default_overlay`
-    /// instead of syncing every overlay (#128).
+    /// Machine context is not authorization to synchronize the host.
     #[tokio::test]
-    async fn sync_default_overlay_narrows_omitted_name() {
+    async fn sync_requires_context_even_when_a_host_is_configured() {
         if crate::cli::common::run_in_isolated_process() {
             return;
         }
         let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join("over.toml"), "default_overlay = \"plain\"").unwrap();
+        fs::write(tmp.path().join("over.toml"), "host_overlay = \"plain\"").unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
         for name in ["plain", "other"] {
@@ -481,18 +509,22 @@ mod tests {
 
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 
     /// `--all` recovers today's "every overlay" behavior even when a
-    /// `default_overlay` is configured (#128).
+    /// `host_overlay` is configured.
     #[tokio::test]
     async fn sync_all_flag_overrides_configured_default() {
         if crate::cli::common::run_in_isolated_process() {
             return;
         }
         let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join("over.toml"), "default_overlay = \"plain\"").unwrap();
+        fs::write(
+            tmp.path().join("over.toml"),
+            "host_overlay = \"plain\"\nsync.default_to_host = true",
+        )
+        .unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
         for name in ["plain", "other"] {
@@ -508,17 +540,17 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    /// A `default_overlay` naming a nonexistent overlay is a hard error,
+    /// A `host_overlay` naming a nonexistent overlay is a hard error,
     /// not a silent fallback to "all overlays" (#128).
     #[tokio::test]
-    async fn sync_misconfigured_default_overlay_errors() {
+    async fn sync_misconfigured_host_overlay_errors() {
         if crate::cli::common::run_in_isolated_process() {
             return;
         }
         let tmp = TempDir::new().unwrap();
         fs::write(
             tmp.path().join("over.toml"),
-            "default_overlay = \"does-not-exist\"",
+            "host_overlay = \"does-not-exist\"",
         )
         .unwrap();
         let root = tmp.child("root");
@@ -552,10 +584,15 @@ mod tests {
         p.push = push_override == Some(true);
         p.no_push = push_override == Some(false);
         assert_eq!(
-            p.source_options(SyncConfig { pull, push }),
+            p.source_options(SyncConfig {
+                pull,
+                push,
+                default_to_host: false
+            }),
             SyncConfig {
                 pull: pull_override.unwrap_or(pull),
                 push: push_override.unwrap_or(push),
+                default_to_host: false,
             }
         );
     }

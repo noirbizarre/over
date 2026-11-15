@@ -70,7 +70,7 @@ fn exported_data_preserves_literal_home_paths() -> TestResult {
 #[case("host-{{ machine.arch }}".into())]
 fn an_omitted_name_exports_the_configured_default_context(#[case] default: String) -> TestResult {
     let repo = TempDir::new()?;
-    descriptor(repo.path(), "", &format!("default_overlay: '{default}'"))?;
+    descriptor(repo.path(), "", &format!("host_overlay: '{default}'"))?;
     let name = default.replace("{{ machine.arch }}", std::env::consts::ARCH);
     descriptor(
         repo.path(),
@@ -112,7 +112,7 @@ fn an_explicit_name_without_a_default_includes_only_its_dependency_closure() -> 
 #[test]
 fn an_explicit_name_exposes_dependencies_without_merging_their_data() -> TestResult {
     let repo = TempDir::new()?;
-    descriptor(repo.path(), "", "default_overlay: host")?;
+    descriptor(repo.path(), "", "host_overlay: host")?;
     descriptor(
         repo.path(),
         "shared",
@@ -147,7 +147,7 @@ fn an_explicit_name_exposes_dependencies_without_merging_their_data() -> TestRes
 #[test]
 fn the_selected_root_wins_even_when_the_default_depends_on_it() -> TestResult {
     let repo = TempDir::new()?;
-    descriptor(repo.path(), "", "default_overlay: host")?;
+    descriptor(repo.path(), "", "host_overlay: host")?;
     descriptor(repo.path(), "host", "uses: [selected]\ndata: {value: host}")?;
     descriptor(repo.path(), "selected", "data: {value: selected}")?;
     assert_json(
@@ -200,7 +200,7 @@ fn host_overrides_do_not_require_resolving_the_hosts_unrelated_dependencies() ->
     descriptor(
         repo.path(),
         "",
-        "default_overlay: machine\nhost: {ancestor: forbidden}",
+        "host_overlay: machine\nhost: {ancestor: forbidden}",
     )?;
     descriptor(
         repo.path(),
@@ -224,7 +224,7 @@ fn host_overrides_do_not_require_resolving_the_hosts_unrelated_dependencies() ->
 #[rstest]
 #[case(false)]
 #[case(true)]
-fn omitted_selection_prefers_the_host_then_falls_back_to_source_context(
+fn omitted_selection_prefers_source_context_with_or_without_a_host(
     #[case] configured: bool,
 ) -> TestResult {
     let repo = TempDir::new()?;
@@ -232,7 +232,7 @@ fn omitted_selection_prefers_the_host_then_falls_back_to_source_context(
         repo.path(),
         "",
         if configured {
-            "default_overlay: machine"
+            "host_overlay: machine"
         } else {
             "{}"
         },
@@ -242,7 +242,7 @@ fn omitted_selection_prefers_the_host_then_falls_back_to_source_context(
     assert_json(
         command(repo.path())?.current_dir(repo.path().join("local")),
         scope(json!({
-            "selected": if configured { "host" } else { "contextual" },
+            "selected": "contextual",
         })),
     )
 }
@@ -296,7 +296,7 @@ fn redirected_data_stays_compact_and_uncolored_even_with_forced_colors(
 #[test]
 fn the_environment_can_select_the_repository() -> TestResult {
     let repo = TempDir::new()?;
-    descriptor(repo.path(), "", "default_overlay: host")?;
+    descriptor(repo.path(), "", "host_overlay: host")?;
     descriptor(repo.path(), "host", "data: {source: environment}")?;
     assert_json(
         Command::cargo_bin("over")?
@@ -330,16 +330,16 @@ fn diagnostic_flags_do_not_contaminate_json_stdout(#[case] flag: &str) -> TestRe
 #[rstest]
 #[case("{}", None, "{}", "cannot infer an overlay")]
 #[case("{}", Some("missing"), "{}", "overlay 'missing' not found")]
-#[case("default_overlay: missing", None, "{}", "default_overlay")]
-#[case("default_overlay: missing", Some("selected"), "{}", "default_overlay")]
+#[case("host_overlay: missing", None, "{}", "host_overlay")]
+#[case("host_overlay: missing", Some("selected"), "{}", "host_overlay")]
 #[case(
-    "default_overlay: '{{ undefined.value }}'",
+    "host_overlay: '{{ undefined.value }}'",
     Some("selected"),
     "{}",
-    "default_overlay"
+    "host_overlay"
 )]
 #[case(
-    "default_overlay: [host]",
+    "host_overlay: [host]",
     Some("selected"),
     "{}",
     "invalid repository root config"

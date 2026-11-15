@@ -19,7 +19,7 @@ impl Fixture {
         fs::create_dir_all(source.join("hosts/laptop")).unwrap();
         fs::write(
             source.join("over.yaml"),
-            "mode: checkout\ndefault_overlay: hosts/laptop\noverlays: [apps/*, hosts/*]\n",
+            "mode: checkout\nhost_overlay: hosts/laptop\noverlays: [apps/*, hosts/*]\n",
         )
         .unwrap();
         fs::write(

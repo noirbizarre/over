@@ -103,7 +103,7 @@ selects the **source**, not the target.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `overlay` | `""` | Ordered, comma-separated overlay names; empty skips application, including repository-default overlays. |
+| `overlay` | `""` | Ordered, comma-separated overlay names; empty skips application, including configured host overlays. |
 | `repository` | `""` | Git source passed to `over init`; empty uses an existing/mounted repository. |
 | `overHome` | `"~/.dotfiles"` | Source checkout; `~` and `~/` resolve against the lifecycle user's home. |
 | `version` | Matching feature release | Override the tag of the Over image at `ghcr.io/noirbizarre/over`. |

@@ -9,7 +9,7 @@ the [configuration](../configuration/materialization.md).
 Usage: over apply [OPTIONS] [NAMES]...
 
 Arguments:
-  [NAMES]...  Names of overlays to compose (otherwise infer context, then use default_overlay)
+  [NAMES]...  Names of overlays to compose (infer active context; host_overlay requires apply.default_to_host)
 
 Options:
   -H, --home <HOME>       Configuration and overlays root [env: OVER_HOME=]
@@ -25,17 +25,19 @@ Options:
   -h, --help              Print help
 ```
 
-- When `NAME` is omitted, [infer from context](../usage/selection.md), then use the
-  repository's configured `default_overlay`. Missing or ambiguous selection
-  requires an explicit name.
+- When `NAME` is omitted, [infer active context](../usage/selection.md), then use
+  `host_overlay` only if root `apply.default_to_host` is true. The option defaults
+  to false: configuring a host alone does not select it for deployment. Missing or
+  ambiguous selection requires an explicit name. An explicit name always wins,
+  including `over apply hosts/laptop` with the option disabled.
 - Multiple explicit names compose as an ordered `uses` list, with dependencies
   before parents and shared participants included once. Each retains its target;
   overlapping ownership fails before any participant writes, regardless of order.
   For example, `over apply --no-prompt -- container/base container/rust`.
 - `--no-uses` applies only the named overlays, skipping every overlay each
   `uses` operationally. Metadata still includes all transitive dependencies.
-- The configured default's own `host` overrides remain available with an explicit
-  `NAME`; this does not apply the default's files or include its unrelated dependencies.
+- The configured host's own `host` overrides remain available with an explicit
+  `NAME`; this does not apply the host's files or include its unrelated dependencies.
   Each participant receives local `data`, resolved `host`, and its explicit dependency
   namespace from one loaded snapshot. See [data scopes](../configuration/overlay.md#consumer-metadata-data).
 - `--install` additionally runs `hooks.install` (see

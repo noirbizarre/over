@@ -390,7 +390,7 @@ fn no_uses_and_metadata_only_dependencies_do_not_participate_in_hooks(
     let fixture = Fixture::new();
     fixture.config(
         "over.yaml",
-        json!({"target": "~", "default_overlay": "host", "hooks": {(event): [
+        json!({"target": "~", "host_overlay": "host", "hooks": {(event): [
             "echo root >> \"$HOOK_TRACE\""
         ]}}),
     );
@@ -482,7 +482,7 @@ fn multiple_roots_share_validation_but_hooks_receive_local_data(
 #[case(true)]
 fn package_hooks_and_files_receive_only_their_own_data_and_host_defaults(#[case] no_uses: bool) {
     let fixture = Fixture::new();
-    fixture.config("over.yaml", json!({"default_overlay": "machine"}));
+    fixture.config("over.yaml", json!({"host_overlay": "machine"}));
     fixture.config(
         "machine/over.yaml",
         json!({

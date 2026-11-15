@@ -23,7 +23,7 @@ Options:
 
 Without `--overlay`, [infer from the input paths](../usage/selection.md). Managed siblings
 can identify an overlay for a new symlink-managed file. Ambiguous or missing context requires an
-explicit overlay; `default_overlay` does not select an ingestion destination.
+explicit overlay; `host_overlay` does not select an ingestion destination.
 
 For symlink materialization, files are moved into the overlay and replaced
 in place by a symlink pointing back at the overlay copy — the same

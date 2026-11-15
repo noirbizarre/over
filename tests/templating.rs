@@ -14,7 +14,7 @@ fn templates_explicitly_access_dependency_data_without_inheriting_it(#[case] che
     let fixture = Fixture::new(checkout);
     fs::write(
         fixture.source.join("over.yaml"),
-        "default_overlay: app\ndata: {config: {root: inherited}}\n",
+        "host_overlay: app\ndata: {config: {root: inherited}}\n",
     )
     .unwrap();
     fs::create_dir_all(fixture.source.join("base")).unwrap();
@@ -472,7 +472,7 @@ impl Fixture {
         let source = temp.path().join("source");
         let target = temp.path().join("target");
         fs::create_dir_all(source.join("app")).unwrap();
-        fs::write(source.join("over.yaml"), "default_overlay: app\n").unwrap();
+        fs::write(source.join("over.yaml"), "host_overlay: app\n").unwrap();
         fs::write(source.join("app/over.yaml"), format!("mode: {}\ndata: {{hostname: first}}\nrules:\n  - {{path: '**/*.jinja', template: true, strip_extension: true}}\n", if checkout { "checkout" } else { "symlink" })).unwrap();
         fs::write(
             source.join("app/config.jinja"),

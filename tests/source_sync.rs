@@ -289,7 +289,7 @@ fn rebase_conflicts_preserve_native_state_and_block_targets_until_git_resolution
 }
 
 #[test]
-fn pulled_configuration_and_overlay_discovery_are_used_for_selection() {
+fn explicit_all_uses_pulled_configuration_and_refreshed_overlay_discovery() {
     let f = Fixture::new();
     fs::create_dir_all(f.writer.join("new")).unwrap();
     fs::write(
@@ -298,7 +298,7 @@ fn pulled_configuration_and_overlay_discovery_are_used_for_selection() {
     )
     .unwrap();
     fs::write(f.writer.join("new/file"), "before").unwrap();
-    fs::write(f.writer.join("over.toml"), "default_overlay = 'ov'\n").unwrap();
+    fs::write(f.writer.join("over.toml"), "host_overlay = 'ov'\n").unwrap();
     commit(&f.writer);
     git(&f.writer, &["push"]);
     git(&f.source, &["fetch", "tracking"]);
@@ -311,7 +311,7 @@ fn pulled_configuration_and_overlay_discovery_are_used_for_selection() {
     fs::write(f.writer.join("new/file"), "updated selection").unwrap();
     fs::write(
         f.writer.join("over.toml"),
-        "default_overlay = 'new'\n[sync]\npush = true\n",
+        "host_overlay = 'new'\n[sync]\npush = true\n",
     )
     .unwrap();
     git(&f.writer, &["rm", "-r", "ov"]);
@@ -327,7 +327,7 @@ fn pulled_configuration_and_overlay_discovery_are_used_for_selection() {
         ],
     );
     f.command("sync")
-        .args(["--pull", "--verbose"])
+        .args(["--all", "--pull", "--verbose"])
         .assert()
         .success()
         .stdout(contains("new"));
@@ -448,8 +448,82 @@ fn an_empty_local_phase_still_pushes_existing_source_commits() {
     let f = Fixture::new();
     git(&f.source, &["rm", "-r", "ov"]);
     commit(&f.source);
-    f.command("sync").arg("--push").assert().success();
+    f.command("sync")
+        .args(["--all", "--push"])
+        .assert()
+        .success();
     assert_eq!(f.remote_head(), git(&f.source, &["rev-parse", "HEAD"]));
+}
+
+#[rstest::rstest]
+fn absent_or_ambiguous_sync_context_never_fetches_or_rebases(
+    #[values(false, true)] ambiguous: bool,
+) {
+    let f = Fixture::new();
+    f.apply();
+    fs::write(
+        f.source.join("over.toml"),
+        "host_overlay = 'ov'\napply.default_to_host = true\n",
+    )
+    .unwrap();
+    if ambiguous {
+        fs::create_dir_all(f.source.join("other")).unwrap();
+        fs::write(
+            f.source.join("other/over.toml"),
+            "target = '~/checkout'\nmode = 'checkout'\n",
+        )
+        .unwrap();
+        fs::write(f.source.join("other/file"), "other").unwrap();
+    }
+    commit(&f.source);
+    f.advance("remote advancement");
+    let source = snapshot(&f.source);
+    let target = snapshot(&f.home);
+    let remote = f.remote_head();
+    let mut command = f.command("sync");
+    if ambiguous {
+        command.current_dir(f.home.join("checkout"));
+    }
+    command
+        .args(["--pull", "--push"])
+        .assert()
+        .failure()
+        .stderr(contains(if ambiguous {
+            "ambiguous"
+        } else {
+            "cannot infer an overlay"
+        }));
+    assert_eq!(snapshot(&f.source), source);
+    assert_eq!(snapshot(&f.home), target);
+    assert_eq!(f.remote_head(), remote);
+}
+
+#[test]
+fn a_pull_cannot_silently_change_the_inferred_sync_identity() {
+    let f = Fixture::new();
+    f.apply();
+    fs::write(
+        f.writer.join("ov/over.toml"),
+        "target = '~/moved'\nmode = 'checkout'\n",
+    )
+    .unwrap();
+    fs::create_dir_all(f.writer.join("other")).unwrap();
+    fs::write(
+        f.writer.join("other/over.toml"),
+        "target = '~/checkout'\nmode = 'checkout'\n",
+    )
+    .unwrap();
+    fs::write(f.writer.join("other/file"), "different owner").unwrap();
+    commit(&f.writer);
+    git(&f.writer, &["push"]);
+    let target = snapshot(&f.home);
+    f.command("sync")
+        .current_dir(f.home.join("checkout"))
+        .arg("--pull")
+        .assert()
+        .failure()
+        .stderr(contains("inferred overlay selection changed"));
+    assert_eq!(snapshot(&f.home), target);
 }
 
 #[test]
@@ -815,7 +889,7 @@ fn all_overlay_discovery_includes_overlays_introduced_by_the_pull() {
 #[test]
 fn pulled_metadata_rebuilds_context_before_resolving_the_target() {
     let f = Fixture::new();
-    fs::write(f.writer.join("over.toml"), "default_overlay='ov'\n").unwrap();
+    fs::write(f.writer.join("over.toml"), "host_overlay='ov'\n").unwrap();
     fs::write(
         f.writer.join("ov/over.toml"),
         "mode='checkout'\ntarget='~/{{ data.checkout_name }}'\n[data]\ncheckout_name='checkout'\n",

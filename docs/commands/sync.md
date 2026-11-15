@@ -8,14 +8,14 @@ By default, sync is entirely local and contacts no remote.
 Usage: over sync [OPTIONS] [NAME]
 
 Arguments:
-  [NAME]  Name of the overlay to sync (infer context, then default_overlay, then all overlays)
+  [NAME]  Name of the overlay to sync (infer active context; host_overlay requires sync.default_to_host)
 
 Options:
   -H, --home <HOME>      Configuration and overlays root [env: OVER_HOME=]
   -r, --target <TARGET>  Set the target directory (defaults to ~) [env: OVER_TARGET=]
   -d, --debug            Toggle debug traces
       --no-uses          Skip dependency operations, retaining dependency data
-  -a, --all              Sync every overlay, retaining configured default_overlay data
+  -a, --all              Sync every overlay, retaining configured host_overlay data
   -v, --verbose          Toggle verbose output
       --pull             Fetch and rebase the Over source repository before local sync
       --no-pull          Disable source-repository pull for this invocation
@@ -30,12 +30,24 @@ Options:
   -h, --help             Print help
 ```
 
-When `NAME` is omitted, [infer from context](../usage/selection.md), then use a configured
-`default_overlay`. With neither, sync every overlay. Ambiguous context requires
-an explicit name; `--all` syncs every overlay regardless of context or default.
-Explicit `NAME` and `--all` retain the configured default's
+When `NAME` is omitted, [infer active context](../usage/selection.md), then use
+the configured `host_overlay` only if root `sync.default_to_host` is true.
+This option defaults to false and is independent of `apply.default_to_host`.
+With neither context nor an enabled host fallback, require an explicit name or
+`--all`. Ambiguous context errors instead of falling back. Explicit names always
+win, and `--all` explicitly syncs every overlay regardless of context.
+Explicit `NAME` and `--all` retain the configured host's
 [data context](../configuration/overlay.md#consumer-metadata-data).
 `--no-uses` skips dependency operations, not their data.
+
+For single-host repositories, opt into bare sync independently of bare apply:
+
+```toml
+host_overlay = "hosts/laptop"
+
+[sync]
+default_to_host = true
+```
 
 ## Source-repository remote synchronization
 
@@ -43,8 +55,8 @@ Enable operations per invocation or through root [`sync` settings](../configurat
 
 ```sh
 over sync workspace/client --dry-run
-over sync --pull --push
-over sync --no-pull --no-push
+over sync workspace/client --pull --push
+over sync workspace/client --no-pull --no-push
 ```
 
 `--pull` / `--no-pull` override only configured pull; `--push` / `--no-push`
@@ -53,13 +65,14 @@ There is no fetch-only flag: run ordinary `git fetch` in the source repository.
 
 The order is:
 
-1. Pull once for the Git worktree containing `--home` / `OVER_HOME`: fetch its
+1. Validate explicit, active, or opted-in host selection (or explicit `--all`) before remote changes.
+2. Pull once for the Git worktree containing `--home` / `OVER_HOME`: fetch its
    current branch's configured upstream and rebase local commits onto it.
-2. Reload root configuration and overlay discovery. Resolve selection, metadata,
-   contexts and desired state from the updated source, including changed defaults
-   or removed overlays.
-3. Reconcile all selected virtual checkouts locally.
-4. Push existing source commits to the configured upstream, without force, only
+3. Reload root configuration and overlay discovery. Resolve selection, metadata,
+   contexts and desired state from the updated source. A removed explicit overlay
+   or changed inferred/host identity requires correction and a rerun.
+4. Reconcile all selected virtual checkouts locally.
+5. Push existing source commits to the configured upstream, without force, only
    after every local operation succeeds. An empty selection is also successful.
 
 Both remote settings default to false. Invocation policy is resolved before pull;

@@ -593,7 +593,7 @@ fn overlapping_inference_remains_ambiguous_with_a_default_and_accepts_an_explici
         fs::read(fixture.target.join("file")).unwrap(),
         b"preserved\n"
     );
-    fs::write(fixture.source.join("over.toml"), "default_overlay = 'ov'\n").unwrap();
+    fs::write(fixture.source.join("over.toml"), "host_overlay = 'ov'\n").unwrap();
     let output = fixture
         .command("restore")
         .arg(fixture.target.join("file"))

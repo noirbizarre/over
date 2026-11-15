@@ -225,7 +225,8 @@ mod tests {
             "format",
             "repository",
             "sync",
-            "default_overlay",
+            "host_overlay",
+            "apply",
             "overlays",
         ];
         assert_eq!(
@@ -244,6 +245,7 @@ mod tests {
             ("/definitions/Hooks", schema::EVENTS),
             ("/definitions/HookDefinition", schema::HOOK_FIELDS),
             ("/definitions/SyncConfig", schema::SYNC_FIELDS),
+            ("/definitions/ApplyConfig", schema::APPLY_FIELDS),
             ("/definitions/Rule", schema::RULE_FIELDS),
             (
                 "/definitions/WorktreeEntry/anyOf/1",
@@ -301,7 +303,11 @@ mod tests {
     #[case(json!({"format":"yaml"}))]
     #[case(json!({"repository":"git@example.com:dotfiles.git"}))]
     #[case(json!({"sync":{"pull":true}}))]
-    #[case(json!({"default_overlay":"hosts/laptop"}))]
+    #[case(json!({"sync":{"default_to_host":true}}))]
+    #[case(json!({"host_overlay":"hosts/laptop"}))]
+    #[case(json!({"apply":{}}))]
+    #[case(json!({"apply":{"default_to_host":true}}))]
+    #[case(json!({"apply":{"default_to_host":false}}))]
     #[case(json!({"overlays":["apps/*", "hosts/laptop"]}))]
     #[case(json!({"overlays":[]}))]
     fn repository_preferences_are_valid_only_at_the_root(#[case] value: Value) {
@@ -314,6 +320,14 @@ mod tests {
     #[case(json!({"root":"/injected"}))]
     #[case(json!({"scopes":[]}))]
     #[case(json!({"unknown":"~"}))]
+    #[case(json!({"default_overlay":"old"}))]
+    #[case(json!({"host_overlay": ["host"]}))]
+    #[case(json!({"apply":true}))]
+    #[case(json!({"apply":{"default_to_host":"true"}}))]
+    #[case(json!({"apply":{"unknown":true}}))]
+    #[case(json!({"sync":{"default_to_host":"true"}}))]
+    #[case(json!({"sync":{"default_to_host":1}}))]
+    #[case(json!({"apply":{"default_to_host":1}}))]
     #[case(json!({"$schema":null}))]
     #[case(json!({"$schema":true}))]
     #[case(json!({"target":null}))]

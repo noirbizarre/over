@@ -202,7 +202,7 @@ fn visit(
 }
 
 impl Repository {
-    /// Return only the selected overlay's local data (or the configured default's).
+    /// Return only the selected overlay's local data (or the configured host's).
     /// Use execution context preparation for the complete three-part scope.
     ///
     /// ```no_run
@@ -243,7 +243,7 @@ impl Repository {
     ) -> Result<(DataMap, Vec<Overlay>)> {
         // Repeating one root must retain its local scope rather than invent a composition.
         let mut selected_names = HashSet::new();
-        let default = self.default_overlay(ctx)?;
+        let default = self.host_overlay(ctx)?;
         let mut selected: Vec<_> = selected
             .iter()
             .filter(|overlay| selected_names.insert(&overlay.name))
@@ -300,7 +300,7 @@ mod tests {
         descriptor(
             &temp,
             "",
-            "default_overlay: machine\nhost: {ancestor: forbidden}\ndata: {ancestor: forbidden}",
+            "host_overlay: machine\nhost: {ancestor: forbidden}\ndata: {ancestor: forbidden}",
         );
         descriptor(
             &temp,
@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn host_and_dependency_data_do_not_leak_into_selected_data() {
         let temp = TempDir::new().unwrap();
-        descriptor(&temp, "", "default_overlay: 'hosts/{{ machine.hostname }}'");
+        descriptor(&temp, "", "host_overlay: 'hosts/{{ machine.hostname }}'");
         descriptor(&temp, "shared", "data: {priority: shared, shared: true}");
         descriptor(
             &temp,
@@ -615,7 +615,7 @@ mod tests {
         #[case] host: &str,
     ) {
         let temp = TempDir::new().unwrap();
-        descriptor(&temp, "", &format!("default_overlay: {default}"));
+        descriptor(&temp, "", &format!("host_overlay: {default}"));
         descriptor(&temp, "host", host);
         descriptor(&temp, "selected", "data: {priority: selected}");
         let repo = Repository::new(temp.path().into());
@@ -638,7 +638,7 @@ mod tests {
     #[case(vec!["parent", "sibling", "dependency"])]
     fn multiple_distinct_roots_have_no_local_data(#[case] names: Vec<&str>) {
         let temp = TempDir::new().unwrap();
-        descriptor(&temp, "", "default_overlay: host");
+        descriptor(&temp, "", "host_overlay: host");
         descriptor(&temp, "host", "data: {host: true, priority: host}");
         descriptor(&temp, "dependency", "data: {priority: dependency}");
         descriptor(
@@ -661,11 +661,7 @@ mod tests {
     #[test]
     fn empty_local_data_does_not_inherit_ancestor_or_host_values() {
         let temp = TempDir::new().unwrap();
-        descriptor(
-            &temp,
-            "",
-            "default_overlay: host\ndata: {priority: inherited}",
-        );
+        descriptor(&temp, "", "host_overlay: host\ndata: {priority: inherited}");
         descriptor(&temp, "host", "data: {priority: host}");
         descriptor(&temp, "selected", "data: {}");
         let repo = Repository::new(temp.path().into());
@@ -698,8 +694,8 @@ mod tests {
     }
 
     #[rstest]
-    #[case("default_overlay: missing", "data: {}")]
-    #[case("default_overlay: '{{ broken'", "data: {}")]
+    #[case("host_overlay: missing", "data: {}")]
+    #[case("host_overlay: '{{ broken'", "data: {}")]
     fn broken_defaults_fail_even_with_an_explicit_target(#[case] root: &str, #[case] host: &str) {
         let temp = TempDir::new().unwrap();
         descriptor(&temp, "", root);

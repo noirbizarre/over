@@ -8,25 +8,25 @@ the same options, output, and exit status.
 Usage: over status [OPTIONS] [NAME]
 
 Arguments:
-  [NAME]  Name of the overlay to check (infer context, then default_overlay, then all overlays)
+  [NAME]  Name of the overlay to check (infer active context, then host_overlay, then all overlays)
 
 Options:
   -H, --home <HOME>      Configuration and overlays root [env: OVER_HOME=]
   -r, --target <TARGET>  Set the target directory (defaults to ~) [env: OVER_TARGET=]
   -d, --debug            Toggle debug traces
       --no-uses          Skip dependency operations, retaining dependency data
-  -a, --all              Check every overlay, retaining configured default_overlay data
+  -a, --all              Check every overlay, retaining configured host_overlay data
   -s, --short            Show stable staged/unstaged file rows only
   -v, --verbose          Toggle verbose output
   -h, --help             Print help
 ```
 
 When `NAME` is omitted, [infer from context](../usage/selection.md), then use a configured
-`default_overlay`. With neither, report on every overlay. Ambiguous context
+`host_overlay`. With neither, report on every overlay. Ambiguous context
 requires an explicit name; pass `--all` to report on every overlay regardless
 of context or default.
 
-Explicit `NAME` and `--all` retain the configured default's
+Explicit `NAME` and `--all` retain the configured host's
 [data context](../configuration/overlay.md#consumer-metadata-data). Each target resolves
 its own metadata separately. `--no-uses` skips dependency entries, not their data.
 
@@ -119,7 +119,7 @@ appears here as staged, without a reconciliation warning.
 
 Changes includes selected overlays' tracked/staged source files (including
 consumed descriptors and sidecars), operational dependencies, virtual checkout
-targets and declared root Git checkouts. Metadata-only default overlays, external
+targets and declared root Git checkouts. Metadata-only host overlays, external
 link referent repositories and opaque non-root declared repositories do not add
 their own file changes. Untracked, unstaged files are omitted.
 

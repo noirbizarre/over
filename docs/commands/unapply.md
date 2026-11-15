@@ -9,7 +9,7 @@ Reapply reconstructs the current configured projection, not historical user data
 Usage: over unapply [OPTIONS] [NAME]
 
 Arguments:
-  [NAME]  Name of the overlay to unapply (otherwise infer context, then use default_overlay)
+  [NAME]  Name of the overlay to unapply (otherwise require an active overlay context)
 
 Options:
   -H, --home <HOME>       Configuration and overlays root [env: OVER_HOME=]
@@ -22,11 +22,11 @@ Options:
   -h, --help              Print help
 ```
 
-When `NAME` is omitted, [infer from context](../usage/selection.md), then use the
-repository's configured `default_overlay`. Missing or ambiguous selection
-requires an explicit name.
+When `NAME` is omitted, [infer active context](../usage/selection.md).
+Missing or ambiguous context requires an explicit name; the configured
+`host_overlay` is not a fallback, even with `apply.default_to_host` enabled.
 
-An explicit `NAME` retains the configured default's
+An explicit `NAME` retains the configured host's
 [data context](../configuration/overlay.md#consumer-metadata-data) for path rendering.
 Only the selected overlay's own entries are removed.
 

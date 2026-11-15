@@ -81,7 +81,7 @@ pub(crate) fn resolve_inputs_with_missing(
 
 /// Resolve single-overlay commands without guessing or prompting on ambiguity.
 pub fn select_overlay(ctx: &exec::Context, name: Option<&str>) -> Result<Overlay> {
-    crate::selection::select(ctx, name, &[], true)
+    crate::selection::select_context(ctx, name, &[])
 }
 
 /// Re-run a cwd-sensitive test alone, including when libtest runs tests in parallel.
@@ -122,9 +122,9 @@ mod tests {
     #[rstest]
     #[case(None, None, false)]
     #[case(Some("ov"), None, true)]
-    #[case(None, Some("ov"), true)]
+    #[case(None, Some("ov"), false)]
     #[case(None, Some("missing"), false)]
-    fn noninteractive_selection_requires_an_explicit_overlay_or_valid_default(
+    fn noninteractive_selection_requires_explicit_or_active_context(
         #[case] name: Option<&str>,
         #[case] default: Option<&str>,
         #[case] succeeds: bool,
@@ -138,7 +138,7 @@ mod tests {
             .unwrap();
         if let Some(default) = default {
             temp.child("over.toml")
-                .write_str(&format!("default_overlay = '{default}'"))
+                .write_str(&format!("host_overlay = '{default}'"))
                 .unwrap();
         }
         let repo = Repository::new(temp.path().to_path_buf());
@@ -249,7 +249,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("over.toml"),
-            "default_overlay = \"default-one\"",
+            "host_overlay = \"default-one\"",
         )
         .unwrap();
         for name in ["default-one", "explicit-one"] {
@@ -265,14 +265,14 @@ mod tests {
     }
 
     #[test]
-    fn select_overlay_uses_default_when_name_omitted() {
+    fn select_overlay_does_not_use_the_host_when_context_is_absent() {
         if run_in_isolated_process() {
             return;
         }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("over.toml"),
-            "default_overlay = \"myoverlay\"",
+            "host_overlay = \"myoverlay\"\napply.default_to_host = true",
         )
         .unwrap();
         let ov = tmp.path().join("myoverlay");
@@ -281,8 +281,7 @@ mod tests {
 
         let repo = Repository::new(tmp.path().to_path_buf());
         let ctx = exec::Context::builder().repository(repo.clone()).build();
-        let overlay = select_overlay(&ctx, None).unwrap();
-        assert_eq!(overlay.name, "myoverlay");
+        assert!(select_overlay(&ctx, None).is_err());
     }
 
     #[test]
@@ -305,7 +304,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("over.toml"),
-            "default_overlay = \"does-not-exist\"",
+            "host_overlay = \"does-not-exist\"",
         )
         .unwrap();
         let repo = Repository::new(tmp.path().to_path_buf());

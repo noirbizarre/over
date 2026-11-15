@@ -15,7 +15,7 @@ use crate::ui;
 #[derive(Args, Debug)]
 pub struct Params {
     #[clap(
-        help = "Name of the overlay to check (infer context, then default_overlay, then all overlays)"
+        help = "Name of the overlay to check (infer active context, then host_overlay, then all overlays)"
     )]
     name: Option<String>,
 
@@ -35,7 +35,7 @@ pub struct Params {
         long,
         short,
         conflicts_with = "name",
-        help = "Diff every overlay, retaining configured default_overlay data"
+        help = "Diff every overlay, retaining configured host_overlay data"
     )]
     all: bool,
 
@@ -75,7 +75,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 .root(root.clone())
                 .repository(repo.clone())
                 .build();
-            match tokio::task::spawn_blocking(move || crate::selection::infer_or_default(&ctx))
+            match tokio::task::spawn_blocking(move || crate::selection::infer_or_host(&ctx))
                 .await??
             {
                 Some(overlay) => vec![overlay],
@@ -310,15 +310,15 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    /// An omitted `NAME` narrows to just the configured `default_overlay`
+    /// An omitted `NAME` narrows to just the configured `host_overlay`
     /// instead of reporting on every overlay (#128).
     #[tokio::test]
-    async fn diff_default_overlay_narrows_omitted_name() {
+    async fn diff_host_overlay_narrows_omitted_name() {
         if crate::cli::common::run_in_isolated_process() {
             return;
         }
         let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join("over.toml"), "default_overlay = \"alpha\"").unwrap();
+        fs::write(tmp.path().join("over.toml"), "host_overlay = \"alpha\"").unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
         for name in ["alpha", "beta"] {
@@ -333,14 +333,14 @@ mod tests {
     }
 
     /// `--all` recovers today's "every overlay" behavior even when a
-    /// `default_overlay` is configured (#128).
+    /// `host_overlay` is configured.
     #[tokio::test]
     async fn diff_all_flag_overrides_configured_default() {
         if crate::cli::common::run_in_isolated_process() {
             return;
         }
         let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join("over.toml"), "default_overlay = \"alpha\"").unwrap();
+        fs::write(tmp.path().join("over.toml"), "host_overlay = \"alpha\"").unwrap();
         let root = tmp.child("root");
         root.create_dir_all().unwrap();
         for name in ["alpha", "beta"] {
@@ -356,17 +356,17 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    /// A `default_overlay` naming a nonexistent overlay is a hard error,
+    /// A `host_overlay` naming a nonexistent overlay is a hard error,
     /// not a silent fallback to "all overlays" (#128).
     #[tokio::test]
-    async fn diff_misconfigured_default_overlay_errors() {
+    async fn diff_misconfigured_host_overlay_errors() {
         if crate::cli::common::run_in_isolated_process() {
             return;
         }
         let tmp = TempDir::new().unwrap();
         fs::write(
             tmp.path().join("over.toml"),
-            "default_overlay = \"does-not-exist\"",
+            "host_overlay = \"does-not-exist\"",
         )
         .unwrap();
         let root = tmp.child("root");

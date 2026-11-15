@@ -388,7 +388,7 @@ impl Context {
         let selected = if let Some(overlay) = &self.overlay {
             Some(overlay.clone())
         } else {
-            self.repository.default_overlay(self)?
+            self.repository.host_overlay(self)?
         };
         self.resolve_data_many(selected.as_slice())
     }
@@ -483,7 +483,7 @@ impl Context {
         // Host overrides require only the host descriptor, never its dependency closure.
         let overrides = self
             .repository
-            .default_overlay(self)?
+            .host_overlay(self)?
             .map(|overlay| overlay.host)
             .unwrap_or_default();
         let (data, dependencies) = self.repository.resolve_inputs_many(self, overlays)?;
@@ -738,7 +738,7 @@ mod tests {
     fn default_selection_shares_base_paths_without_resolving_a_target_or_recursing_into_data() {
         let (td, overlay) = make_overlay();
         td.child("over.toml").write_str(
-            "default_overlay = \"{{ 'test-overlay' if paths.over is defined and paths.home is defined and paths.target is not defined else 'missing' }}\"\n"
+            "host_overlay = \"{{ 'test-overlay' if paths.over is defined and paths.home is defined and paths.target is not defined else 'missing' }}\"\n"
         ).unwrap();
         let repo = Repository::new(td.path().to_path_buf());
         let ctx = Context::builder()
@@ -746,10 +746,7 @@ mod tests {
             .root(td.path().join("deployment"))
             .build()
             .with_target(td.path().join("stale"));
-        assert_eq!(
-            repo.default_overlay(&ctx).unwrap().unwrap().name,
-            overlay.name
-        );
+        assert_eq!(repo.host_overlay(&ctx).unwrap().unwrap().name, overlay.name);
         assert!(ctx.resolve_data().is_ok());
     }
 

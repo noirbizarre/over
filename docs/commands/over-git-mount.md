@@ -17,7 +17,7 @@ Options:
 
 Without `--overlay`, [infer from repository context](../usage/selection.md), preferring
 its existing explicit `over.overlay` association. Missing or ambiguous selection
-requires an explicit overlay; mount does not fall back to `default_overlay`.
+requires an explicit overlay; mount does not fall back to `host_overlay`.
 
 ## Example
 

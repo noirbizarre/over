@@ -5,7 +5,6 @@ use clap::Args;
 use dirs::home_dir;
 
 use crate::cli::CLI;
-use crate::cli::common::select_overlay;
 use crate::exec::Context;
 use crate::overlays::{Overlay, Repository};
 use crate::ui;
@@ -13,7 +12,7 @@ use crate::ui::{emojis, style};
 #[derive(Args, Debug)]
 pub struct Params {
     #[clap(
-        help = "Names of overlays to compose (otherwise infer context, then use default_overlay)"
+        help = "Names of overlays to compose (infer active context; host_overlay requires apply.default_to_host)"
     )]
     names: Vec<String>,
 
@@ -86,7 +85,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let names = args.names.clone();
     let overlays = tokio::task::spawn_blocking(move || -> Result<Vec<Overlay>> {
         if names.is_empty() {
-            return Ok(vec![select_overlay(&selection_ctx, None)?]);
+            return Ok(vec![crate::selection::select_apply(&selection_ctx, None)?]);
         }
         names
             .iter()

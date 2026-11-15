@@ -18,7 +18,7 @@ pub struct Params {
     #[clap(
         short,
         long,
-        help = "Select an overlay (otherwise infer from context, then use default_overlay)"
+        help = "Select an overlay (otherwise require an active overlay context)"
     )]
     overlay: Option<String>,
     #[clap(
@@ -98,7 +98,7 @@ fn resolved(ctx: &Ctx, overlay: &Overlay) -> Result<Ctx> {
 }
 
 fn select(ctx: Ctx, name: Option<&str>, paths: &[PathBuf]) -> Result<(Ctx, Overlay)> {
-    let overlay = crate::selection::select(&ctx, name, paths, true)?;
+    let overlay = crate::selection::select_context(&ctx, name, paths)?;
     Ok((resolved(&ctx, &overlay)?, overlay))
 }
 

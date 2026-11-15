@@ -17,7 +17,7 @@ use crate::utils::short_path;
 pub struct Params {
     #[clap(
         long = "overlay",
-        help = "Select the overlay (otherwise infer context, then use default_overlay)"
+        help = "Select the overlay (otherwise require an active overlay context)"
     )]
     name: Option<String>,
 

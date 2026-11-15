@@ -6,7 +6,7 @@ Export the same stable data context used by templates and hooks as JSON.
 Usage: over data [OPTIONS] [NAME]
 
 Arguments:
-  [NAME]  Select an overlay (defaults to the configured host)
+  [NAME]  Select an overlay (infer active context, then host_overlay); emit local data, dependency overlays, and resolved host values
 
 Options:
   -H, --home <HOME>  Configuration and overlays root [env: OVER_HOME]
@@ -17,10 +17,11 @@ Options:
 
 ## Selection and Composition
 
-Without `NAME`, select the configured `default_overlay` (the host) first, including
-machine-based selection such as `hosts/{{ machine.hostname }}`. Without a configured
-host, use [contextual selection](../usage/selection.md), failing if no overlay can
-be selected. An explicit name selects that overlay. The command never prompts or
+Without `NAME`, use [active contextual selection](../usage/selection.md), then the
+configured `host_overlay`, including machine-based selection such as
+`hosts/{{ machine.hostname }}`. Fail if neither supplies an overlay. An explicit
+name selects that overlay. This active-before-host order matches status; unlike
+status, data errors rather than inspecting all overlays when neither exists. The command never prompts or
 implicitly selects all overlays.
 
 The selected overlay determines `data` and the transitive `uses` namespace.

@@ -15,7 +15,7 @@ Mount records the selected overlay in the host's Git config as `over.overlay`.
 Mount and add accept `--overlay` to override this association, then use
 [contextual inference](../usage/selection.md) when omitted. Missing or ambiguous selection
 requires an explicit overlay. Status requires an existing association and reports
-an error if none is configured. These commands do not use `default_overlay` as
+an error if none is configured. These commands do not use `host_overlay` as
 their association-selection fallback. Only repository-local or enabled worktree
 associations count; worktree values override shared local values.
 
