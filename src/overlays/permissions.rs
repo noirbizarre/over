@@ -1,4 +1,4 @@
-//! Octal permissions for managed partial content; symlink sources remain untouched.
+//! Octal permissions for managed partial and generated content; symlink sources remain untouched.
 
 use std::fmt;
 use std::num::ParseIntError;

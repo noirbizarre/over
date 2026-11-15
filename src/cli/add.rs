@@ -5,7 +5,6 @@ use clap::Args;
 use dialoguer::Input;
 use dirs::home_dir;
 
-use crate::actions::symlink::SymlinkConfig;
 use crate::cli::CLI;
 use crate::cli::common::resolve_inputs_with_missing;
 use crate::exec::Context;
@@ -163,22 +162,31 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .await?;
     }
 
-    crate::secrets::validate_ingestion(&ctx, &overlay, &resolved)?;
-    crate::desired::content::validate_ingestion(&ctx, &overlay, &resolved)?;
+    ingest(&overlay, &ctx, &resolved).await
+}
+
+/// Keep both add frontends on the same preflight and symlink import path.
+pub(crate) async fn ingest(
+    overlay: &crate::overlays::Overlay,
+    ctx: &crate::exec::Ctx,
+    resolved: &[PathBuf],
+) -> Result<()> {
+    crate::secrets::validate_ingestion(ctx, overlay, resolved)?;
+    crate::desired::content::validate_ingestion(ctx, overlay, resolved)?;
     let (symlinks, regulars): (Vec<_>, Vec<_>) = resolved.iter().partition(|p| p.is_symlink());
 
     // Validate the entire selection before the first prompt can publish a declaration.
     for symlink_path in &symlinks {
-        validate_symlink_ingestion(&overlay, symlink_path, &ctx)?;
+        validate_symlink_ingestion(overlay, symlink_path, ctx)?;
     }
     for symlink_path in &symlinks {
-        add_symlink(&overlay, symlink_path, &ctx)?;
+        add_symlink(overlay, symlink_path, ctx)?;
     }
 
     if !regulars.is_empty() {
         let regular_paths: Vec<PathBuf> = regulars.into_iter().cloned().collect();
         overlay
-            .add_files(&ctx, &regular_paths)
+            .add_files(ctx, &regular_paths)
             .await
             .inspect_err(|e| {
                 ui::warn(format!(
@@ -200,20 +208,7 @@ fn validate_symlink_ingestion(
     symlink_path: &Path,
     ctx: &Context,
 ) -> Result<PathBuf> {
-    let rel_path = overlay
-        .resolve_mappings(ctx)?
-        .logical_path_for(symlink_path)?;
-    let source = overlay.root.join(&rel_path);
-    let policy = crate::overlays::ignore::SourcePolicy::new(&ctx.repository.root, overlay)?;
-    anyhow::ensure!(
-        policy.includes(&source, symlink_path.is_dir()),
-        "cannot ingest ignored content or control metadata '{}'",
-        rel_path.display()
-    );
-    if symlink_path.is_dir() {
-        policy.validate_directory_link(symlink_path, &source)?;
-    }
-    Ok(rel_path)
+    crate::actions::ingest::validate_symlink(overlay, symlink_path, ctx)
 }
 
 fn add_symlink(
@@ -222,15 +217,6 @@ fn add_symlink(
     ctx: &crate::exec::Context,
 ) -> Result<()> {
     let rel_path = validate_symlink_ingestion(overlay, symlink_path, ctx)?;
-    let desired = crate::desired::DesiredTree::build_own(ctx, overlay)?;
-    anyhow::ensure!(
-        !desired
-            .entries()
-            .iter()
-            .any(|entry| entry.intent.is_virtual_checkout()
-                && crate::stage::owns(entry, symlink_path)),
-        "cannot stage a symlink in a virtual checkout"
-    );
     if ctx.dry_run {
         return Ok(());
     }
@@ -247,19 +233,7 @@ fn add_symlink(
         .map_err(|e| anyhow!("target input cancelled: {}", e))?;
     drop(pause);
 
-    let link_config_name = rel_path.to_string_lossy();
-    let config_path = overlay.root.join(format!("{}.link.toml", link_config_name));
-
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let config = SymlinkConfig {
-        target,
-        r#type: crate::actions::symlink::LinkType::Soft,
-    };
-    let toml_content = toml::to_string_pretty(&config)?;
-    std::fs::write(&config_path, toml_content)?;
+    let config_path = crate::actions::ingest::publish_symlink(overlay, &rel_path, target)?;
 
     ui::info(format!(
         "{} {} {} {}",
@@ -278,13 +252,7 @@ fn imported_symlink_target(
     overlay_root: &Path,
     ctx: &Context,
 ) -> Result<String> {
-    let link_target = std::fs::read_link(symlink_path)
-        .map_err(|e| anyhow!("failed to read symlink {}: {}", symlink_path.display(), e))?;
-    // read_link returns a path relative to the original link, not to its new sidecar.
-    let parent = symlink_path
-        .parent()
-        .ok_or_else(|| anyhow!("symlink has no parent"))?;
-    let referent = crate::overlays::mapping::absolute(&parent.join(link_target))?;
+    let referent = crate::actions::ingest::referent(symlink_path)?;
     Ok(compute_default_target(&referent, overlay_root, &ctx.root))
 }
 
@@ -310,6 +278,7 @@ mod tests {
     #[case("repository_sibling")]
     #[case("custom_root")]
     #[case("overlay_source")]
+    #[case("relative_directory")]
     fn imported_symlink_sidecars_preserve_the_original_referent(#[case] kind: &str) {
         let temp = tempfile::TempDir::new().unwrap();
         let repo_root = temp.path().join("repo");
@@ -321,8 +290,13 @@ mod tests {
             "overlay_source" => repo_root.join("ov/source"),
             _ => root.join("referent"),
         };
-        std::fs::write(&referent, "original").unwrap();
-        let raw_target = if kind == "relative" {
+        if kind == "relative_directory" {
+            std::fs::create_dir(&referent).unwrap();
+            std::fs::write(referent.join("child"), "original").unwrap();
+        } else {
+            std::fs::write(&referent, "original").unwrap();
+        }
+        let raw_target = if kind.starts_with("relative") {
             PathBuf::from("../referent")
         } else {
             referent.clone()
@@ -337,25 +311,23 @@ mod tests {
             .build();
         let encoded = imported_symlink_target(&link, &overlay.root, &ctx).unwrap();
         match kind {
-            "custom_root" | "relative" => assert_eq!(encoded, "~/referent"),
+            "custom_root" | "relative" | "relative_directory" => assert_eq!(encoded, "~/referent"),
             "repository_sibling" => assert_eq!(encoded, referent.to_string_lossy()),
             _ => assert_eq!(encoded, "source"),
         }
-        std::fs::create_dir_all(overlay.root.join("nested")).unwrap();
-        std::fs::write(
-            overlay.root.join("nested/link.link.toml"),
-            toml::to_string(&SymlinkConfig {
-                target: encoded,
-                r#type: crate::actions::symlink::LinkType::Soft,
-            })
-            .unwrap(),
-        )
-        .unwrap();
+        let relative = validate_symlink_ingestion(&overlay, &link, &ctx).unwrap();
+        crate::actions::ingest::publish_symlink(&overlay, &relative, encoded).unwrap();
         let tree = crate::desired::DesiredTree::build_own(&ctx, &overlay).unwrap();
         assert!(tree.entries().iter().any(|entry| entry.target == link && matches!(&entry.intent,
-            crate::desired::MaterializationIntent::SymlinkFile { source, .. } if source == &referent)));
+            crate::desired::MaterializationIntent::SymlinkFile { source, .. }
+            | crate::desired::MaterializationIntent::SymlinkDirectory { source, .. } if source == &referent)));
         assert_eq!(std::fs::read_link(link).unwrap(), raw_target);
-        assert_eq!(std::fs::read_to_string(referent).unwrap(), "original");
+        let content = if kind == "relative_directory" {
+            referent.join("child")
+        } else {
+            referent
+        };
+        assert_eq!(std::fs::read_to_string(content).unwrap(), "original");
     }
 
     #[cfg(unix)]

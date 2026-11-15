@@ -34,18 +34,18 @@
 //!
 //! ## What's deliberately *not* here
 //!
-//! - Overlay discovery without an `over.yml` marker — that's #127, layered
-//!   on top of this model later. (A `mode:`/`rules:` configuration
-//!   syntax with path/subtree overrides *is* here — #126, resolved via
-//!   `Overlay::materialization_for`/`crate::overlays::rules` before this
-//!   module ever walks the overlay tree.)
+//! - Overlay discovery, including descriptor-less overlays, belongs to
+//!   [`Repository`](crate::overlays::Repository). Materialization configuration
+//!   (`mode`/`rules`) is resolved via `Overlay::materialization_for` and
+//!   `crate::overlays::rules` before this module walks the overlay tree.
 //! - Rendered file bytes and source identity live in [`content`]; checkout units
 //!   carry complete desired-leaf inventories without overlapping child entries.
-//! - Permission metadata is present (`DesiredEntry.permissions`, #65) but
-//!   scoped to entries `over` writes content for directly (`PartialFile`
-//!   today) — a symlinked entry shares its overlay source's inode, so
-//!   there's no independent target permission to manage without mutating
-//!   that source, which stays out of scope (see ADR-020).
+//! - Permission policy applies to content Over writes directly: partial files,
+//!   encrypted whole files, and rendered artifacts use `DesiredEntry.permissions`;
+//!   generated checkout leaves carry assignments in their rendered inventory.
+//!   Ordinary checkout files have no independent permission policy. Ordinary
+//!   symlinks share their source's inode, so chmod would mutate source content
+//!   and stays out of scope (see ADR-020).
 //! - Comparing against actual filesystem state and materializing anything —
 //!   that's [`crate::plan`] (#13) and [`crate::materialize`] (#108).
 //!   `DesiredTree` is consumed by those, not a replacement for

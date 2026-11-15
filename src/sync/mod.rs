@@ -713,7 +713,19 @@ async fn commit_virtual_checkout_interactively(
     entry: &DesiredEntry,
     opts: &SyncOptions,
 ) -> Result<SyncOutcome> {
+    commit_virtual_checkout_with_prompt(entry, opts, prompt_virtual_checkout_commit).await
+}
+
+async fn commit_virtual_checkout_with_prompt(
+    entry: &DesiredEntry,
+    opts: &SyncOptions,
+    prompt: impl FnOnce(usize, &Path) -> Result<Option<String>>,
+) -> Result<SyncOutcome> {
     let path = entry.target.clone();
+    // Consent must refer to the HEAD/index inspected before either prompt can pause execution.
+    let snapshot_entry = entry.clone();
+    let expected =
+        tokio::task::spawn_blocking(move || commit::snapshot(&[snapshot_entry])).await??;
     let (pending, unstaged) = ordinary_virtual_checkout_changes(entry)?;
     if pending.is_empty() || !unstaged.is_empty() {
         return Ok(SyncOutcome::Blocked {
@@ -736,41 +748,25 @@ async fn commit_virtual_checkout_interactively(
         });
     }
 
-    let pause = crate::ui::progress::pause()?;
-    let confirmed = Confirm::with_theme(&DialogTheme::default())
-        .with_prompt(format!(
-            "{} staged file{} changed at {} — commit {} now?",
-            pending.len(),
-            if pending.len() == 1 { "" } else { "s" },
-            short_path(&path.to_string_lossy()),
-            if pending.len() == 1 { "it" } else { "them" },
-        ))
-        .default(true)
-        .interact()
-        .map_err(|e| anyhow!("commit confirmation prompt failed: {}", e))?;
-
-    if !confirmed {
+    let Some(message) = prompt(pending.len(), &path)? else {
         return Ok(SyncOutcome::Blocked {
             path,
             reason: "local changes not committed (declined)".to_string(),
         });
-    }
-
-    let message = crate::ui::message_input("Commit message")
-        .map_err(|e| anyhow!("commit message prompt failed: {}", e))?;
-    drop(pause);
+    };
     let message = if message.trim().is_empty() {
         None
     } else {
         Some(message)
     };
 
-    match commit::commit(
-        entry,
+    match commit::commit_entries_checked(
+        std::slice::from_ref(entry),
         &CommitOptions {
             message,
             ..Default::default()
         },
+        Some(expected),
     )
     .await?
     {
@@ -788,6 +784,27 @@ async fn commit_virtual_checkout_interactively(
             "sync_virtual_checkout only ever calls commit::commit for a VirtualCheckout entry"
         ),
     }
+}
+
+fn prompt_virtual_checkout_commit(count: usize, path: &Path) -> Result<Option<String>> {
+    let _pause = crate::ui::progress::pause()?;
+    let confirmed = Confirm::with_theme(&DialogTheme::default())
+        .with_prompt(format!(
+            "{} staged file{} changed at {} — commit {} now?",
+            count,
+            if count == 1 { "" } else { "s" },
+            short_path(&path.to_string_lossy()),
+            if count == 1 { "it" } else { "them" },
+        ))
+        .default(true)
+        .interact()
+        .map_err(|e| anyhow!("commit confirmation prompt failed: {}", e))?;
+    if !confirmed {
+        return Ok(None);
+    }
+    crate::ui::message_input("Commit message")
+        .map(Some)
+        .map_err(|e| anyhow!("commit message prompt failed: {}", e))
 }
 
 /// Update `entry`'s managed subtree in place to reflect the source
@@ -865,7 +882,7 @@ async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Resu
                 .get_path(&managed_path.join(relative), 0)
                 .map(|entry| (entry.id, entry.mode as i32));
             anyhow::ensure!(
-                vc_git::entries_match(local, base) || vc_git::entries_match(local, head),
+                !vc_git::entries_conflict(base, head, local),
                 "target '{}' changed incompatibly with its source",
                 target.join(relative).display()
             );
@@ -1433,6 +1450,78 @@ mod tests {
         .unwrap();
     }
 
+    #[rstest::rstest]
+    #[case("index")]
+    #[case("head")]
+    #[case("unchanged")]
+    #[tokio::test]
+    async fn sync_commits_only_the_snapshot_inspected_before_consent(#[case] change: &str) {
+        let _xdg = isolate_xdg_state();
+        let source = TempDir::new().unwrap();
+        source.child("a.txt").write_str("original").unwrap();
+        init_committed_repo(source.path());
+        let repo = Repository::open(source.path()).unwrap();
+        let target = TempDir::new().unwrap();
+        materialize_virtual_checkout(source.path(), target.path()).await;
+        let entry = virtual_checkout_entry(target.path().into(), source.path().into());
+        let mut index = repo.index().unwrap();
+        let selected = index.get_path(Path::new("a.txt"), 0).unwrap();
+        index.add_frombuffer(&selected, b"approved").unwrap();
+        index.write().unwrap();
+        target.child("a.txt").write_str("approved").unwrap();
+        let mut head = repo.head().unwrap().target();
+        let result =
+            commit_virtual_checkout_with_prompt(&entry, &SyncOptions::default(), |count, _| {
+                assert_eq!(count, 1);
+                if change == "index" {
+                    index.add_frombuffer(&selected, b"not approved").unwrap();
+                    index.write().unwrap();
+                } else if change == "head" {
+                    let parent = repo.head().unwrap().peel_to_commit().unwrap();
+                    let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+                    head = Some(
+                        repo.commit(
+                            Some("HEAD"),
+                            &signature,
+                            &signature,
+                            "native commit",
+                            &parent.tree().unwrap(),
+                            &[&parent],
+                        )
+                        .unwrap(),
+                    );
+                }
+                Ok(Some("approved message".into()))
+            })
+            .await;
+        if change == "unchanged" {
+            assert!(matches!(
+                result.unwrap(),
+                SyncOutcome::Committed { files: 1, .. }
+            ));
+            assert_ne!(repo.head().unwrap().target(), head);
+            return;
+        }
+        let error = result.unwrap_err();
+        assert!(
+            error.to_string().contains("HEAD or index changed"),
+            "{error:#}"
+        );
+        assert_eq!(repo.head().unwrap().target(), head);
+        let staged = repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("a.txt"), 0)
+            .unwrap();
+        let expected: &[u8] = if change == "index" {
+            b"not approved"
+        } else {
+            b"approved"
+        };
+        assert_eq!(repo.find_blob(staged.id).unwrap().content(), expected);
+        target.child("a.txt").assert("approved");
+    }
+
     #[tokio::test]
     async fn virtual_checkout_up_to_date_reports_up_to_date() {
         let _xdg = isolate_xdg_state();
@@ -1454,6 +1543,70 @@ mod tests {
             SyncOutcome::UpToDate {
                 path: target_td.path().to_path_buf()
             }
+        );
+    }
+
+    #[cfg(unix)]
+    #[rstest::rstest]
+    #[case("a", 0o755, "b", 0o644, true)]
+    #[case("b", 0o644, "a", 0o755, true)]
+    #[case("b", 0o755, "b", 0o644, true)]
+    #[case("b", 0o755, "b", 0o755, false)]
+    #[case("a", 0o755, "a", 0o644, false)]
+    #[tokio::test]
+    async fn status_and_sync_agree_on_content_and_executable_conflicts(
+        #[case] source_content: &str,
+        #[case] source_mode: u32,
+        #[case] local_content: &str,
+        #[case] local_mode: u32,
+        #[case] conflict: bool,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let _xdg = isolate_xdg_state();
+        let source = TempDir::new().unwrap();
+        source.child("a.txt").write_str("a").unwrap();
+        fs::set_permissions(
+            source.path().join("a.txt"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let repo = init_committed_repo_ret(source.path());
+        let target = TempDir::new().unwrap();
+        materialize_virtual_checkout(source.path(), target.path()).await;
+        source.child("a.txt").write_str(source_content).unwrap();
+        fs::set_permissions(
+            source.path().join("a.txt"),
+            fs::Permissions::from_mode(source_mode),
+        )
+        .unwrap();
+        commit_all(&repo, "source advancement");
+        target.child("a.txt").write_str(local_content).unwrap();
+        fs::set_permissions(
+            target.path().join("a.txt"),
+            fs::Permissions::from_mode(local_mode),
+        )
+        .unwrap();
+        let entry = virtual_checkout_entry(target.path().into(), source.path().into());
+        let inspection =
+            status::virtual_checkout::inspect_tracked_cached(&entry, &mut Default::default())
+                .unwrap();
+        assert_eq!(matches!(inspection.status, Status::Conflict), conflict);
+        let outcome = sync_virtual_checkout(&entry, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(matches!(outcome, SyncOutcome::Conflict { .. }), conflict);
+        target.child("a.txt").assert(if conflict {
+            local_content
+        } else {
+            source_content
+        });
+        assert_eq!(
+            fs::metadata(target.path().join("a.txt"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            if conflict { local_mode } else { source_mode }
         );
     }
 

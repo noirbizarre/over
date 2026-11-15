@@ -98,16 +98,18 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let ctx = ctx.resolve_data()?;
 
-    overlay.add_files(&ctx, &resolved).await.inspect_err(|e| {
-        ui::warn(format!(
-            "{} {} {}: {}",
-            emojis::crossmark().for_stderr(),
-            style::heading("Failed to add to overlay"),
-            style::overlay(&overlay.name),
-            e,
-        ))
-        .ok();
-    })?;
+    crate::cli::add::ingest(&overlay, &ctx, &resolved)
+        .await
+        .inspect_err(|e| {
+            ui::warn(format!(
+                "{} {} {}: {}",
+                emojis::crossmark().for_stderr(),
+                style::heading("Failed to add to overlay"),
+                style::overlay(&overlay.name),
+                e,
+            ))
+            .ok();
+        })?;
 
     // Exclude the newly added files from this repo's `git status`, via the
     // same per-overlay `.git/info/exclude` block `over apply` maintains

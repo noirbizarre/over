@@ -268,6 +268,53 @@ fn historical_only_files_can_be_recovered_but_untracked_collisions_are_preserved
 }
 
 #[rstest]
+#[case(false, false, false)]
+#[case(false, true, false)]
+#[case(true, false, false)]
+#[case(true, true, false)]
+#[case(true, false, true)]
+#[case(true, true, true)]
+fn deleted_rule_selected_checkout_roots_remain_restorable(
+    #[case] committed: bool,
+    #[case] staged: bool,
+    #[case] dry_run: bool,
+) {
+    let fixture =
+        Fixture::with_descriptor("mode = 'symlink'\n[[rules]]\npath = 'sub'\nmode = 'checkout'\n");
+    fixture.git(&["rm", "-r", "ov/sub"]);
+    if committed {
+        fixture.git(&["commit", "-qm", "remove checkout subtree"]);
+    }
+    fs::remove_file(fixture.target.join("sub/file")).unwrap();
+    let source = inventory(&fixture.source);
+    let target = inventory(&fixture.target);
+    let mut options = vec!["--source", if committed { "HEAD~1" } else { "HEAD" }];
+    if staged {
+        options.push("--staged");
+    }
+    if dry_run {
+        options.push("--dry-run");
+    }
+    checked(fixture.restore(&options, &["sub/file"]));
+    if dry_run {
+        assert_eq!(inventory(&fixture.source), source);
+        assert_eq!(inventory(&fixture.target), target);
+    } else if staged {
+        assert_eq!(
+            fixture.git(&["show", ":ov/sub/file"]).stdout,
+            b"historical\n"
+        );
+        assert_eq!(inventory(&fixture.target), target);
+    } else {
+        assert_eq!(
+            fs::read(fixture.target.join("sub/file")).unwrap(),
+            b"historical\n"
+        );
+        assert_eq!(inventory(&fixture.source), source);
+    }
+}
+
+#[rstest]
 #[case(&["--source", "not-a-revision"], "file")]
 #[case(&[], "untracked")]
 #[case(&["--staged", "--worktree"], "../outside")]

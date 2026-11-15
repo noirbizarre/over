@@ -58,7 +58,9 @@ Initialization and read-only commands never run install hooks.
 
 ## Explicit package aggregation
 
-An overlay hook can consume only its own complete package list:
+An overlay's `data` contains its own complete package list, without automatic
+aggregation. Hooks may explicitly read dependency lists through `overlays`.
+For example, a hook consuming its own list:
 
 ```yaml
 # apps/ssh/over.yaml

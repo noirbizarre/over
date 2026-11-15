@@ -269,10 +269,7 @@ fn declared_ref_status(
         let head_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
         if let Some(head_commit) = head_commit {
             if let Some(tag) = &config.tag {
-                let expected = repo
-                    .revparse_single(&format!("refs/tags/{tag}"))
-                    .ok()
-                    .and_then(|o| o.peel_to_commit().ok());
+                let expected = crate::actions::git::resolve_tag(repo, tag).ok();
                 if expected.is_none_or(|c| c.id() != head_commit.id()) {
                     return Ok(Status::Conflict);
                 }

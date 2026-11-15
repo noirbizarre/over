@@ -320,23 +320,25 @@ fn checkout_ref(repo: &Repository, config: &GitRepoConfig) -> Result<()> {
     checkout.safe().overwrite_ignored(false);
     // branch is handled at clone time via RepoBuilder; tag/rev are post-clone operations
     if let Some(tag) = &config.tag {
-        let (obj, reference) = repo.revparse_ext(tag)?;
-        repo.checkout_tree(&obj, Some(&mut checkout))?;
-        if let Some(reference) = reference {
-            repo.set_head(
-                reference
-                    .name()
-                    .with_context(|| format!("invalid reference name for tag {}", tag))?,
-            )?;
-        } else {
-            repo.set_head_detached(obj.id())?;
-        }
+        let commit = resolve_tag(repo, tag)?;
+        repo.checkout_tree(commit.as_object(), Some(&mut checkout))?;
+        repo.set_head_detached(commit.id())?;
     } else if let Some(rev) = &config.rev {
         let obj = repo.revparse_single(rev)?;
         repo.checkout_tree(&obj, Some(&mut checkout))?;
         repo.set_head_detached(obj.id())?;
     }
     Ok(())
+}
+
+pub(crate) fn resolve_tag<'repo>(
+    repo: &'repo Repository,
+    tag: &str,
+) -> Result<git2::Commit<'repo>> {
+    // Restrict configuration to real tags; rev is the separate revision-expression escape hatch.
+    Ok(repo
+        .find_reference(&format!("refs/tags/{tag}"))?
+        .peel_to_commit()?)
 }
 
 /// Ensure extra remotes exist with correct URLs and refspecs.
@@ -1858,6 +1860,63 @@ mod tests {
         checkout_ref(&dest_repo, &config).unwrap();
         // HEAD should be detached at the tagged commit
         assert!(dest_repo.head_detached().unwrap());
+    }
+
+    #[rstest::rstest]
+    #[case("missing")]
+    #[case("lightweight")]
+    #[case("annotated")]
+    fn tag_checkout_uses_only_the_tag_namespace(#[case] kind: &str) {
+        let (_temp, repo) = create_source_repo();
+        let original = repo.head().unwrap().peel_to_commit().unwrap();
+        let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+        let branch_commit = repo
+            .commit(
+                None,
+                &signature,
+                &signature,
+                "branch only",
+                &original.tree().unwrap(),
+                &[&original],
+            )
+            .unwrap();
+        repo.reference(
+            "refs/heads/release",
+            branch_commit,
+            false,
+            "branch collision",
+        )
+        .unwrap();
+        match kind {
+            "lightweight" => {
+                repo.tag_lightweight("release", original.as_object(), false)
+                    .unwrap();
+            }
+            "annotated" => {
+                repo.tag(
+                    "release",
+                    original.as_object(),
+                    &signature,
+                    "release",
+                    false,
+                )
+                .unwrap();
+            }
+            _ => {}
+        }
+        let config: GitRepoConfig = toml::from_str("url = ''\ntag = 'release'\n").unwrap();
+        let result = checkout_ref(&repo, &config);
+        if kind == "missing" {
+            assert!(result.is_err(), "a branch must not satisfy a declared tag");
+            assert_eq!(repo.head().unwrap().target(), Some(original.id()));
+        } else {
+            result.unwrap();
+            assert!(repo.head_detached().unwrap());
+            assert_eq!(
+                repo.head().unwrap().peel_to_commit().unwrap().id(),
+                original.id()
+            );
+        }
     }
 
     // ── checkout_ref: no tag, no rev (no-op) ────────────────────────────

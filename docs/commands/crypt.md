@@ -10,6 +10,7 @@ over crypt add <PATHS>...
 over crypt remove <PATHS>... [--yes]
 over crypt list
 over crypt recover
+over crypt migrate
 ```
 
 ## Repository selection and options
@@ -102,3 +103,33 @@ git diff --cached
 ```
 
 See [recovery](../usage/crypt.md#recovery) for the complete procedure.
+
+## Migrate legacy encryption
+
+`migrate` converts legacy Age files and native secrets to repository-key encryption.
+It takes no additional arguments and requires an initialized, unlocked repository
+key, plus access to decrypt the legacy Age inputs. Run it from the source repository
+or select that repository with `--home`.
+
+```sh
+over crypt migrate
+over crypt list
+git diff --cached --stat
+git diff --cached
+git commit -m 'Migrate legacy encryption'
+```
+
+The command processes tracked `.age` files and entries in the legacy
+`.over/secrets/` directory. Ordinary files migrate to the same path with the `.age`
+extension removed; native secrets migrate to `.over/secrets.yaml`, preserving
+binary values. All inputs must be real regular files. Tracked legacy files must
+match their index snapshots, and incompatible destination content or unrecognized
+legacy-store entries must be resolved before migration.
+
+Original Age ciphertext is preserved under `over-crypt/legacy-backup/` in Git's
+administrative directory, retaining its repository-relative paths. These backups
+are local and are not included in the resulting commit. Migration writes the new
+destinations, stages their ciphertext and protection policy, stages tracked legacy
+removals, and removes legacy inputs and the old secret-store directory. Review the
+staged changes and commit explicitly: migration does not commit or rewrite old
+history.
