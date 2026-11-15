@@ -165,7 +165,19 @@ fn textconv_authenticates_both_domains_before_writing_any_plaintext() {
         let mut ciphertext = key.encrypt(b"exact\0secret\xff\n", domain).unwrap();
         let path = fixture.path("-quoted ' input");
         fs::write(&path, &ciphertext).unwrap();
-        let output = fixture.over(&["git", "textconv", "--", path.to_str().unwrap()]);
+        let output = fixture
+            .command(cargo_bin("over"))
+            // Helpers must use Git's context even when Over home points elsewhere.
+            .args([
+                "--home",
+                fixture.identity.path().to_str().unwrap(),
+                "crypt",
+                "textconv",
+                "--",
+                path.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
         assert!(
             output.status.success(),
             "{}",
@@ -174,9 +186,71 @@ fn textconv_authenticates_both_domains_before_writing_any_plaintext() {
         assert_eq!(output.stdout, b"exact\0secret\xff\n");
         *ciphertext.last_mut().unwrap() ^= 1;
         fs::write(&path, ciphertext).unwrap();
-        let output = fixture.over(&["git", "textconv", "--", path.to_str().unwrap()]);
+        let output = fixture.over(&["crypt", "textconv", "--", path.to_str().unwrap()]);
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn existing_git_helper_configuration_works_until_unlock_refreshes_its_namespace() {
+    let fixture = Fixture::new();
+    let repo = git2::Repository::open(fixture.root.path()).unwrap();
+    let mut config = repo.config().unwrap();
+    let names = [
+        "filter.over.clean",
+        "filter.over.smudge",
+        "filter.over.process",
+        "diff.over.textconv",
+    ];
+    for name in names {
+        let command = config.get_string(name).unwrap();
+        assert!(command.contains(" crypt "), "{command}");
+        config
+            .set_str(name, &command.replace(" crypt ", " git "))
+            .unwrap();
+    }
+    fs::write(fixture.path("protected/token"), b"compatible edit\n").unwrap();
+    fixture.git(&["add", "protected/token"]);
+    let output = fixture
+        .command("git")
+        .args(["diff", "--cached"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("+compatible edit")
+    );
+    fixture.success(&["unlock"]);
+    let config = repo.config().unwrap();
+    for name in names {
+        assert!(config.get_string(name).unwrap().contains(" crypt "));
+    }
+    let output = fixture
+        .command("git")
+        .args(["check-attr", "filter", "diff", "--", "protected/token"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.stdout,
+        b"protected/token: filter: over\nprotected/token: diff: over\n"
+    );
+}
+
+#[test]
+fn helper_help_groups_encryption_plumbing_under_crypt_instead_of_git() {
+    let fixture = Fixture::new();
+    let crypt = String::from_utf8(fixture.over(&["crypt", "--help"]).stdout).unwrap();
+    let git = String::from_utf8(fixture.over(&["git", "--help"]).stdout).unwrap();
+    for helper in ["filter", "filter-process", "textconv"] {
+        assert!(crypt.contains(helper), "{crypt}");
+        assert!(!git.contains(helper), "{git}");
     }
 }
 
@@ -254,7 +328,7 @@ fn unavailable_historical_generations_fail_instead_of_displaying_ciphertext() {
     let path = fixture.identity.path().join("old ciphertext");
     fs::write(&path, ciphertext).unwrap();
     fixture.success(&["key", "rotate"]);
-    let output = fixture.over(&["git", "textconv", path.to_str().unwrap()]);
+    let output = fixture.over(&["crypt", "textconv", path.to_str().unwrap()]);
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
 }

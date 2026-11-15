@@ -26,6 +26,19 @@ pub enum Commands {
     Recover,
     /// Migrate legacy Age files and native secrets explicitly
     Migrate,
+    /// Run the repository encryption filter
+    #[command(subcommand)]
+    Filter(FilterCommand),
+    /// Run the long-lived Git encryption filter
+    FilterProcess,
+    /// Convert an encrypted Git file for diff display
+    Textconv { file: PathBuf },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FilterCommand {
+    Clean,
+    Smudge,
 }
 
 #[derive(Args, Debug)]
@@ -609,16 +622,19 @@ pub fn lock(cli: &super::CLI) -> Result<()> {
 }
 
 pub fn execute(cli: &super::CLI, command: &Commands) -> Result<()> {
-    let repo = match command {
-        Commands::Add { paths } | Commands::Remove { paths, .. } => policy_repository(cli, paths)?,
-        _ => repository(cli)?,
-    };
     match command {
+        // Git invokes helpers in its own repository context, independently of Over home.
+        Commands::Filter(FilterCommand::Clean) => crate::crypt::filter::once(true),
+        Commands::Filter(FilterCommand::Smudge) => crate::crypt::filter::once(false),
+        Commands::FilterProcess => crate::crypt::filter::process(),
+        Commands::Textconv { file } => crate::crypt::textconv::run(file),
         Commands::Add { paths } => {
+            let repo = policy_repository(cli, paths)?;
             let (patterns, inputs) = policy_inputs(&repo, &cli.resolve_home()?, paths)?;
             policy::update_inputs(&repo, &patterns, true, &inputs)
         }
         Commands::Remove { paths, yes } => {
+            let repo = policy_repository(cli, paths)?;
             eprintln!(
                 "Removing crypt protection stages plaintext for future commits. Historical ciphertext/plaintext is unchanged."
             );
@@ -634,12 +650,12 @@ pub fn execute(cli: &super::CLI, command: &Commands) -> Result<()> {
             policy::update_inputs(&repo, &patterns, false, &inputs)
         }
         Commands::List => {
-            for finding in policy::inspect(&repo)? {
+            for finding in policy::inspect(&repository(cli)?)? {
                 crate::ui::info(finding.to_string())?;
             }
             Ok(())
         }
-        Commands::Recover => policy::recover(&repo),
-        Commands::Migrate => policy::migrate(&repo),
+        Commands::Recover => policy::recover(&repository(cli)?),
+        Commands::Migrate => policy::migrate(&repository(cli)?),
     }
 }

@@ -847,7 +847,7 @@ fn quoted_executable() -> Result<String> {
 }
 
 pub fn textconv_command() -> Result<String> {
-    Ok(format!("{} git textconv --", quoted_executable()?))
+    Ok(format!("{} crypt textconv --", quoted_executable()?))
 }
 
 pub fn filter_commands() -> Result<[(&'static str, String); 3]> {
@@ -855,15 +855,15 @@ pub fn filter_commands() -> Result<[(&'static str, String); 3]> {
     Ok([
         (
             "filter.over.clean",
-            format!("{executable} git filter clean"),
+            format!("{executable} crypt filter clean"),
         ),
         (
             "filter.over.smudge",
-            format!("{executable} git filter smudge"),
+            format!("{executable} crypt filter smudge"),
         ),
         (
             "filter.over.process",
-            format!("{executable} git filter-process"),
+            format!("{executable} crypt filter-process"),
         ),
     ])
 }

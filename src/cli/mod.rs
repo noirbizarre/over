@@ -59,7 +59,7 @@ pub struct CLI {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    #[clap(subcommand, about = "Manage repository encryption policy")]
+    #[clap(subcommand, about = "Manage repository encryption and Git drivers")]
     Crypt(crypt::Commands),
     #[clap(subcommand, about = "Manage repository users and their Age keys")]
     User(crypt::UserCommands),

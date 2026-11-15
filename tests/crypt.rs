@@ -682,7 +682,7 @@ fn a_long_lived_filter_does_not_retain_key_access_after_explicit_lock() {
     let mut child = Command::new(cargo_bin("over"))
         .current_dir(root.path())
         .env_remove("OVER_HOME")
-        .args(["git", "filter-process"])
+        .args(["crypt", "filter-process"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
