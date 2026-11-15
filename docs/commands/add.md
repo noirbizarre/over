@@ -1,0 +1,127 @@
+# `over add`
+
+Add files or directories to an overlay.
+
+```text
+Usage: over add [OPTIONS] <FILES>...
+
+Arguments:
+  <FILES>...  Files, directories, or glob patterns to add
+
+Options:
+  -H, --home <HOME>        Configuration and overlays root [env: OVER_HOME=]
+  -o, --overlay <OVERLAY>  Select the target overlay (otherwise infer from file context)
+  -d, --debug              Toggle debug traces
+  -r, --target <TARGET>    Set the target directory (defaults to ~) [env: OVER_TARGET=]
+  -n, --dry-run            Run without applying changes
+  -v, --verbose            Toggle verbose output
+  -f, --force              Overwrite without prompting
+   -p, --patch              Interactively stage virtual-checkout changes by hunk
+       --crypt              Declare crypt policy and stage encrypted content
+  -h, --help               Print help
+```
+
+Without `--overlay`, [infer from the input paths](../usage/selection.md). Managed siblings
+can identify an overlay for a new symlink-managed file. Ambiguous or missing context requires an
+explicit overlay; `default_overlay` does not select an ingestion destination.
+
+For symlink materialization, files are moved into the overlay and replaced
+in place by a symlink pointing back at the overlay copy — the same
+mechanism `over apply` uses in reverse.
+
+## Mapped directories
+
+Inputs are reverse-routed through the overlay's
+[rule targets](../configuration/overlay.md#overlay-rules).
+For example, with a rule `{path: etc, target: /etc/client}`:
+
+```sh
+over add --overlay workspace/client /etc/client/other.yaml
+```
+
+This adds `etc/other.yaml` to that overlay. Inputs outside the base target
+and mapped destinations are rejected, as are base-target paths that would
+reapply somewhere else because their source prefix was mapped away.
+
+## Virtual checkout staging
+
+Use `over add --crypt <file>...` to declare source `.gitattributes` protection
+and add content through the repository encryption filter in one workflow. It
+shares the implementation of [`over crypt add`](crypt.md), requires unlock, and
+supports individual regular files, including mapped virtual destinations. Policy
+and ciphertext are staged together; subsequent `over commit` includes the
+required source policy. `--crypt` cannot be combined with `--patch`.
+
+The crypt workflow preflights checkout/source/index state before publishing and
+keeps rollback ownership through ordinary file ingestion. Independent existing
+source files require explicit resolution, including equal-byte copies with
+different metadata; `--force` does not discard them. Use `over crypt add` on the
+canonical source instead. Unrelated staged entries are preserved.
+
+Inside a virtual checkout, `over add` acts like `git add`: selected new,
+modified, or deleted files are staged in the overlay source repository's
+Git index at their reverse-mapped source paths. Target files remain ordinary
+files. A directory selection includes tracked deletions beneath it; a
+missing literal path can select a deleted tracked file.
+
+Fresh virtual checkouts share directories and own individual projected files.
+Acquiring a new destination file requires `--overlay NAME`, even when neighboring
+files identify an application. Recursive selections stage known owned files and,
+with an explicit overlay, acquire eligible unowned files. They skip files owned by
+other overlays; directly naming another owner's file fails. New files remain ordinary
+files and are staged at their canonical source paths, including with `--crypt`.
+Unstaging or resetting an acquired file does not release its ownership. Unapply
+the association when removing its ownership. Existing exclusive checkout deployments
+retain their previous addition-discovery behavior.
+
+```sh
+over add --overlay workspace/client /etc/client/config.toml
+over commit --overlay workspace/client --message "Update client configuration"
+```
+
+Staging records a snapshot. Further edits stay unstaged, and `over commit`
+commits only staged changes. Status and diff distinguish staged and unstaged
+content. Unrelated index entries are preserved. Sync a checkout that is
+behind its source before staging, and resolve conflicting source edits
+first. `--dry-run` leaves both the index and target files unchanged.
+
+Use [`over restore --staged PATH`](restore.md) to unstage a file while preserving
+target edits, or `over restore PATH` to discard its unstaged target changes.
+
+### Interactive partial staging
+
+Use `--patch` (`-p`) to stage selected changes instead of entire files:
+
+```sh
+over add -p --overlay workspace/client /etc/client/config.toml
+over add --patch --overlay workspace/client /etc/client/
+```
+
+Each text hunk includes surrounding context. Choose **Accept** to stage it
+or **Skip** to leave it unstaged. **Finish** applies the accepted choices and
+skips all remaining changes. **Cancel** (including Escape) discards every
+choice in the session. Finishing the last choice applies accepted changes.
+An interrupted or failed prompt does not stage any choices.
+
+Hunks show canonical Git content after clean filters. External diff drivers
+and text conversion tools are not used to generate applicable patches.
+
+Already-staged changes and unrelated index entries are preserved. All target
+and source working-tree files remain unchanged. If another process changes
+the index while you select hunks, the operation fails: rerun it against the
+new index. Index updates are atomic per repository; selections spanning
+multiple repositories are not a single transaction.
+
+Added and deleted text files, binary files, and empty-file changes are offered
+as whole-file choices. Executable-mode changes are separate whole-change
+choices. Manual hunk splitting/editing and file/directory replacements are
+not supported in patch mode.
+
+Patch mode only stages virtual-checkout paths owned by the selected overlay.
+Directory selections skip other materializations; explicitly selecting an
+unmanaged file requires explicit overlay selection to acquire it. No files are moved
+or replaced with symlinks. Explicit acquisition reserves ownership even if a later
+patch session is cancelled; cancelling changes no staged snapshots.
+`--force` does not accept choices automatically. Interactive selection needs
+a terminal; `--patch --dry-run` displays candidate changes without prompting
+or updating the index.

@@ -1,4 +1,4 @@
-# Native secrets and legacy Age files
+# Native secrets
 
 Over's native key-value store shares the repository key and persistent unlock
 state used by [Git encryption](crypt.md). Standard [Age](https://age-encryption.org/)
@@ -19,12 +19,8 @@ corrupt ciphertext remains a fatal error. Plaintext values are never cached.
 
 ## Named secrets
 
-```text
-over secret add NAME [--replace]
-over secret list
-over secret get NAME
-over secret remove NAME
-```
+Use [`over secret`](../commands/secret.md) for command syntax and output contracts.
+The examples below explain how to use the native store in workflows.
 
 The store belongs to the repository selected by `--home` / `OVER_HOME`, with
 `~/.dotfiles` as the default. It does not depend on the selected overlay, the
@@ -88,80 +84,30 @@ plaintext. Other diagnostics and Debug output redact values and passphrases.
 `remove` updates the aggregate ciphertext. As with any versioned data, removing
 a value does not erase prior Git history.
 
-## Legacy encrypted overlay files
+## Use secrets in hooks
 
-Existing repositories without repository-key metadata retain the original
-passphrase-based `.age` reader and per-name `.over/secrets/NAME.age` store.
-For this legacy format only, a nonempty `OVER_SECRET` supplies the credential,
-otherwise an allowed hidden terminal prompt acquires it for the invocation.
-Legacy listing/removal do not require decryption. Migrate explicitly with
-[`over crypt migrate`](crypt.md#migration-and-recovery); Over never silently
-reinterprets or discards legacy ciphertext. Mixing both native store formats
-requires migration before native secret operations continue.
-
-Use a case-sensitive final `.age` suffix for passphrase-encrypted overlay files.
-For example, `selected/config/token.age` deploys as `config/token` under the
-overlay's resolved destination. Exactly one suffix is removed, target rules
-apply to the logical output path, and collisions with ordinary files or partial
-files are rejected before apply writes anything. Both binary and ASCII-armored
-Age inputs are accepted.
-
-You can prepare ciphertext with an Age-compatible tool:
-
-```sh
-age --passphrase --output selected/config/token.age token
-over apply selected
-```
-
-The encrypted source remains unchanged. Decryption is a desired-state content
-transformation, producing a real file rather than a source symlink. These Age
-files do not support content templating. Ordinary files can opt into
-[file templates](../configuration/overlay.md#file-templates) through rules.
 Lifecycle hooks support native secret interpolation
 through `secret("name")` in commands, environment values, working directories
 and conditions. See [hook templates](../configuration/root.md#templates-and-conditions).
+
+Pass values through the hook environment rather than embedding them in shell
+command text:
+
+```yaml
+hooks:
+  post-apply:
+    - command: ./deploy --token "$TOKEN"
+      env:
+        TOKEN: "{{ secret('github-token') }}"
+```
 
 Fallback chains use a pipe inside the argument, for example
 `secret("op://dev/github/token | github-token")`. Bare names address the active
 repository's native store; provider-qualified references use `scheme://payload`.
 External providers are not implemented yet and count as unavailable. Missing
-secrets, unavailable providers, and a missing modern native local key allow
-fallback. Malformed expressions, legacy credential failures, wrong passphrases,
-corrupt ciphertext and store failures stop
+secrets, unavailable providers, and a missing local repository key allow
+fallback. Malformed expressions, corrupt ciphertext and store failures stop
 resolution. Hook interpolation requires valid UTF-8 and preserves whitespace
-without caching plaintext values. Modern native stores require a prior
+without caching plaintext values. Native stores require a prior
 `over unlock`; hook lookup does not prompt to acquire their local repository key.
-Only legacy per-name Age secrets share the invocation's cached Age credential.
-Path templates cannot access secrets. Prefer passing values through hook `env`
-rather than embedding them in shell command text.
-
-On Unix, decrypted files default to `0600`; explicit scalar/rule permissions
-can override this, matched against the logical output filename. Plaintext is
-written only to the final destination, never an Over cache or intermediate
-file. Existing files are updated in place after complete authentication: an
-I/O failure or crash during that write can leave partial destination content.
-Hard-linked destinations and directory obstructions require manual resolution.
-
-Apply preserves differing target content unless overwrite is explicitly
-authorized interactively or with `--force`. Encrypted conflicts never offer
-Absorb or a plaintext diff. Unapply removes only a destination whose bytes still
-match the current decrypted source; it retains edits and cannot use force to
-skip ownership verification. Encrypted diff diagnostics are metadata-only.
-
-Decrypted destinations inside host Git repositories are excluded from ordinary
-Git discovery before plaintext is written. Invalid exclusion blocks or conflicting
-ignore rules stop publication; exclusions survive a later apply failure.
-Already-tracked destinations must be untracked before apply;
-excludes cannot protect tracked files. Retained encrypted destinations keep the
-overlay's exclude block after unapply.
-
-### Legacy format scope
-
-- Encrypted files require ordinary file-level materialization. Whole-directory
-  symlinks, directory-valued link sidecars, and virtual checkouts reject encrypted
-  descendants instead of deploying ciphertext silently.
-- Encrypted control files (overlay descriptors, ignore files, link and partial
-  sidecars) and encrypted symlink inputs are unsupported.
-- Reverse-add of decrypted destinations, including a containing directory, is
-  rejected. Update encrypted sources explicitly; encryption-aware checkout
-  staging, synchronization, and restore are not supported.
+Path templates cannot access secrets.

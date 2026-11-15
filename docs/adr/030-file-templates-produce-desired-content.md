@@ -62,11 +62,6 @@ reserving a destination filename. Shared strict storage boundaries encrypt befor
 persistent blob publication and authenticate before plaintext reconciliation or
 reverse patching. Both desired and consumed-render snapshots use this boundary.
 
-Lock/unlock migrate known legacy snapshots recoverably, retaining a ledger of
-leaked object IDs until actual object cleanup is verified. Unknown historical
-ownership blocks completion; output without affirmative public-source evidence is
-conservatively encrypted rather than silently classified as public. Key-independent
-legacy comparisons do not certify inherited history through a new manifest.
 Key rotation refuses to strand operational protected snapshots.
 
 Rendered physical artifacts and snapshots from unprotected sources may contain

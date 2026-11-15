@@ -27,7 +27,7 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
     apply, and inspect the result. It demonstrates the complete first workflow
     without changing your existing dotfiles.
 
-    Already have an Over repository? [`over init`](usage/init.md) clones or
+    Already have an Over repository? [`over init`](commands/init.md) clones or
     validates it; then apply the overlay you want. Initialization and application
     are separate steps. You can start with [one flat overlay](examples.md#one-flat-overlay)
     and introduce composition when you need shared building blocks.
@@ -70,12 +70,11 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
     they do not all address the same scope. In particular, Home Manager is an
     adjacent user-environment manager, not just another dotfiles installer.
 
-    **Checked 12 November 2026.** Over's column describes the implementation in
-    this documentation's source revision. Repository encryption/native secrets
-    and the revised Dev Container Feature are implemented **after release 0.1.0**,
-    the latest published release at this check. They are not promises about what
-    installing 0.1.0 provides. Alternative columns describe their current upstream
-    implementations; the sources below identify the relevant documentation.
+    **Alternatives checked 12 November 2026.** Over's column describes the
+    implementation in this documentation's source revision, including repository
+    encryption, native secrets, and the Dev Container Feature available in 0.3.
+    Alternative columns describe the upstream implementations checked on that
+    date; the sources below identify the relevant documentation.
 
     **Status:** 🟢 supported and available in the current implementation/version;
     ❌ explicitly unsupported in the stated scope; 🚧 planned but not available.
@@ -91,7 +90,7 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
     | Dev Container configuration/setup | 🟢 Config files plus install/apply Feature | 🟢 Config-file links | 🟢 Config files and documented container bootstrap | 🟢 Tracked config files; bootstrap scripts | 🟢 Generated config files; external container tooling | 🟢 Config links; shell setup | 🟢 Config files; actions |
     | File deployment | 🟢 File/directory links, virtual checkouts, managed blocks | 🟢 Symlink farm | 🟢 Ordinary/generated files and symlinks | 🟢 Git working-tree files; alternative links | 🟢 Links to Nix-store files | 🟢 Symbolic/hard links | 🟢 Copies/generated files and links |
     | Permission handling | 🟢 Scoped modes and metadata preservation; see below | 🟢 Source permissions through links | 🟢 Private/executable file attributes | 🟢 Restrict private/decrypted files | 🟢 Executability; external secret modules for private files | 🟢 Directory creation modes | 🟢 `chmod`/preserve policy |
-    | Encryption/secret handling | 🟢 Repository encryption, access keys, native secrets (post-0.1.0) | ❌ No encryption facility | 🟢 Age/GPG and password-manager integrations | 🟢 Encrypted archive via external GPG/OpenSSL | 🟢 External module, e.g. sops-nix | 🟢 External plugins, e.g. dotbot-age | 🟢 External GPG via transformations |
+    | Encryption/secret handling | 🟢 Repository encryption, access keys, native secrets | ❌ No encryption facility | 🟢 Age/GPG and password-manager integrations | 🟢 Encrypted archive via external GPG/OpenSSL | 🟢 External module, e.g. sops-nix | 🟢 External plugins, e.g. dotbot-age | 🟢 External GPG via transformations |
     | File-content generation | 🟢 Rule-enabled MiniJinja file templates; path/hook templates | ❌ No rendering | 🟢 Go templates | 🟢 Built-in templates; optional external processors | 🟢 Nix expressions and format generators | ❌ Core directives do not render files | 🟢 Jinja2 templates |
     | Platforms/runtime model | 🟢 Linux/macOS/Windows binary; Git and hook tools as needed | 🟢 Perl and filesystem symlinks | 🟢 Linux/macOS/Windows binary; integrations may need tools | 🟢 Shell/Git; Linux/macOS, Windows via compatible environment | 🟢 Nix ecosystem on Linux/macOS; WSL for Windows | 🟢 Python; Unix and Windows with symlink privileges | 🟢 Python/dependencies; Linux/macOS/WSL |
 
@@ -119,8 +118,8 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
       [native secrets](usage/secrets.md) share repository access management.
       They protect selected content, not filenames or all Git metadata. Locking
       does not erase deployed plaintext or copies. External secret-provider
-      execution and [hardware recipients](https://github.com/noirbizarre/over/issues/246)
-      are not available yet. Integrations in other tools can be a better fit for
+      execution is not available yet; [hardware access keys](usage/crypt.md#hardware-keys-yubikey-and-ledger)
+      use supported Age plugins. Integrations in other tools can be a better fit for
       an existing password-manager workflow.
     - **Portability and commitment:** Over aims to reuse a workspace workflow on
       existing operating systems. Home Manager brings Nix's package and module
@@ -222,7 +221,7 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
 
     There are two distinct capabilities here: checkout removes dependence on a
     source symlink, while [permission policy](configuration/overlay.md#file-permissions)
-    controls **partial-file, legacy decrypted-file, and generated outputs**,
+    controls **partial-file and generated outputs**,
     including generated physical checkout files. Ordinary virtual-checkout files
     preserve access permissions while following Git executability; permission
     policy does not independently chmod them. Over has no general
@@ -241,7 +240,7 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
     Git remains the version-control system. Over uses Git repositories as
     first-class inputs and can [provision workspace repositories/worktrees](configuration/overlay.md#git-declarations),
     but their ongoing development remains ordinary Git. Apply is not a bulk pull
-    of those repositories. The [Git command group](usage/git.md) integrates overlay
+    of those repositories. The [Git command group](commands/git.md) integrates overlay
     files with host repositories, while [checkout recording and sync](configuration/materialization.md#editing-and-lifecycle)
     reconcile edits in Over's virtual checkouts.
 

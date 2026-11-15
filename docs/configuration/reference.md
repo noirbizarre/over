@@ -36,7 +36,7 @@ Defaults below apply when no inherited value or matching rule supplies a value.
 | `uses` | Both | List of strings | No dependencies | Literal repository-relative overlay identifiers, composed in order. |
 | `exclude` | Both | String or list of strings | No exclusions | Source exclusion globs relative to the declaring descriptor. |
 | `mode` | Both | [Materialization mode](#materialization-mode) | `symlink` | Materialization baseline for this scope. |
-| `permissions` | Both | [Octal string](#permissions) | No explicit assignment | Permission baseline for partial, decrypted, and generated outputs. |
+| `permissions` | Both | [Octal string](#permissions) | No explicit assignment | Permission baseline for partial and generated outputs. |
 | `rules` | Both | List of [rule objects](#rules) | No local rules | Ordered source-path assignments of target, mode, and permissions. |
 | `data` | Both | Mapping | Empty mapping | Consumer-owned metadata for templates and external tools. |
 | `git` | Both | URL string, repository object, or placement mapping | No repositories | [Git repositories and worktrees](#git-repositories-git) to provision. |
@@ -79,7 +79,7 @@ pull = true
 push = false
 ```
 
-These settings affect [`over sync`](../usage/sync.md) and the repository
+These settings affect [`over sync`](../commands/sync.md) and the repository
 containing `OVER_HOME`, not repositories declared under `git`. Neither stages
 nor commits changes. CLI pull/push flags override each setting independently;
 dry runs perform no remote operations. See [Source synchronization](root.md#source-synchronization).
@@ -145,12 +145,12 @@ ownership, target-mapping constraints, and lifecycle guidance.
 
 `permissions` and `rules[].permissions` require quoted octal strings, such as
 `"600"`, `"0644"`, or `"0o644"`, in both root and overlay descriptors.
-They manage partial-file, decrypted-file, and generated outputs (including
+They manage partial-file and generated outputs (including
 extension-stripped files and generated checkout leaves), without
 chmod of tracked symlink sources or independent chmod of ordinary virtual
 checkout content. Without an assignment, partial permissions are unmanaged;
-decrypted files default to `0600`, and new generated files use `0600` with the
-source executable bits retained. Existing generated checkout files preserve
+new generated files use `0600` with the source executable bits retained.
+Existing generated checkout files preserve
 access permissions unless explicitly assigned; sync repairs explicit permission
 drift even when content matches.
 See [File permissions](overlay.md#file-permissions).
@@ -252,7 +252,7 @@ disabling provisioning. It also changes the default of `per_worktree_config`.
 Apply reapplies remotes, configuration, and worktree provisioning to existing
 repositories. `branch` is a clone-time choice, not a branch-switching policy for
 existing clones. Manage these repositories with ordinary Git;
-[`over sync`](../usage/sync.md) serves a different purpose.
+[`over sync`](../commands/sync.md) serves a different purpose.
 See [Git declarations](overlay.md#git-declarations) for worktree layout.
 
 ### Named worktrees
@@ -417,7 +417,7 @@ At runtime, Over warns and ignores unknown attributes; invalid recognized
 values and missing required fields remain errors. `data`, Git option names,
 additional remote options, and hook environment names are intentionally open
 namespaces with the value types described above. Schemas do not replace
-[`over lint`](../usage/lint.md) or runtime validation.
+[`over lint`](../commands/lint.md) or runtime validation.
 
 Removed attributes `install`, `default`, `defaults`, `materialization`, and
 `link_dirs` are unsupported. Use `hooks.install`, `default_overlay`, scalar

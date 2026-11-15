@@ -20,7 +20,6 @@ license = "MIT"
 # on, the PKGBUILD's `# Maintainer:` line.
 description = "A git-based file overlay manager (dotfiles as overlays)"
 repository = "https://github.com/noirbizarre/over"
-homepage = "https://noirbizarre.github.io/over/"
 documentation = "https://noirbizarre.github.io/over/"
 readme = "README.md"
 keywords = ["dotfiles", "overlay", "git", "symlink", "cli"]

@@ -159,7 +159,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **readme** Match supported platforms to release artifacts - ([90ace31](https://github.com/noirbizarre/over/commit/90ace31c29345cfbb7ced128bee5f04e99cefe64))
 - **restore** Explain protected content and historical index restrictions - ([37fb04b](https://github.com/noirbizarre/over/commit/37fb04bfed038f2eba214415c7e08bc0e54150d5))
 - **secrets** Clarify recoverable native session fallback - ([0336882](https://github.com/noirbizarre/over/commit/03368822217fb3de0cd98cece99bee0be8fff283))
-- **secrets** Distinguish native unlock from legacy credentials - ([a8f089d](https://github.com/noirbizarre/over/commit/a8f089d9a5b11316fb4cafcd4bd49afb0e7b4d9a))
 - **selection** Remove obsolete overlay chooser examples - ([ea634cd](https://github.com/noirbizarre/over/commit/ea634cdf7bb5434df76fae89adf38df657031a65))
 - **selection** Qualify explicit sidecar referent protection - ([0bfcc63](https://github.com/noirbizarre/over/commit/0bfcc63a4f3fe123c2c58f586b5dc3aabcd2289c))
 - **selection** Explain reserved Git administration paths - ([a0829c3](https://github.com/noirbizarre/over/commit/a0829c3ae7b442be3ccff7bd54fad3e591d5526e))
@@ -489,4 +488,3 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Wip - ([36d443a](https://github.com/noirbizarre/over/commit/36d443a72d86d1223fcc3c711677b6f80e5c8d27))
 - Install - ([c2e3fa6](https://github.com/noirbizarre/over/commit/c2e3fa6adc9b2450aafad1cdb444439052282f01))
 - Install - ([9a8a600](https://github.com/noirbizarre/over/commit/9a8a6007b83a2ccc5f84d6b5f937709364bba4f4))
-

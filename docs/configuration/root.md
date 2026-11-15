@@ -31,7 +31,7 @@ Set `mode` in the root descriptor to persist the repository's inherited
 mode = "checkout"
 ```
 
-[`over init`](../usage/init.md#choose-a-repository-default) offers to create this
+[`over init`](../commands/init.md#choose-a-repository-default) offers to create this
 minimal configuration when no root descriptor exists, recommending virtual
 checkout and offering symlink as an alternative. Scripts can use
 `over init --mode checkout`, `--mode symlink`, or `--no-config` to skip creation.
@@ -62,7 +62,7 @@ See [Editor support](../configuration.md#editor-support) for validation scope.
 
 ## Format preference
 
-`format` controls what [`over new`](../usage/new.md) **writes**: `toml` (the
+`format` controls what [`over new`](../commands/new.md) **writes**: `toml` (the
 default) or `yaml`. Resolution is `--format`, then root `format`, then `toml`.
 It does not restrict reading: all three descriptor extensions remain supported.
 
@@ -81,7 +81,7 @@ HTTPS, `file://`, and local paths are accepted. Relative local paths are
 repository-root-relative. Empty values, non-strings, control characters, and
 template expressions are errors. Child descriptors cannot override it.
 
-[`over init`](../usage/init.md) sets a fresh clone's `origin` without connecting
+[`over init`](../commands/init.md) sets a fresh clone's `origin` without connecting
 to the canonical remote. With no field, it preserves the cloned origin. Existing
 checkouts require confirmation or `--set-origin` before changing origin.
 Explicit origin push URLs are preserved. Init validates or clones a repository;
@@ -89,7 +89,7 @@ it does not create an empty project or apply overlays.
 
 ## Source synchronization
 
-Opt into remote operations for [`over sync`](../usage/sync.md) in the root descriptor:
+Opt into remote operations for [`over sync`](../commands/sync.md) in the root descriptor:
 
 ```toml
 [sync]
@@ -253,16 +253,13 @@ An ordered fallback expression such as
 succeeds. Provider references use `scheme://payload`; external providers are not
 implemented yet, so those candidates are unavailable and allow fallback. Empty
 or malformed candidates reject the entire expression before any lookup. Missing
-secrets, unavailable providers, and a missing modern native unlock session allow
-fallback. Decryption, corruption, store errors, and legacy credential failures
-stop it. The pipe is inside the argument string,
-not a MiniJinja filter.
+secrets, unavailable providers, and a missing native unlock session allow
+fallback. Decryption, corruption, and store errors stop it. The pipe is inside
+the argument string, not a MiniJinja filter.
 
-Native resolution uses the active source repository. Modern native stores require
+Native resolution uses the active source repository. Native stores require
 the local repository key established by `over unlock`; hook lookup does not prompt
-to unlock them. Legacy per-name Age secrets share the invocation's lazy credential:
-set `OVER_SECRET` or allow interactive prompting; apply's `--no-prompt` disables
-those prompts. Hook secrets must be valid UTF-8. Secret access
+to unlock them. Hook secrets must be valid UTF-8. Secret access
 is not available in overlay destination or sidecar path templates. Prefer
 injecting secrets through `env`, for example:
 

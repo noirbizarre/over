@@ -105,7 +105,7 @@ variables. Existing `~/.over` repositories remain usable
 through source overrides; they are not moved automatically.
 
 A root `repository` setting can switch a clone's origin to a canonical remote
-without requiring that remote for bootstrap. See [`over init`](docs/usage/init.md)
+without requiring that remote for bootstrap. See [`over init`](docs/commands/init.md)
 for local-source, confirmation, and retry behavior. Init does not apply files.
 
 ## Layout examples
@@ -155,7 +155,7 @@ current capabilities, and trade-offs.
 over --help
 ```
 
-The [command reference](docs/usage/index.md) groups setup (`init`, `new`, `add`,
+The [command reference](docs/commands/index.md) groups setup (`init`, `new`, `add`,
 `list`), inspection (`status`, `diff`, `data`, `lint`, `doctor`), application
 (`apply`, `unapply`), checkout recording/reconciliation (`commit`, `sync`, `log`),
 and shell `completion`. `ls` aliases `list`; `show` aliases `status`.
@@ -163,7 +163,7 @@ and shell `completion`. `ls` aliases `list`; `show` aliases `status`.
 For editable checkouts, `over add` stages selected target snapshots and
 `over commit` records staged changes in the source repository. `over git mount`,
 `over git add`, and `over git status` integrate overlays with a host Git repository;
-see the [Git command group](docs/usage/git.md).
+see the [Git command group](docs/commands/git.md).
 
 ## Documentation
 
@@ -172,7 +172,8 @@ see the [Git command group](docs/usage/git.md).
 - [Examples](docs/examples.md)
 - [Configuration](docs/configuration.md): separate root, overlay, materialization,
   and install-hook references
-- [Commands](docs/usage/index.md)
+- [Usage and lifecycle](docs/usage/index.md)
+- [Commands](docs/commands/index.md)
 - [Architecture decisions](docs/adr/README.md)
 
 ## Contributing

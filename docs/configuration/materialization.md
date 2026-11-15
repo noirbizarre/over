@@ -8,7 +8,7 @@ you compose with `uses`.
 
 Both root and overlay descriptors accept `mode` and ordered `rules`.
 
-For missing root configuration, [`over init`](../usage/init.md#choose-a-repository-default)
+For missing root configuration, [`over init`](../commands/init.md#choose-a-repository-default)
 recommends virtual checkout and persists the selected repository default. Existing
 configuration is preserved, and the implicit fallback remains symlink when no
 policy selects a mode. Initialization never migrates existing deployments.
@@ -95,7 +95,7 @@ child directories of `tools` are whole-directory links. Reversing the two
 
 `uses` composes independent overlays; its order does not make conflicting file
 ownership safe or add descriptors to another overlay's inheritance chain.
-[`over lint`](../usage/lint.md) diagnoses composed target conflicts and explains
+[`over lint`](../commands/lint.md) diagnoses composed target conflicts and explains
 overlapping rules with the winning declaration for each property.
 
 ## Atomic boundaries and mappings
@@ -140,23 +140,23 @@ source templates to make lasting changes. For ordinary virtual checkout files,
 the source and target are separate snapshots:
 
 1. Edit ordinary target files.
-2. [`over add --overlay NAME PATH`](../usage/add.md) stages selected target
+2. [`over add --overlay NAME PATH`](../commands/add.md) stages selected target
    snapshots in the source index.
-3. [`over commit --overlay NAME`](../usage/commit.md) commits staged changes only; later
+3. [`over commit --overlay NAME`](../commands/commit.md) commits staged changes only; later
    unstaged target edits remain outside that commit.
-4. [`over sync NAME`](../usage/sync.md#virtual-checkouts-mode-checkout)
+4. [`over sync NAME`](../commands/sync.md#virtual-checkouts-mode-checkout)
    reconciles source advancement and target changes locally. Applying an existing
    checkout does not replace this workflow.
 
-Use [`over restore PATH`](../usage/restore.md) to discard selected unstaged target
+Use [`over restore PATH`](../commands/restore.md) to discard selected unstaged target
 changes, `over restore --staged PATH` to unstage without changing target content,
 or `over restore --source REV PATH` to recover historical content as an unstaged
 change. Restore overwrites selected content; preview with `--dry-run` first.
 
 Virtual checkout reconciliation performs no network I/O. `over sync` can optionally
 pull/rebase and push the Over source repository; all overlay-declared Git repositories
-remain independent working repositories managed with Git. Use [`status`](../usage/status.md) and
-[`diff`](../usage/diff.md) to inspect state before recording or reconciling it.
+remain independent working repositories managed with Git. Use [`status`](../commands/status.md) and
+[`diff`](../commands/diff.md) to inspect state before recording or reconciling it.
 
 Before changing mappings on an existing checkout, commit or resolve changes,
 unapply with the old configuration, change the mapping, and apply again.
@@ -170,9 +170,9 @@ See [Safety and recovery](../usage/safety.md) for the full contract.
 
 Template-containing checkouts use complete generated Git snapshots and preserve
 local edits through three-way sync. Generated output cannot be staged with
-`over add`; [`over commit`](../usage/commit.md#rendered-file-edits) can translate
+`over add`; [`over commit`](../commands/commit.md#rendered-file-edits) can translate
 unambiguous literal edits into source-template patches. See
-[Generated checkouts](../usage/sync.md#generated-checkouts)
+[Generated checkouts](../commands/sync.md#generated-checkouts)
 for snapshot storage, conflict resolution, and local-data security.
 
 ## Migrating older descriptors

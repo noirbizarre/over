@@ -103,7 +103,7 @@ against a small git2 spike before implementation:
   target content intact but loses the recorded base and ownership association.
   Reapply can initialize populated targets against current source `HEAD`, but
   cannot reconstruct the lost historical base. See
-  [lost association metadata](../usage/status.md#lost-association-metadata)
+  [lost association metadata](../commands/status.md#lost-association-metadata)
   for preservation and recovery limitations.
 
 **`Materializer::classify` is sync; XDG reads inside it are too.**

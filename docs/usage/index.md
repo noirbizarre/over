@@ -1,95 +1,73 @@
-# Commands
+# Getting started
 
-`over` is the standalone CLI. Its `git` subcommand group (`over git
-mount`/`add`/`status`) integrates the same overlay model with git
-workflows.
+Over's normal lifecycle is **set up → preview → apply → inspect → edit and
+record → sync → unapply**. Start with the [first-overlay walkthrough](../index.md#getting-started)
+for installation and a complete example in temporary directories.
 
-## Set up and select overlays
+## Set up a source repository
 
-| Command | Description |
-|---|---|
-| [`over init`](init.md) | Clone or validate an Over repository and configure its canonical origin |
-| [`over add`](add.md) | Add files or directories to an overlay |
-| [`over new`](new.md) | Create a new overlay |
-| [`over list`](list.md) (`ls`) | List known overlays |
-| [`over data`](data.md) | Export resolved overlay data as JSON |
-| [`over crypt`, `over unlock`, `over lock`](crypt.md) | Manage transparent repository encryption |
-| [`over crypt` Git helpers](crypt-filters.md) | Git-invoked encryption filters and readable diff conversion |
-| [`over user`, `over key`](crypt.md#users-and-keys) | Manage logical users, Age keys, and rotation |
-| [`over secret`](secrets.md) | Manage the repository-key-protected native secret store |
-| [`over completion`](completion.md) | Generate shell completion scripts |
+Already have an Over repository? [`over init`](../commands/init.md) clones or
+validates it. Initialization does not apply files. For a new setup, create a
+Git repository and [discover overlays](../configuration/root.md#overlay-discovery)
+or use [`over new`](../commands/new.md). Commit source files before initializing
+a checkout: its starting content comes from committed source `HEAD`.
 
-## Apply and inspect
+## Preview, apply, and inspect
 
-| Command | When to use it |
-| --- | --- |
-| [`over apply`](apply.md) | Apply a given overlay |
-| [`over lint`](lint.md) | Check overlays for configuration issues |
-| [`over doctor`](doctor.md) | Check the environment and overlays for issues |
-| [`over status`](status.md) | Inspect reconciliation health and staged/unstaged Git changes; `--short` prints file rows |
-| [`over show`](show.md) | Compatibility alias for `over status` |
-| [`over diff`](diff.md) | Show Git changes for managed overlay paths, with staged and difftool views |
-| [`over unapply`](unapply.md) | Remove a given overlay's own entries from the target |
+Select an overlay explicitly while learning:
 
-## Reconcile editable checkouts
+```sh
+over apply hosts/laptop --dry-run
+over apply hosts/laptop
+over status hosts/laptop
+```
 
-| Command | When to use it |
-| --- | --- |
-| [`over sync`](sync.md) | Reconcile virtual checkouts locally, optionally pulling/pushing the Over source repository |
-| [`over commit`](commit.md) | Record staged checkout changes in the source repository |
-| [`over restore`](restore.md) | Discard selected changes, unstage files, or recover historical content |
-| [`over log`](log.md) | Show the git history behind a checkout-materialized overlay |
+[`--home` and `--target`](../commands/index.md#shared-options-and-selection)
+select the source repository and destination. Review the preview before applying;
+see [selection](selection.md), [materialization](../configuration/materialization.md),
+and [safety and recovery](safety.md) for detailed behavior.
 
-## `over git`
+## Edit and record changes
 
-See the [Git group overview](git.md) for host-repository discovery and association.
+With default source symlinks, editing a deployed file edits its source directly:
+review and commit through Git. With ordinary editable checkouts, stage destination
+edits through Over before recording them:
 
-| Command | Description |
-|---|---|
-| [`over git mount`](over-git-mount.md) | Mount the current git repository to an overlay |
-| [`over git add`](over-git-add.md) | Add files from the current git repository to an overlay |
-| [`over git status`](over-git-status.md) | Show overlay status for the current git repository |
+```sh
+over diff hosts/laptop
+over add --overlay hosts/laptop ~/.config/example/config
+over diff hosts/laptop --staged
+over commit --overlay hosts/laptop -m 'Update configuration'
+over sync hosts/laptop
+```
 
-## Shared options and selection
+The paths above are illustrative: use a file actually managed by your overlay.
+Follow the [checkout example](../examples.md#edit-ordinary-files-with-checkout)
+for a complete setup. Generated/template files have additional
+[reverse-patching rules](../configuration/materialization.md#editing-and-lifecycle).
+[`over sync`](../commands/sync.md) reconciles checkout changes; source pull/push
+are explicit options or configured policy.
 
-Long-running commands show a spinner on terminal stderr. Progress pauses for
-prompts, hooks, and external tools; reports and warnings remain above it.
-Redirected stderr contains no progress animation, and JSON reports stay on stdout.
+## Reverse and extend the setup
 
-Human-readable path labels and diagnostics abbreviate your user home directory
-as `~` across commands, including when output is redirected. Paths outside your
-home stay unchanged. This is only a display convention: JSON values, file and
-patch contents, generated configuration, secrets, and external-tool output keep
-their original values. The displayed `~` refers to your user home, independently
-of the repository and target options below.
+[`over unapply`](../commands/unapply.md) removes an overlay's own safely reversible
+entries, retaining local edits and independently applied dependencies. Review
+status before reversing a deployment.
 
-Every `over` subcommand, including the `git` group, accepts `-H`/`--home`
-(or the `OVER_HOME` environment variable) to point at the overlays root, and
-`-d`/`--debug`, `-v`/`--verbose` for diagnostics.
+Next, [compose reusable overlays](../examples.md),
+[protect repository files](crypt.md), [manage secrets](secrets.md),
+[lock and unlock](crypt.md#locking-and-unlocking), or [use a Dev Container](../devcontainer.md).
+Use [Configuration](../configuration.md) for descriptor fields and
+[Commands](../commands/index.md) for exact CLI contracts.
 
-The default repository location is `~/.dotfiles`. Resolution priority is
-`--home`, then `OVER_HOME`, then this default. Existing repositories previously
-stored at `~/.over` are not moved automatically: set `OVER_HOME=~/.over` or use
-`--home ~/.over` to continue using them. `over init` without a source validates
-the resolved location, regardless of the current working directory.
+<!-- Preserve published fragments from the former command overview. -->
+<span id="commands"></span>
+<span id="shared-options-and-selection"></span>
+<span id="set-up-and-select-overlays"></span>
+<span id="apply-and-inspect"></span>
+<span id="reconcile-editable-checkouts"></span>
+<span id="over-git"></span>
 
-[Crypt and access commands](crypt.md) are an exception: without `--home` or
-`OVER_HOME`, they discover the current Git repository, falling back to the usual
-Over home for virtual destinations. [`over secret`](secrets.md) instead uses the
-home-based native store selection regardless of the current Git repository.
-
-Commands that support `-r`/`--target` use it as the destination meaning of `~`.
-Resolution priority is `--target`, then `OVER_TARGET`, then your home directory.
-This does not select the source repository. Consult each page's syntax for supported flags.
-
-An explicit overlay name selects that overlay. Otherwise commands first try
-[contextual overlay selection](selection.md): Git associations, source context, destination ownership,
-managed siblings, then target containment. Context precedes a configured default;
-ambiguous contexts require an explicit overlay. Status/diff/sync retain their
-all-overlay fallback outside an inferable/default context (`--all` forces all).
-Lint and doctor retain their broader diagnostic scopes. See
-[default selection](../configuration/root.md#default-overlay-selection).
-
-For concepts and your first successful apply, start with
-[Getting started](../index.md#getting-started). For supported modes and the
-checkout lifecycle, see [Materialization](../configuration/materialization.md).
+Looking for the former command overview? Its tables and
+[shared options](../commands/index.md#shared-options-and-selection) now live in
+[Commands](../commands/index.md), including the [Git group](../commands/git.md).
