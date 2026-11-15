@@ -56,7 +56,7 @@ status before reversing a deployment.
 
 Next, [compose reusable overlays](../examples.md),
 [protect repository files](crypt.md), [manage secrets](secrets.md),
-[lock and unlock](locking.md), or [use a Dev Container](../devcontainer.md).
+[lock and unlock](crypt.md#locking-and-unlocking), or [use a Dev Container](../devcontainer.md).
 Use [Configuration](../configuration.md) for descriptor fields and
 [Commands](../commands/index.md) for exact CLI contracts.
 

@@ -10,14 +10,6 @@ remains unchanged. Symlinks expose generated XDG artifacts; virtual checkouts us
 physical files backed by internal generated Git snapshots. The original decision
 below records the earlier path-only scope.
 
-## Age amendment (#62)
-
-Age-encrypted ordinary files now provide a whole-file transformation and real-file
-materializer. Their plaintext remains short-lived and is not rendered as a
-template. Named secret resolution is available through the reusable secret store;
-it is not exposed to path templates. Future content rendering must run after
-decryption. See [Secrets and Age-encrypted files](../usage/secrets.md).
-
 ## Context
 
 Some dotfile tools (chezmoi, for instance) template file *content* at apply

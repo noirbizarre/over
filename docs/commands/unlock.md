@@ -39,5 +39,5 @@ installing a key. Driver repair does not rewrite tracked attributes: existing
 repositories must [select `diff=over`](../usage/crypt.md#readable-encrypted-diffs)
 explicitly on older rules.
 
-See [locking and unlocking](../usage/locking.md) for the lifecycle and
+See [locking and unlocking](../usage/crypt.md#locking-and-unlocking) for the lifecycle and
 [user keys](user.md) for supported access methods.

@@ -12,10 +12,10 @@ over secret remove <NAME>
 Accepts [global options](index.md#shared-options-and-selection). Unlike crypt/access
 commands, these always select the existing Over home through `--home`, then
 `OVER_HOME`, then `~/.dotfiles`, independently of the current Git repository.
-Modern storage requires the source Git repository root. There are no overlay,
+Storage requires the source Git repository root. There are no overlay,
 target, JSON, or credential options.
 
-All modern operations require an existing [`over unlock`](unlock.md), including
+All operations require an existing [`over unlock`](unlock.md), including
 listing/removing names. The entire map, including names, is ciphertext in
 `.over/secrets.yaml` even while unlocked. Commands do not stage or commit it.
 
@@ -42,15 +42,9 @@ over --home ~/.dotfiles secret get github-token | consuming-program
 over --home ~/.dotfiles secret remove github-token
 ```
 
-## Resolution and legacy compatibility
+## Resolution
 
 Resolution uses the hook-template function `secret("name")`, not a CLI
 `resolve` subcommand. See [native secret usage](../usage/secrets.md) and
 [hook templates](../configuration/root.md#templates-and-conditions) for fallback
 chains and provider availability.
-
-Without repository-key metadata, commands retain legacy per-name Age storage.
-Legacy add/get use a passphrase (`OVER_SECRET` or hidden input); list/remove need
-no decryption. Once modern encryption is configured, mixed stores require
-[`over crypt migrate`](crypt.md#recover-and-migrate). `OVER_SECRET` does not unlock
-modern repository encryption. Follow the [legacy migration guide](../usage/secrets.md#legacy-encrypted-overlay-files).

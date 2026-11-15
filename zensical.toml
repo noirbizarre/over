@@ -30,9 +30,8 @@ nav = [
     { "Overlay selection" = "usage/selection.md" },
     { "Safety and recovery" = "usage/safety.md" },
     { "Repository encryption" = "usage/crypt.md" },
-    { "Locking and unlocking" = "usage/locking.md" },
     { "Lock/unlock automation" = "usage/crypt-automation.md" },
-    { "Native secrets and legacy Age" = "usage/secrets.md" },
+    { "Native secrets" = "usage/secrets.md" },
     { "Dev Containers" = "devcontainer.md" },
   ] },
   { "Configuration" = [

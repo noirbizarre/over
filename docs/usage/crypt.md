@@ -252,9 +252,22 @@ without authentication. Locked smudge retains ciphertext. Malformed/unsupported
 Over payloads fail. Historical plaintext is preserved by smudge with an exposure
 warning, rather than destroying recoverable data.
 
+### Locking and unlocking
+
+Repository encryption and the native secret store share one persistent local key:
+
 ```sh
+over unlock --identity ~/.config/age/over-alice.txt
+# Work with protected files and native secrets.
+over crypt list
 over lock
 ```
+
+Before locking, review and stage protected edits you want to keep. If lock
+refuses a transition, resolve the reported problem and retry; failure does not
+imply key removal. Lock requires an installed key, so it is not an unconditional
+already-locked no-op. Closing a terminal, rebooting, or unplugging a hardware
+device does not lock the repository.
 
 Lock preflights all registered linked worktrees sharing the common key. It
 refuses dirty, inaccessible, conflicting, or incompatible protected states,
@@ -280,8 +293,10 @@ plaintext while unlocked; protect their output like any other decrypted copy.
 For opt-in systemd/Sway and macOS examples, see
 [lock/unlock automation recipes](crypt-automation.md).
 
-For a shorter task guide, see [locking and unlocking](locking.md). Exact flags
-are in [`over lock`](../commands/lock.md) and [`over unlock`](../commands/unlock.md).
+Exact flags are in [`over lock`](../commands/lock.md) and
+[`over unlock`](../commands/unlock.md). For noninteractive startup, supply an
+available unencrypted software identity; encrypted identities and hardware
+plugins can still require interaction during unlock.
 
 ## Readable encrypted diffs
 
@@ -327,40 +342,10 @@ Unprotected templates still produce unprotected snapshots, even when their
 rendering contains secrets obtained from context data. Protect the source to
 protect its generated snapshot.
 
-Lock and unlock also inspect older generated history and retained operational
-snapshots. Known legacy snapshots are rewritten with encrypted protected entries
-and updated checkout pointers. Interrupted migration resumes through unlock or
-`over crypt recover`. Migration preserves pending/conflict roots under local
-`refs/over/generated-retained/` refs so Git maintenance cannot prune needed bases.
-Successful unapply removes an association's retained refs along with its main ref.
-
-Legacy source mappings can change and source history can be replaced. Migration
-therefore conservatively encrypts historical output unless its bytes are already
-present in a known public source blob, recording the original exposed object IDs.
-A public template today does not establish that an older rendering was public.
-Missing ownership/source hints still require restored provenance or explicit cleanup.
-
-Rewriting refs does **not** erase old plaintext objects. Over records known leaked
-blob IDs in `over-crypt/generated-snapshots.json` under the common Git directory
-and checks their actual availability, including packed and alternate object
-stores. While known plaintext remains, lock/unlock reports incomplete cleanup
-and preserves the previous source worktree/key access state; successfully
-migrated snapshot refs remain migrated. Keep the ledger until cleanup is verified.
-
-Inspect remaining refs, reflogs, and alternate object stores, stop repository
-writers, and deliberately perform the appropriate Git history/reflog/object
-maintenance. Over does not expire unrelated recovery history or automatically
-prune your object database. Rerun lock/unlock to verify cleanup. If provenance is
-missing or ambiguous, restore the matching XDG association/source history, or
-explicitly retire the affected snapshots and their objects. The audit also finds
-unreferenced legacy snapshot commits left by failed publication. Local cleanup
-cannot establish erasure from clones, remotes, backups, or filesystem snapshots.
-
-Repositories without protected source history can continue using their legacy
-snapshots for ordinary and reverse commits without configuring encryption. These
-comparisons do not certify old snapshot contents as public: reverse checkpoints
-retain their legacy representation until sync publishes a new desired inventory.
-An interrupted unencrypted sync can finish without a repository key.
+Pending/conflict roots are retained under local `refs/over/generated-retained/`
+refs so Git maintenance cannot prune needed bases. Successful unapply removes an
+association's retained refs along with its main ref. Removing refs does not erase
+objects from the Git database, clones, remotes, backups, or filesystem snapshots.
 
 ## Users and keys
 
@@ -521,23 +506,10 @@ Rotation protects new state, not previously published ciphertext, old commits,
 clones, backups, caches, or plaintext already copied by recipients. It cannot
 provide retroactive revocation. Rotate the underlying exposed credentials too.
 
-## Migration and recovery
+## Recovery
 
-Back up the repository and identities before migration or rotation. Create the
-initial user/key, then explicitly run:
-
-```sh
-over crypt migrate
-```
-
-Migration authenticates legacy `.age` overlay files and `.over/secrets/*.age`,
-rejects differing destination collisions, stages suffix-free protected files and the
-aggregate secret store, and preserves original Age ciphertext under private
-Git administrative `over-crypt/legacy-backup/`. Supply the **legacy** credential
-via its hidden prompt or `OVER_SECRET`; it is not a new repository unlock method.
-Review the staged transition and commit explicitly. Keep backups until verified.
-Retrying recognizes identical encrypted backups/prepared content; differing
-legacy/index snapshots or new store values require explicit resolution first.
+Back up the repository and identities before changing protection policy or
+rotating keys.
 
 Interrupted publication leaves an encrypted recovery journal and blocks
 cooperating encryption operations. Preserve the local key and journal, then run:
@@ -560,8 +532,7 @@ Changed ancestry, permissions, symlinks, or ingestion inode identity cause
 refusal before rollback. Existing unrelated files and nonempty new scaffolds
 are retained.
 After a completed rotation with a stale local key, unlock through the new
-envelopes. For migration rollback after verification, use the saved Age ciphertext
-and a backed-up repository/index; do not discard new edits while restoring it.
+envelopes.
 
 ## Storage checks and format
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for #245; evolves the original Age-file/native-secret implementation.
+Accepted for #245.
 
 ## Context
 
@@ -51,8 +51,7 @@ filtering and verify ciphertext before index publication. Virtual checkouts map
 to source policy/index and compare in ciphertext space. Native secrets remain
 direct ciphertext even in unlocked working trees, decrypting only in memory.
 Recovery journals are authenticated ciphertext, record old/prepared states, and
-refuse intervening edits. Age originals survive explicit legacy migration as
-encrypted backups. Revocation rotates the key after trusted recovery/retained
+refuse intervening edits. Revocation rotates the key after trusted recovery/retained
 passphrase preflight, never just deleting metadata.
 
 ## Consequences

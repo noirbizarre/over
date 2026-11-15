@@ -29,5 +29,5 @@ over lock
 ```
 
 Lock does not erase deployed virtual destinations, copies, memory, snapshots, or
-backups. Follow the [locking workflow](../usage/locking.md) and
+backups. Follow the [locking workflow](../usage/crypt.md#locking-and-unlocking) and
 [automation recipes](../usage/crypt-automation.md) for practical integration.

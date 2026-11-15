@@ -4,7 +4,7 @@ Over provides `over lock`, `over unlock`, and the Git filter. You choose when to
 invoke them. These opt-in, user-managed examples add no session policy or daemon
 to Over; adapt and test them for your desktop and repository.
 
-Read the [explicit lock lifecycle](crypt.md#transparent-git-and-explicit-lock)
+Read the [explicit lock lifecycle](crypt.md#locking-and-unlocking)
 first. The local key persists across terminal closure and reboot until explicit
 lock. Lock affects linked worktrees sharing that key and the native secret store;
 it cannot erase deployed destination files, application copies, or backups.
@@ -27,7 +27,7 @@ it cannot erase deployed destination files, application copies, or backups.
   Choose whether that trade-off fits your session policy.
 - Never place private key bytes, passphrases, tokens, or secret values in command
   arguments, units, configuration, notifications, or logs. Only identity **paths**
-  appear here. `OVER_SECRET` is a legacy migration credential, not an unlock method.
+  appear here.
   Do not enable shell tracing or log decrypted files/secret-command output.
 
 Lock can refuse dirty or untracked protected plaintext, policy conflicts, or

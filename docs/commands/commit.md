@@ -144,8 +144,7 @@ Git commit contains source templates, never rendered artifacts.
 Protected templates support the same literal reverse patches while the matching
 repository key is unlocked. Source layers and previous renderings are decoded
 for translation; source commits and generated/consumed-render snapshots retain
-their [encryption policy](../usage/crypt.md#protected-generated-snapshots) at rest. Legacy
-protected snapshots must be migrated through `over unlock` first.
+their [encryption policy](../usage/crypt.md#protected-generated-snapshots) at rest.
 
 Each template succeeds or fails as a whole. Successful files and selected ordinary
 staged changes are committed together even if another reverse patch fails. The

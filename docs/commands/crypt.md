@@ -8,7 +8,6 @@ over crypt add <PATHS>...
 over crypt remove <PATHS>... [--yes]
 over crypt list
 over crypt recover
-over crypt migrate
 ```
 
 ## Repository selection and options
@@ -85,23 +84,16 @@ The command does not stage or change policy. Reported error findings alone do
 **not** produce a nonzero exit status; operational inspection failures do. Read
 the findings rather than treating it as a strict pass/fail automation gate.
 
-## Recover and migrate
+## Recover
 
 `recover` rolls back an interrupted recorded encryption transaction subject to
 current-state checks. It refuses to overwrite incompatible intervening edits;
 it is not a generic decrypt or discard command.
 
-`migrate` requires modern repository unlock plus the applicable legacy Age
-credentials. It authenticates legacy `.age` files/per-name secrets, creates
-suffix-free protected paths and the aggregate native store, stages the transition,
-and retains original ciphertext in private administrative backups. Differing
-collisions are refused. Review and commit explicitly.
-
 ```sh
-over crypt migrate
+over crypt recover
 over crypt list
 git diff --cached
 ```
 
-See [migration and recovery](../usage/crypt.md#migration-and-recovery) for the
-complete procedure and [legacy compatibility](../usage/secrets.md#legacy-encrypted-overlay-files).
+See [recovery](../usage/crypt.md#recovery) for the complete procedure.

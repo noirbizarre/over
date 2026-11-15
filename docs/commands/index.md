@@ -50,7 +50,7 @@ See the [Git group overview](git.md) for host-repository discovery and associati
 
 | Command | Description |
 | --- | --- |
-| [`over crypt`](crypt.md) | Add/remove protection, inspect policy, recover and migrate |
+| [`over crypt`](crypt.md) | Add/remove protection, inspect policy, and recover interrupted changes |
 | [`over crypt` Git helpers](crypt-filters.md) | Git-invoked encryption filters and readable diff conversion |
 | [`over crypt list`](crypt.md#list-policy-and-storage-diagnostics) | Inspect encryption policy, drivers and stored content |
 | [`over lock`](lock.md) | Restore protected source ciphertext and remove the local key |

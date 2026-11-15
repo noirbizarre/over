@@ -36,7 +36,7 @@ Defaults below apply when no inherited value or matching rule supplies a value.
 | `uses` | Both | List of strings | No dependencies | Literal repository-relative overlay identifiers, composed in order. |
 | `exclude` | Both | String or list of strings | No exclusions | Source exclusion globs relative to the declaring descriptor. |
 | `mode` | Both | [Materialization mode](#materialization-mode) | `symlink` | Materialization baseline for this scope. |
-| `permissions` | Both | [Octal string](#permissions) | No explicit assignment | Permission baseline for partial, decrypted, and generated outputs. |
+| `permissions` | Both | [Octal string](#permissions) | No explicit assignment | Permission baseline for partial and generated outputs. |
 | `rules` | Both | List of [rule objects](#rules) | No local rules | Ordered source-path assignments of target, mode, and permissions. |
 | `data` | Both | Mapping | Empty mapping | Consumer-owned metadata for templates and external tools. |
 | `git` | Both | URL string, repository object, or placement mapping | No repositories | [Git repositories and worktrees](#git-repositories-git) to provision. |
@@ -145,12 +145,12 @@ ownership, target-mapping constraints, and lifecycle guidance.
 
 `permissions` and `rules[].permissions` require quoted octal strings, such as
 `"600"`, `"0644"`, or `"0o644"`, in both root and overlay descriptors.
-They manage partial-file, decrypted-file, and generated outputs (including
+They manage partial-file and generated outputs (including
 extension-stripped files and generated checkout leaves), without
 chmod of tracked symlink sources or independent chmod of ordinary virtual
 checkout content. Without an assignment, partial permissions are unmanaged;
-decrypted files default to `0600`, and new generated files use `0600` with the
-source executable bits retained. Existing generated checkout files preserve
+new generated files use `0600` with the source executable bits retained.
+Existing generated checkout files preserve
 access permissions unless explicitly assigned; sync repairs explicit permission
 drift even when content matches.
 See [File permissions](overlay.md#file-permissions).
