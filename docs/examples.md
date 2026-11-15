@@ -259,7 +259,7 @@ over restore --overlay workspace/client --source HEAD~1 ~/.config/client/setting
 ```
 
 The default discards unstaged edits using the index. Historical recovery changes
-only target content until explicitly staged. See [`over restore`](usage/restore.md)
+only target content until explicitly staged. See [`over restore`](commands/restore.md)
 for unstaging, combined destinations, and destructive behavior.
 
 For whole-directory links instead, use `mode: symlink-directory` on directories

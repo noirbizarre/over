@@ -15,6 +15,9 @@ including its [comparison with other tools](faq.md#alternatives).
 
 ## Getting started
 
+For the practical TL;DR, follow the [Usage lifecycle overview](usage/index.md).
+The walkthrough below takes you through your first overlay in isolated directories.
+
 ### Install Over
 
 Choose one installation channel:
@@ -79,7 +82,7 @@ over unapply apps/hello
 unset OVER_HOME OVER_TARGET
 ```
 
-When you already have an Over repository, [`over init`](usage/init.md) clones or
+When you already have an Over repository, [`over init`](commands/init.md) clones or
 validates it; applying remains a separate step. To keep a new setup, create its
 files under `~/.dotfiles` and version them with Git.
 
@@ -100,4 +103,4 @@ Grow from one overlay to a reusable setup with the [complete examples](examples.
   record changes without target symlinks.
 
 For exact fields and flags, use [Configuration](configuration.md) and
-[Commands](usage/index.md).
+[Commands](commands/index.md).

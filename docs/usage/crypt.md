@@ -65,12 +65,9 @@ and physical storage erasure remain outside this guarantee.
 
 ## Policy commands
 
-```text
-over crypt add <path-or-pattern>...
-over crypt remove <path-or-pattern>... [--yes]
-over crypt list
-over add --crypt <file>...
-```
+Use the [`over crypt` reference](../commands/crypt.md) for exact arguments,
+options, and diagnostic output, and [`over add --crypt`](../commands/add.md)
+for ingestion of destination files.
 
 `crypt list` inspects the canonical policy, effective attributes, filter setup,
 and protected content in storage; it does not change policy or stage files.
@@ -283,6 +280,9 @@ plaintext while unlocked; protect their output like any other decrypted copy.
 For opt-in systemd/Sway and macOS examples, see
 [lock/unlock automation recipes](crypt-automation.md).
 
+For a shorter task guide, see [locking and unlocking](locking.md). Exact flags
+are in [`over lock`](../commands/lock.md) and [`over unlock`](../commands/unlock.md).
+
 ## Readable encrypted diffs
 
 New encryption policies include `diff=over`. While unlocked, ordinary `git diff`,
@@ -310,7 +310,7 @@ caches with its installed configuration. Diffs can still disclose plaintext to
 pagers, redirected output, and external tools; lock does not erase those copies
 or previously created caches. Git textconv patches are for human review, not
 applying; `git format-patch` does not generate them. External difftools retain
-their own behavior. See [Git helper reference](crypt-filters.md#textconv).
+their own behavior. See [Git helper reference](../commands/crypt-filters.md#textconv).
 
 ## Protected generated snapshots
 

@@ -148,7 +148,7 @@ Repeating setup reuses the existing checkout and already-applied files. It does
 not implicitly pull updates, reset local changes or replace an existing origin.
 Use normal Git/Over commands to update a checkout deliberately. Initialization
 and application retain the CLI's repository hook behavior; hooks must themselves
-be safe to repeat. See [`over init`](usage/init.md).
+be safe to repeat. See [`over init`](commands/init.md).
 
 Missing repositories, unknown overlays, failed initialization and unavailable
 binary image versions fail with diagnostic context. Installation failures occur

@@ -19,12 +19,8 @@ corrupt ciphertext remains a fatal error. Plaintext values are never cached.
 
 ## Named secrets
 
-```text
-over secret add NAME [--replace]
-over secret list
-over secret get NAME
-over secret remove NAME
-```
+Use [`over secret`](../commands/secret.md) for command syntax and output contracts.
+The examples below explain how to use the native store in workflows.
 
 The store belongs to the repository selected by `--home` / `OVER_HOME`, with
 `~/.dotfiles` as the default. It does not depend on the selected overlay, the

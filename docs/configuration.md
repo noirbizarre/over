@@ -41,7 +41,7 @@ Schemas describe authored settings, so inherited fields may be omitted.
 Unknown keys in documented objects are editor errors; Over still warns and
 ignores unknown keys when loading. Consumer metadata, Git option names, remote
 extras, and hook environment names remain open namespaces with their documented
-value types. Schemas do not replace [`over lint`](usage/lint.md) or runtime
+value types. Schemas do not replace [`over lint`](commands/lint.md) or runtime
 checks for filesystem state, dependency cycles, glob syntax, template evaluation,
 and Git remote validity.
 

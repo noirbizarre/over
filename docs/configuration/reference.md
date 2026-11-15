@@ -79,7 +79,7 @@ pull = true
 push = false
 ```
 
-These settings affect [`over sync`](../usage/sync.md) and the repository
+These settings affect [`over sync`](../commands/sync.md) and the repository
 containing `OVER_HOME`, not repositories declared under `git`. Neither stages
 nor commits changes. CLI pull/push flags override each setting independently;
 dry runs perform no remote operations. See [Source synchronization](root.md#source-synchronization).
@@ -252,7 +252,7 @@ disabling provisioning. It also changes the default of `per_worktree_config`.
 Apply reapplies remotes, configuration, and worktree provisioning to existing
 repositories. `branch` is a clone-time choice, not a branch-switching policy for
 existing clones. Manage these repositories with ordinary Git;
-[`over sync`](../usage/sync.md) serves a different purpose.
+[`over sync`](../commands/sync.md) serves a different purpose.
 See [Git declarations](overlay.md#git-declarations) for worktree layout.
 
 ### Named worktrees
@@ -417,7 +417,7 @@ At runtime, Over warns and ignores unknown attributes; invalid recognized
 values and missing required fields remain errors. `data`, Git option names,
 additional remote options, and hook environment names are intentionally open
 namespaces with the value types described above. Schemas do not replace
-[`over lint`](../usage/lint.md) or runtime validation.
+[`over lint`](../commands/lint.md) or runtime validation.
 
 Removed attributes `install`, `default`, `defaults`, `materialization`, and
 `link_dirs` are unsupported. Use `hooks.install`, `default_overlay`, scalar

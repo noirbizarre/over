@@ -12,7 +12,7 @@ by editing the old one. The history is the value.
 
 These records include historical and superseded behavior. For current user-facing
 semantics, use the [configuration reference](../configuration.md) and
-[command reference](../usage/index.md).
+[command reference](../commands/index.md).
 
 ## Format
 

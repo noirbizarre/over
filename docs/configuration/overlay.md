@@ -165,10 +165,10 @@ whole-directory symlink containing templates is expanded into leaf links.
 In checkout mode, generated output is an ordinary physical file, rendered from
 committed source `HEAD`; commit template-file edits with Git in the source
 repository before syncing them, or use
-[`over commit`](../usage/commit.md#rendered-file-edits) to propagate compatible
+[`over commit`](../commands/commit.md#rendered-file-edits) to propagate compatible
 literal edits from the rendered file. Context
 changes can rerender without a source commit. See
-[generated checkout synchronization](../usage/sync.md#generated-checkouts).
+[generated checkout synchronization](../commands/sync.md#generated-checkouts).
 
 ## Composition
 
@@ -271,7 +271,7 @@ rules:
 
 `config/settings.json` lands at `~/.config/client/settings.json`, not below
 `~/Workspace/Client/config`. Unmapped `main/app` stays at
-`~/Workspace/Client/main/app`. [`over add`](../usage/add.md) routes the other way:
+`~/Workspace/Client/main/app`. [`over add`](../commands/add.md) routes the other way:
 `~/.config/client/other.yaml` belongs to `workspace/client/config/other.yaml`.
 
 ### Matching and cascade
@@ -498,7 +498,7 @@ git:
 
 Apply provisions repositories and their configuration. Manage all declared
 repositories, including root `"."` entries and worktrees, with ordinary Git.
-[`over sync`](../usage/sync.md) reconciles virtual checkouts and optionally
+[`over sync`](../commands/sync.md) reconciles virtual checkouts and optionally
 synchronizes the Over source repository instead.
 
 ## Install configuration
@@ -582,7 +582,7 @@ are not recursively templated. Explicitly selected file templates can consume
 the same data; partial content remains literal.
 `default_overlay` is resolved before this composition and cannot depend on it.
 
-[`over data`](../usage/data.md) exports JSON, preserving types and nulls, with
+[`over data`](../commands/data.md) exports JSON, preserving types and nulls, with
 diagnostics on stderr. Terminal output is pretty-printed; piped or redirected
 output is compact and uncolored:
 
