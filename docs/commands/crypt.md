@@ -2,6 +2,8 @@
 
 Manage versioned encryption policy and inspect protected Git storage. For setup,
 manual attributes, and day-to-day workflows, see [Repository encryption](../usage/crypt.md).
+Git-invoked `over crypt filter`, `filter-process`, and `textconv` commands are
+documented in [Encryption filters and textconv](crypt-filters.md).
 
 ```text
 over crypt add <PATHS>...
@@ -19,6 +21,9 @@ canonical source; mixed or ambiguous ownership is rejected.
 
 All subcommands accept global `-d`/`--debug`, `-v`/`--verbose`, and `--help`.
 There are no overlay/target options, `--dry-run`, or JSON output options.
+
+The Git-invoked helpers use Git's repository environment and current directory
+instead of this policy-command selection; `--home` does not redirect them.
 
 ## Add protection
 
