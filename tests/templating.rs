@@ -481,6 +481,12 @@ impl Fixture {
         .unwrap();
         fs::write(source.join("app/plain"), "ordinary\n").unwrap();
         let repo = git2::Repository::init(&source).unwrap();
+        // Background Git housekeeping must not race byte-for-byte administrative snapshots.
+        repo.config()
+            .unwrap()
+            .set_bool("maintenance.auto", false)
+            .unwrap();
+        repo.config().unwrap().set_i32("gc.auto", 0).unwrap();
         commit_all(&repo);
         Self {
             temp,
