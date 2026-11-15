@@ -49,7 +49,7 @@ fn committed_policy_cannot_protect_bootstrap_files(#[case] protected: &str) {
     let result = detect::inspect(&repo).unwrap();
     assert!(result.diagnostics.iter().any(|diagnostic| diagnostic.code
         == DiagnosticCode::ProtectedBootstrap
-        && diagnostic.location == protected));
+        && Path::new(&diagnostic.location) == Path::new(protected)));
     assert!(result.validate_checkout().is_err());
 }
 
