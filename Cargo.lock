@@ -2161,7 +2161,7 @@ dependencies = [
  "etcetera",
  "futures",
  "gethostname",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "git2",
  "git2_credentials",
  "glob",
