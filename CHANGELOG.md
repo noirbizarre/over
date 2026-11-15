@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/noirbizarre/over/compare/0.3.0..0.4.0) - 2026-11-15
+
+### 💫 Features
+
+- **crypt** Detect repository encryption before checkout ([#306](https://github.com/noirbizarre/over/issues/306)) - ([71ecb1f](https://github.com/noirbizarre/over/commit/71ecb1f4f6f5e678fa88280c7c8fcfe06fd52b95))
+- **data**  🚨 **breaking** Separate host and overlay data scopes ([#305](https://github.com/noirbizarre/over/issues/305)) - ([631ef92](https://github.com/noirbizarre/over/commit/631ef92394ff819af99f0680a6b3a7a594cb383b))
+- **init** Unlock encrypted repositories before initial checkout ([#312](https://github.com/noirbizarre/over/issues/312)) - ([1ef947b](https://github.com/noirbizarre/over/commit/1ef947b592216ae5ae8006f56033b6d42ffe8ce9))
+- **overlays**  🚨 **breaking** Separate host context from deployment defaults ([#311](https://github.com/noirbizarre/over/issues/311)) - ([744251d](https://github.com/noirbizarre/over/commit/744251db498e62d59356384945225de4cf4365f6))
+
+### 🐛 Bug Fixes
+
+- **add** Preserve symlink referents in Git ingestion - ([236314a](https://github.com/noirbizarre/over/commit/236314ac6e8699a808cfc9a4fb6e5a36901af90f))
+- **crypt** Make locked Git operations safe and retry interrupted unlocks ([#310](https://github.com/noirbizarre/over/issues/310)) - ([0c4f56b](https://github.com/noirbizarre/over/commit/0c4f56b3de476956999188e4e88388812ebca65d))
+- **crypt** Restore authenticated Git textconv diffs ([#298](https://github.com/noirbizarre/over/issues/298)) - ([fac2834](https://github.com/noirbizarre/over/commit/fac2834c06873bdb71c6bf3d67cd006f835738ae))
+- **deps** Support system OpenSSL 4.x ([#288](https://github.com/noirbizarre/over/issues/288)) - ([2acbc0c](https://github.com/noirbizarre/over/commit/2acbc0c3ecbf632fa1a354a8de2a9f7fc252d9ab))
+- **doctor** Scope checkout records to their source collection - ([ae32cd1](https://github.com/noirbizarre/over/commit/ae32cd1ada704896b793d4faec9b9fe25608115c))
+- **git** Resolve declared tags consistently - ([16b119f](https://github.com/noirbizarre/over/commit/16b119f1a9ab852b32fb0c593040b82c3592614b))
+- **restore** Retain ownership of deleted checkout roots - ([7d101a6](https://github.com/noirbizarre/over/commit/7d101a6d9b0355c73c36c01bef4892cb4782916d))
+- **status** Retain executable modes in checkout conflicts - ([a7f5ce9](https://github.com/noirbizarre/over/commit/a7f5ce9aa51f8940e464549d20e0e6004d86fb76))
+- **sync** Verify the snapshot approved before committing - ([6198a29](https://github.com/noirbizarre/over/commit/6198a2944529ec0b18201f98f86c1bf9aa3a13a3))
+- Reconcile overlay behavior and documentation inconsistencies ([#314](https://github.com/noirbizarre/over/issues/314)) - ([8dc3bd7](https://github.com/noirbizarre/over/commit/8dc3bd7705f912dc1a01aedff5e917aac0c304eb))
+
+### 📚 Documentation
+
+- **ci** Correct the Clippy linking rationale - ([ed6dd21](https://github.com/noirbizarre/over/commit/ed6dd214fcfe6a4cc9d0c5344f1e0ce4e1d7921f))
+- **contributing** Clarify template update and merge steps - ([bc4418e](https://github.com/noirbizarre/over/commit/bc4418e9c62fa71a64e787978d17440dd678e5e1))
+- **crypt** Document legacy encryption migration - ([2f26cb0](https://github.com/noirbizarre/over/commit/2f26cb09e240419b9c83ebaf2ab8ce0af68b3f4d))
+- **data** Correct contextual selection precedence - ([da14c5b](https://github.com/noirbizarre/over/commit/da14c5bd517172a2d1c2d0a870ed51902247340d))
+- **desired** Refresh discovery and permission boundaries - ([cbbae19](https://github.com/noirbizarre/over/commit/cbbae19b9978e62cd7ec2162948e0c553c4e27ab))
+- **diff** Explain locked ciphertext passthrough - ([817f2e5](https://github.com/noirbizarre/over/commit/817f2e5c2bd73fc23002bfb32d380e290428e162))
+- **install** Clarify explicit dependency package access - ([deba7c6](https://github.com/noirbizarre/over/commit/deba7c6ce25655d1dbb27f29a0e96e7817a30a63))
+- Reorganize guides and command references ([#290](https://github.com/noirbizarre/over/issues/290)) - ([95734b1](https://github.com/noirbizarre/over/commit/95734b1fb2770060050caa5ccf872c864cb4c340))
+
+### 🏗️ Build
+
+- **deps** Bump the rust-dependencies group across 1 directory with 6 updates ([#301](https://github.com/noirbizarre/over/issues/301)) - ([9ace00e](https://github.com/noirbizarre/over/commit/9ace00ed9dc960f126c4d254fc2592e2adce0c45))
+- **deps** Bump aes from 0.8.4 to 0.9.4 ([#293](https://github.com/noirbizarre/over/issues/293)) - ([fbdf1ff](https://github.com/noirbizarre/over/commit/fbdf1ff1734a54da687d30847fe34bb0473571db))
+- **deps** Bump noyalib from 0.0.58 to 0.0.60 ([#292](https://github.com/noirbizarre/over/issues/292)) - ([b593cc1](https://github.com/noirbizarre/over/commit/b593cc1da8e2d6c29d179ca65104b0298902ebff))
+- **deps** Bump jsonschema from 0.46.10 to 0.52.0 ([#294](https://github.com/noirbizarre/over/issues/294)) - ([2cbcb9b](https://github.com/noirbizarre/over/commit/2cbcb9b0d4b221393404d3443b5a1bba93ca0d6d))
+- **deps** Bump getrandom from 0.3.4 to 0.4.2 ([#296](https://github.com/noirbizarre/over/issues/296)) - ([f545036](https://github.com/noirbizarre/over/commit/f54503641d2f80b6036b0b732f18ecebe1787711))
+- **deps** Bump aes-siv from 0.7.0 to 0.8.0 ([#297](https://github.com/noirbizarre/over/issues/297)) - ([c3b60cf](https://github.com/noirbizarre/over/commit/c3b60cf3d89d29a75cb2c370eaeedd0a4bc3460c))
+
+### 🔧 CI
+
+- **deps** Bump actions/setup-node from 6 to 7 in the actions group ([#295](https://github.com/noirbizarre/over/issues/295)) - ([aca2089](https://github.com/noirbizarre/over/commit/aca20897a14be23c9a87716c0d7046b929177d06))
+- **docs** Always build docs on pull requests ([#309](https://github.com/noirbizarre/over/issues/309)) - ([f6afb84](https://github.com/noirbizarre/over/commit/f6afb84f01efe8efea6066adbef48e589fb49c9d))
+- Pull LLVM profile collision fix from rust.tpl ([#308](https://github.com/noirbizarre/over/issues/308)) - ([0463152](https://github.com/noirbizarre/over/commit/0463152d8ece205b4b29e3cd116327e7ae41b3fc))
+- Pull LLVM profile collision fix from rust.tpl - ([b773167](https://github.com/noirbizarre/over/commit/b773167440970b2da1f5ca2264a8c3b8d7104dea))
+
+### Tpl
+
+- Render rust at main - ([840fee7](https://github.com/noirbizarre/over/commit/840fee7217a5128d8f33b6c2247c0bdcab87a323))
+
 ## [0.3.0](https://github.com/noirbizarre/over/compare/0.2.1..0.3.0) - 2026-11-14
 
 ### 💫 Features
@@ -159,6 +212,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **readme** Match supported platforms to release artifacts - ([90ace31](https://github.com/noirbizarre/over/commit/90ace31c29345cfbb7ced128bee5f04e99cefe64))
 - **restore** Explain protected content and historical index restrictions - ([37fb04b](https://github.com/noirbizarre/over/commit/37fb04bfed038f2eba214415c7e08bc0e54150d5))
 - **secrets** Clarify recoverable native session fallback - ([0336882](https://github.com/noirbizarre/over/commit/03368822217fb3de0cd98cece99bee0be8fff283))
+- **secrets** Distinguish native unlock from legacy credentials - ([a8f089d](https://github.com/noirbizarre/over/commit/a8f089d9a5b11316fb4cafcd4bd49afb0e7b4d9a))
 - **selection** Remove obsolete overlay chooser examples - ([ea634cd](https://github.com/noirbizarre/over/commit/ea634cdf7bb5434df76fae89adf38df657031a65))
 - **selection** Qualify explicit sidecar referent protection - ([0bfcc63](https://github.com/noirbizarre/over/commit/0bfcc63a4f3fe123c2c58f586b5dc3aabcd2289c))
 - **selection** Explain reserved Git administration paths - ([a0829c3](https://github.com/noirbizarre/over/commit/a0829c3ae7b442be3ccff7bd54fad3e591d5526e))
@@ -488,3 +542,4 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Wip - ([36d443a](https://github.com/noirbizarre/over/commit/36d443a72d86d1223fcc3c711677b6f80e5c8d27))
 - Install - ([c2e3fa6](https://github.com/noirbizarre/over/commit/c2e3fa6adc9b2450aafad1cdb444439052282f01))
 - Install - ([9a8a600](https://github.com/noirbizarre/over/commit/9a8a6007b83a2ccc5f84d6b5f937709364bba4f4))
+
