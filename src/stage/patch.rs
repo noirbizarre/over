@@ -426,7 +426,7 @@ fn prepare_entry(
         if let Some(old) = old {
             prepared.before.insert(path.clone(), old);
         }
-        if let Some((content, mode)) = target_content(&entry.target, &relative)? {
+        if let Some((content, mode)) = target_content(&entry.target, &relative, &entry.access)? {
             let canonical =
                 canonical_entry(repo, &prepared.scratch, &path, &content, mode, &[old])?;
             prepared.after.insert(path, canonical);

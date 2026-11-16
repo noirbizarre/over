@@ -270,12 +270,17 @@ pub fn managed_targets(desired: &DesiredTree) -> Result<Vec<ManagedTarget>> {
                 if !scope.owns_source(&path) || !scope.owns_target(&path) {
                     continue;
                 }
-                match fs::symlink_metadata(entry.target.join(&path)) {
+                match entry
+                    .access
+                    .child(&path, false)
+                    .fs
+                    .metadata(&entry.target.join(&path), false)
+                {
                     Ok(_) => {
                         paths.insert(path);
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
+                    Err(error) if crate::target_fs::is_not_found(&error) => {}
+                    Err(error) => return Err(error),
                 }
             }
             for path in paths {
@@ -319,12 +324,15 @@ fn discover_enclosing_repo(target: &Path) -> Result<Option<Repository>> {
 }
 
 /// Excludes cannot protect an already tracked plaintext destination.
-pub(crate) fn ensure_sensitive_target_untracked(target: &Path) -> Result<()> {
-    if let Some(repo) = discover_enclosing_repo(target)? {
+pub(crate) fn ensure_sensitive_target_untracked_with(
+    target: &Path,
+    access: &crate::target_fs::TargetFs,
+) -> Result<()> {
+    if let Some(repo) = discover_enclosing_repo_with(target, access)? {
         let workdir = repo
             .workdir()
             .context("encrypted destination repository has no worktree")?;
-        let target = crate::overlays::mapping::location(target)?;
+        let target = access.location(target)?;
         // Match location()'s ordinary Windows prefixes instead of canonicalize()'s verbatim ones.
         let workdir = crate::overlays::mapping::physical(workdir)?;
         let relative = target
@@ -336,6 +344,51 @@ pub(crate) fn ensure_sensitive_target_untracked(target: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn discover_enclosing_repo_with(
+    target: &Path,
+    access: &crate::target_fs::TargetFs,
+) -> Result<Option<Repository>> {
+    match target.parent() {
+        Some(parent) => discover_repo_at_with(parent, access),
+        None => Ok(None),
+    }
+}
+
+fn discover_repo_at_with(
+    start: &Path,
+    access: &crate::target_fs::TargetFs,
+) -> Result<Option<Repository>> {
+    if !access.is_privileged() {
+        return discover_repo_at(start);
+    }
+    for ancestor in start.ancestors() {
+        match access.metadata(&ancestor.join(".git"), false) {
+            // Only filesystem discovery is privileged. Opening/configuring Git remains local.
+            Ok(_) => return discover_repo_at(ancestor),
+            Err(error)
+                if crate::target_fs::is_not_found(&error)
+                    || error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotADirectory) => {
+            }
+            Err(error) => return Err(error),
+        }
+        if access.metadata(&ancestor.join("HEAD"), false).is_ok()
+            && access.metadata(&ancestor.join("objects"), false).is_ok()
+            && access.metadata(&ancestor.join("config"), false).is_ok()
+        {
+            // A possible bare boundary still needs normal-account Git validation.
+            match Repository::open(ancestor) {
+                Ok(repo) if repo.is_bare() => return Ok(None),
+                Ok(_) => return discover_repo_at(ancestor),
+                Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn discover_repo_at(start: &Path) -> Result<Option<Repository>> {
@@ -427,15 +480,15 @@ fn to_gitignore_pattern(relative: &Path) -> Result<String> {
 
 /// Protect plaintext before publication, retaining prior exclusions if later work fails.
 pub(crate) fn protect_sensitive_target(entry: &crate::desired::DesiredEntry) -> Result<()> {
-    ensure_sensitive_target_untracked(&entry.target)?;
-    let Some(repo) = discover_enclosing_repo(&entry.target)? else {
+    ensure_sensitive_target_untracked_with(&entry.target, &entry.access.fs)?;
+    let Some(repo) = discover_enclosing_repo_with(&entry.target, &entry.access.fs)? else {
         return Ok(());
     };
     let workdir = crate::overlays::mapping::physical(
         repo.workdir()
             .context("encrypted destination repository has no worktree")?,
     )?;
-    let location = crate::overlays::mapping::location(&entry.target)?;
+    let location = entry.access.fs.location(&entry.target)?;
     let relative = location
         .strip_prefix(&workdir)
         .context("encrypted destination is outside its host Git repository")?;
@@ -487,15 +540,17 @@ pub(crate) fn protect_sensitive_target(entry: &crate::desired::DesiredEntry) -> 
 type DiscoveredGroups = (
     HashMap<PathBuf, Repository>,
     BTreeMap<(PathBuf, String), BTreeSet<PathBuf>>,
+    BTreeMap<PathBuf, PathBuf>,
 );
 
 /// Compute worktree-relative patterns before merging their shared physical block.
 fn expectations(
-    (repos, groups): DiscoveredGroups,
+    (repos, groups, locations): DiscoveredGroups,
 ) -> Result<BTreeMap<(PathBuf, String), GroupExpectation>> {
     let mut expectations = BTreeMap::<(PathBuf, String), GroupExpectation>::new();
     for ((repo_key, overlay), targets) in groups {
-        let mut expectation = compute_expectation(&repos[&repo_key], &overlay, &targets)?;
+        let mut expectation =
+            compute_expectation_with(&repos[&repo_key], &overlay, &targets, &locations)?;
         // Alias spellings and linked worktrees still write one physical marker.
         expectation.exclude_path = repos[&repo_key]
             .commondir()
@@ -543,7 +598,7 @@ fn discover_groups(targets: &[ManagedTarget]) -> Result<DiscoveredGroups> {
         repos.entry(key).or_insert(repo);
     }
 
-    Ok((repos, groups))
+    Ok((repos, groups, BTreeMap::new()))
 }
 
 /// Reconcile `.git/info/exclude` blocks for `targets`, one block per
@@ -606,7 +661,23 @@ pub(crate) fn protect_sync_desired(desired: &DesiredTree) -> Result<()> {
 }
 
 fn discover_desired_groups(desired: &DesiredTree) -> Result<DiscoveredGroups> {
-    let (mut repos, mut groups) = discover_groups(&managed_targets(desired)?)?;
+    let mut repos = HashMap::new();
+    let mut groups = BTreeMap::<(PathBuf, String), BTreeSet<PathBuf>>::new();
+    let mut locations = BTreeMap::new();
+    for target in managed_targets(desired)? {
+        let access = desired_target_access(desired, &target.overlay, &target.target)?;
+        if let Some(repo) = discover_enclosing_repo_with(&target.target, &access)? {
+            let key = repo.path().to_owned();
+            if access.is_privileged() {
+                locations.insert(target.target.clone(), access.location(&target.target)?);
+            }
+            groups
+                .entry((key.clone(), target.overlay))
+                .or_default()
+                .insert(target.target);
+            repos.entry(key).or_insert(repo);
+        }
+    }
     for entry in desired.entries() {
         // Scaffolding and virtual checkouts may be rooted at the host repository
         // itself. Actual managed artifacts still require parent-only discovery
@@ -614,9 +685,9 @@ fn discover_desired_groups(desired: &DesiredTree) -> Result<DiscoveredGroups> {
         let repo = if matches!(entry.intent, MaterializationIntent::Directory)
             || entry.intent.is_virtual_checkout()
         {
-            discover_repo_at(&entry.target)?
+            discover_repo_at_with(&entry.target, &entry.access.fs)?
         } else {
-            discover_enclosing_repo(&entry.target)?
+            discover_enclosing_repo_with(&entry.target, &entry.access.fs)?
         };
         if let Some(repo) = repo {
             let key = repo.path().to_path_buf();
@@ -626,20 +697,47 @@ fn discover_desired_groups(desired: &DesiredTree) -> Result<DiscoveredGroups> {
             repos.entry(key).or_insert(repo);
         }
     }
-    Ok((repos, groups))
+    Ok((repos, groups, locations))
+}
+
+fn desired_target_access(
+    desired: &DesiredTree,
+    overlay: &str,
+    target: &Path,
+) -> Result<crate::target_fs::TargetFs> {
+    let entry = desired
+        .entries()
+        .iter()
+        .filter(|entry| {
+            overlay_name(&entry.provenance) == overlay
+                && (entry.target == target
+                    || (entry.intent.is_virtual_checkout() && target.starts_with(&entry.target)))
+        })
+        .max_by_key(|entry| entry.target.components().count())
+        .context("managed Git exclusion has no desired owner")?;
+    if entry.target == target {
+        return Ok(entry.access.fs.clone());
+    }
+    let relative = target.strip_prefix(&entry.target)?;
+    if entry.intent.checkout_scope().rendered.is_some() {
+        return Ok(
+            crate::materialize::virtual_checkout::generated::leaf_access(entry, relative)?.fs,
+        );
+    }
+    Ok(entry.access.child(relative, false).fs)
 }
 
 fn discover_existing_groups(desired: &DesiredTree) -> Result<DiscoveredGroups> {
-    let (repos, mut groups) = discover_desired_groups(desired)?;
-    for targets in groups.values_mut() {
+    let (repos, mut groups, locations) = discover_desired_groups(desired)?;
+    for ((_, overlay), targets) in &mut groups {
         let mut existing = BTreeSet::new();
         for target in targets.iter() {
             // A dangling symlink still needs exclusion; exists() would follow it and lose it.
-            match fs::symlink_metadata(target) {
+            match desired_target_access(desired, overlay, target)?.metadata(target, false) {
                 Ok(_) => {
                     existing.insert(target.clone());
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) if crate::target_fs::is_not_found(&error) => {}
                 Err(error) => {
                     return Err(error)
                         .with_context(|| format!("failed to inspect '{}'", target.display()));
@@ -649,7 +747,7 @@ fn discover_existing_groups(desired: &DesiredTree) -> Result<DiscoveredGroups> {
         *targets = existing;
     }
     // Keep empty discovery anchors so absent artifacts do not hide corrupted or stale blocks.
-    Ok((repos, groups))
+    Ok((repos, groups, locations))
 }
 
 /// Diagnose exclusions for desired artifacts currently on disk, including dangling symlinks.
@@ -675,15 +773,15 @@ pub struct ProtectionDiagnosis {
 
 /// Inspect Git's actual ignore rules without requiring an over-owned rule.
 pub fn diagnose_protection(desired: &DesiredTree) -> Result<Vec<ProtectionDiagnosis>> {
-    let (repos, groups) = discover_existing_groups(desired)?;
+    let (repos, groups, locations) = discover_existing_groups(desired)?;
     let mut diagnoses = Vec::new();
     for ((key, overlay), targets) in groups {
         let repo = &repos[&key];
-        let expectation = compute_expectation(repo, &overlay, &targets)?;
+        let expectation = compute_expectation_with(repo, &overlay, &targets, &locations)?;
         let root = expectation.repo_root.canonicalize()?;
         let mut missing = Vec::new();
         for target in targets {
-            let canonical = canonical_parent_join(&target)?;
+            let canonical = resolved_location(&target, &locations)?;
             let Ok(relative) = canonical.strip_prefix(&root) else {
                 continue;
             };
@@ -733,15 +831,17 @@ pub fn repair_existing(desired: &DesiredTree) -> Result<RepairReport> {
 pub fn repair_existing_batch(desired: &[&DesiredTree]) -> Result<RepairReport> {
     let mut repos = HashMap::new();
     let mut groups = BTreeMap::<(PathBuf, String), BTreeSet<PathBuf>>::new();
+    let mut locations = BTreeMap::new();
     for desired in desired {
-        let (found_repos, found_groups) = discover_existing_groups(desired)?;
+        let (found_repos, found_groups, found_locations) = discover_existing_groups(desired)?;
+        locations.extend(found_locations);
         repos.extend(found_repos);
         for (key, targets) in found_groups {
             groups.entry(key).or_default().extend(targets);
         }
     }
     let mut report = RepairReport::default();
-    for ((_, overlay), expectation) in expectations((repos, groups))? {
+    for ((_, overlay), expectation) in expectations((repos, groups, locations))? {
         repair_expectation(expectation, &overlay, &mut report)?;
     }
     Ok(report)
@@ -774,7 +874,7 @@ pub fn unreconcile(targets: &[ManagedTarget]) -> Result<ExcludeReport> {
     remove_discovered_blocks(discover_groups(targets)?)
 }
 
-fn remove_discovered_blocks((repos, groups): DiscoveredGroups) -> Result<ExcludeReport> {
+fn remove_discovered_blocks((repos, groups, _): DiscoveredGroups) -> Result<ExcludeReport> {
     let mut report = ExcludeReport::default();
     let mut removed = BTreeSet::new();
     for (repo_key, overlay) in groups.keys() {
@@ -808,10 +908,18 @@ struct GroupExpectation {
 /// and enclosed by `repo`. Purely read-only: only reads `repo.workdir()`/
 /// `repo.index()` and canonicalizes paths — never touches
 /// `.git/info/exclude` itself (not even to check whether it exists).
-fn compute_expectation(
+fn resolved_location(target: &Path, locations: &BTreeMap<PathBuf, PathBuf>) -> Result<PathBuf> {
+    match locations.get(target) {
+        Some(location) => Ok(location.clone()),
+        None => canonical_parent_join(target),
+    }
+}
+
+fn compute_expectation_with(
     repo: &Repository,
     overlay: &str,
     targets: &BTreeSet<PathBuf>,
+    locations: &BTreeMap<PathBuf, PathBuf>,
 ) -> Result<GroupExpectation> {
     let workdir = repo.workdir().with_context(|| {
         format!(
@@ -829,7 +937,7 @@ fn compute_expectation(
     let mut expected: BTreeSet<String> = BTreeSet::new();
     let mut tracked_conflicts = Vec::new();
     for target in targets {
-        let canonical_target = canonical_parent_join(target)?;
+        let canonical_target = resolved_location(target, locations)?;
         let Ok(relative) = canonical_target.strip_prefix(&canonical_workdir) else {
             // Discovered from this target but somehow outside its
             // workdir (shouldn't happen) — never guess, skip it.
@@ -1105,6 +1213,7 @@ mod tests {
 
     fn entry(target: PathBuf, overlay: &str, intent: MaterializationIntent) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Overlay {
                 overlay: overlay.to_string(),

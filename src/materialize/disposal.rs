@@ -31,20 +31,32 @@ impl Assessment {
 
 /// Reject symlinks inside an owned unit while allowing established aliases above it.
 pub(crate) fn validate_relative_ancestors(root: &Path, path: &Path) -> Result<()> {
+    validate_relative_ancestors_with(root, path, &crate::target_fs::Access::default())
+}
+
+pub(crate) fn validate_relative_ancestors_with(
+    root: &Path,
+    path: &Path,
+    access: &crate::target_fs::Access,
+) -> Result<()> {
     for ancestor in path
         .ancestors()
         .skip(1)
         .take_while(|ancestor| ancestor.starts_with(root))
     {
-        match fs::symlink_metadata(ancestor) {
+        match access
+            .child(ancestor.strip_prefix(root)?, true)
+            .fs
+            .metadata(ancestor, false)
+        {
             Ok(metadata) => ensure!(
                 !metadata.file_type().is_symlink(),
                 "refusing to follow symlink ancestor '{}' of '{}'",
                 ancestor.display(),
                 path.display()
             ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+            Err(error) if crate::target_fs::is_not_found(&error) => {}
+            Err(error) => return Err(error),
         }
     }
     Ok(())
@@ -54,6 +66,7 @@ pub(crate) fn validate_relative_ancestors(root: &Path, path: &Path) -> Result<()
 /// Existing ancestor aliases are supported; a later retargeting is not.
 #[derive(Debug, Clone)]
 pub(crate) struct PathGuard {
+    fs: crate::target_fs::TargetFs,
     path: std::path::PathBuf,
     location: std::path::PathBuf,
     directory_identity: Option<String>,
@@ -61,28 +74,35 @@ pub(crate) struct PathGuard {
 
 impl PathGuard {
     pub(crate) fn capture(path: &Path) -> Result<Self> {
+        Self::capture_with(path, &crate::target_fs::Access::default().fs)
+    }
+
+    pub(crate) fn capture_with(path: &Path, fs: &crate::target_fs::TargetFs) -> Result<Self> {
         Ok(Self {
+            fs: fs.clone(),
             path: path.into(),
-            location: crate::overlays::mapping::location(path)?,
-            directory_identity: directory_identity(path)?,
+            location: fs.location(path)?,
+            directory_identity: directory_identity_with(path, fs)?,
         })
     }
 
     pub(crate) fn verify(&self) -> Result<()> {
         ensure!(
-            crate::overlays::mapping::location(&self.path)? == self.location,
+            self.fs.location(&self.path)? == self.location,
             "ancestor of '{}' changed since planning; rerun to re-evaluate",
             self.path.display()
         );
         if let Some(identity) = &self.directory_identity {
-            if fs::symlink_metadata(&self.path)
-                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            if self
+                .fs
+                .metadata(&self.path, false)
+                .is_err_and(|error| crate::target_fs::is_not_found(&error))
             {
                 // A prior owned removal may already have removed this scaffold.
                 return Ok(());
             }
             ensure!(
-                directory_identity(&self.path)?.as_ref() == Some(identity),
+                directory_identity_with(&self.path, &self.fs)?.as_ref() == Some(identity),
                 "directory '{}' was replaced since planning",
                 self.path.display()
             );
@@ -92,10 +112,14 @@ impl PathGuard {
 }
 
 fn directory_identity(path: &Path) -> Result<Option<String>> {
-    let metadata = match fs::symlink_metadata(path) {
+    directory_identity_with(path, &crate::target_fs::Access::default().fs)
+}
+
+fn directory_identity_with(path: &Path, fs: &crate::target_fs::TargetFs) -> Result<Option<String>> {
+    let metadata = match fs.metadata(path, false) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+        Err(error) if crate::target_fs::is_not_found(&error) => return Ok(None),
+        Err(error) => return Err(error),
     };
     if !metadata.is_dir() {
         return Ok(None);

@@ -10,12 +10,12 @@ use git2::{Oid, Repository};
 use crate::actions::fs::{ConflictChoice, ensure_unprotected_target, prompt_conflict, show_diff};
 use crate::desired::{CheckoutScope, DesiredEntry, Provenance};
 use crate::exec::Context;
-use crate::materialize::disposal::{PathGuard, validate_relative_ancestors};
+use crate::materialize::disposal::PathGuard;
 
 use super::{git, snapshot, state::VirtualCheckoutRecord};
 
 #[derive(PartialEq, Eq)]
-enum Node {
+pub(crate) enum Node {
     Directory,
     File(Vec<u8>, i32),
     Link(PathBuf),
@@ -44,7 +44,7 @@ impl Drop for Node {
     }
 }
 
-type Inventory = BTreeMap<PathBuf, Node>;
+pub(crate) type Inventory = BTreeMap<PathBuf, Node>;
 
 fn join_relative(root: &Path, relative: &Path) -> PathBuf {
     // Joining an empty relative path adds a trailing separator, which makes
@@ -91,6 +91,51 @@ fn inventory(path: &Path) -> Result<Inventory> {
     Ok(result)
 }
 
+fn inventory_with(path: &Path, access: &crate::target_fs::Access) -> Result<Inventory> {
+    let mut result = Inventory::new();
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        let destination = join_relative(path, &relative);
+        let node_access = access.child(&relative, false);
+        let metadata = match node_access.fs.metadata(&destination, false) {
+            Ok(metadata) => metadata,
+            Err(error)
+                if crate::target_fs::is_not_found(&error) && relative.as_os_str().is_empty() =>
+            {
+                return Ok(result);
+            }
+            Err(error) => return Err(error),
+        };
+        let node = if metadata.is_symlink() {
+            Node::Link(node_access.fs.read_link(&destination)?)
+        } else if metadata.is_dir() {
+            for child in node_access.fs.read_dir(&destination)? {
+                pending.push(child.strip_prefix(path)?.to_owned());
+            }
+            Node::Directory
+        } else {
+            ensure!(
+                metadata.is_file(),
+                "unsupported virtual checkout target entry"
+            );
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o111 == 0 {
+                    0o100644
+                } else {
+                    0o100755
+                }
+            };
+            #[cfg(not(unix))]
+            let mode = 0o100644;
+            Node::File(node_access.fs.read(&destination)?, mode)
+        };
+        result.insert(relative, node);
+    }
+    Ok(result)
+}
+
 struct Group {
     path: PathBuf,
     before: Inventory,
@@ -107,13 +152,13 @@ struct Initial {
 
 impl Initial {
     fn assess(source: &Path, target: &Path, scope: &CheckoutScope) -> Result<Self> {
-        match target.symlink_metadata() {
+        match scope.access.fs.metadata(target, false) {
             Ok(metadata) => ensure!(
                 metadata.is_dir() && !metadata.is_symlink(),
                 "virtual checkout root is not a real directory"
             ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+            Err(error) if crate::target_fs::is_not_found(&error) => {}
+            Err(error) => return Err(error),
         }
         let (repo, managed) = git::discover_source(source)?;
         let base = repo.head()?.peel_to_commit()?.id();
@@ -137,14 +182,18 @@ impl Initial {
             let mut obstruction = None;
             for component in path.components() {
                 current.push(component);
-                match target.join(&current).symlink_metadata() {
+                match scope
+                    .access
+                    .child(&current, false)
+                    .fs
+                    .metadata(&target.join(&current), false)
+                {
                     Ok(metadata) if metadata.is_dir() && current != *path => {
                         // A shared container may hold repositories, but its nested
                         // checkout units must never become initialization scaffolds.
                         let directory = target.join(&current);
                         ensure!(
-                            !directory.join(".git").try_exists()?
-                                && !directory.join(".git").is_symlink()
+                            matches!(scope.access.child(&current, true).fs.metadata(&directory.join(".git"), false), Err(error) if crate::target_fs::is_not_found(&error))
                                 && super::state::record_for_blocking(&directory)?
                                     .is_none_or(|record| record.scope.projection.is_some()),
                             "virtual checkout path crosses protected checkout '{}'",
@@ -155,12 +204,15 @@ impl Initial {
                         obstruction = Some(current.clone());
                         break;
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-                    Err(error) => return Err(error.into()),
+                    Err(error) if crate::target_fs::is_not_found(&error) => break,
+                    Err(error) => return Err(error),
                 }
             }
             if let Some(obstruction) = obstruction {
-                let before = inventory(&target.join(&obstruction))?;
+                let before = inventory_with(
+                    &target.join(&obstruction),
+                    &scope.access.child(&obstruction, false),
+                )?;
                 ensure!(
                     scope.projection.is_none()
                         || !before.values().any(|node| matches!(node, Node::Link(_))),
@@ -175,6 +227,7 @@ impl Initial {
                         path,
                         &managed.join(path),
                         &[Some(*expected)],
+                        &scope.access,
                     )?;
                     if git::entries_match(actual, Some(*expected)) {
                         continue;
@@ -256,9 +309,27 @@ fn validate_group(root: &Path, group: &Group, scope: &CheckoutScope, source: boo
         "conflict '{}' overlaps an independent mapping",
         group.path.display()
     );
-    validate_relative_ancestors(root, &root.join(&group.path))?;
-    ensure_unprotected_target(&root.join(&group.path))?;
-    let metadata = root.join(&group.path).symlink_metadata()?;
+    let access = if source {
+        crate::target_fs::Access::default()
+    } else {
+        scope.access.as_ref().clone()
+    };
+    crate::materialize::disposal::validate_relative_ancestors_with(
+        root,
+        &root.join(&group.path),
+        &access,
+    )?;
+    if !access.child(&group.path, false).fs.is_privileged() {
+        ensure_unprotected_target(&root.join(&group.path))?;
+    } else {
+        access
+            .child(&group.path, false)
+            .validate_removal(&root.join(&group.path))?;
+    }
+    let metadata = access
+        .child(&group.path, false)
+        .fs
+        .metadata(&root.join(&group.path), false)?;
     ensure!(
         metadata.is_symlink() || !metadata.permissions().readonly(),
         "conflict '{}' is read-only",
@@ -308,15 +379,20 @@ fn initialize_with(
     mut diff: impl FnMut(&Path, &Path) -> Result<()>,
 ) -> Result<VirtualCheckoutRecord> {
     let initial = Initial::assess(source, target, &scope)?;
-    let guard = PathGuard::capture(target)?;
+    let guard = PathGuard::capture_with(target, &scope.access.fs)?;
     let source_guard = PathGuard::capture(source)?;
     let target_guards = initial
         .groups
         .iter()
-        .map(|group| PathGuard::capture(&target.join(&group.path)))
+        .map(|group| {
+            PathGuard::capture_with(
+                &target.join(&group.path),
+                &scope.access.child(&group.path, false).fs,
+            )
+        })
         .collect::<Result<Vec<_>>>()?;
     let source_location = crate::overlays::mapping::physical(source)?;
-    let target_location = crate::overlays::mapping::location(target)?;
+    let target_location = scope.access.fs.location(target)?;
     ensure!(
         !source_location.starts_with(&target_location)
             && !target_location.starts_with(&source_location),
@@ -368,7 +444,13 @@ fn initialize_with(
                 let comparison = tempfile::tempdir()?;
                 let committed = comparison.path().join("committed");
                 write_inventory(&committed, &initial.committed_group(group)?)?;
-                diff(&committed, &target.join(&group.path))?;
+                if scope.access.child(&group.path, false).fs.is_privileged() {
+                    let existing = comparison.path().join("existing");
+                    write_inventory(&existing, &group.before)?;
+                    diff(&committed, &existing)?;
+                } else {
+                    diff(&committed, &target.join(&group.path))?;
+                }
             }
         };
         if matches!(choice, ConflictChoice::Overwrite | ConflictChoice::Absorb) && group.conflict {
@@ -382,7 +464,10 @@ fn initialize_with(
     // may gain new deletion authority while the user is deciding.
     for group in &initial.groups {
         ensure!(
-            inventory(&target.join(&group.path))? == group.before,
+            inventory_with(
+                &target.join(&group.path),
+                &scope.access.child(&group.path, false)
+            )? == group.before,
             "virtual checkout target changed during conflict resolution"
         );
     }
@@ -395,12 +480,22 @@ fn initialize_with(
                 ConflictChoice::Skip => {}
                 ConflictChoice::Overwrite => {
                     let contents = initial.committed_group(group)?;
+                    let group_access = scope.access.child(&group.path, false);
+                    ensure!(
+                        contents.keys().all(|path| group_access
+                            .child(path, false)
+                            .fs
+                            .is_privileged()
+                            == group_access.fs.is_privileged()),
+                        "a structural checkout replacement cannot cross differing sudo policies; resolve its directory obstruction first"
+                    );
                     prepare_update(
                         &mut regular,
                         &mut replacements,
                         target.join(&group.path),
                         &contents,
                         false,
+                        Some(&scope.access.child(&group.path, false).fs),
                     )?;
                 }
                 ConflictChoice::Absorb => {
@@ -451,6 +546,7 @@ fn initialize_with(
                         source.join(&group.path),
                         &contents,
                         true,
+                        None,
                     )?;
                 }
                 ConflictChoice::Diff => unreachable!(),
@@ -492,9 +588,16 @@ fn initialize_with(
             validate_source(&initial, source, group)?;
         }
         for group in &initial.groups {
-            validate_relative_ancestors(target, &target.join(&group.path))?;
+            crate::materialize::disposal::validate_relative_ancestors_with(
+                target,
+                &target.join(&group.path),
+                &scope.access,
+            )?;
             ensure!(
-                inventory(&target.join(&group.path))? == group.before,
+                inventory_with(
+                    &target.join(&group.path),
+                    &scope.access.child(&group.path, false)
+                )? == group.before,
                 "virtual checkout target changed before initialization"
             );
         }
@@ -506,7 +609,7 @@ fn initialize_with(
         for replacement in &mut replacements {
             replacement.apply()?;
         }
-        fs::create_dir_all(target)?;
+        scope.access.fs.create_dir_all(target)?;
         Ok(())
     })();
     if let Err(error) = applied {
@@ -611,13 +714,37 @@ fn write_inventory(destination: &Path, contents: &Inventory) -> Result<()> {
 
 // Regular files use the existing metadata-preserving transaction. Structural
 // replacements retain an entire original group for rollback instead of deleting it.
-fn prepare_update(
+pub(crate) fn prepare_update(
     regular: &mut git::SourceTransaction,
     replacements: &mut Vec<Replacement>,
     destination: PathBuf,
     contents: &Inventory,
     private: bool,
+    target_fs: Option<&crate::target_fs::TargetFs>,
 ) -> Result<()> {
+    if let Some(fs) = target_fs.filter(|fs| fs.is_privileged()) {
+        let contents = contents
+            .iter()
+            .map(|(path, node)| {
+                Ok((
+                    path.clone(),
+                    match node {
+                        Node::Directory => crate::target_fs::PreparedNode::Directory,
+                        Node::File(bytes, mode) => {
+                            crate::target_fs::PreparedNode::File(bytes.clone(), *mode)
+                        }
+                        Node::Link(_) => {
+                            anyhow::bail!("cannot materialize a link in a virtual checkout")
+                        }
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        replacements.push(Replacement::Privileged(
+            fs.prepare_inventory(&destination, contents)?,
+        ));
+        return Ok(());
+    }
     if let Some(Node::File(bytes, mode)) = contents.get(Path::new(""))
         && destination
             .symlink_metadata()
@@ -649,22 +776,42 @@ fn prepare_update(
         }
         #[cfg(not(unix))]
         let _ = private;
-        replacements.push(Replacement {
+        replacements.push(Replacement::Local(LocalReplacement {
             destination,
             scratch,
             backup: None,
-        });
+        }));
     }
     Ok(())
 }
 
-struct Replacement {
+pub(crate) enum Replacement {
+    Local(LocalReplacement),
+    Privileged(crate::target_fs::PreparedEffect),
+}
+
+impl Replacement {
+    pub(crate) fn apply(&mut self) -> Result<()> {
+        match self {
+            Self::Local(replacement) => replacement.apply(),
+            Self::Privileged(replacement) => replacement.apply(),
+        }
+    }
+    pub(crate) fn rollback(&mut self) -> Result<()> {
+        match self {
+            Self::Local(replacement) => replacement.rollback(),
+            Self::Privileged(replacement) => replacement.rollback(),
+        }
+    }
+}
+
+pub(crate) struct LocalReplacement {
     destination: PathBuf,
     scratch: tempfile::TempDir,
     backup: Option<tempfile::TempDir>,
 }
 
-impl Replacement {
+impl LocalReplacement {
     fn apply(&mut self) -> Result<()> {
         let parent = self
             .destination

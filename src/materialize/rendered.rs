@@ -76,20 +76,22 @@ impl Materializer for RenderedMaterializer {
             unreachable!()
         };
         let path = artifact(file)?;
-        Ok(match actual::inspect(&entry.target)? {
-            ActualState::Missing => Operation::Create,
-            ActualState::Symlink { points_to } if points_to == path => {
-                if artifact_matches(&path, file, entry.permissions)? {
-                    Operation::Noop
-                } else {
+        Ok(
+            match actual::inspect_with(&entry.target, &entry.access.fs)? {
+                ActualState::Missing => Operation::Create,
+                ActualState::Symlink { points_to } if points_to == path => {
+                    if artifact_matches(&path, file, entry.permissions)? {
+                        Operation::Noop
+                    } else {
+                        Operation::Create
+                    }
+                }
+                ActualState::Symlink { points_to } if points_to.parent() == path.parent() => {
                     Operation::Create
                 }
-            }
-            ActualState::Symlink { points_to } if points_to.parent() == path.parent() => {
-                Operation::Create
-            }
-            current => Operation::Conflict { current },
-        })
+                current => Operation::Conflict { current },
+            },
+        )
     }
 
     async fn materialize(&self, ctx: Ctx, step: &PlanStep) -> Result<()> {
@@ -100,22 +102,19 @@ impl Materializer for RenderedMaterializer {
         tokio::task::spawn_blocking(move || -> Result<()> {
             let MaterializationIntent::RenderedFile(file) = &entry.intent else { unreachable!() };
             let path = artifact(file)?;
-            crate::desired::content::validate_destination(file, &entry.target)?;
-            let actual = actual::inspect(&entry.target)?;
+            crate::desired::content::validate_destination(file, &entry.target, &entry.access.fs)?;
+            let actual = actual::inspect_with(&entry.target, &entry.access.fs)?;
             let managed_link = matches!(&actual, ActualState::Symlink { points_to } if points_to.parent() == path.parent());
             ensure!(matches!(actual, ActualState::Missing) || managed_link || ctx.force, "rendered destination '{}' conflicts with source template '{}'; move it aside or use --force", entry.target.display(), file.source.display());
             ensure!(!matches!(actual, ActualState::Directory), "rendered destination is a directory; move it aside");
             if !artifact_matches(&path, file, entry.permissions)? {
                 atomic_write(&path, &file.bytes, entry.permissions.map_or(0o600 | (file.mode as u32 & 0o111), |mode| mode.bits()))?;
             }
-            if let Some(parent) = entry.target.parent() { fs::create_dir_all(parent)?; }
-            let guard = super::disposal::PathGuard::capture(&entry.target)?;
+            if let Some(parent) = entry.target.parent() { entry.access.fs.create_dir_all(parent)?; }
+            let guard = super::disposal::PathGuard::capture_with(&entry.target, &entry.access.fs)?;
             guard.verify()?;
-            if !matches!(actual, ActualState::Missing) { fs::remove_file(&entry.target)?; }
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&path, &entry.target)?;
-            #[cfg(windows)]
-            std::os::windows::fs::symlink_file(&path, &entry.target)?;
+            if !matches!(actual, ActualState::Missing) { entry.access.fs.remove_file(&entry.target)?; }
+            entry.access.fs.symlink(&path, &entry.target)?;
             Ok(())
         }).await??;
         Ok(())

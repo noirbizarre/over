@@ -41,7 +41,7 @@
 
 mod checkout;
 pub(crate) mod encrypted;
-mod partial;
+pub(crate) mod partial;
 pub(crate) mod rendered;
 pub(crate) mod symlink;
 pub mod virtual_checkout;
@@ -126,6 +126,7 @@ mod tests {
 
     fn entry(intent: MaterializationIntent) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target: PathBuf::from("/tmp/does-not-matter"),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),

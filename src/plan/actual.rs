@@ -77,6 +77,37 @@ pub fn inspect(path: &Path) -> Result<ActualState> {
     })
 }
 
+/// Inspect through the entry's explicit access policy, preserving missing/error distinctions.
+pub(crate) fn inspect_with(
+    path: &Path,
+    access: &crate::target_fs::TargetFs,
+) -> Result<ActualState> {
+    if !access.is_privileged() {
+        return inspect(path);
+    }
+    let metadata = match access.metadata(path, false) {
+        Ok(metadata) => metadata,
+        Err(error)
+            if error
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::NotFound) =>
+        {
+            return Ok(ActualState::Missing);
+        }
+        Err(error) => return Err(error),
+    };
+    if metadata.is_symlink() {
+        return Ok(ActualState::Symlink {
+            points_to: access.read_link(path)?,
+        });
+    }
+    Ok(if metadata.is_dir() {
+        ActualState::Directory
+    } else {
+        ActualState::File
+    })
+}
+
 /// Whether `path` is, recursively, nothing but symlinks (or doesn't exist
 /// at all) — no real file/directory content anywhere underneath.
 ///

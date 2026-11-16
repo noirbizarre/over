@@ -59,3 +59,4 @@ semantics, use the [configuration reference](../configuration.md) and
 | [030](030-file-templates-produce-desired-content.md) | File templates produce desired content and generated Git snapshots, superseding ADR-010's path-only scope |
 | [031](031-encrypted-git-diffs-use-textconv.md) | Authenticated encrypted Git diffs use textconv without persistent plaintext caching |
 | [032](032-host-context-is-distinct-from-deployment-selection.md) | Host context is distinct from deployment selection, superseding ADR-019 |
+| [033](033-share-invocation-scoped-sudo-between-target-effects-and-explicit-hooks.md) | Invocation-scoped sudo for target effects and explicitly elevated command hooks |

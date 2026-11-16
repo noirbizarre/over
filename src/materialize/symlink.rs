@@ -47,7 +47,7 @@ impl Materializer for SymlinkMaterializer {
     fn classify(&self, entry: &DesiredEntry) -> Result<Operation> {
         match &entry.intent {
             MaterializationIntent::Directory => {
-                let actual = actual::inspect(&entry.target)?;
+                let actual = actual::inspect_with(&entry.target, &entry.access.fs)?;
                 match actual {
                     ActualState::Missing => Ok(Operation::Create),
                     // Deliberately *not* checked for a checkout-migration
@@ -93,10 +93,10 @@ impl Materializer for SymlinkMaterializer {
                 }
             }
             MaterializationIntent::SymlinkFile { source, link_type } => {
-                let actual = actual::inspect(&entry.target)?;
+                let actual = actual::inspect_with(&entry.target, &entry.access.fs)?;
                 if matches!(link_type, LinkType::Hard)
                     && matches!(actual, ActualState::File)
-                    && crate::actions::symlink::hard_link_matches(source, &entry.target)?
+                    && hard_link_matches(entry, source)?
                 {
                     return Ok(Operation::Noop);
                 }
@@ -109,7 +109,7 @@ impl Materializer for SymlinkMaterializer {
                 })
             }
             MaterializationIntent::SymlinkDirectory { source, .. } => {
-                let actual = actual::inspect(&entry.target)?;
+                let actual = actual::inspect_with(&entry.target, &entry.access.fs)?;
                 match actual {
                     ActualState::Missing => Ok(Operation::Create),
                     ActualState::Symlink { ref points_to } if points_to == source => {
@@ -129,7 +129,7 @@ impl Materializer for SymlinkMaterializer {
                         if let Some(op) = virtual_checkout_migration(entry)? {
                             return Ok(op);
                         }
-                        if directory_is_symlink_mirror(&entry.target, source)? {
+                        if directory_is_symlink_mirror_with(&entry.target, source, &entry.access)? {
                             return Ok(Operation::Migrate {
                                 from: MaterializationIntent::Directory,
                                 to: entry.intent.clone(),
@@ -155,6 +155,50 @@ impl Materializer for SymlinkMaterializer {
     }
 
     async fn materialize(&self, ctx: Ctx, step: &PlanStep) -> Result<()> {
+        let mut effective = step.clone();
+        if let MaterializationIntent::SymlinkFile {
+            source,
+            link_type: LinkType::Hard,
+        } = &step.entry.intent
+        {
+            let source = source.clone();
+            let access = step.entry.access.clone();
+            if spawn_blocking(move || access.needs_independent_link_ownership(&source)).await?? {
+                if !ctx.dry_run {
+                    let entry = step.entry.clone();
+                    spawn_blocking(move || -> Result<()> {
+                        let MaterializationIntent::SymlinkFile { source, .. } = &entry.intent
+                        else {
+                            unreachable!()
+                        };
+                        if matches!(
+                            actual::inspect_with(&entry.target, &entry.access.fs)?,
+                            ActualState::File
+                        ) && hard_link_matches(&entry, source)?
+                        {
+                            // A soft-link fallback keeps independent ownership and verifiable provenance.
+                            // An unmarked regular copy would let unapply mistake equal foreign bytes for ownership.
+                            entry.access.fs.remove_file(&entry.target)?;
+                        }
+                        Ok(())
+                    })
+                    .await??;
+                }
+                if let MaterializationIntent::SymlinkFile { link_type, .. } =
+                    &mut effective.entry.intent
+                {
+                    *link_type = LinkType::Soft;
+                }
+            }
+        }
+        let step = &effective;
+        if step.entry.access.fs.is_privileged() {
+            if ctx.dry_run {
+                return Ok(());
+            }
+            let step = step.clone();
+            return spawn_blocking(move || materialize_privileged(ctx, &step)).await?;
+        }
         match &step.operation {
             Operation::Migrate {
                 from,
@@ -183,6 +227,132 @@ impl Materializer for SymlinkMaterializer {
                 action.execute(ctx).await
             }
         }
+    }
+}
+
+pub(crate) fn hard_link_matches(entry: &DesiredEntry, source: &Path) -> Result<bool> {
+    hard_link_matches_with(source, &entry.target, &entry.access)
+}
+
+pub(crate) fn hard_link_matches_with(
+    source: &Path,
+    target: &Path,
+    access: &crate::target_fs::Access,
+) -> Result<bool> {
+    if !access.fs.is_privileged() {
+        return crate::actions::symlink::hard_link_matches(source, target);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let source_metadata = fs::metadata(source)?;
+        let target_metadata = access.fs.metadata(target, false)?;
+        if source_metadata.dev() == target_metadata.dev()
+            && source_metadata.ino() == target_metadata.ino()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn materialize_privileged(ctx: Ctx, step: &PlanStep) -> Result<()> {
+    use crate::actions::fs::{ConflictChoice, prompt_conflict};
+    let entry = &step.entry;
+    let target_fs = &entry.access.fs;
+    if matches!(step.operation, Operation::Migrate { .. }) {
+        anyhow::bail!("privileged layout migration requires unapplying the previous layout first");
+    }
+    let source = match &entry.intent {
+        MaterializationIntent::SymlinkFile { source, .. }
+        | MaterializationIntent::SymlinkDirectory { source, .. } => Some(source.as_path()),
+        _ => None,
+    };
+    let current = actual::inspect_with(&entry.target, target_fs)?;
+    let already_matches = match (&entry.intent, &current) {
+        (MaterializationIntent::Directory, ActualState::Directory) => true,
+        (_, ActualState::Symlink { points_to }) => source == Some(points_to.as_path()),
+        (
+            MaterializationIntent::SymlinkFile {
+                source,
+                link_type: LinkType::Hard,
+            },
+            ActualState::File,
+        ) => hard_link_matches(entry, source)?,
+        _ => false,
+    };
+    if already_matches {
+        return Ok(());
+    }
+    if !matches!(current, ActualState::Missing) {
+        let source = source
+            .or(match &entry.provenance {
+                Provenance::Overlay { source, .. } => Some(source.as_path()),
+                _ => None,
+            })
+            .ok_or_else(|| anyhow::anyhow!("missing source identity for conflict"))?;
+        let source_location = crate::overlays::mapping::physical(source)?;
+        let target_location = target_fs.location(&entry.target)?;
+        anyhow::ensure!(
+            !source_location.starts_with(&target_location)
+                && !target_location.starts_with(&source_location),
+            "refusing overlapping source and target replacement"
+        );
+        loop {
+            let choice = if ctx.force {
+                ConflictChoice::Overwrite
+            } else if ctx.no_prompt {
+                anyhow::bail!(
+                    "protected target conflict at '{}' (use --force or run interactively)",
+                    entry.target.display()
+                );
+            } else {
+                prompt_conflict(source, &entry.target)?
+            };
+            match choice {
+                ConflictChoice::Skip => return Ok(()),
+                ConflictChoice::Overwrite => break,
+                ConflictChoice::Diff => {
+                    let before = target_fs.read(&entry.target)?;
+                    let after = fs::read(source)?;
+                    crate::ui::literal(format!(
+                        "{}",
+                        crate::diff::ContentDiff::from_texts(
+                            std::str::from_utf8(&before)?,
+                            std::str::from_utf8(&after)?
+                        )
+                    ))?;
+                }
+                ConflictChoice::Absorb => {
+                    anyhow::ensure!(
+                        matches!(current, ActualState::File),
+                        "directory absorb from a protected target is unsupported"
+                    );
+                    let bytes = target_fs.read(&entry.target)?;
+                    // Source updates remain local and retain the ordinary replacement safeguards.
+                    crate::actions::fs::replace_file(source, bytes, |permissions| permissions)?;
+                    break;
+                }
+            }
+        }
+        entry.access.remove_target(&entry.target)?;
+    }
+    match &entry.intent {
+        MaterializationIntent::Directory => target_fs.create_dir_all(&entry.target),
+        MaterializationIntent::SymlinkFile { source, link_type }
+        | MaterializationIntent::SymlinkDirectory { source, link_type } => {
+            if let Some(parent) = entry.target.parent() {
+                target_fs.create_dir_all(parent)?;
+            }
+            if matches!(link_type, LinkType::Hard)
+                && !source.is_dir()
+                && target_fs.hard_link(source, &entry.target).is_ok()
+            {
+                return Ok(());
+            }
+            target_fs.symlink(source, &entry.target)
+        }
+        _ => anyhow::bail!("unexpected privileged symlink materialization intent"),
     }
 }
 
@@ -252,20 +422,28 @@ fn virtual_checkout_migration(entry: &DesiredEntry) -> Result<Option<Operation>>
 /// directory safely instead of falling back to `Operation::Conflict`;
 /// removing it loses nothing the overlay didn't already provide.
 pub(crate) fn directory_is_symlink_mirror(target: &Path, source: &Path) -> Result<bool> {
+    directory_is_symlink_mirror_with(target, source, &crate::target_fs::Access::default())
+}
+
+pub(crate) fn directory_is_symlink_mirror_with(
+    target: &Path,
+    source: &Path,
+    access: &crate::target_fs::Access,
+) -> Result<bool> {
     if !source.is_dir() {
         return Ok(false);
     }
-    for dir_entry in fs::read_dir(target)? {
-        let dir_entry = dir_entry?;
-        let path = dir_entry.path();
-        let file_type = dir_entry.file_type()?;
-        let expected = source.join(dir_entry.file_name());
+    for path in access.fs.read_dir(target)? {
+        let relative = path.strip_prefix(target)?;
+        let child_access = access.child(relative, false);
+        let file_type = child_access.fs.metadata(&path, false)?.file_type();
+        let expected = source.join(relative);
         if file_type.is_symlink() {
-            if fs::read_link(&path)? != expected {
+            if child_access.fs.read_link(&path)? != expected {
                 return Ok(false);
             }
         } else if file_type.is_dir() {
-            if !directory_is_symlink_mirror(&path, &expected)? {
+            if !directory_is_symlink_mirror_with(&path, &expected, &child_access)? {
                 return Ok(false);
             }
         } else {
@@ -445,8 +623,35 @@ mod tests {
     use git2::Signature;
     use std::path::PathBuf;
 
+    #[test]
+    fn ownership_policy_does_not_make_equal_foreign_bytes_a_managed_hardlink() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        fs::write(&source, "same bytes").unwrap();
+        fs::write(&target, "same bytes").unwrap();
+        let mut managed = entry(MaterializationIntent::SymlinkFile {
+            source,
+            link_type: LinkType::Hard,
+        });
+        managed.target = target.clone();
+        managed.access.permissions.owner = Some(crate::overlays::Identity::Id(0));
+        assert!(matches!(
+            SymlinkMaterializer.classify(&managed).unwrap(),
+            Operation::Conflict { .. }
+        ));
+        let desired = crate::desired::DesiredTree::from_entries(vec![managed]);
+        let report = crate::unapply::Report::build(&desired).unwrap();
+        assert!(matches!(
+            report.entries()[0].outcome,
+            crate::unapply::Outcome::NotOwned { .. }
+        ));
+        assert_eq!(fs::read_to_string(target).unwrap(), "same bytes");
+    }
+
     fn entry(intent: MaterializationIntent) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target: PathBuf::from("/tmp/does-not-matter-for-this-test"),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -569,6 +774,7 @@ mod tests {
     #[test]
     fn build_action_directory() {
         let entry = DesiredEntry {
+            access: Default::default(),
             target: PathBuf::from("/tmp/does-not-matter"),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -595,6 +801,7 @@ mod tests {
         init_committed_repo(td.path());
         let m = SymlinkMaterializer;
         let e = DesiredEntry {
+            access: Default::default(),
             target: td.path().to_path_buf(),
             ..entry(MaterializationIntent::Directory)
         };
@@ -607,6 +814,7 @@ mod tests {
         init_committed_repo(td.path());
         let m = SymlinkMaterializer;
         let e = DesiredEntry {
+            access: Default::default(),
             target: td.path().to_path_buf(),
             ..entry(MaterializationIntent::SymlinkDirectory {
                 source: PathBuf::from("/repo/ov"),
@@ -634,6 +842,7 @@ mod tests {
         fs::write(td.path().join("README.md"), "changed").unwrap();
         let m = SymlinkMaterializer;
         let e = DesiredEntry {
+            access: Default::default(),
             target: td.path().to_path_buf(),
             ..entry(MaterializationIntent::SymlinkDirectory {
                 source: PathBuf::from("/repo/ov"),
@@ -694,6 +903,7 @@ mod tests {
 
         let m = SymlinkMaterializer;
         let e = DesiredEntry {
+            access: Default::default(),
             target: target.path().to_path_buf(),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -758,6 +968,7 @@ mod tests {
 
         let m = SymlinkMaterializer;
         let e = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -792,6 +1003,7 @@ mod tests {
 
         let m = SymlinkMaterializer;
         let e = DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -824,6 +1036,7 @@ mod tests {
 
         let m = SymlinkMaterializer;
         let e = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -859,6 +1072,7 @@ mod tests {
 
         let m = SymlinkMaterializer;
         let e = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -886,6 +1100,7 @@ mod tests {
         fs::write(source.join("file"), "overlay").unwrap();
         symlink::symlink_file(source.join("file"), target.join("file")).unwrap();
         let entry = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "ov".into(),
@@ -934,6 +1149,7 @@ mod tests {
         fs::write(source.join("file"), "overlay").unwrap();
         symlink::symlink_file(source.join("file"), target.join("file")).unwrap();
         let entry = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "ov".into(),
@@ -1019,6 +1235,7 @@ mod tests {
         let m = SymlinkMaterializer;
         let target = checkout_dir.path().to_path_buf();
         let e = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -1074,6 +1291,7 @@ mod tests {
         let m = SymlinkMaterializer;
         let target = checkout_dir.path().to_path_buf();
         let e = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             // The real, discoverable source repository — needed for
             // `status::virtual_checkout::inspect`'s safety re-check right
@@ -1145,6 +1363,7 @@ mod tests {
         let m = SymlinkMaterializer;
         let target = checkout_dir.path().to_path_buf();
         let e = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -1192,6 +1411,7 @@ mod tests {
         let target = td.path().to_path_buf();
         let source = PathBuf::from("/repo/ov/somewhere");
         let e = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -1231,6 +1451,7 @@ mod tests {
     #[test]
     fn build_action_symlink_sidecar_uses_ensure_symlink() {
         let entry = DesiredEntry {
+            access: Default::default(),
             target: PathBuf::from("/tmp/link"),
             provenance: Provenance::SymlinkSidecar {
                 overlay: "ov".to_string(),

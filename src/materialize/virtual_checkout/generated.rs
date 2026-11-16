@@ -1,7 +1,6 @@
 //! Generated desired snapshots and pure base/local/desired reconciliation.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, ensure};
@@ -10,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::desired::content::{RenderedFile, RenderedInventory};
 use crate::desired::{DesiredEntry, Provenance};
-use crate::materialize::disposal::{PathGuard, validate_relative_ancestors};
+use crate::materialize::disposal::PathGuard;
 use crate::plan::{ActualState, Operation, actual};
 
 use super::{generated_snapshot, git, state};
@@ -85,7 +84,7 @@ pub(crate) fn generated_paths(entry: &DesiredEntry) -> Result<BTreeSet<PathBuf>>
 
 pub(crate) fn classify(entry: &DesiredEntry) -> Result<Operation> {
     state::verify_live_target(entry)?;
-    match actual::inspect(&entry.target)? {
+    match actual::inspect_with(&entry.target, &entry.access.fs)? {
         ActualState::Missing => Ok(Operation::Create),
         ActualState::Directory => {
             if let Some(record) = state::record_for_entry(entry)? {
@@ -183,13 +182,37 @@ fn desired(entry: &DesiredEntry, repo: &Repository, managed: &Path) -> Result<Re
         .collect()
 }
 
-fn local(root: &Path, path: &Path) -> Result<Option<RenderedFile>> {
+pub(crate) fn leaf_access(entry: &DesiredEntry, path: &Path) -> Result<crate::target_fs::Access> {
+    let (_, root) = source(entry)?;
+    if let Some(file) = entry
+        .intent
+        .checkout_scope()
+        .rendered
+        .as_ref()
+        .and_then(|files| files.get(path))
+    {
+        return Ok(entry.access.child(file.source.strip_prefix(root)?, false));
+    }
+    if let Some(record) = state::record_for_entry(entry)?
+        && let Some(source) = record
+            .generated
+            .as_ref()
+            .and_then(|generated| generated.sources.get(path))
+    {
+        return Ok(entry.access.child(source.strip_prefix(root)?, false));
+    }
+    Ok(entry.access.child(path, false))
+}
+
+fn local(entry: &DesiredEntry, path: &Path) -> Result<Option<RenderedFile>> {
+    let root = &entry.target;
     let target = root.join(path);
-    validate_relative_ancestors(root, &target)?;
-    let metadata = match fs::symlink_metadata(&target) {
+    crate::materialize::disposal::validate_relative_ancestors_with(root, &target, &entry.access)?;
+    let access = leaf_access(entry, path)?;
+    let metadata = match access.fs.metadata(&target, false) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+        Err(error) if crate::target_fs::is_not_found(&error) => return Ok(None),
+        Err(error) => return Err(error),
     };
     ensure!(
         metadata.is_file() || metadata.is_symlink(),
@@ -197,18 +220,32 @@ fn local(root: &Path, path: &Path) -> Result<Option<RenderedFile>> {
         target.display()
     );
     let bytes = if metadata.is_symlink() {
-        fs::read_link(&target)?
+        access
+            .fs
+            .read_link(&target)?
             .to_str()
             .context("symlink is not valid UTF-8")?
             .as_bytes()
             .to_vec()
     } else {
-        fs::read(&target)?
+        access.fs.read(&target)?
     };
     let mode = if metadata.is_symlink() {
         0o120000
     } else {
-        i32::from(git::on_disk_filemode(&target)?)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o111 == 0 {
+                0o100644
+            } else {
+                0o100755
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            0o100644
+        }
     };
     Ok(Some(RenderedFile {
         protection: Default::default(),
@@ -361,7 +398,7 @@ pub(crate) fn analyze(
         .cloned()
         .collect();
     for path in paths {
-        let current = local(&entry.target, &path)?;
+        let current = local(entry, &path)?;
         if let Some(current) = &current {
             analysis.local.insert(path.clone(), current.clone());
         }
@@ -373,7 +410,12 @@ pub(crate) fn analyze(
                 && let Some(permissions) = wanted.permissions
             {
                 use std::os::unix::fs::PermissionsExt;
-                if fs::metadata(entry.target.join(&path))?.permissions().mode() & 0o777
+                if leaf_access(entry, &path)?
+                    .fs
+                    .metadata(&entry.target.join(&path), false)?
+                    .permissions()
+                    .mode()
+                    & 0o777
                     != permissions.bits()
                 {
                     analysis.updates.insert(path.clone(), Some(wanted.clone()));
@@ -566,16 +608,20 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<Reconcile
     // must not bypass read-only protection merely because a sibling is rendered.
     for path in analysis.updates.keys() {
         let target = entry.target.join(path);
-        validate_relative_ancestors(&entry.target, &target)?;
-        match fs::symlink_metadata(&target) {
+        crate::materialize::disposal::validate_relative_ancestors_with(
+            &entry.target,
+            &target,
+            &entry.access,
+        )?;
+        match leaf_access(entry, path)?.fs.metadata(&target, false) {
             Ok(metadata) if metadata.is_file() => ensure!(
                 !metadata.permissions().readonly(),
                 "file '{}' is read-only",
                 target.display()
             ),
             Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+            Err(error) if crate::target_fs::is_not_found(&error) => {}
+            Err(error) => return Err(error),
         }
     }
     if dry_run {
@@ -746,45 +792,46 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<Reconcile
     persist(entry, &record)?;
     ensure!(
         matches!(
-            actual::inspect(&entry.target)?,
+            actual::inspect_with(&entry.target, &entry.access.fs)?,
             ActualState::Missing | ActualState::Directory
         ),
         "checkout root changed kind"
     );
-    fs::create_dir_all(&entry.target)?;
-    let root_guard = PathGuard::capture(&entry.target)?;
+    entry.access.fs.create_dir_all(&entry.target)?;
+    let root_guard = PathGuard::capture_with(&entry.target, &entry.access.fs)?;
     for (path, replacement) in &analysis.updates {
         root_guard.verify()?;
         ensure!(
-            same(
-                local(&entry.target, path)?.as_ref(),
-                analysis.local.get(path)
-            ),
+            same(local(entry, path)?.as_ref(), analysis.local.get(path)),
             "checkout file '{}' changed during sync; rerun",
             entry.target.join(path).display()
         );
         let target = entry.target.join(path);
-        validate_relative_ancestors(&entry.target, &target)?;
+        crate::materialize::disposal::validate_relative_ancestors_with(
+            &entry.target,
+            &target,
+            &entry.access,
+        )?;
+        let access = leaf_access(entry, path)?;
         if let Some(file) = replacement {
             if file.generated {
-                crate::desired::content::validate_destination(file, &target)?;
+                crate::desired::content::validate_destination(file, &target, &access.fs)?;
             }
             if file.mode == 0o120000 {
-                if target.symlink_metadata().is_ok() {
-                    fs::remove_file(&target)?;
+                if access.fs.metadata(&target, false).is_ok() {
+                    access.fs.remove_file(&target)?;
                 }
                 if let Some(parent) = target.parent() {
-                    fs::create_dir_all(parent)?;
+                    access.fs.create_dir_all(parent)?;
                 }
-                #[cfg(unix)]
-                std::os::unix::fs::symlink(std::str::from_utf8(&file.bytes)?, &target)?;
-                #[cfg(windows)]
-                std::os::windows::fs::symlink_file(std::str::from_utf8(&file.bytes)?, &target)?;
+                access
+                    .fs
+                    .symlink(Path::new(std::str::from_utf8(&file.bytes)?), &target)?;
             } else {
-                let existing = match fs::symlink_metadata(&target) {
+                let existing = match access.fs.metadata(&target, false) {
                     Ok(metadata) => Some(metadata),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(error) => return Err(error.into()),
+                    Err(error) if crate::target_fs::is_not_found(&error) => None,
+                    Err(error) => return Err(error),
                 };
                 let default_mode = if file.generated {
                     0o600 | (file.mode as u32 & 0o111)
@@ -794,25 +841,44 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<Reconcile
                 if existing.as_ref().is_some_and(|metadata| metadata.is_file()) {
                     // Physical checkout leaves carry user metadata, unlike
                     // reconstructible artifacts: retain it and detach hard links safely.
-                    crate::actions::fs::replace_file(&target, &file.bytes, |permissions| {
-                        #[cfg(unix)]
-                        if let Some(mode) = file.permissions {
-                            use std::os::unix::fs::PermissionsExt;
-                            return fs::Permissions::from_mode(mode.bits());
-                        }
-                        git::executable_permissions(permissions, file.mode)
-                    })?;
+                    #[cfg(unix)]
+                    let mode = {
+                        use std::os::unix::fs::PermissionsExt;
+                        Some(file.permissions.unwrap_or_else(|| {
+                            crate::overlays::FileMode::from_bits(
+                                git::executable_permissions(
+                                    existing
+                                        .as_ref()
+                                        .expect("existing regular file")
+                                        .permissions(),
+                                    file.mode,
+                                )
+                                .mode(),
+                            )
+                        }))
+                    };
+                    #[cfg(not(unix))]
+                    let mode = file.permissions;
+                    access.fs.write(&target, &file.bytes, mode)?;
                 } else {
-                    crate::materialize::rendered::atomic_write(
+                    if existing.is_some() {
+                        access.fs.remove_file(&target)?;
+                    }
+                    if let Some(parent) = target.parent() {
+                        access.fs.create_dir_all(parent)?;
+                    }
+                    access.fs.write(
                         &target,
                         &file.bytes,
-                        file.permissions
-                            .map_or(default_mode, |permissions| permissions.bits()),
+                        Some(
+                            file.permissions
+                                .unwrap_or(crate::overlays::FileMode::from_bits(default_mode)),
+                        ),
                     )?;
                 }
             }
-        } else if target.symlink_metadata().is_ok() {
-            fs::remove_file(&target)?;
+        } else if access.fs.metadata(&target, false).is_ok() {
+            access.fs.remove_file(&target)?;
         }
     }
     let expected = ref_target(&repo, &reference)?;
@@ -848,6 +914,9 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<Reconcile
     record.generated = Some(generated);
     record.initializing = false;
     persist(entry, &record)?;
+    if analysis.conflicts.is_empty() {
+        super::metadata::apply(entry)?;
+    }
     Ok(outcome)
 }
 
@@ -933,8 +1002,9 @@ pub(crate) fn restore(entry: &DesiredEntry, paths: &[PathBuf], dry_run: bool) ->
             "'{}' is not a recorded generated checkout destination",
             entry.target.join(path).display()
         );
-        let current = local(&entry.target, path)?;
-        let guard = PathGuard::capture(&entry.target.join(path))?;
+        let current = local(entry, path)?;
+        let guard =
+            PathGuard::capture_with(&entry.target.join(path), &leaf_access(entry, path)?.fs)?;
         prepared.push((path, current, guard));
     }
     if dry_run {
@@ -943,33 +1013,39 @@ pub(crate) fn restore(entry: &DesiredEntry, paths: &[PathBuf], dry_run: bool) ->
     for (path, before, guard) in prepared {
         guard.verify()?;
         ensure!(
-            same(local(&entry.target, path)?.as_ref(), before.as_ref()),
+            same(local(entry, path)?.as_ref(), before.as_ref()),
             "restore target changed while preparing"
         );
         let target = entry.target.join(path);
         if let Some(file) = inventory.get(path) {
             if file.generated {
-                crate::desired::content::validate_destination(file, &target)?;
+                crate::desired::content::validate_destination(
+                    file,
+                    &target,
+                    &leaf_access(entry, path)?.fs,
+                )?;
             }
             ensure!(
                 file.mode != 0o120000,
                 "restore generated checkout symlinks through their source workflow"
             );
-            crate::materialize::rendered::atomic_write(
+            leaf_access(entry, path)?.fs.write(
                 &target,
                 &file.bytes,
-                generated
-                    .permissions
-                    .get(path)
-                    .copied()
-                    .unwrap_or(if file.generated {
-                        0o600 | (file.mode as u32 & 0o111)
-                    } else {
-                        file.mode as u32
-                    }),
+                Some(crate::overlays::FileMode::from_bits(
+                    generated
+                        .permissions
+                        .get(path)
+                        .copied()
+                        .unwrap_or(if file.generated {
+                            0o600 | (file.mode as u32 & 0o111)
+                        } else {
+                            file.mode as u32
+                        }),
+                )),
             )?;
         } else if before.is_some() {
-            fs::remove_file(target)?;
+            leaf_access(entry, path)?.fs.remove_file(&target)?;
         }
         generated.conflicts.remove(path);
         generated.reverse_observed.remove(path);
@@ -1013,10 +1089,12 @@ pub(crate) fn remove(entry: &DesiredEntry) -> Result<()> {
     );
     for (path, base) in &analysis.base {
         ensure!(
-            same(local(&entry.target, path)?.as_ref(), Some(base)),
+            same(local(entry, path)?.as_ref(), Some(base)),
             "checkout changed during removal"
         );
-        fs::remove_file(entry.target.join(path))?;
+        leaf_access(entry, path)?
+            .fs
+            .remove_file(&entry.target.join(path))?;
     }
     let (_, source) = source(entry)?;
     let (repo, _) = git::discover_source(source)?;

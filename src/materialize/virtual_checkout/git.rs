@@ -268,6 +268,7 @@ pub(crate) fn apply_tree_diff(
         &from_entries,
         &from_entries,
         &to_entries,
+        &crate::target_fs::Access::default(),
     )?
     .apply(target)
 }
@@ -275,6 +276,7 @@ pub(crate) fn apply_tree_diff(
 /// The complete removal/write order is computed before any mutation. In
 /// particular, a late directory obstruction cannot follow an earlier file write.
 pub(crate) struct TreeChanges {
+    access: crate::target_fs::Access,
     removed: Vec<PathBuf>,
     directories: Vec<PathBuf>,
     writes: Vec<(PathBuf, zeroize::Zeroizing<Vec<u8>>, i32)>,
@@ -287,6 +289,7 @@ pub(crate) fn preflight_tree_changes(
     owned: &BTreeMap<PathBuf, (Oid, i32)>,
     from: &BTreeMap<PathBuf, (Oid, i32)>,
     to: &BTreeMap<PathBuf, (Oid, i32)>,
+    access: &crate::target_fs::Access,
 ) -> Result<TreeChanges> {
     let removed: Vec<_> = from
         .keys()
@@ -304,9 +307,13 @@ pub(crate) fn preflight_tree_changes(
             if let Some(component) = component {
                 current.push(component);
             }
-            let metadata = match current.symlink_metadata() {
+            let metadata = match access
+                .child(current.strip_prefix(target)?, false)
+                .fs
+                .metadata(&current, false)
+            {
                 Ok(metadata) => metadata,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) if crate::target_fs::is_not_found(&error) => break,
                 Err(error) => {
                     return Err(error)
                         .with_context(|| format!("failed to inspect '{}'", current.display()));
@@ -339,6 +346,7 @@ pub(crate) fn preflight_tree_changes(
                         ancestor,
                         &managed.join(ancestor),
                         &[expected],
+                        access,
                     )?;
                     anyhow::ensure!(
                         entries_match(local, expected),
@@ -361,24 +369,35 @@ pub(crate) fn preflight_tree_changes(
                 );
             }
             if current == target.join(path) && to.contains_key(path) {
+                anyhow::ensure!(
+                    owned.keys().any(|owned| owned.starts_with(path)),
+                    "unowned directory obstruction '{}'",
+                    current.display()
+                );
+                directories.insert(path.clone());
                 // Raw inventory deliberately includes ignored files, empty
                 // foreign directories, symlinks, and independently owned holes.
-                for entry in walkdir::WalkDir::new(&current) {
-                    let entry = entry?;
-                    let relative = entry.path().strip_prefix(target)?;
-                    if entry.file_type().is_dir() {
+                for (path, metadata) in walk_target(
+                    &current,
+                    &CheckoutScope {
+                        access: Box::new(access.child(current.strip_prefix(target)?, true)),
+                        ..Default::default()
+                    },
+                    true,
+                )? {
+                    let relative = path.strip_prefix(target)?;
+                    if metadata.is_dir() {
                         anyhow::ensure!(
                             owned.keys().any(|path| path.starts_with(relative)),
                             "unowned directory obstruction '{}'",
-                            entry.path().display()
+                            path.display()
                         );
                         directories.insert(relative.to_path_buf());
                     } else {
                         anyhow::ensure!(
-                            entry.file_type().is_file()
-                                && removed.iter().any(|path| path == relative),
+                            metadata.is_file() && removed.iter().any(|path| path == relative),
                             "unowned obstruction '{}'",
-                            entry.path().display()
+                            path.display()
                         );
                     }
                 }
@@ -393,6 +412,7 @@ pub(crate) fn preflight_tree_changes(
             path,
             &managed.join(path),
             &[expected],
+            access,
         )?;
         anyhow::ensure!(
             local.is_none() || entries_match(local, expected),
@@ -414,6 +434,7 @@ pub(crate) fn preflight_tree_changes(
     let mut directories: Vec<_> = directories.into_iter().collect();
     directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
     Ok(TreeChanges {
+        access: access.clone(),
         removed,
         directories,
         writes,
@@ -423,11 +444,15 @@ pub(crate) fn preflight_tree_changes(
 impl TreeChanges {
     pub(crate) fn apply(self, target: &Path) -> Result<()> {
         for path in self.removed {
-            let on_disk = target.join(path);
-            crate::materialize::disposal::validate_relative_ancestors(target, &on_disk)?;
-            match fs::remove_file(&on_disk) {
+            let on_disk = target.join(&path);
+            crate::materialize::disposal::validate_relative_ancestors_with(
+                target,
+                &on_disk,
+                &self.access,
+            )?;
+            match self.access.child(&path, false).fs.remove_file(&on_disk) {
                 Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) if crate::target_fs::is_not_found(&error) => {}
                 Err(error) => {
                     return Err(error)
                         .with_context(|| format!("failed to remove '{}'", on_disk.display()));
@@ -436,49 +461,91 @@ impl TreeChanges {
         }
         for path in self.directories {
             // Never recursively delete: a raced-in foreign entry must stop us.
-            let directory = target.join(path);
-            crate::materialize::disposal::validate_relative_ancestors(target, &directory)?;
-            fs::remove_dir(directory)?;
+            let directory = target.join(&path);
+            crate::materialize::disposal::validate_relative_ancestors_with(
+                target,
+                &directory,
+                &self.access,
+            )?;
+            self.access.child(&path, true).fs.remove_dir(&directory)?;
         }
         for (path, content, mode) in self.writes {
-            let on_disk = target.join(path);
-            crate::materialize::disposal::validate_relative_ancestors(target, &on_disk)?;
+            let on_disk = target.join(&path);
+            crate::materialize::disposal::validate_relative_ancestors_with(
+                target,
+                &on_disk,
+                &self.access,
+            )?;
             anyhow::ensure!(
                 !on_disk.is_symlink(),
                 "refusing to write through symlink '{}'",
                 on_disk.display()
             );
+            let access = self.access.child(&path, false);
             if let Some(parent) = on_disk.parent() {
-                fs::create_dir_all(parent)
+                access
+                    .fs
+                    .create_dir_all(parent)
                     .with_context(|| format!("failed to create '{}'", parent.display()))?;
             }
-            crate::actions::fs::replace_file(&on_disk, content, |permissions| {
-                executable_permissions(permissions, mode)
-            })
-            .with_context(|| format!("failed to write '{}'", on_disk.display()))?;
+            let permissions = match access.fs.metadata(&on_disk, false) {
+                Ok(metadata) => Some(metadata.permissions()),
+                Err(error) if crate::target_fs::is_not_found(&error) => None,
+                Err(error) => return Err(error),
+            };
+            #[cfg(unix)]
+            let file_mode = {
+                use std::os::unix::fs::PermissionsExt;
+                permissions.as_ref().map(|permissions| {
+                    crate::overlays::FileMode::from_bits(
+                        executable_permissions(permissions.clone(), mode).mode(),
+                    )
+                })
+            };
+            #[cfg(not(unix))]
+            let file_mode = {
+                let _ = (&permissions, mode);
+                None
+            };
+            access
+                .fs
+                .write(&on_disk, &content, file_mode)
+                .with_context(|| format!("failed to write '{}'", on_disk.display()))?;
+            #[cfg(unix)]
+            if permissions.is_none() && mode & 0o111 != 0 {
+                use std::os::unix::fs::PermissionsExt;
+                // New access bits come from the creating process's umask, not a guessed 0644.
+                let current = access.fs.metadata(&on_disk, false)?.permissions();
+                let desired = executable_permissions(current.clone(), mode);
+                if current.mode() != desired.mode() {
+                    access.fs.set_metadata(
+                        &on_disk,
+                        &crate::overlays::Permissions {
+                            mode: Some(crate::overlays::FileMode::from_bits(desired.mode())),
+                            ..Default::default()
+                        },
+                    )?;
+                }
+            }
+            let mut permissions = access.permissions.clone();
+            permissions.mode = None;
+            access.fs.set_metadata(&on_disk, &permissions)?;
         }
         Ok(())
     }
 }
 
+#[cfg(unix)]
 pub(crate) fn executable_permissions(permissions: fs::Permissions, mode: i32) -> fs::Permissions {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Git records executability, not private access bits such as 0600.
-        let existing = permissions.mode();
-        let bits = if mode & 0o111 != 0 {
-            existing | ((existing & 0o444) >> 2)
-        } else {
-            existing & !0o111
-        };
-        fs::Permissions::from_mode(bits)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = mode;
-        permissions
-    }
+    use std::os::unix::fs::PermissionsExt;
+    // Git records executability, not private access bits such as 0600.
+    let existing = permissions.mode();
+    let bits = if mode & 0o111 != 0 {
+        existing | ((existing & 0o444) >> 2)
+    } else {
+        existing & !0o111
+    };
+    fs::Permissions::from_mode(bits)
 }
 
 /// Git-blob hash of the file currently on disk at `path` — the same `Oid`
@@ -669,7 +736,7 @@ pub(crate) fn diff_canonical_target(
             continue;
         }
         let expected = tracked.get(&path).copied();
-        let local = match super::snapshot::target_content(target, &path)? {
+        let local = match super::snapshot::target_content(target, &path, &scope.access)? {
             Some((content, mode)) => Some(super::snapshot::canonical_entry(
                 repo,
                 &scratch,
@@ -703,6 +770,7 @@ pub(crate) fn tracked_target_entries(
     managed: &Path,
     target: &Path,
     references: &[&BTreeMap<PathBuf, (Oid, i32)>],
+    access: &crate::target_fs::Access,
 ) -> Result<BTreeMap<PathBuf, (Oid, i32)>> {
     let paths: std::collections::BTreeSet<_> = references
         .iter()
@@ -711,7 +779,7 @@ pub(crate) fn tracked_target_entries(
     let scratch = crate::actions::git::diff::Scratch::new(repo)?;
     let mut entries = BTreeMap::new();
     for path in paths {
-        if let Some((content, mode)) = super::snapshot::target_content(target, &path)? {
+        if let Some((content, mode)) = super::snapshot::target_content(target, &path, access)? {
             // Any known canonical blob bypasses a potentially non-idempotent filter.
             let expected = references
                 .iter()
@@ -777,29 +845,26 @@ pub(crate) fn commits_between(repo: &Repository, from: Oid, to: Oid) -> Result<u
 pub(crate) fn walk_owned_files(root: &Path, scope: &CheckoutScope) -> Result<Vec<PathBuf>> {
     if let Some(paths) = &scope.projection {
         // Never walk a shared home to discover additions belonging to somebody else.
-        return Ok(paths
-            .iter()
-            .filter(|path| scope.owns_target(path) && root.join(path).is_file())
-            .cloned()
-            .collect());
+        let mut existing = Vec::new();
+        for path in paths.iter().filter(|path| scope.owns_target(path)) {
+            match scope
+                .access
+                .child(path, false)
+                .fs
+                .metadata(&root.join(path), false)
+            {
+                Ok(metadata) if metadata.is_file() => existing.push(path.clone()),
+                Ok(_) => {}
+                Err(error) if crate::target_fs::is_not_found(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        return Ok(existing);
     }
     let mut files = Vec::new();
-    if !root.exists() {
-        return Ok(files);
-    }
-    for entry in walkdir::WalkDir::new(root)
-        .min_depth(1)
-        .into_iter()
-        .filter_entry(|entry| {
-            entry
-                .path()
-                .strip_prefix(root)
-                .is_ok_and(|path| scope.owns_target_kind(path, entry.file_type().is_dir()))
-        })
-    {
-        let entry = entry.with_context(|| format!("failed to walk '{}'", root.display()))?;
-        if entry.file_type().is_file()
-            && let Ok(rel) = entry.path().strip_prefix(root)
+    for (path, metadata) in walk_target(root, scope, false)? {
+        if metadata.is_file()
+            && let Ok(rel) = path.strip_prefix(root)
         {
             files.push(rel.to_path_buf());
         }
@@ -808,17 +873,8 @@ pub(crate) fn walk_owned_files(root: &Path, scope: &CheckoutScope) -> Result<Vec
 }
 
 pub(crate) fn has_owned_content(root: &Path, scope: &CheckoutScope) -> Result<bool> {
-    for entry in walkdir::WalkDir::new(root)
-        .min_depth(1)
-        .into_iter()
-        .filter_entry(|entry| {
-            entry
-                .path()
-                .strip_prefix(root)
-                .is_ok_and(|path| scope.owns_target_kind(path, entry.file_type().is_dir()))
-        })
-    {
-        if !entry?.file_type().is_dir() {
+    for (_, metadata) in walk_target(root, scope, false)? {
+        if !metadata.is_dir() {
             return Ok(true);
         }
     }
@@ -828,13 +884,53 @@ pub(crate) fn has_owned_content(root: &Path, scope: &CheckoutScope) -> Result<bo
 /// Whole-directory disposal needs a raw inventory: a filtered clean status
 /// intentionally says nothing about ignored or independently owned content.
 pub(crate) fn has_unowned_content(root: &Path, scope: &CheckoutScope) -> Result<bool> {
-    for entry in walkdir::WalkDir::new(root).min_depth(1) {
-        let entry = entry?;
-        if !scope.owns_target_kind(entry.path().strip_prefix(root)?, entry.file_type().is_dir()) {
+    for (path, metadata) in walk_target(root, scope, true)? {
+        if !scope.owns_target_kind(path.strip_prefix(root)?, metadata.is_dir()) {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+fn walk_target(
+    root: &Path,
+    scope: &CheckoutScope,
+    include_unowned: bool,
+) -> Result<Vec<(PathBuf, fs::Metadata)>> {
+    let mut result = Vec::new();
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        let path = if relative.as_os_str().is_empty() {
+            root.to_owned()
+        } else {
+            root.join(&relative)
+        };
+        let access = scope.access.child(&relative, false);
+        let metadata = match access.fs.metadata(&path, false) {
+            Ok(metadata) => metadata,
+            Err(error)
+                if crate::target_fs::is_not_found(&error) && relative.as_os_str().is_empty() =>
+            {
+                return Ok(result);
+            }
+            Err(error) => return Err(error),
+        };
+        if !relative.as_os_str().is_empty()
+            && !include_unowned
+            && !scope.owns_target_kind(&relative, metadata.is_dir())
+        {
+            continue;
+        }
+        if metadata.is_dir() {
+            for child in access.fs.read_dir(&path)? {
+                pending.push(child.strip_prefix(root)?.to_owned());
+            }
+        }
+        if !relative.as_os_str().is_empty() {
+            result.push((path, metadata));
+        }
+    }
+    Ok(result)
 }
 
 /// Whether `rel_path` (relative to a managed subtree's own root) is

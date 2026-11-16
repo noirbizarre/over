@@ -23,6 +23,7 @@ pub mod selection;
 pub mod stage;
 pub mod status;
 pub mod sync;
+pub mod target_fs;
 pub mod ui;
 pub mod unapply;
 pub mod xdg;

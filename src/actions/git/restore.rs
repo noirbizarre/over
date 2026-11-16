@@ -12,6 +12,7 @@ use crate::materialize::virtual_checkout::git::{self, SourceTransaction};
 use crate::restore::RestoreOptions;
 
 pub(crate) struct RestorePath {
+    pub access: crate::target_fs::Access,
     pub repository: PathBuf,
     pub source: PathBuf,
     pub root: PathBuf,
@@ -131,7 +132,7 @@ pub(crate) fn restore_paths(
             );
         }
         if options.writes_worktree() {
-            let target = target_content(&request.root, &request.relative)?;
+            let target = target_content(&request.root, &request.relative, &request.access)?;
             // Recovering historical-only content must not overwrite a new local file.
             ensure!(
                 before.is_some() || head_entry.is_some() || target.is_none(),
@@ -260,7 +261,11 @@ pub(crate) fn restore_paths(
     revalidate()?;
     for target in &targets {
         ensure!(
-            target_content(&target.request.root, &target.request.relative)? == target.before,
+            target_content(
+                &target.request.root,
+                &target.request.relative,
+                &target.request.access
+            )? == target.before,
             "target changed while preparing restore; rerun over restore"
         );
     }
@@ -294,8 +299,22 @@ pub(crate) fn restore_paths(
             entry.insert(SourceTransaction::for_repository(&prepared.repo)?);
         }
     }
+    let mut privileged = Vec::new();
     let result = (|| -> Result<()> {
         for target in &targets {
+            let access = target.request.access.child(&target.request.relative, false);
+            if access.fs.is_privileged() {
+                privileged.push(
+                    access.fs.prepare_file(
+                        &target.request.root.join(&target.request.relative),
+                        target
+                            .after
+                            .as_ref()
+                            .map(|(bytes, mode)| (bytes.to_vec(), *mode)),
+                    )?,
+                );
+                continue;
+            }
             transactions
                 .get_mut(
                     transaction_for
@@ -314,6 +333,9 @@ pub(crate) fn restore_paths(
         for transaction in transactions.values_mut() {
             transaction.apply()?;
         }
+        for effect in &mut privileged {
+            effect.apply()?;
+        }
         for ((prepared, lock), bytes) in indexes.values().zip(&mut locks).zip(publications) {
             if let Some(bytes) = bytes {
                 lock.publish(&prepared.path, &bytes)?;
@@ -322,6 +344,11 @@ pub(crate) fn restore_paths(
         Ok(())
     })();
     if let Err(error) = result {
+        for effect in privileged.iter_mut().rev() {
+            effect
+                .rollback()
+                .with_context(|| format!("{error:#}; privileged target rollback also failed"))?;
+        }
         for transaction in transactions.values_mut().rev() {
             transaction
                 .rollback()
@@ -343,15 +370,23 @@ fn tree_entry(tree: &git2::Tree<'_>, path: &Path) -> Result<Option<(Oid, u32)>> 
     }
 }
 
-fn target_content(root: &Path, relative: &Path) -> Result<Content> {
+fn target_content(
+    root: &Path,
+    relative: &Path,
+    access: &crate::target_fs::Access,
+) -> Result<Content> {
     let mut path = root.to_path_buf();
     for component in std::iter::once(None).chain(relative.components().map(Some)) {
         if let Some(component) = component {
             path.push(component);
         }
-        let metadata = match path.symlink_metadata() {
+        let metadata = match access
+            .child(path.strip_prefix(root)?, false)
+            .fs
+            .metadata(&path, false)
+        {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if crate::target_fs::is_not_found(&error) => return Ok(None),
             Err(error) => {
                 return Err(error).with_context(|| format!("cannot inspect '{}'", path.display()));
             }
@@ -368,21 +403,36 @@ fn target_content(root: &Path, relative: &Path) -> Result<Content> {
             path.display()
         );
         if !leaf && path != root {
-            match path.join(".git").symlink_metadata() {
+            match access
+                .child(path.strip_prefix(root)?, true)
+                .fs
+                .metadata(&path.join(".git"), false)
+            {
                 Ok(_) => anyhow::bail!(
                     "restore cannot cross nested repository '{}'",
                     path.display()
                 ),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) if crate::target_fs::is_not_found(&error) => {}
                 Err(error) => {
                     return Err(error).context("cannot inspect nested repository boundary");
                 }
             }
         }
         if leaf {
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o111 == 0 {
+                    0o100644
+                } else {
+                    0o100755
+                }
+            };
+            #[cfg(not(unix))]
+            let mode = 0o100644;
             return Ok(Some((
-                crate::crypt::buffer::read_file(&path)?,
-                i32::from(git::on_disk_filemode(&path)?) as u32,
+                zeroize::Zeroizing::new(access.child(relative, false).fs.read(&path)?),
+                mode,
             )));
         }
     }
@@ -422,6 +472,7 @@ mod tests {
             index.write().unwrap();
             fs::write(root.join("file"), "target edits\n").unwrap();
             let request = RestorePath {
+                access: Default::default(),
                 repository: repo.path().to_path_buf(),
                 source: PathBuf::from("file"),
                 root,
@@ -558,6 +609,7 @@ mod tests {
         let first_target = fixture.request.root.join("file");
         let second_file = second_target.join("file");
         let second = RestorePath {
+            access: Default::default(),
             repository: sibling_repo.path().to_path_buf(),
             source: PathBuf::from("file"),
             root: second_target,

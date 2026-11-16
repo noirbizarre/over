@@ -240,7 +240,10 @@ impl Report {
                 // the content is still exactly what this overlay put
                 // there, only its mode needs a `chmod` — just as safe to
                 // remove as a plain `Noop`.
-                (_, Operation::Noop | Operation::Repair { .. }) => Outcome::Removed,
+                (
+                    _,
+                    Operation::Noop | Operation::Repair { .. } | Operation::RepairMetadata { .. },
+                ) => Outcome::Removed,
                 (_, Operation::Conflict { current }) => Outcome::NotOwned {
                     current: current.clone(),
                 },
@@ -249,7 +252,7 @@ impl Report {
                 // and report it exactly like any other not-plain-owned
                 // entry, same as a `Conflict`.
                 (_, Operation::Migrate { .. }) => Outcome::NotOwned {
-                    current: actual::inspect(&step.entry.target)?,
+                    current: actual::inspect_with(&step.entry.target, &step.entry.access.fs)?,
                 },
                 // Every intent has a registered `Materializer` since #110;
                 // no step should ever classify as `Deferred` — unreachable
@@ -266,7 +269,12 @@ impl Report {
         }
         let guards = entries
             .iter()
-            .map(|entry| crate::materialize::disposal::PathGuard::capture(&entry.entry.target))
+            .map(|entry| {
+                crate::materialize::disposal::PathGuard::capture_with(
+                    &entry.entry.target,
+                    &entry.entry.access.fs,
+                )
+            })
             .collect::<Result<_>>()?;
         Ok(Self { entries, guards })
     }
@@ -378,7 +386,10 @@ impl Report {
                     Operation::Create => Outcome::AlreadyAbsent,
                     Operation::NeedsUnlock => Outcome::NeedsUnlock,
                     _ => Outcome::NotOwned {
-                        current: actual::inspect(&entry_outcome.entry.target)?,
+                        current: actual::inspect_with(
+                            &entry_outcome.entry.target,
+                            &entry_outcome.entry.access.fs,
+                        )?,
                     },
                 };
             }
@@ -401,8 +412,10 @@ impl Report {
             if matches!(entry_outcome.outcome, Outcome::Removed) {
                 dematerialize(&entry_outcome.entry).await?;
                 let target = &entry_outcome.entry.target;
+                let fs_access = &entry_outcome.entry.access.fs;
+                let after = actual::inspect_with(target, fs_access)?;
                 if matches!(entry_outcome.entry.intent, MaterializationIntent::Directory)
-                    && target.exists()
+                    && !matches!(after, ActualState::Missing)
                 {
                     entry_outcome.outcome = Outcome::RetainedDirectory;
                 } else if matches!(
@@ -411,10 +424,10 @@ impl Report {
                         | MaterializationIntent::RenderedFile(_)
                         | MaterializationIntent::SymlinkFile { .. }
                         | MaterializationIntent::SymlinkDirectory { .. }
-                ) && (target.exists() || target.is_symlink())
+                ) && !matches!(after, ActualState::Missing)
                 {
                     entry_outcome.outcome = Outcome::NotOwned {
-                        current: actual::inspect(target)?,
+                        current: after.clone(),
                     };
                 }
                 if entry_outcome.entry.intent.is_virtual_checkout() {
@@ -427,7 +440,7 @@ impl Report {
                             Outcome::CheckoutNotClean {
                                 status: status::virtual_checkout::inspect(&entry_outcome.entry)?,
                             }
-                        } else if target.is_dir() {
+                        } else if matches!(after, ActualState::Directory) {
                             // Dropping the verified association means teardown succeeded,
                             // even when an independent mapped destination keeps the root.
                             Outcome::RemovedProjectionRetainedDirectory
@@ -437,15 +450,13 @@ impl Report {
                 }
                 if let MaterializationIntent::PartialFile { marker, .. } =
                     &entry_outcome.entry.intent
-                    && target.exists()
+                    && !matches!(after, ActualState::Missing)
                     && !matches!(
-                        partial::find_block(&fs::read_to_string(target)?, marker),
+                        partial::find_block(&fs_access.read_to_string(target)?, marker),
                         BlockState::Absent
                     )
                 {
-                    entry_outcome.outcome = Outcome::NotOwned {
-                        current: actual::inspect(target)?,
-                    };
+                    entry_outcome.outcome = Outcome::NotOwned { current: after };
                 }
             }
         }
@@ -454,15 +465,20 @@ impl Report {
 }
 
 fn rendered_outcome(entry: &DesiredEntry, operation: &Operation) -> Result<Outcome> {
-    if matches!(operation, Operation::Noop) {
+    if matches!(
+        operation,
+        Operation::Noop | Operation::RepairMetadata { .. }
+    ) {
         return Ok(Outcome::Removed);
     }
     // Create also means a stale or damaged artifact link. Without historical
     // provenance we cannot prove ownership merely from its cache directory.
-    Ok(match actual::inspect(&entry.target)? {
-        ActualState::Missing => Outcome::AlreadyAbsent,
-        current => Outcome::NotOwned { current },
-    })
+    Ok(
+        match actual::inspect_with(&entry.target, &entry.access.fs)? {
+            ActualState::Missing => Outcome::AlreadyAbsent,
+            current => Outcome::NotOwned { current },
+        },
+    )
 }
 
 /// Tear down a single entry classified [`Outcome::Removed`]. Dispatches on
@@ -472,6 +488,57 @@ fn rendered_outcome(entry: &DesiredEntry, operation: &Operation) -> Result<Outco
 /// `status`/`diff`/`sync` route their own concerns through it either (they
 /// call `status::git`/`actions::git` directly for what they need).
 async fn dematerialize(entry: &DesiredEntry) -> Result<()> {
+    if entry.access.fs.is_privileged() && !entry.intent.is_virtual_checkout() {
+        let entry = entry.clone();
+        return spawn_blocking(move || -> Result<()> {
+            use crate::materialize::MaterializerRegistry;
+            let registry = MaterializerRegistry::default();
+            let operation = registry
+                .find(&entry.intent)
+                .context("missing removal materializer")?
+                .classify(&entry)?;
+            if !matches!(operation, Operation::Noop | Operation::Repair { .. }) {
+                return Ok(());
+            }
+            match &entry.intent {
+                MaterializationIntent::Directory => match entry.access.fs.remove_dir(&entry.target)
+                {
+                    Ok(()) => Ok(()),
+                    Err(error)
+                        if crate::target_fs::is_not_found(&error)
+                            || error.downcast_ref::<io::Error>().is_some_and(|error| {
+                                error.kind() == io::ErrorKind::DirectoryNotEmpty
+                            }) =>
+                    {
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                },
+                MaterializationIntent::PartialFile { content, marker } => {
+                    let current = entry.access.fs.read_to_string(&entry.target)?;
+                    if let BlockState::Found(existing) = partial::find_block(&current, marker)
+                        && existing == partial::canonical_content(content)
+                    {
+                        let stripped = partial::remove_block(&current, marker);
+                        if stripped.is_empty() {
+                            entry.access.fs.remove_file(&entry.target)?;
+                        } else {
+                            entry
+                                .access
+                                .fs
+                                .write(&entry.target, stripped.as_bytes(), None)?;
+                        }
+                    }
+                    Ok(())
+                }
+                MaterializationIntent::Checkout => {
+                    anyhow::bail!("Git checkout removal requires explicit disposal assessment")
+                }
+                _ => entry.access.fs.remove_file(&entry.target),
+            }
+        })
+        .await?;
+    }
     match &entry.intent {
         MaterializationIntent::RenderedFile(file) => {
             remove_symlink_if_unchanged(
@@ -506,8 +573,10 @@ async fn dematerialize(entry: &DesiredEntry) -> Result<()> {
             }
             let source = source.clone();
             let target = entry.target.clone();
+            let entry = entry.clone();
             spawn_blocking(move || -> Result<()> {
-                if target.is_file() && crate::actions::symlink::hard_link_matches(&source, &target)?
+                if target.is_file()
+                    && crate::materialize::symlink::hard_link_matches(&entry, &source)?
                 {
                     fs::remove_file(&target)?;
                 }
@@ -678,26 +747,43 @@ async fn remove_virtual_checkout_if_clean(entry: DesiredEntry) -> Result<()> {
         );
         for path in tracked.keys() {
             let file = target.join(path);
-            fs::remove_file(&file)?;
+            scope.access.child(path, false).fs.remove_file(&file)?;
             let mut parent = file.parent();
             while let Some(dir) = parent {
                 if dir == target || !dir.starts_with(&target) {
                     break;
                 }
-                match fs::remove_dir(dir) {
+                match scope
+                    .access
+                    .child(dir.strip_prefix(&target)?, true)
+                    .fs
+                    .remove_dir(dir)
+                {
                     Ok(()) => parent = dir.parent(),
-                    Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => break,
-                    Err(error) => return Err(error.into()),
+                    Err(error)
+                        if error.downcast_ref::<io::Error>().is_some_and(|error| {
+                            error.kind() == io::ErrorKind::DirectoryNotEmpty
+                        }) =>
+                    {
+                        break;
+                    }
+                    Err(error) => return Err(error),
                 }
             }
         }
         if scope.projection.is_some() {
             return Ok(());
         }
-        match fs::remove_dir(&target) {
+        match scope.access.fs.remove_dir(&target) {
             Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
-            Err(error) => Err(error.into()),
+            Err(error)
+                if error
+                    .downcast_ref::<io::Error>()
+                    .is_some_and(|error| error.kind() == io::ErrorKind::DirectoryNotEmpty) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
         }
     })
     .await??;
@@ -828,6 +914,7 @@ mod tests {
         symlink::symlink_file(&source, &target).unwrap();
 
         let entry = DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -854,6 +941,7 @@ mod tests {
 
     fn partial_entry(target: PathBuf, content: &str, marker: &str) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::PartialSidecar {
                 overlay: "ov".to_string(),
@@ -1126,6 +1214,7 @@ mod tests {
             })
             .unwrap_or_default();
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Git {
                 overlay: "ov".to_string(),
@@ -1184,6 +1273,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         init_committed_repo(td.path());
         let entry = DesiredEntry {
+            access: Default::default(),
             target: td.path().to_path_buf(),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -1216,6 +1306,7 @@ mod tests {
         // whether the test machine happens to span multiple filesystems.
         symlink::symlink_file(&source, &target).unwrap();
         let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "ov".into(),
@@ -1248,6 +1339,7 @@ mod tests {
         fs::hard_link(&source, &foreign).unwrap();
         symlink::symlink_file(&source, &target).unwrap();
         let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "ov".into(),
@@ -1358,6 +1450,7 @@ mod tests {
         .await
         .unwrap();
         let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "ov".into(),
@@ -1597,6 +1690,7 @@ mod tests {
     /// used by the safety-decoupling regression test below (#140).
     fn declared_checkout_entry(target: PathBuf, url: &str) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Git {
                 overlay: "ov".to_string(),
@@ -1694,6 +1788,7 @@ mod tests {
         fn entry_outcome(outcome: Outcome) -> EntryOutcome {
             EntryOutcome {
                 entry: DesiredEntry {
+                    access: Default::default(),
                     target: PathBuf::from("/tmp/target"),
                     provenance: Provenance::Overlay {
                         overlay: "ov".to_string(),

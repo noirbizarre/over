@@ -21,7 +21,8 @@ pub(crate) mod generated;
 pub(crate) mod generated_migration;
 pub(crate) mod generated_snapshot;
 pub(crate) mod git;
-mod initial;
+pub(crate) mod initial;
+pub(crate) mod metadata;
 pub(crate) mod snapshot;
 pub(crate) mod state;
 
@@ -76,7 +77,7 @@ impl Materializer for VirtualCheckoutMaterializer {
         }
         // A missing new destination does not mean this source unit is undeployed.
         state::verify_live_target(entry)?;
-        let actual = actual::inspect(&entry.target)?;
+        let actual = actual::inspect_with(&entry.target, &entry.access.fs)?;
         let scope = entry.intent.checkout_scope();
         if !scope.target_excludes.is_empty() || scope.source_policy.is_some() {
             let Provenance::Overlay { source, .. } = &entry.provenance else {
@@ -135,7 +136,11 @@ impl Materializer for VirtualCheckoutMaterializer {
             unreachable!()
         };
         if matches!(actual, ActualState::Directory)
-            && super::symlink::directory_is_symlink_mirror(&entry.target, source)?
+            && super::symlink::directory_is_symlink_mirror_with(
+                &entry.target,
+                source,
+                &entry.access,
+            )?
         {
             anyhow::ensure!(
                 scope.projection.is_none(),
@@ -172,6 +177,7 @@ impl Materializer for VirtualCheckoutMaterializer {
                 tokio::task::spawn_blocking(move || generated::reconcile(&entry, false))
                     .await??
                     .ensure_clean()?;
+                metadata::apply(&step.entry)?;
             }
             return Ok(());
         }
@@ -252,6 +258,8 @@ impl Materializer for VirtualCheckoutMaterializer {
         let record =
             spawn_blocking(move || initial::initialize(&ctx, &target, &overlay, &source, scope))
                 .await??;
+        let entry = step.entry.clone();
+        spawn_blocking(move || metadata::apply(&entry)).await??;
         state::persist(&step.entry.target, record).await
     }
 }
@@ -314,6 +322,7 @@ mod tests {
 
     fn entry(target: PathBuf, source: PathBuf) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),

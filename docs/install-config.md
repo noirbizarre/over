@@ -69,7 +69,8 @@ data:
     packages: [openssh]
 hooks:
   install:
-    - command: "sudo pacman -S --needed {{ data.archlinux.packages | join(' ') }}"
+    - command: "pacman -S --needed {{ data.archlinux.packages | join(' ') }}"
+      sudo: true
       when: machine.distro_id == "arch"
 ```
 
@@ -124,7 +125,8 @@ including inherited ancestor descriptors. Replace them with explicit
 # Replace an old install.apt package list with an explicit command.
 hooks:
   install:
-    - command: sudo apt-get install -y neovim
+    - command: apt-get install -y neovim
+      sudo: true
       when: machine.os == "linux" and machine.distro_id == "ubuntu"
 ```
 

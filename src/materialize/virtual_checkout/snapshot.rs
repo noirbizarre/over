@@ -25,7 +25,9 @@ pub(crate) fn canonical_source_entry(
         .get_path(path, 0)
         .map(|entry| (entry.id, entry.mode as i32));
     let root = repo.workdir().context("source has no working directory")?;
-    let Some((content, mut mode)) = target_content(root, path)? else {
+    let Some((content, mut mode)) =
+        target_content(root, path, &crate::target_fs::Access::default())?
+    else {
         return Ok(None);
     };
     // Only targets contain materializer-written raw blobs. A real worktree must
@@ -62,8 +64,9 @@ pub(crate) fn canonical_target_entry(
     relative: &Path,
     logical: &Path,
     expected: &[Option<(git2::Oid, i32)>],
+    access: &crate::target_fs::Access,
 ) -> Result<Option<(git2::Oid, i32)>> {
-    let Some((content, mode)) = target_content(root, relative)? else {
+    let Some((content, mode)) = target_content(root, relative, access)? else {
         return Ok(None);
     };
     let scratch = crate::actions::git::diff::Scratch::new(repo)?;
@@ -116,6 +119,7 @@ pub(crate) fn honors_filemode(repo: &git2::Repository) -> Result<bool> {
 pub(crate) fn target_content(
     root: &Path,
     relative: &Path,
+    access: &crate::target_fs::Access,
 ) -> Result<Option<(zeroize::Zeroizing<Vec<u8>>, i32)>> {
     ensure!(
         !crate::secrets::is_encrypted(relative),
@@ -128,12 +132,15 @@ pub(crate) fn target_content(
         if let Some(component) = component {
             path.push(component);
         }
-        let metadata = match path.symlink_metadata() {
+        let node_access = access.child(path.strip_prefix(root)?, false);
+        let metadata = match node_access.fs.metadata(&path, false) {
             Ok(metadata) => metadata,
             Err(error)
                 if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    error
+                        .downcast_ref::<std::io::Error>()
+                        .map(|error| error.kind()),
+                    Some(std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
                 ) =>
             {
                 return Ok(None);
@@ -156,8 +163,8 @@ pub(crate) fn target_content(
         if path == file {
             return if metadata.is_file() {
                 Ok(Some((
-                    crate::crypt::buffer::read_file(&path)?,
-                    i32::from(git::on_disk_filemode(&path)?),
+                    zeroize::Zeroizing::new(node_access.fs.read(&path)?),
+                    target_mode(&metadata),
                 )))
             } else {
                 Ok(None)
@@ -168,6 +175,19 @@ pub(crate) fn target_content(
         }
     }
     Ok(None)
+}
+
+fn target_mode(metadata: &std::fs::Metadata) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 != 0 {
+            return 0o100755;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = metadata;
+    0o100644
 }
 
 #[cfg(all(test, unix))]
@@ -207,7 +227,8 @@ mod tests {
                 directory.path(),
                 Path::new("file"),
                 Path::new("file"),
-                &[Some(expected)]
+                &[Some(expected)],
+                &crate::target_fs::Access::default(),
             )
             .unwrap(),
             Some(expected)
@@ -220,7 +241,8 @@ mod tests {
                 directory.path(),
                 Path::new("file"),
                 Path::new("file"),
-                &[Some(expected)]
+                &[Some(expected)],
+                &crate::target_fs::Access::default(),
             )
             .is_err()
         );

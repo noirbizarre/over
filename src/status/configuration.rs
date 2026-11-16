@@ -531,6 +531,7 @@ mod tests {
             names
                 .iter()
                 .map(|name| DesiredEntry {
+                    access: Default::default(),
                     target: root.join(name),
                     provenance: Provenance::Overlay {
                         overlay: "workspaces/demo".into(),
@@ -837,6 +838,7 @@ mod tests {
             [target.clone(), temp.path().join("absent")]
                 .into_iter()
                 .map(|target| DesiredEntry {
+                    access: Default::default(),
                     target,
                     provenance: Provenance::Git {
                         overlay: "owner".into(),

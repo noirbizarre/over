@@ -178,7 +178,7 @@ for snapshot storage, conflict resolution, and local-data security.
 ## Migrating older descriptors
 
 Removed `default`, `defaults`, and `materialization` settings warn and are ignored; use
-`mode`, scalar `permissions`, and `rules`. Replace `link_dirs` with rules using
+`mode`, `permissions`, `sudo`, and `rules`. Replace `link_dirs` with rules using
 `mode: symlink-directory`. Move old permission-rule arrays into the shared
 `rules` list. Relative mapping destinations follow declaration-relative path
 resolution, just like the base target.

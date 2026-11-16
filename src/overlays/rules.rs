@@ -8,7 +8,7 @@ use globset::GlobBuilder;
 use serde::{Deserialize, Serialize};
 
 use super::overlay::Overlay;
-use super::permissions::FileMode;
+use super::permissions::{FileMode, Permissions};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -39,6 +39,7 @@ impl fmt::Display for MaterializationKind {
     "anyOf" = [
         {"required": ["mode"], "properties": {"mode": {"not": {"type": "null"}}}},
         {"required": ["permissions"], "properties": {"permissions": {"not": {"type": "null"}}}},
+        {"required": ["sudo"], "properties": {"sudo": {"type": "boolean"}}},
         {"required": ["target"], "properties": {"target": {"type": "string", "pattern": "\\S"}}},
         {"required": ["template"], "properties": {"template": {"type": "boolean"}}},
         {"required": ["strip_extension"], "properties": {"strip_extension": {"type": "boolean"}}}
@@ -53,7 +54,8 @@ pub struct Rule {
     )))]
     pub path: String,
     pub mode: Option<MaterializationKind>,
-    pub permissions: Option<FileMode>,
+    pub permissions: Option<Permissions>,
+    pub sudo: Option<bool>,
     #[cfg_attr(feature = "schema", schemars(extend("pattern" = r"\S")))]
     pub target: Option<String>,
     pub template: Option<bool>,
@@ -69,10 +71,11 @@ impl Rule {
         ensure!(
             self.mode.is_some()
                 || self.permissions.is_some()
+                || self.sudo.is_some()
                 || self.target.is_some()
                 || self.template.is_some()
                 || self.strip_extension.is_some(),
-            "rule '{}' must set target, mode, permissions, template or strip_extension",
+            "rule '{}' must set target, mode, permissions, sudo, template or strip_extension",
             self.path
         );
         ensure!(!self.path.trim().is_empty(), "rule path must not be empty");
@@ -120,7 +123,8 @@ pub struct PolicyScope {
     pub root: PathBuf,
     pub descriptor: PathBuf,
     pub mode: Option<MaterializationKind>,
-    pub permissions: Option<FileMode>,
+    pub permissions: Option<Permissions>,
+    pub sudo: Option<bool>,
     pub rules: Vec<Rule>,
     pub exclude: Option<Vec<String>>,
 }
@@ -151,8 +155,13 @@ pub(crate) struct ResolvedProperties<'a> {
     pub strip_extension_origin: Option<AssignmentOrigin<'a>>,
     pub mode: MaterializationKind,
     pub permissions: Option<FileMode>,
+    pub metadata: Permissions,
+    pub sudo: bool,
+    pub sudo_origin: Option<AssignmentOrigin<'a>>,
     pub mode_origin: Option<AssignmentOrigin<'a>>,
     pub permissions_origin: Option<AssignmentOrigin<'a>>,
+    pub owner_origin: Option<AssignmentOrigin<'a>>,
+    pub group_origin: Option<AssignmentOrigin<'a>>,
     pub target_origin: Option<AssignmentOrigin<'a>>,
 }
 
@@ -168,8 +177,13 @@ pub(crate) fn resolve_with_origins<'a>(
         strip_extension_origin: None,
         mode: MaterializationKind::Symlink,
         permissions: None,
+        metadata: Permissions::default(),
+        sudo: false,
+        sudo_origin: None,
         mode_origin: None,
         permissions_origin: None,
+        owner_origin: None,
+        group_origin: None,
         target_origin: None,
     };
     let source = overlay
@@ -183,9 +197,22 @@ pub(crate) fn resolve_with_origins<'a>(
             resolved.mode = value;
             resolved.mode_origin = Some((scope, None));
         }
-        if let Some(value) = scope.permissions {
-            resolved.permissions = Some(value);
-            resolved.permissions_origin = Some((scope, None));
+        if let Some(value) = &scope.permissions {
+            resolved.metadata.merge(value);
+            resolved.permissions = resolved.metadata.mode;
+            if value.mode.is_some() {
+                resolved.permissions_origin = Some((scope, None));
+            }
+            if value.owner.is_some() {
+                resolved.owner_origin = Some((scope, None));
+            }
+            if value.group.is_some() {
+                resolved.group_origin = Some((scope, None));
+            }
+        }
+        if let Some(value) = scope.sudo {
+            resolved.sudo = value;
+            resolved.sudo_origin = Some((scope, None));
         }
         for (index, rule) in scope.rules.iter().enumerate() {
             if scope.matches(rule, &source, is_directory) {
@@ -201,9 +228,22 @@ pub(crate) fn resolve_with_origins<'a>(
                     resolved.mode = value;
                     resolved.mode_origin = Some((scope, Some(index)));
                 }
-                if let Some(value) = rule.permissions {
-                    resolved.permissions = Some(value);
-                    resolved.permissions_origin = Some((scope, Some(index)));
+                if let Some(value) = &rule.permissions {
+                    resolved.metadata.merge(value);
+                    resolved.permissions = resolved.metadata.mode;
+                    if value.mode.is_some() {
+                        resolved.permissions_origin = Some((scope, Some(index)));
+                    }
+                    if value.owner.is_some() {
+                        resolved.owner_origin = Some((scope, Some(index)));
+                    }
+                    if value.group.is_some() {
+                        resolved.group_origin = Some((scope, Some(index)));
+                    }
+                }
+                if let Some(value) = rule.sudo {
+                    resolved.sudo = value;
+                    resolved.sudo_origin = Some((scope, Some(index)));
                 }
                 if rule.target.is_some() {
                     resolved.target_origin = Some((scope, Some(index)));
@@ -240,6 +280,36 @@ mod tests {
     use super::*;
     use crate::overlays::Repository;
     use assert_fs::prelude::*;
+
+    #[test]
+    fn sudo_false_and_permission_components_override_independently() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        temp.child("over.yaml")
+            .write_str("sudo: true\npermissions: { mode: '0644', owner: root, group: root }\n")
+            .unwrap();
+        temp.child("child").create_dir_all().unwrap();
+        temp.child("child/over.yaml").write_str("rules:\n  - { path: config, sudo: false, permissions: { group: 123 } }\n  - { path: config/private, permissions: '0600' }\n").unwrap();
+        let repository = Repository::new(temp.path().to_owned());
+        let overlay = repository.get("child").unwrap();
+        let resolved = resolve_with_origins(&overlay, Path::new("config/private"), false);
+        assert!(!resolved.sudo);
+        assert_eq!(resolved.metadata.mode, Some(FileMode::from_bits(0o600)));
+        assert_eq!(
+            resolved.metadata.owner,
+            Some(crate::overlays::Identity::Name("root".into()))
+        );
+        assert_eq!(
+            resolved.metadata.group,
+            Some(crate::overlays::Identity::Id(123))
+        );
+        assert!(resolved.sudo_origin.is_some());
+        assert!(
+            serde_json::from_value::<Rule>(serde_json::json!({"path": "file", "sudo": false}))
+                .unwrap()
+                .validate()
+                .is_ok()
+        );
+    }
 
     #[test]
     fn inherited_rules_keep_their_scope_and_later_broad_rules_win() {
@@ -285,6 +355,7 @@ mod tests {
     #[test]
     fn literal_prefixes_respect_component_boundaries() {
         let rule = Rule {
+            sudo: None,
             path: "foo".into(),
             template: None,
             strip_extension: None,
@@ -299,6 +370,7 @@ mod tests {
     #[test]
     fn globs_match_files_and_directories_but_cannot_redirect_targets() {
         let mut rule = Rule {
+            sudo: None,
             path: "config/*".into(),
             template: None,
             strip_extension: None,

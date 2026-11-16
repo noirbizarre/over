@@ -877,6 +877,7 @@ async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Resu
                 relative,
                 &managed_path.join(relative),
                 &[base, head],
+                &scope.access,
             )?;
             let indexed = index
                 .get_path(&managed_path.join(relative), 0)
@@ -922,9 +923,11 @@ async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Resu
             &base_entries,
             &updates_from,
             &updates_to,
+            &scope.access,
         )?;
         if !dry_run {
             changes.apply(&target)?;
+            crate::materialize::virtual_checkout::metadata::apply(&inspect_entry)?;
         }
         anyhow::Ok(repo.head()?.peel_to_commit()?.id().to_string())
     })
@@ -1029,6 +1032,7 @@ mod tests {
 
     fn checkout_entry(target: PathBuf, repo_key: &str, config: GitRepoConfig) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Git {
                 overlay: "ov".to_string(),
@@ -1391,6 +1395,7 @@ mod tests {
 
     fn virtual_checkout_entry(target: PathBuf, source: PathBuf) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),

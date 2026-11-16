@@ -256,6 +256,7 @@ impl DesiredTree {
             terminal.push(directory.clone());
             entries.push(DesiredEntry {
                 target: routing.target_for(&directory),
+                access: Default::default(),
                 provenance: Provenance::Overlay {
                     overlay: overlay.name.clone(),
                     source,
@@ -275,7 +276,7 @@ impl DesiredTree {
         )?;
         build_partial_sidecars(ctx, overlay, &policy, &mut entries)?;
         attach_source_policy(&mut entries, &policy);
-        finalize_entries(overlay, &routing, &mut entries, true)?;
+        finalize_entries(ctx, overlay, &routing, &mut entries, true)?;
         for entry in &mut entries {
             if !entry.intent.is_virtual_checkout() {
                 continue;
@@ -327,16 +328,16 @@ impl DesiredTree {
     pub(crate) fn blocking_scaffold(&self, target: &Path) -> Result<Option<PathBuf>> {
         let ancestors: Vec<_> = target.ancestors().skip(1).collect();
         for ancestor in ancestors.into_iter().rev() {
-            if !self.entries.iter().any(|entry| {
+            let Some(scaffold) = self.entries.iter().find(|entry| {
                 entry.target == ancestor && matches!(entry.intent, MaterializationIntent::Directory)
-            }) {
+            }) else {
                 continue;
-            }
-            match ancestor.symlink_metadata() {
+            };
+            match scaffold.access.fs.metadata(ancestor, false) {
                 Ok(metadata) if !metadata.is_dir() => return Ok(Some(ancestor.to_path_buf())),
                 Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
+                Err(error) if crate::target_fs::is_not_found(&error) => {}
+                Err(error) => return Err(error),
             }
         }
         Ok(None)
@@ -466,6 +467,7 @@ fn collect_own_entries(
     if overlay.materialization_for(Path::new("")) == MaterializationKind::Checkout {
         entries.push(DesiredEntry {
             target: routing.target_for(Path::new("")),
+            access: Default::default(),
             provenance: Provenance::Overlay {
                 overlay: overlay.name.clone(),
                 source: overlay.root.clone(),
@@ -490,7 +492,7 @@ fn collect_own_entries(
         build_partial_sidecars(&ctx_with_target, overlay, &policy, &mut entries)?;
         attach_source_policy(&mut entries, &policy);
         prune_transformed_scaffolds(&mut entries);
-        finalize_entries(overlay, &routing, &mut entries, reporting)?;
+        finalize_entries(ctx, overlay, &routing, &mut entries, reporting)?;
         attach_rendered_checkouts(ctx, overlay, &mut entries)?;
         return Ok(entries);
     }
@@ -500,6 +502,7 @@ fn collect_own_entries(
     // `EnsureDir` at the top of `Overlay::apply_inner`.
     entries.push(DesiredEntry {
         target: routing.target_for(Path::new("")),
+        access: Default::default(),
         provenance: Provenance::Overlay {
             overlay: overlay.name.clone(),
             source: overlay.root.clone(),
@@ -532,7 +535,7 @@ fn collect_own_entries(
 
     attach_source_policy(&mut entries, &policy);
     prune_transformed_scaffolds(&mut entries);
-    finalize_entries(overlay, &routing, &mut entries, reporting)?;
+    finalize_entries(ctx, overlay, &routing, &mut entries, reporting)?;
     attach_rendered_checkouts(ctx, overlay, &mut entries)?;
     Ok(entries)
 }
@@ -653,7 +656,18 @@ fn attach_rendered_checkouts(
             }
             transformed |= content.generated;
             if content.generated {
-                super::content::validate_destination(&content, &entry.target.join(&destination))?;
+                let properties =
+                    crate::overlays::rules::resolve_with_origins(overlay, logical, false);
+                let access = ctx.target_fs.target(
+                    properties.sudo,
+                    ctx.no_prompt,
+                    ctx.dry_run || ctx.read_only,
+                );
+                super::content::validate_destination(
+                    &content,
+                    &entry.target.join(&destination),
+                    &access,
+                )?;
             }
             if let Some(previous) = inventory.insert(destination.clone(), content) {
                 anyhow::bail!(
@@ -705,11 +719,69 @@ fn attach_rendered_checkouts(
 }
 
 fn finalize_entries(
+    ctx: &exec::Context,
     overlay: &Overlay,
     routing: &ResolvedMappings,
     entries: &mut [DesiredEntry],
     reporting: bool,
 ) -> Result<()> {
+    let overlay = Arc::new(overlay.clone());
+    for entry in entries.iter_mut() {
+        let logical = match &entry.provenance {
+            Provenance::Overlay { source, .. } => {
+                let logical = source.strip_prefix(&overlay.root)?.to_owned();
+                if matches!(entry.intent, MaterializationIntent::EncryptedFile(_)) {
+                    logical.with_extension("")
+                } else {
+                    logical
+                }
+            }
+            Provenance::PartialSidecar { config, .. }
+            | Provenance::SymlinkSidecar { config, .. } => config
+                .strip_prefix(&overlay.root)?
+                .with_extension("")
+                .with_extension(""),
+            Provenance::Git { repo_key, .. } => PathBuf::from(repo_key),
+        };
+        entry.access = crate::target_fs::Access::new(
+            ctx,
+            overlay.clone(),
+            &logical,
+            entry.kind() == super::EntryKind::Directory,
+        );
+        if entry.permissions.is_none() {
+            // Existing mode baselines must not chmod scaffolds or source-link referents.
+            entry.access.permissions.mode = None;
+        }
+        for (identity, group) in [
+            (&entry.access.permissions.owner, false),
+            (&entry.access.permissions.group, true),
+        ] {
+            if let Some(identity) = identity {
+                ctx.target_fs.identity(identity, group)?;
+            }
+        }
+        #[cfg(not(unix))]
+        anyhow::ensure!(
+            !entry.access.fs.is_privileged()
+                && entry.access.permissions.owner.is_none()
+                && entry.access.permissions.group.is_none(),
+            "sudo and ownership policies require Unix"
+        );
+        if let MaterializationIntent::SymlinkDirectory { source, .. } = &entry.intent {
+            validate_directory_link_policy(ctx, &overlay, &logical, source)?;
+        }
+        if entry.intent.is_virtual_checkout() {
+            let mut scope = entry.intent.checkout_scope();
+            scope.access = Box::new(entry.access.clone());
+            entry.intent = MaterializationIntent::ScopedVirtualCheckout(scope);
+            crate::materialize::virtual_checkout::metadata::validate(entry)?;
+        }
+        anyhow::ensure!(
+            !entry.access.fs.is_privileged() || !matches!(entry.provenance, Provenance::Git { .. }),
+            "sudo is unsupported for declared Git repository provisioning; keep Git operations unprivileged"
+        );
+    }
     for entry in entries.iter() {
         if !reporting
             && entry.intent.is_virtual_checkout()
@@ -768,16 +840,24 @@ fn finalize_entries(
             MaterializationIntent::SymlinkDirectory { .. } | MaterializationIntent::Checkout
         ) {
             let physical_entry = match &entry.intent {
-                MaterializationIntent::SymlinkDirectory { source, .. } => {
-                    mapping::physical_destination(&entry.target, source)?
-                }
+                MaterializationIntent::SymlinkDirectory { source, .. } => entry
+                    .access
+                    .fs
+                    .physical_destination(&entry.target, source)?,
                 _ => mapping::physical(&entry.target)?,
             };
-            for destination in routing.boundaries.values() {
+            for (source, destination) in &routing.boundaries {
                 // Lexically distinct aliases must not punch holes into indivisible units.
-                let source = routing.logical_path_for(destination)?;
+                // Each mapped sibling retains its own privilege policy during validation.
+                let properties =
+                    crate::overlays::rules::resolve_with_origins(&overlay, source, false);
+                let access = ctx.target_fs.target(
+                    properties.sudo,
+                    ctx.no_prompt,
+                    ctx.dry_run || ctx.read_only,
+                );
                 let physical_destination =
-                    mapping::physical_destination(destination, &overlay.root.join(source))?;
+                    access.physical_destination(destination, &overlay.root.join(source))?;
                 anyhow::ensure!(
                     destination == &entry.target
                         || (!destination.starts_with(&entry.target)
@@ -808,6 +888,67 @@ fn finalize_entries(
     Ok(())
 }
 
+fn validate_directory_link_policy(
+    ctx: &exec::Context,
+    overlay: &Overlay,
+    logical: &Path,
+    source: &Path,
+) -> Result<()> {
+    let has_descendant_assignment = overlay.scopes.iter().any(|scope| {
+        scope.rules.iter().any(|rule| {
+            (rule.sudo.is_some() || rule.permissions.is_some() || rule.mode.is_some())
+                && (rule.is_glob() || {
+                    let selector = scope.root.join(&rule.path);
+                    let root = overlay.root.join(logical);
+                    selector != root && selector.starts_with(root)
+                })
+        })
+    });
+    if !has_descendant_assignment {
+        return Ok(());
+    }
+    let baseline = crate::overlays::rules::resolve_with_origins(overlay, logical, true);
+    let policy = ctx.repository.source_policy(overlay)?;
+    let identity = |identity: &Option<crate::overlays::Identity>, group| -> Result<Option<u32>> {
+        identity
+            .as_ref()
+            .map(|identity| crate::target_fs::resolve_identity(identity, group))
+            .transpose()
+    };
+    for child in WalkDir::new(source)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|entry| !policy.is_ignored(entry.path(), entry.file_type().is_dir()))
+    {
+        let child = child?;
+        if source.starts_with(&overlay.root)
+            && !policy.includes(child.path(), child.file_type().is_dir())
+        {
+            continue;
+        }
+        let relative = logical.join(child.path().strip_prefix(source)?);
+        let properties = crate::overlays::rules::resolve_with_origins(
+            overlay,
+            &relative,
+            child.file_type().is_dir(),
+        );
+        // A directory link has one destination inode; enforcing child policy would touch source referents.
+        anyhow::ensure!(
+            properties.sudo == baseline.sudo
+                && properties.mode == baseline.mode
+                && properties.metadata.mode == baseline.metadata.mode
+                && identity(&properties.metadata.owner, false)?
+                    == identity(&baseline.metadata.owner, false)?
+                && identity(&properties.metadata.group, true)?
+                    == identity(&baseline.metadata.group, true)?,
+            "policy for '{}' cannot be represented beneath whole-directory symlink '{}'; use recursive symlinks or checkout mode at this boundary",
+            relative.display(),
+            logical.display()
+        );
+    }
+    Ok(())
+}
+
 /// Git-managed paths declared via `overlay.git`: materialized by
 /// `CheckoutMaterializer` (#110), which ensures presence/configuration
 /// only — manage their content with ordinary Git. The CLI's `over sync`
@@ -832,6 +973,7 @@ fn build_git_entries(
         };
         entries.push(DesiredEntry {
             target: repo_target,
+            access: Default::default(),
             provenance: Provenance::Git {
                 overlay: overlay.name.clone(),
                 repo_key: repo_key.clone(),
@@ -876,6 +1018,7 @@ fn walk_overlay_tree(
         if !start.as_os_str().is_empty() && policy.includes(&walk_root, true) {
             entries.push(DesiredEntry {
                 target: routing.target_for(start),
+                access: Default::default(),
                 provenance: Provenance::Overlay {
                     overlay: overlay.name.clone(),
                     source: walk_root,
@@ -958,6 +1101,7 @@ fn walk_overlay_tree(
                     }
                     entries.push(DesiredEntry {
                         target: entry_target,
+                        access: Default::default(),
                         provenance: Provenance::Overlay {
                             overlay: overlay.name.clone(),
                             source: path.to_path_buf(),
@@ -979,6 +1123,7 @@ fn walk_overlay_tree(
                     // git-tree-based enumeration instead).
                     entries.push(DesiredEntry {
                         target: entry_target,
+                        access: Default::default(),
                         provenance: Provenance::Overlay {
                             overlay: overlay.name.clone(),
                             source: path.to_path_buf(),
@@ -996,6 +1141,7 @@ fn walk_overlay_tree(
         if path.is_dir() {
             entries.push(DesiredEntry {
                 target: entry_target,
+                access: Default::default(),
                 provenance: Provenance::Overlay {
                     overlay: overlay.name.clone(),
                     source: path.to_path_buf(),
@@ -1019,13 +1165,19 @@ fn walk_overlay_tree(
                             format!("cannot render source template '{}'", path.display())
                         })?;
                 entry_target = transformed_target(routing, rel_path, &destination)?;
-                super::content::validate_destination(&content, &entry_target)?;
+                let access = ctx.target_fs.target(
+                    properties.sudo,
+                    ctx.no_prompt,
+                    ctx.dry_run || ctx.read_only,
+                );
+                super::content::validate_destination(&content, &entry_target, &access)?;
                 Some(content)
             } else {
                 None
             };
             entries.push(DesiredEntry {
                 target: entry_target,
+                access: Default::default(),
                 provenance: Provenance::Overlay {
                     overlay: overlay.name.clone(),
                     source: path.to_path_buf(),
@@ -1143,6 +1295,7 @@ fn build_symlink_sidecars(
 
         entries.push(DesiredEntry {
             target: entry_target,
+            access: Default::default(),
             provenance,
             intent,
             // Symlink sidecars carry a source outside the overlay's own
@@ -1176,6 +1329,7 @@ fn checkout_intent(routing: &ResolvedMappings, logical: &Path) -> Materializatio
         MaterializationIntent::VirtualCheckout
     } else {
         MaterializationIntent::ScopedVirtualCheckout(super::CheckoutScope {
+            access: Default::default(),
             rendered: None,
             source_excludes,
             target_excludes,
@@ -1232,6 +1386,7 @@ fn build_partial_sidecars(
 
         entries.push(DesiredEntry {
             target: resolved,
+            access: Default::default(),
             provenance: Provenance::PartialSidecar {
                 overlay: overlay.name.clone(),
                 config: config_path,
@@ -2278,5 +2433,73 @@ mod tests {
         if inaccessible {
             assert!(result.is_err());
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn encrypted_files_resolve_elevation_and_ownership_against_the_plaintext_name() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        temp.child("source/app").create_dir_all().unwrap();
+        temp.child("source/app/over.yaml").write_str("rules:\n  - path: private\n    sudo: true\n    permissions: { owner: 0, group: 0, mode: '0600' }\n").unwrap();
+        // Desired construction carries the recipe; it must not decrypt or authenticate.
+        temp.child("source/app/private.age")
+            .write_str("ciphertext recipe placeholder")
+            .unwrap();
+        let repository = crate::overlays::Repository::new(temp.path().join("source"));
+        let overlay = repository.get("app").unwrap();
+        let ctx = crate::exec::Context::builder()
+            .repository(repository)
+            .root(temp.path().join("target"))
+            .build();
+        let desired = super::DesiredTree::build_own(&ctx, &overlay).unwrap();
+        let entry = desired
+            .entries()
+            .iter()
+            .find(|entry| {
+                matches!(
+                    entry.intent,
+                    crate::desired::MaterializationIntent::EncryptedFile(_)
+                )
+            })
+            .unwrap();
+        assert!(entry.access.fs.is_privileged());
+        assert_eq!(
+            entry.access.permissions.owner,
+            Some(crate::overlays::Identity::Id(0))
+        );
+        assert_eq!(
+            entry.access.permissions.group,
+            Some(crate::overlays::Identity::Id(0))
+        );
+        assert_eq!(
+            entry.permissions,
+            Some(crate::overlays::FileMode::from_bits(0o600))
+        );
+    }
+
+    #[cfg(not(unix))]
+    #[rstest]
+    #[case("sudo: true\n")]
+    #[case("permissions: { owner: 0 }\n")]
+    #[case("permissions: { group: 0 }\n")]
+    fn unix_only_policies_are_rejected_before_creating_a_target(#[case] descriptor: &str) {
+        let temp = TempDir::new().unwrap();
+        temp.child("source/app").create_dir_all().unwrap();
+        temp.child("source/app/over.yaml")
+            .write_str(descriptor)
+            .unwrap();
+        temp.child("source/app/plain").write_str("source").unwrap();
+        let repository = Repository::new(temp.path().join("source"));
+        let overlay = repository.get("app").unwrap();
+        let target = temp.path().join("target");
+        let ctx = Context::builder()
+            .repository(repository)
+            .root(target.clone())
+            .build();
+        let error = DesiredTree::build_own(&ctx, &overlay).unwrap_err();
+        assert!(
+            error.to_string().contains("policies require Unix"),
+            "{error:#}"
+        );
+        assert!(!target.exists());
     }
 }

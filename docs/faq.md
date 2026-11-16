@@ -224,11 +224,14 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
     controls **partial-file and generated outputs**,
     including generated physical checkout files. Ordinary virtual-checkout files
     preserve access permissions while following Git executability; permission
-    policy does not independently chmod them. Over has no general
-    declarative owner/group assignment. Existing metadata is preserved within
+    policy does not independently chmod them. A structured `permissions` object
+    additionally accepts `owner` and `group`, including for ordinary checkout
+    files and directories. Existing undeclared metadata is preserved within
     the [documented platform limits](usage/safety.md#recovery-limitations).
-    Arrange required ownership/restrictive checkout permissions separately and
-    run with appropriate privileges; Over does not elevate itself.
+    Enable `sudo: true` on the overlay or selected rules for protected targets.
+    Over shares one sudo authentication session across target operations and
+    explicitly opted-in hook commands; Git and source processing retain your
+    normal account. See [Sudo mode](configuration/overlay.md#sudo-mode).
 
     The target filesystem must actually be available when the file is needed.
     Over needs its executable, source, and state when provisioning/updating;

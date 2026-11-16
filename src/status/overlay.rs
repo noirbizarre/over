@@ -141,6 +141,7 @@ impl OverlayReport {
         mode: InspectionMode,
     ) -> Result<Self> {
         let ctx = Context::builder()
+            .read_only(true)
             .root(root.to_path_buf())
             .repository(repo.clone())
             .overlay(overlay.clone())
@@ -393,6 +394,7 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
     let mut details = Vec::new();
     for scope in &overlay.scopes {
         if scope.mode.is_some()
+            || scope.sudo.is_some()
             || scope.permissions.is_some()
             || !scope.rules.is_empty()
             || scope.exclude.is_some()
@@ -411,11 +413,14 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
                     .extend([Value::Text(" = ".into()), Value::Mode(mode.to_string())]);
                 summary.push(field);
             }
-            if let Some(permissions) = scope.permissions {
+            if let Some(permissions) = &scope.permissions {
                 details.push(Field::new(
                     "permissions",
                     Value::Mode(permissions.to_string()),
                 ));
+            }
+            if let Some(sudo) = scope.sudo {
+                details.push(Field::new("sudo", Value::Text(sudo.to_string())));
             }
             for (index, rule) in scope.rules.iter().enumerate() {
                 let mut field = Field::new(
@@ -439,12 +444,14 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
                         "permissions",
                         Value::Mode(
                             rule.permissions
+                                .as_ref()
                                 .map(|mode| mode.to_string())
                                 .unwrap_or_else(|| "unchanged".into()),
                         ),
                     ),
                 ];
                 for (property, value) in [
+                    ("sudo", rule.sudo),
                     ("template", rule.template),
                     ("strip_extension", rule.strip_extension),
                 ] {

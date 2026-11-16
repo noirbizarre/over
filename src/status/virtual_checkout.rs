@@ -67,7 +67,7 @@ fn inspect_with_details(
             .as_ref()
             .expect("state snapshot initialized above");
         state::verify_live_target_snapshot(snapshot, entry)?;
-        let actual = crate::plan::actual::inspect(&entry.target)?;
+        let actual = crate::plan::actual::inspect_with(&entry.target, &entry.access.fs)?;
         let status = match actual {
             crate::plan::actual::ActualState::Missing => Some(Status::Missing),
             crate::plan::actual::ActualState::Directory => None,
@@ -95,7 +95,10 @@ fn inspect_with_details(
         // classification (a race, or manual XDG state deletion). Mirror
         // `status::git::inspect_checkout`'s own `Missing`/`Broken` split.
         return Ok(Inspection {
-            status: if entry.target.exists() {
+            status: if !matches!(
+                crate::plan::actual::inspect_with(&entry.target, &entry.access.fs)?,
+                crate::plan::ActualState::Missing
+            ) {
                 Status::Broken
             } else {
                 Status::Missing
@@ -171,6 +174,7 @@ fn inspect_with_details(
             &managed_path,
             &entry.target,
             &[&base_entries, &head_entries, &owned],
+            &entry.access,
         )?;
         // Local edits are Git changes; only source updates still absent from the target need reconciliation.
         converged = head_entries.iter().all(|(path, value)| {
@@ -314,6 +318,7 @@ pub(crate) fn commit_conflicts(entry: &DesiredEntry, paths: &[PathBuf]) -> Resul
         &managed,
         &entry.target,
         &[&base_entries, &head_entries],
+        &entry.access,
     )?;
     Ok(conflicting_paths(
         &base_entries,
@@ -510,6 +515,7 @@ mod tests {
 
     fn entry(target: PathBuf, source: PathBuf) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),

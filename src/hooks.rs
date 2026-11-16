@@ -26,6 +26,8 @@ pub enum Hook {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 pub struct HookDefinition {
+    #[cfg_attr(feature = "schema", schemars(default))]
+    pub sudo: bool,
     #[cfg_attr(
         feature = "schema",
         schemars(with = "crate::overlays::json_schema::HookCommand")
@@ -90,6 +92,11 @@ impl Hook {
         };
         let cwd = optional_string("cwd")?;
         let when = optional_string("when")?;
+        let sudo = match fields.remove("sudo") {
+            None => false,
+            Some(serde_json::Value::Bool(value)) => value,
+            _ => bail!("hook sudo must be a boolean"),
+        };
         let mut env = BTreeMap::new();
         if let Some(value) = fields.remove("env") {
             let serde_json::Value::Object(values) = value else {
@@ -114,6 +121,7 @@ impl Hook {
         }
         // Descriptor inspection reports extras with source context before deserialization.
         Ok(Self::Structured(HookDefinition {
+            sudo,
             command,
             env,
             cwd,
@@ -260,6 +268,7 @@ pub fn nested() -> bool {
 
 // Rendered fields may contain secrets and must never acquire a value-bearing Debug.
 struct PreparedHook {
+    sudo: bool,
     script: String,
     cwd: PathBuf,
     overrides: BTreeMap<String, String>,
@@ -373,18 +382,21 @@ fn prepare(
                 return Err(failure("cwd", "rendered directory must be nonempty"));
             }
             cwd = absolute(context.repository)?.join(rendered);
-            let metadata = std::fs::metadata(&cwd).map_err(|error| {
-                failure(
-                    "cwd",
-                    &format!("cannot inspect directory ({:?})", error.kind()),
-                )
-            })?;
-            if !metadata.is_dir() {
-                return Err(failure("cwd", "resolved path is not a directory"));
+            if !definition.sudo {
+                let metadata = std::fs::metadata(&cwd).map_err(|error| {
+                    failure(
+                        "cwd",
+                        &format!("cannot inspect directory ({:?})", error.kind()),
+                    )
+                })?;
+                if !metadata.is_dir() {
+                    return Err(failure("cwd", "resolved path is not a directory"));
+                }
             }
         }
     }
     Ok(Some(PreparedHook {
+        sudo: definition.is_some_and(|definition| definition.sudo),
         script,
         cwd,
         overrides,
@@ -423,6 +435,7 @@ pub async fn run(hooks: &Hooks, event: Event, context: HookContext<'_>) -> Resul
         .await
         .map_err(|_| hook_failure(event, index, context.scope, "preparation", "task failed"))??;
         let Some(PreparedHook {
+            sudo,
             script,
             cwd,
             overrides,
@@ -437,8 +450,8 @@ pub async fn run(hooks: &Hooks, event: Event, context: HookContext<'_>) -> Resul
         command.env_remove(crate::crypt::bootstrap::ENV);
         command
             .arg("-c")
-            .arg(script)
-            .current_dir(cwd)
+            .arg(&script)
+            .current_dir(&cwd)
             .envs(overrides)
             .env("OVER_HOOK_ACTIVE", "1")
             .env("OVER_HOOK_EVENT", event.to_string())
@@ -462,9 +475,36 @@ pub async fn run(hooks: &Hooks, event: Event, context: HookContext<'_>) -> Resul
                 .env("OVER_OVERLAY_TARGET", absolute(target)?);
         }
         // Inherit stdio for interactive tools; never reproduce their output in errors.
-        let status = command.status().await.map_err(|error|
-            failure("process", &format!("could not start hook ({:?}); ensure sh is available on PATH and cwd can be entered", error.kind()))
-        )?;
+        let status = if sudo {
+            let mut env = Vec::new();
+            let mut remove_env = Vec::new();
+            for (name, value) in command.as_std().get_envs() {
+                if let Some(value) = value {
+                    env.push((name.to_owned(), value.to_owned()));
+                } else {
+                    remove_env.push(name.to_owned());
+                }
+            }
+            let target = context.templates.target_fs.target(
+                true,
+                context.templates.no_prompt,
+                context.templates.dry_run || context.templates.read_only,
+            );
+            tokio::task::spawn_blocking(move || target.run_hook(script, cwd, env, remove_env))
+                .await
+                .map_err(|_| failure("process", "elevated hook task failed"))?
+                // Preserve sanitized hook errors: transport context must not expose prepared values.
+                .map_err(|_| {
+                    failure(
+                        "process",
+                        "could not execute elevated hook; check sudo authorization, shell and cwd",
+                    )
+                })?
+        } else {
+            command.status().await.map_err(|error|
+                failure("process", &format!("could not start hook ({:?}); ensure sh is available on PATH and cwd can be entered", error.kind()))
+            )?
+        };
         if !status.success() {
             return Err(HookFailure {
                 event,

@@ -629,6 +629,7 @@ mod tests {
 
     fn entry(target: PathBuf, source: PathBuf) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -670,6 +671,7 @@ mod tests {
     async fn non_virtual_checkout_entry_is_refused() {
         let _xdg = isolate_xdg_state();
         let e = DesiredEntry {
+            access: Default::default(),
             target: PathBuf::from("/tmp/whatever"),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),

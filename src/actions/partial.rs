@@ -366,8 +366,15 @@ impl fmt::Display for StructuralChoice {
 
 fn resolve_structural_conflict(ctx: &Ctx, target: &Path) -> Result<bool> {
     super::fs::ensure_unprotected_target(target)?;
+    if !authorize_structural_conflict(ctx, target)? {
+        return Ok(false);
+    }
+    remove_target(target)?;
+    Ok(true)
+}
+
+pub(crate) fn authorize_structural_conflict(ctx: &Ctx, target: &Path) -> Result<bool> {
     if ctx.force {
-        remove_target(target)?;
         return Ok(true);
     }
     if ctx.no_prompt {
@@ -392,10 +399,7 @@ fn resolve_structural_conflict(ctx: &Ctx, target: &Path) -> Result<bool> {
         .map_err(|e| anyhow::anyhow!("prompt failed: {}", e))?;
     match StructuralChoice::ALL[selection] {
         StructuralChoice::Skip => Ok(false),
-        StructuralChoice::Overwrite => {
-            remove_target(target)?;
-            Ok(true)
-        }
+        StructuralChoice::Overwrite => Ok(true),
     }
 }
 
@@ -423,7 +427,7 @@ impl fmt::Display for BlockChoice {
     }
 }
 
-fn resolve_block_conflict(
+pub(crate) fn resolve_block_conflict(
     ctx: &Ctx,
     target: &Path,
     marker: &str,

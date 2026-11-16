@@ -40,6 +40,9 @@ pub(crate) struct ClaimIdentity {
     source: Source,
     intent: Intent,
     permissions: Option<String>,
+    sudo: bool,
+    owner_policy: Option<crate::overlays::Identity>,
+    group_policy: Option<crate::overlays::Identity>,
 }
 
 impl ClaimIdentity {
@@ -92,6 +95,9 @@ impl ClaimIdentity {
             source,
             intent,
             permissions: entry.permissions.map(|mode| mode.to_string()),
+            sudo: entry.access.fs.is_privileged(),
+            owner_policy: entry.access.permissions.owner.clone(),
+            group_policy: entry.access.permissions.group.clone(),
         }
     }
 }
@@ -113,6 +119,7 @@ mod tests {
         let repo = Repository::new(temp.path().to_path_buf());
         let overlay = repo.get("overlay").unwrap();
         let entry_for = |overlay: &crate::overlays::Overlay| DesiredEntry {
+            access: Default::default(),
             target: temp.path().join("target"),
             provenance: Provenance::Overlay {
                 overlay: "overlay".into(),

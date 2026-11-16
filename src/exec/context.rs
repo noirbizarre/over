@@ -92,6 +92,12 @@ pub struct Context {
     #[serde(skip)]
     pub crypto: Arc<crate::secrets::CryptoService>,
     #[serde(skip)]
+    pub target_fs: Arc<crate::target_fs::Session>,
+    #[serde(skip)]
+    pub read_only: bool,
+    #[serde(skip)]
+    pub(crate) defer_partials: bool,
+    #[serde(skip)]
     pub(crate) path_inputs: PathInputs,
 
     #[serde(skip)]
@@ -196,6 +202,8 @@ impl Progress {
 /// to get an `Arc<Context>`.
 #[derive(Default)]
 pub struct ContextBuilder {
+    read_only: bool,
+    target_fs: Option<Arc<crate::target_fs::Session>>,
     acquire_checkout_paths: bool,
     path_inputs: PathInputs,
     dry_run: bool,
@@ -217,6 +225,14 @@ pub struct ContextBuilder {
 }
 
 impl ContextBuilder {
+    pub fn read_only(mut self, enabled: bool) -> Self {
+        self.read_only = enabled;
+        self
+    }
+    pub fn target_fs(mut self, session: Arc<crate::target_fs::Session>) -> Self {
+        self.target_fs = Some(session);
+        self
+    }
     pub fn acquire_checkout_paths(mut self, enabled: bool) -> Self {
         self.acquire_checkout_paths = enabled;
         self
@@ -309,6 +325,11 @@ impl ContextBuilder {
             resolved_dependencies: Arc::default(),
             acquire_checkout_paths: self.acquire_checkout_paths,
             crypto: Arc::new(crate::secrets::CryptoService::default()),
+            target_fs: self
+                .target_fs
+                .unwrap_or_else(crate::target_fs::Session::shared),
+            read_only: self.read_only,
+            defer_partials: false,
             path_inputs: self.path_inputs,
             current_target: None,
             dry_run: self.dry_run,

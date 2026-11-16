@@ -122,6 +122,7 @@ nav = [
     { "030: File templates" = "adr/030-file-templates-produce-desired-content.md" },
     { "031: Encrypted Git diffs" = "adr/031-encrypted-git-diffs-use-textconv.md" },
     { "032: Host context and deployment" = "adr/032-host-context-is-distinct-from-deployment-selection.md" },
+    { "033: Shared sudo session" = "adr/033-share-invocation-scoped-sudo-between-target-effects-and-explicit-hooks.md" },
   ] },
 ]
 

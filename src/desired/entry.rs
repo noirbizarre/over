@@ -9,6 +9,8 @@ use crate::overlays::ignore::SourcePolicy;
 /// Source routing holes and optional positive destination-leaf ownership.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct CheckoutScope {
+    #[serde(skip)]
+    pub access: Box<crate::target_fs::Access>,
     /// Desired leaves are runtime inputs, not a second snapshot store in XDG.
     #[serde(skip)]
     pub rendered: Option<Arc<super::content::RenderedCheckout>>,
@@ -224,6 +226,7 @@ pub enum Provenance {
 /// inventory, independently of tracked source files.
 #[derive(Debug, Clone)]
 pub struct DesiredEntry {
+    pub access: crate::target_fs::Access,
     /// Absolute path this entry should exist at.
     pub target: PathBuf,
     pub provenance: Provenance,
@@ -299,6 +302,7 @@ mod tests {
     #[test]
     fn desired_entry_kind_delegates_to_intent() {
         let entry = DesiredEntry {
+            access: Default::default(),
             target: PathBuf::from("/target/file.txt"),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
