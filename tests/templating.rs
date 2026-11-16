@@ -481,6 +481,15 @@ impl Fixture {
         .unwrap();
         fs::write(source.join("app/plain"), "ordinary\n").unwrap();
         let repo = git2::Repository::init(&source).unwrap();
+        // Native commits require an explicit identity in this globally isolated fixture.
+        repo.config()
+            .unwrap()
+            .set_str("user.name", "Template test")
+            .unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("user.email", "template@example.invalid")
+            .unwrap();
         // Background Git housekeeping must not race byte-for-byte administrative snapshots.
         repo.config()
             .unwrap()
@@ -3101,7 +3110,7 @@ fn sync_can_commit_an_ordinary_sibling_with_consent_without_recording_generated_
             .peel_to_commit()
             .unwrap()
             .message(),
-        Ok("record ordinary sibling")
+        Ok("record ordinary sibling\n")
     );
     assert_eq!(
         fs::read(fixture.source.join("app/plain")).unwrap(),

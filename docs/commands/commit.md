@@ -96,7 +96,7 @@ staged files are preserved in the index and excluded from this commit.
 A checkout whose ordinary source content has advanced must be synced first.
 
 Commits use Git's configured identity and signing settings, including
-`commit.gpgSign`, `user.signingKey`, and `gpg.format`. Git runs the configured
+`commit.gpgSign`, `user.signingKey`, `gpg.format`, and `commit.cleanup`. Git runs the configured
 `pre-commit`, `prepare-commit-msg`, and `commit-msg` hooks against an isolated
 index containing the selected snapshot. Message edits are accepted; hooks that
 change that snapshot are rejected so generated-file provenance stays accurate.

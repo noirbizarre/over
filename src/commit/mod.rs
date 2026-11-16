@@ -708,7 +708,7 @@ mod tests {
 
         let commit_oid = git2::Oid::from_str(&oid).unwrap();
         let created_commit = repo.find_commit(commit_oid).unwrap();
-        assert_eq!(created_commit.message(), Ok("update a.txt"));
+        assert_eq!(created_commit.message(), Ok("update a.txt\n"));
         assert_eq!(created_commit.parent_count(), 1);
         let tree = created_commit.tree().unwrap();
         let blob = tree

@@ -382,7 +382,7 @@ fn interactive_message_input_starts_below_the_question_and_records_edited_text()
     let repo = git2::Repository::open(&fixture.source).unwrap();
     assert_eq!(
         repo.head().unwrap().peel_to_commit().unwrap().message(),
-        Ok("focused")
+        Ok("focused\n")
     );
 }
 

@@ -1,7 +1,7 @@
 //! Native hooks and signing without publishing HEAD before recovery is prepared.
 
 use std::fs;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use anyhow::{Context as _, Result, ensure};
 use git2::{Oid, Repository};
@@ -97,6 +97,34 @@ impl PreparedCommit {
             String::from_utf8(actual.stdout)?.trim() == tree.to_string(),
             "a commit hook changed the prepared snapshot; inspect its changes and retry"
         );
+        let cleanup = command(repo)?
+            .args(["config", "--get", "commit.cleanup"])
+            .output()?;
+        ensure!(
+            cleanup.status.success() || cleanup.status.code() == Some(1),
+            "could not read commit.cleanup"
+        );
+        let cleanup = String::from_utf8(cleanup.stdout)?;
+        let cleanup = cleanup.trim();
+        if cleanup != "verbatim" {
+            // Without an editor, default/scissors use whitespace cleanup, just
+            // like git commit -F. stripspace reads core.commentChar itself.
+            ensure!(
+                matches!(
+                    cleanup,
+                    "" | "default" | "whitespace" | "strip" | "scissors"
+                ),
+                "invalid commit.cleanup setting"
+            );
+            let mut strip = command(repo)?;
+            strip
+                .arg("stripspace")
+                .stdin(Stdio::from(fs::File::open(&message_path)?));
+            if cleanup == "strip" {
+                strip.arg("--strip-comments");
+            }
+            fs::write(&message_path, checked(&mut strip)?.stdout)?;
+        }
         let rendered = fs::read_to_string(&message_path)?;
         ensure!(
             !rendered.trim().is_empty() && !rendered.contains('\0'),
@@ -307,5 +335,50 @@ mod tests {
         assert!(PreparedCommit::prepare(&repo, tree, "chore: cannot sign").is_err());
         assert!(repo.head().is_err());
         assert!(!repo.path().join("index").exists());
+    }
+
+    #[rstest::rstest]
+    #[case("strip", "subject\n")]
+    #[case("whitespace", "subject\n# comment\n")]
+    #[case("verbatim", "\nsubject  \n# comment\n\n")]
+    fn configured_cleanup_is_applied_before_signing(#[case] cleanup: &str, #[case] expected: &str) {
+        let (_directory, repo, tree) = fixture();
+        repo.config()
+            .unwrap()
+            .set_str("commit.cleanup", cleanup)
+            .unwrap();
+        let prepared = PreparedCommit::prepare(&repo, tree, "\nsubject  \n# comment\n\n").unwrap();
+        assert_eq!(
+            repo.find_commit(prepared.oid)
+                .unwrap()
+                .message_raw()
+                .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn configured_relative_hook_paths_keep_the_real_branch_context() {
+        let (directory, repo, tree) = fixture();
+        fs::create_dir(directory.path().join("custom-hooks")).unwrap();
+        let path = directory.path().join("custom-hooks/commit-msg");
+        fs::write(&path, "#!/bin/sh\ngit symbolic-ref --short HEAD > \"$1\"\n").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("core.hooksPath", "custom-hooks")
+            .unwrap();
+        let branch = checked(
+            command(&repo)
+                .unwrap()
+                .args(["symbolic-ref", "--short", "HEAD"]),
+        )
+        .unwrap()
+        .stdout;
+        let prepared = PreparedCommit::prepare(&repo, tree, "original").unwrap();
+        assert_eq!(
+            repo.find_commit(prepared.oid).unwrap().message_bytes(),
+            branch
+        );
     }
 }
