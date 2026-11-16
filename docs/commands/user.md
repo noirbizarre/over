@@ -29,7 +29,7 @@ Names identify logical access records, not operating-system accounts.
 | `-r`, `--recipient <RECIPIENT>` | Wrap for an existing public Age recipient; repeatable |
 | `-R`, `--recipients-file <PATH>` | Import recipients from a standard Age list; repeatable |
 | `--identity-output <PATH>` | Generate a software identity at a new private local path |
-| `--passphrase` | Wrap with a passphrase acquired through hidden input |
+| `--passphrase` | Wrap with a passphrase entered twice through hidden input |
 
 `--name` conflicts with `--name-prefix`. Recipient imports conflict with identity
 generation and passphrase wrapping; generation and passphrase are alternatives.
@@ -37,6 +37,9 @@ Multiple recipients require a prefix, with inline recipients preceding file
 recipients. Without a method, an interactive chooser is required. The first key
 for a user defaults to `default`; an additional key without a name prompts, so
 name it explicitly in noninteractive invocations.
+
+New passphrases require matching confirmation. If the entries differ, both
+hidden prompts repeat before the user or key is added.
 
 The first `user add` initializes repository encryption, installs Git drivers, and
 persists an unlocked key. Subsequent access changes need the unlocked repository
