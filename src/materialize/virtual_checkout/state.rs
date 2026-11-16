@@ -105,16 +105,16 @@ pub(crate) fn verify_live_target_snapshot(
     let crate::desired::Provenance::Overlay { overlay, source } = &entry.provenance else {
         anyhow::bail!("virtual checkout has no overlay source");
     };
-    let desired_key = key_for(&entry.target);
+    let desired_key = key_with(&entry.target, &entry.access.fs)?;
     for (key, record) in &state.checkouts {
         let target = target_for_key(key)?;
-        if key_for(&target) == desired_key || &record.overlay != overlay {
+        if key_with(&target, &entry.access.fs)? == desired_key || &record.overlay != overlay {
             continue;
         }
-        match target.symlink_metadata() {
+        match entry.access.fs.metadata(&target, false) {
             Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
+            Err(error) if crate::target_fs::is_not_found(&error) => continue,
+            Err(error) => return Err(error),
         }
         let (repo, managed_path) = super::git::discover_source(source)?;
         // Old records lack repository identity; preserve their existing
@@ -207,7 +207,7 @@ pub(crate) fn target_for_key(key: &str) -> Result<PathBuf> {
 }
 
 pub(crate) fn association_key(target: &Path, record: &VirtualCheckoutRecord) -> Result<String> {
-    let target = key_for(target);
+    let target = key_with(target, &record.scope.access.fs)?;
     if record.scope.projection.is_none() {
         return Ok(target);
     }
@@ -246,19 +246,25 @@ pub(crate) fn record_in_snapshot(
         .ok()
         .map(|(repo, managed)| (repo.workdir().map(Path::to_path_buf), managed));
     for (key, record) in &state.checkouts {
-        if key_for(&target_for_key(key)?) != key_for(&entry.target) {
+        if key_with(&target_for_key(key)?, &entry.access.fs)?
+            != key_with(&entry.target, &entry.access.fs)?
+        {
             continue;
         }
         if record.scope.projection.is_none() {
             // Return legacy ownership even for a different source so verification rejects it.
-            return Ok(Some(record.clone()));
+            let mut record = record.clone();
+            record.scope.access = Box::new(entry.access.clone());
+            return Ok(Some(record));
         }
         if &record.overlay == overlay
             && source_identity.as_ref().is_some_and(|(root, managed)| {
                 root == &record.source_repository && managed == &record.managed_path
             })
         {
-            return Ok(Some(record.clone()));
+            let mut record = record.clone();
+            record.scope.access = Box::new(entry.access.clone());
+            return Ok(Some(record));
         }
     }
     Ok(None)
@@ -268,6 +274,13 @@ pub(crate) fn record_for_entry(
     entry: &crate::desired::DesiredEntry,
 ) -> Result<Option<VirtualCheckoutRecord>> {
     record_in_snapshot(&state_file()?.inspect_blocking()?, entry)
+}
+
+fn key_with(target: &Path, fs: &crate::target_fs::TargetFs) -> Result<String> {
+    if !fs.is_privileged() {
+        return Ok(key_for(target));
+    }
+    Ok(fs.location(target)?.to_string_lossy().into_owned())
 }
 
 /// Lock order is ownership mutation, source index, then short state publication locks.
@@ -334,6 +347,7 @@ pub(crate) fn validate_claims(
             continue;
         };
         let mut other = crate::desired::DesiredEntry {
+            access: entry.access.clone(),
             target,
             provenance: crate::desired::Provenance::Overlay {
                 overlay: record.overlay.clone(),
@@ -386,6 +400,7 @@ pub(crate) fn reserve_initial(target: &Path, mut record: VirtualCheckoutRecord) 
         .ok_or_else(|| anyhow::anyhow!("projected checkout lacks source identity"))?
         .join(&record.managed_path);
     let entry = crate::desired::DesiredEntry {
+        access: Default::default(),
         target: target.to_path_buf(),
         provenance: crate::desired::Provenance::Overlay {
             overlay: record.overlay.clone(),
@@ -547,6 +562,7 @@ pub(crate) async fn persist_in(
                     anyhow::anyhow!("projected checkout lacks source repository identity")
                 })?;
                 let entry = crate::desired::DesiredEntry {
+                    access: Default::default(),
                     target,
                     provenance: crate::desired::Provenance::Overlay {
                         overlay: record.overlay.clone(),
@@ -613,6 +629,7 @@ mod tests {
         std::fs::create_dir(&old_target).unwrap();
         let state_file = StateFile::new(temp.path().join("state.toml"));
         let entry = crate::desired::DesiredEntry {
+            access: Default::default(),
             target: temp.path().join("new-target"),
             provenance: crate::desired::Provenance::Overlay {
                 overlay: "ov".to_string(),

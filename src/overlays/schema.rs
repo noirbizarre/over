@@ -25,11 +25,12 @@ pub(crate) const OVERLAY_KEYS: &[&str] = &[
     "rules",
     "secrets",
     "sync",
+    "sudo",
     "target",
     "uses",
 ];
 pub(super) const EVENTS: &[&str] = &["install", "post-clone", "post-init", "post-apply"];
-pub(super) const HOOK_FIELDS: &[&str] = &["command", "env", "cwd", "when"];
+pub(super) const HOOK_FIELDS: &[&str] = &["command", "env", "cwd", "when", "sudo"];
 pub(super) const SYNC_FIELDS: &[&str] = &["default_to_host", "pull", "push"];
 pub(super) const APPLY_FIELDS: &[&str] = &["default_to_host"];
 pub(super) const SECRETS_FIELDS: &[&str] = &["commit_messages"];
@@ -48,6 +49,7 @@ pub(super) const RULE_FIELDS: &[&str] = &[
     "path",
     "mode",
     "permissions",
+    "sudo",
     "target",
     "template",
     "strip_extension",

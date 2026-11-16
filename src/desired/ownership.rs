@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent, Provenance};
-use crate::overlays::mapping;
 
 /// Stable identity lets presentation layers deduplicate shared compositions.
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -152,14 +151,12 @@ pub(crate) fn check(tree: &DesiredTree) -> Vec<OwnershipIssue> {
                 // Replaced scaffold links no longer alias their old referents, even
                 // when resolving through the current directory link would succeed.
                 match tree.blocking_scaffold(&entry.target)? {
-                    Some(parent) => {
-                        validate_directory_ancestors(&parent)?;
-                        Ok(mapping::location(&parent)?.join(entry.target.strip_prefix(parent)?))
-                    }
-                    None => {
-                        validate_directory_ancestors(&entry.target)?;
-                        mapping::location(&entry.target)
-                    }
+                    Some(parent) => Ok(entry
+                        .access
+                        .fs
+                        .location(&parent)?
+                        .join(entry.target.strip_prefix(parent)?)),
+                    None => entry.access.fs.location(&entry.target),
                 }
             })() {
                 Ok(location) => Some(location),
@@ -251,6 +248,17 @@ pub(crate) fn conflict(
     a: &DesiredEntry,
     b: &DesiredEntry,
 ) -> anyhow::Result<Option<(PathBuf, String)>> {
+    if a.target == b.target
+        && directory(a)
+        && directory(b)
+        && ownership_conflicts(&a.access.permissions, &b.access.permissions)?
+    {
+        // Shared containers cannot satisfy different file-wide owners, regardless of apply order.
+        return Ok(Some((
+            a.target.clone(),
+            "incompatible directory-wide ownership on a shared target".to_owned(),
+        )));
+    }
     // A declared Git checkout ensures repository presence; this overlay's own
     // content is intentionally materialized inside it as a separate operation.
     if owner(a).0 == owner(b).0
@@ -270,6 +278,7 @@ pub(crate) fn conflict(
                 }
                 // Do not clone the whole projection inventory for every leaf comparison.
                 let leaf = DesiredEntry {
+                    access: projection.access.child(path, false),
                     target: projection.target.join(path),
                     provenance: projection.provenance.clone(),
                     intent: MaterializationIntent::SymlinkFile {
@@ -281,7 +290,7 @@ pub(crate) fn conflict(
                 if let Some(issue) = conflict(&leaf, other)? {
                     return Ok(Some(issue));
                 }
-                let location = mapping::location(&leaf.target)?;
+                let location = leaf.access.fs.location(&leaf.target)?;
                 if location != leaf.target {
                     // Shared roots can contain deeper aliases; resolving only the root misses them.
                     let mut physical = leaf;
@@ -307,6 +316,10 @@ pub(crate) fn conflict(
         ) if a.target == b.target => {
             if am == bm {
                 format!("duplicate partial marker '{am}'")
+            } else if a.access.fs.is_privileged() != b.access.fs.is_privileged() {
+                "incompatible sudo policy on shared partial target".to_owned()
+            } else if ownership_conflicts(&a.access.permissions, &b.access.permissions)? {
+                "incompatible file-wide ownership on partial blocks".to_owned()
             } else if a.permissions.is_some()
                 && b.permissions.is_some()
                 && a.permissions != b.permissions
@@ -321,6 +334,21 @@ pub(crate) fn conflict(
     Ok(overlap(a, b)?.map(|witness| (witness, reason)))
 }
 
+fn ownership_conflicts(
+    a: &crate::overlays::Permissions,
+    b: &crate::overlays::Permissions,
+) -> anyhow::Result<bool> {
+    for (left, right, group) in [(&a.owner, &b.owner, false), (&a.group, &b.group, true)] {
+        if let (Some(left), Some(right)) = (left, right)
+            && crate::target_fs::resolve_identity(left, group)?
+                != crate::target_fs::resolve_identity(right, group)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use assert_fs::TempDir;
@@ -330,6 +358,34 @@ mod tests {
     use crate::exec::Context;
     use crate::lint::{LintResult, lint_overlay_with_context, lint_repository_with_context};
     use crate::overlays::Repository;
+
+    #[test]
+    fn shared_directory_ownership_conflicts_are_rejected_before_reconciliation() {
+        use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent, Provenance};
+        let temp = TempDir::new().unwrap();
+        let entry = |name: &str, uid| {
+            let mut access = crate::target_fs::Access::default();
+            access.permissions.owner = Some(crate::overlays::Identity::Id(uid));
+            DesiredEntry {
+                access,
+                target: temp.path().to_owned(),
+                provenance: Provenance::Overlay {
+                    overlay: name.into(),
+                    source: temp.path().join(name),
+                },
+                intent: MaterializationIntent::Directory,
+                permissions: None,
+            }
+        };
+        let desired = DesiredTree::from_entries(vec![entry("first", 1), entry("second", 2)]);
+        assert!(
+            desired
+                .validate_ownership()
+                .unwrap_err()
+                .to_string()
+                .contains("directory-wide ownership")
+        );
+    }
 
     fn fixture() -> (TempDir, std::sync::Arc<Context>) {
         let temp = TempDir::new().unwrap();
@@ -781,6 +837,7 @@ mod tests {
         let policy =
             std::sync::Arc::new(SourcePolicy::new(&context.repository.root, &overlay).unwrap());
         let entry = DesiredEntry {
+            access: Default::default(),
             target: context.root.clone(),
             provenance: Provenance::Overlay {
                 overlay: "selected".into(),
@@ -793,6 +850,7 @@ mod tests {
             permissions: None,
         };
         let other = DesiredEntry {
+            access: Default::default(),
             target: context.root.join("block.partial.yaml"),
             provenance: Provenance::Overlay {
                 overlay: "dependency".into(),

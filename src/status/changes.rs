@@ -425,6 +425,7 @@ mod tests {
                 .unwrap();
         }
         let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            access: Default::default(),
             target: temp.path().to_path_buf(),
             permissions: None,
             intent: MaterializationIntent::Checkout,
@@ -525,6 +526,7 @@ mod tests {
         checkout.target = alias.join("nested");
         let blocked = DesiredTree::from_entries(vec![
             DesiredEntry {
+                access: Default::default(),
                 target: alias,
                 permissions: None,
                 intent: MaterializationIntent::Directory,

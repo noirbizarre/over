@@ -162,12 +162,35 @@ fn check_duplicate_rule_paths(overlay: &Overlay) -> Vec<Diagnostic> {
         for (index, rule) in scope.rules.iter().enumerate() {
             for (later_index, later) in scope.rules.iter().enumerate().skip(index + 1) {
                 let mode = rule.mode.is_some() && later.mode.is_some();
-                let permissions = rule.permissions.is_some() && later.permissions.is_some();
+                let permissions = rule
+                    .permissions
+                    .as_ref()
+                    .zip(later.permissions.as_ref())
+                    .is_some_and(|(first, second)| first.mode.is_some() && second.mode.is_some());
+                let owner = rule
+                    .permissions
+                    .as_ref()
+                    .zip(later.permissions.as_ref())
+                    .is_some_and(|(first, second)| first.owner.is_some() && second.owner.is_some());
+                let group = rule
+                    .permissions
+                    .as_ref()
+                    .zip(later.permissions.as_ref())
+                    .is_some_and(|(first, second)| first.group.is_some() && second.group.is_some());
+                let sudo = rule.sudo.is_some() && later.sudo.is_some();
                 let target = rule.target.is_some() && later.target.is_some();
                 let template = rule.template.is_some() && later.template.is_some();
                 let strip_extension =
                     rule.strip_extension.is_some() && later.strip_extension.is_some();
-                if !mode && !permissions && !target && !template && !strip_extension {
+                if !mode
+                    && !permissions
+                    && !owner
+                    && !group
+                    && !sudo
+                    && !target
+                    && !template
+                    && !strip_extension
+                {
                     continue;
                 }
                 let first = lexical(&scope.root.join(&rule.path));
@@ -222,6 +245,34 @@ fn check_duplicate_rule_paths(overlay: &Overlay) -> Vec<Diagnostic> {
                 let resolved = resolve_with_origins(overlay, relative, is_dir);
                 let mut winners = Vec::new();
                 for (property, active, origin, value) in [
+                    (
+                        "sudo",
+                        sudo,
+                        resolved.sudo_origin,
+                        resolved.sudo.to_string(),
+                    ),
+                    (
+                        "permissions.owner",
+                        owner,
+                        resolved.owner_origin,
+                        resolved
+                            .metadata
+                            .owner
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_default(),
+                    ),
+                    (
+                        "permissions.group",
+                        group,
+                        resolved.group_origin,
+                        resolved
+                            .metadata
+                            .group
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_default(),
+                    ),
                     (
                         "template",
                         template,

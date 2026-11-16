@@ -2158,6 +2158,7 @@ dependencies = [
  "ignore",
  "indicatif",
  "jsonschema",
+ "libc",
  "libz-sys",
  "minijinja",
  "noyalib",

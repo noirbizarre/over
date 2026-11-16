@@ -18,7 +18,7 @@ use crate::ui;
 use crate::ui::{emojis, style};
 use crate::utils::short_path;
 
-use super::permissions::{self, FileMode};
+use super::permissions::{self, FileMode, Permissions};
 use super::rules::{self, MaterializationKind, PolicyScope, Rule};
 use super::{DEFAULT_TARGET, Repository};
 
@@ -97,7 +97,8 @@ pub struct Overlay {
     pub git: Option<HashMap<String, GitRepoConfig>>,
 
     pub mode: Option<MaterializationKind>,
-    pub permissions: Option<FileMode>,
+    pub permissions: Option<Permissions>,
+    pub sudo: Option<bool>,
     pub rules: Option<Vec<Rule>>,
     /// Runtime policy retains declaration order and origins lost by ordinary merging.
     #[serde(skip)]
@@ -203,7 +204,11 @@ impl Overlay {
                 .get("mode")
                 .map(|value| value.clone().try_deserialize())
                 .transpose()?;
-            let permissions = values.get("permissions").map(|value| value.clone().try_deserialize::<FileMode>()).transpose().with_context(|| format!("{}: `permissions` must be an octal string; move path overrides into `rules`", descriptor.display()))?;
+            let permissions = values.get("permissions").map(|value| value.clone().try_deserialize::<Permissions>()).transpose().with_context(|| format!("{}: `permissions` must be an octal string or a mode/owner/group object; move path overrides into `rules`", descriptor.display()))?;
+            let sudo = values
+                .get("sudo")
+                .map(|value| value.clone().try_deserialize::<bool>())
+                .transpose()?;
             let rules = values
                 .get("rules")
                 .map(|value| value.clone().try_deserialize::<Vec<Rule>>())
@@ -249,6 +254,7 @@ impl Overlay {
                 descriptor,
                 mode,
                 permissions,
+                sudo,
                 rules,
                 exclude,
             });
@@ -408,6 +414,12 @@ impl Overlay {
             "at least one overlay must be selected"
         );
         let prepared = ctx.prepare_rendering_many(overlays)?;
+        // Shared partial destinations need one edit and one final metadata policy,
+        // rather than a restrictive first block preventing subsequent contributors.
+        let prepared = std::sync::Arc::new(crate::exec::Context {
+            defer_partials: true,
+            ..prepared.as_ref().clone()
+        });
         let ctx = &prepared;
         let mut desired = DesiredTree::build_many(ctx, overlays)?;
         let has_virtual_checkouts = desired
@@ -472,6 +484,14 @@ impl Overlay {
             let overlay_ctx = ctx.with_overlay(overlay.clone());
             overlay.apply_own(&overlay_ctx).await?;
             applied.push((overlay, overlay.resolve_target(&overlay_ctx)?));
+        }
+        if !ctx.dry_run {
+            let entries = desired.entries().to_vec();
+            let ctx = ctx.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::materialize::partial::reconcile_partials(&entries, ctx)
+            })
+            .await??;
         }
         drop(ownership);
         if ctx.dry_run || !hooks_enabled || crate::hooks::nested() {

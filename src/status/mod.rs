@@ -258,7 +258,16 @@ impl Report {
                         MaterializationIntent::VirtualCheckout
                         | MaterializationIntent::ScopedVirtualCheckout(_),
                         _,
-                    ) => inspect(&step.entry)?,
+                    ) => {
+                        let status = inspect(&step.entry)?;
+                        if status == Status::Applied
+                            && matches!(step.operation, Operation::RepairMetadata { .. })
+                        {
+                            Status::Modified
+                        } else {
+                            status
+                        }
+                    }
                     (MaterializationIntent::RenderedFile(_), Operation::Create)
                         if step.entry.target.symlink_metadata().is_ok() =>
                     {
@@ -266,7 +275,7 @@ impl Report {
                     }
                     (_, Operation::Create) => Status::Missing,
                     (_, Operation::Conflict { .. }) => Status::Conflict,
-                    (intent, Operation::Noop) => classify_noop(intent),
+                    (_, Operation::Noop) => classify_noop_with(&step.entry)?,
                     // A pending rule-change migration (#129, blocked or not):
                     // target exists and doesn't match desired intent — `status`
                     // has no dedicated vocabulary for "migration pending", but
@@ -277,7 +286,9 @@ impl Report {
                     // matches, only the mode needs fixing — auto-fixable, not a
                     // real conflict, so it's reported the same way a dirty git
                     // checkout is.
-                    (_, Operation::Repair { .. }) => Status::Modified,
+                    (_, Operation::Repair { .. } | Operation::RepairMetadata { .. }) => {
+                        Status::Modified
+                    }
                     (_, Operation::Deferred) => {
                         anyhow::bail!("entry classification is deferred without a scaffold blocker")
                     }
@@ -397,6 +408,24 @@ pub(crate) fn classify_noop(intent: &MaterializationIntent) -> Status {
         }
         _ => Status::Applied,
     }
+}
+
+pub(crate) fn classify_noop_with(entry: &DesiredEntry) -> Result<Status> {
+    if entry.access.fs.is_privileged()
+        && matches!(
+            entry.intent,
+            MaterializationIntent::SymlinkFile { .. }
+                | MaterializationIntent::SymlinkDirectory { .. }
+        )
+        && entry.access.fs.metadata(&entry.target, false)?.is_symlink()
+    {
+        return match entry.access.fs.metadata(&entry.target, true) {
+            Ok(_) => Ok(Status::Applied),
+            Err(error) if crate::target_fs::is_not_found(&error) => Ok(Status::Broken),
+            Err(error) => Err(error),
+        };
+    }
+    Ok(classify_noop(&entry.intent))
 }
 
 /// Short, human-readable reason a checkout isn't safe to migrate away from
@@ -677,6 +706,7 @@ mod tests {
         fn entry_status(status: Status) -> EntryStatus {
             EntryStatus {
                 entry: DesiredEntry {
+                    access: Default::default(),
                     target: std::path::PathBuf::from("/tmp/target"),
                     provenance: crate::desired::Provenance::Overlay {
                         overlay: "ov".to_string(),
@@ -723,6 +753,7 @@ mod tests {
         fn entry_status(status: Status) -> EntryStatus {
             EntryStatus {
                 entry: DesiredEntry {
+                    access: Default::default(),
                     target: std::path::PathBuf::from("/tmp/target"),
                     provenance: crate::desired::Provenance::Overlay {
                         overlay: "ov".to_string(),
@@ -868,6 +899,7 @@ mod tests {
         fs::write(target.path().join("a.txt"), "edited\n").unwrap();
 
         let entry = DesiredEntry {
+            access: Default::default(),
             target: target.path().to_path_buf(),
             provenance: crate::desired::Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -990,6 +1022,7 @@ mod tests {
         fs::write(&target, "content").unwrap();
 
         let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Overlay {
                 overlay: "demo".to_string(),
@@ -1024,6 +1057,7 @@ mod tests {
         fs::write(&target, "content").unwrap();
 
         let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "demo".to_string(),

@@ -55,6 +55,10 @@ pub enum Operation {
         current: FileMode,
         desired: FileMode,
     },
+    RepairMetadata {
+        current: crate::overlays::Permissions,
+        desired: crate::overlays::Permissions,
+    },
 }
 
 /// Short, human-readable word for a [`MaterializationIntent`], used only by
@@ -88,6 +92,9 @@ impl fmt::Display for PlanStep {
         let target = short_path(&self.entry.target.to_string_lossy());
 
         match (&self.entry.intent, &self.operation) {
+            (_, Operation::RepairMetadata { current, desired }) => {
+                write!(f, "metadata: {target} ({current} -> {desired})")
+            }
             (MaterializationIntent::RenderedFile(file), operation) => write!(
                 f,
                 "rendered file: {target} from {} ({operation:?})",
@@ -337,6 +344,7 @@ mod tests {
 
     fn entry(intent: MaterializationIntent) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target: PathBuf::from("/home/user/.config/app"),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),

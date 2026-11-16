@@ -72,6 +72,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         (None, true) => repo.overlays()?,
         (None, false) => {
             let ctx = Context::builder()
+                .read_only(true)
                 .root(root.clone())
                 .repository(repo.clone())
                 .build();
@@ -162,6 +163,7 @@ async fn build_overlay_diff(
     views: Vec<View>,
 ) -> Result<Report> {
     let ctx = Context::builder()
+        .read_only(true)
         .root(root.to_path_buf())
         .repository(repo.clone())
         .overlay(overlay.clone())

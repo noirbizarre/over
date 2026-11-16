@@ -143,6 +143,7 @@ fn restore_blocking(
         };
         let (repo, managed) = git::discover_source(source)?;
         requests.push(RestorePath {
+            access: entry.access.clone(),
             repository: repo.path().to_path_buf(),
             source: managed.join(relative),
             root: entry.target.clone(),

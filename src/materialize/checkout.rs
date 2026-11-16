@@ -220,6 +220,7 @@ mod tests {
 
     fn entry(target: PathBuf, config: GitRepoConfig) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Git {
                 overlay: "ov".to_string(),

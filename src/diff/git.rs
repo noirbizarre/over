@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result, ensure};
 use git2::{IndexEntryExtendedFlag, Oid, Repository};
 
 use crate::actions::git::diff::{Comparison, Scratch, View};
-use crate::actions::symlink::{LinkType, hard_link_matches};
+use crate::actions::symlink::LinkType;
 use crate::desired::{CheckoutScope, DesiredEntry, DesiredTree, MaterializationIntent, Provenance};
 use crate::materialize::virtual_checkout::snapshot::{canonical_entry, target_content};
 use crate::materialize::virtual_checkout::{git as vc, state};
@@ -120,6 +120,7 @@ impl Report {
                         &selection.routing.target_for(logical),
                         &overlay.root.join(logical),
                         &LinkType::Soft,
+                        &crate::target_fs::Access::inspection(overlay, logical),
                     )?;
                 }
                 linked
@@ -151,13 +152,32 @@ impl Report {
                                 .context("rendered destination has no filename")?,
                         );
                         let mut before = Entries::new();
-                        match std::fs::read(&entry.target) {
+                        let current = match actual::inspect_with(&entry.target, &entry.access.fs)? {
+                            ActualState::Symlink { points_to } => {
+                                // Referent/artifact reads keep the caller's identity, even when the link is protected.
+                                let source = if points_to.is_absolute() {
+                                    points_to
+                                } else {
+                                    entry
+                                        .target
+                                        .parent()
+                                        .context("rendered target has no parent")?
+                                        .join(points_to)
+                                };
+                                std::fs::read(source).map_err(anyhow::Error::from)
+                            }
+                            ActualState::Missing => {
+                                Err(std::io::Error::from(std::io::ErrorKind::NotFound).into())
+                            }
+                            _ => entry.access.fs.read(&entry.target),
+                        };
+                        match current {
                             Ok(bytes) => {
                                 before
                                     .insert(path.clone(), (scratch.repo.blob(&bytes)?, file.mode));
                             }
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                            Err(error) => return Err(error.into()),
+                            Err(error) if crate::target_fs::is_not_found(&error) => {}
+                            Err(error) => return Err(error),
                         }
                         let after = Entries::from([(
                             path.clone(),
@@ -190,7 +210,7 @@ impl Report {
                 }
                 MaterializationIntent::SymlinkFile { source, link_type }
                 | MaterializationIntent::SymlinkDirectory { source, link_type } => {
-                    report.link_diagnostic(&entry.target, source, link_type)?;
+                    report.link_diagnostic(&entry.target, source, link_type, &entry.access)?;
                     // Sidecars can refer to another repository, outside the overlay tree.
                     if matches!(entry.provenance, Provenance::SymlinkSidecar { .. }) {
                         match vc::discover_source(source) {
@@ -282,12 +302,13 @@ impl Report {
         target: &Path,
         source: &Path,
         link_type: &LinkType,
+        access: &crate::target_fs::Access,
     ) -> Result<()> {
-        let problem = match actual::inspect(target)? {
+        let problem = match actual::inspect_with(target, &access.fs)? {
             // Equal bytes alone cannot establish hard-link identity: a replaced
             // target must be reported even when its content has not changed.
             ActualState::File if matches!(link_type, LinkType::Hard) => {
-                match hard_link_matches(source, target) {
+                match crate::materialize::symlink::hard_link_matches_with(source, target, access) {
                     Ok(true) => None,
                     Ok(false) => Some(format!(
                         "replaced hard link (expected {})",
@@ -324,7 +345,15 @@ impl Report {
                         "misdirected symlink (expected {})",
                         source.display()
                     ))
-                } else if !resolved.exists() {
+                } else if if access.fs.is_privileged() {
+                    match access.fs.metadata(target, true) {
+                        Ok(_) => false,
+                        Err(error) if crate::target_fs::is_not_found(&error) => true,
+                        Err(error) => return Err(error),
+                    }
+                } else {
+                    !resolved.exists()
+                } {
                     Some("broken symlink".into())
                 } else {
                     None
@@ -481,7 +510,7 @@ fn source_virtual_comparisons(
         } else {
             ensure!(
                 matches!(
-                    actual::inspect(&entry.target)?,
+                    actual::inspect_with(&entry.target, &entry.access.fs)?,
                     ActualState::Directory | ActualState::Missing
                 ),
                 "virtual checkout '{}' is not an ordinary directory",
@@ -498,7 +527,9 @@ fn source_virtual_comparisons(
                 if !owns(&path) || !scope.owns_target(relative) {
                     continue;
                 }
-                if let Some((content, mode)) = target_content(&entry.target, relative)? {
+                if let Some((content, mode)) =
+                    target_content(&entry.target, relative, &entry.access)?
+                {
                     vc::ensure_supported_path(&base, &index, &path)
                         .context("cannot compare unsupported virtual checkout content")?;
                     let canonical = canonical_entry(
@@ -648,6 +679,7 @@ mod tests {
         std::fs::write(&source, "retained hard-link content").unwrap();
         std::fs::hard_link(&source, &target).unwrap();
         let entry = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "ov".into(),
@@ -696,6 +728,7 @@ mod tests {
         let target = td.path().join("target");
         std::fs::write(&source, "same content").unwrap();
         let entry = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::SymlinkSidecar {
                 overlay: "ov".into(),

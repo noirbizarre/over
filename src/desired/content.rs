@@ -47,8 +47,12 @@ impl std::ops::Deref for RenderedCheckout {
     }
 }
 
-pub(crate) fn validate_destination(file: &RenderedFile, target: &Path) -> Result<()> {
-    let destination = crate::overlays::mapping::location(target)?;
+pub(crate) fn validate_destination(
+    file: &RenderedFile,
+    target: &Path,
+    access: &crate::target_fs::TargetFs,
+) -> Result<()> {
+    let destination = access.location(target)?;
     ensure!(
         destination != crate::overlays::mapping::location(&file.source)?,
         "rendered destination '{}' would overwrite its source template '{}'",

@@ -23,14 +23,15 @@ impl Materializer for EncryptedFileMaterializer {
         let MaterializationIntent::EncryptedFile(recipe) = &entry.intent else {
             unreachable!()
         };
-        match actual::inspect(&entry.target)? {
+        match actual::inspect_with(&entry.target, &entry.access.fs)? {
             ActualState::Missing => Ok(Operation::Create),
             ActualState::File => {
                 if !recipe.crypto.available()? {
                     return Ok(Operation::NeedsUnlock);
                 }
                 let expected = recipe.read(false)?;
-                let current = crate::secrets::SecretBytes::new(fs::read(&entry.target)?);
+                let current =
+                    crate::secrets::SecretBytes::new(entry.access.fs.read(&entry.target)?);
                 if expected.expose() != current.expose() {
                     return Ok(Operation::Conflict {
                         current: ActualState::File,
@@ -40,7 +41,12 @@ impl Materializer for EncryptedFileMaterializer {
                 {
                     use std::os::unix::fs::PermissionsExt;
                     let current = crate::overlays::FileMode::from_bits(
-                        fs::metadata(&entry.target)?.permissions().mode(),
+                        entry
+                            .access
+                            .fs
+                            .metadata(&entry.target, false)?
+                            .permissions()
+                            .mode(),
                     );
                     let desired = entry
                         .permissions
@@ -60,10 +66,16 @@ impl Materializer for EncryptedFileMaterializer {
             return Ok(());
         }
         if let Some(parent) = step.entry.target.parent() {
-            // A file-level target rule may place plaintext outside all walked directory scaffolds.
-            EnsureDir::new(parent.to_path_buf())
-                .execute(ctx.clone())
-                .await?;
+            if step.entry.access.fs.is_privileged() {
+                let target_fs = step.entry.access.fs.clone();
+                let parent = parent.to_owned();
+                tokio::task::spawn_blocking(move || target_fs.create_dir_all(&parent)).await??;
+            } else {
+                // A file-level target rule may place plaintext outside all walked directory scaffolds.
+                EnsureDir::new(parent.to_path_buf())
+                    .execute(ctx.clone())
+                    .await?;
+            }
         }
         let entry = step.entry.clone();
         let prompt = !ctx.no_prompt;
@@ -73,15 +85,23 @@ impl Materializer for EncryptedFileMaterializer {
                 unreachable!()
             };
             let plaintext = recipe.read(prompt)?;
-            crate::git_exclude::ensure_sensitive_target_untracked(&entry.target)?;
-            let guard = crate::materialize::disposal::PathGuard::capture(&entry.target)?;
-            let state = actual::inspect(&entry.target)?;
+            crate::git_exclude::ensure_sensitive_target_untracked_with(
+                &entry.target,
+                &entry.access.fs,
+            )?;
+            let guard = crate::materialize::disposal::PathGuard::capture_with(
+                &entry.target,
+                &entry.access.fs,
+            )?;
+            let state = actual::inspect_with(&entry.target, &entry.access.fs)?;
             ensure!(
                 matches!(state, ActualState::Missing | ActualState::File),
                 "move the obstruction aside before deploying an encrypted file"
             );
             let before = if matches!(state, ActualState::File) {
-                Some(crate::secrets::SecretBytes::new(fs::read(&entry.target)?))
+                Some(crate::secrets::SecretBytes::new(
+                    entry.access.fs.read(&entry.target)?,
+                ))
             } else {
                 None
             };
@@ -106,13 +126,14 @@ impl Materializer for EncryptedFileMaterializer {
             guard.verify()?;
             ensure!(
                 matches!(
-                    actual::inspect(&entry.target)?,
+                    actual::inspect_with(&entry.target, &entry.access.fs)?,
                     ActualState::Missing | ActualState::File
                 ),
                 "encrypted target changed kind before writing"
             );
             if let Some(before) = &before {
-                let current = crate::secrets::SecretBytes::new(fs::read(&entry.target)?);
+                let current =
+                    crate::secrets::SecretBytes::new(entry.access.fs.read(&entry.target)?);
                 ensure!(
                     before.expose() == current.expose(),
                     "encrypted target changed while awaiting authorization; rerun apply"
@@ -120,6 +141,14 @@ impl Materializer for EncryptedFileMaterializer {
             }
             // Later apply failures must never leave a newly published secret eligible for Git staging.
             crate::git_exclude::protect_sensitive_target(&entry)?;
+            if entry.access.fs.is_privileged() {
+                return entry.access.fs.secure_write(
+                    &entry.target,
+                    plaintext.expose(),
+                    before.as_ref().map(|bytes| bytes.expose()),
+                    entry.permissions.map_or(0o600, |mode| mode.bits()),
+                );
+            }
             let mut options = OpenOptions::new();
             options.write(true);
             if matches!(state, ActualState::Missing) {
@@ -186,7 +215,7 @@ pub(crate) async fn prepare(desired: &crate::desired::DesiredTree, ctx: &Ctx) ->
         .iter()
         .filter_map(|entry| {
             if let MaterializationIntent::EncryptedFile(recipe) = &entry.intent {
-                Some((entry.target.clone(), recipe.clone()))
+                Some((entry.target.clone(), recipe.clone(), entry.access.clone()))
             } else {
                 None
             }
@@ -194,11 +223,10 @@ pub(crate) async fn prepare(desired: &crate::desired::DesiredTree, ctx: &Ctx) ->
         .collect();
     let prompt = !ctx.no_prompt;
     tokio::task::spawn_blocking(move || -> Result<()> {
-        for (target, recipe) in recipes {
-            crate::git_exclude::ensure_sensitive_target_untracked(&target)?;
+        for (target, recipe, access) in recipes {
+            crate::git_exclude::ensure_sensitive_target_untracked_with(&target, &access.fs)?;
             ensure!(
-                crate::overlays::mapping::location(&target)?
-                    != crate::overlays::mapping::physical(&recipe.source)?,
+                access.fs.location(&target)? != crate::overlays::mapping::physical(&recipe.source)?,
                 "encrypted destination overlaps its ciphertext source"
             );
             recipe.read(prompt)?;

@@ -272,8 +272,25 @@ impl Report {
 /// Classify a filesystem (non-`Checkout`) entry's `Operation` into a
 /// [`Change`].
 fn classify_fs(entry: &DesiredEntry, operation: &Operation) -> Result<Change> {
+    if let Operation::RepairMetadata { current, desired } = operation {
+        return Ok(Change::Modified(ContentDiff::from_texts(
+            &current.to_string(),
+            &desired.to_string(),
+        )));
+    }
     if let MaterializationIntent::RenderedFile(file) = &entry.intent {
-        return match fs::read(&entry.target) {
+        let current = actual::inspect_with(&entry.target, &entry.access.fs)?;
+        let bytes = match &current {
+            ActualState::Symlink { points_to }
+                if points_to.parent() == crate::materialize::rendered::artifact(file)?.parent() =>
+            {
+                fs::read(points_to).map_err(Into::into)
+            }
+            ActualState::File => entry.access.fs.read(&entry.target),
+            ActualState::Missing => return Ok(Change::Missing),
+            _ => return Ok(Change::Unexpected { actual: current }),
+        };
+        return match bytes {
             Ok(bytes) => match (
                 std::str::from_utf8(&bytes),
                 std::str::from_utf8(&file.bytes),
@@ -282,13 +299,17 @@ fn classify_fs(entry: &DesiredEntry, operation: &Operation) -> Result<Change> {
                 (Ok(old), Ok(new)) => Ok(Change::Modified(ContentDiff::from_texts(old, new))),
                 _ => Ok(Change::Modified(ContentDiff::binary())),
             },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Change::Missing),
-            Err(error) if error.kind() == std::io::ErrorKind::IsADirectory => {
+            Err(error) if crate::target_fs::is_not_found(&error) => Ok(Change::Missing),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::IsADirectory) =>
+            {
                 Ok(Change::Unexpected {
                     actual: ActualState::Directory,
                 })
             }
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         };
     }
     match operation {
@@ -296,7 +317,7 @@ fn classify_fs(entry: &DesiredEntry, operation: &Operation) -> Result<Change> {
         Operation::Create => Ok(Change::Missing),
         // Reuse `status`'s own dangling-soft-symlink check rather than
         // re-deriving it.
-        Operation::Noop => Ok(match status::classify_noop(&entry.intent) {
+        Operation::Noop => Ok(match status::classify_noop_with(entry)? {
             Status::Broken => Change::Broken,
             _ => Change::Unchanged,
         }),
@@ -306,7 +327,7 @@ fn classify_fs(entry: &DesiredEntry, operation: &Operation) -> Result<Change> {
         // what's currently desired — exactly what `Unexpected` already
         // means, no meaningful line diff to show either way.
         Operation::Migrate { .. } => Ok(Change::Unexpected {
-            actual: actual::inspect(&entry.target)?,
+            actual: actual::inspect_with(&entry.target, &entry.access.fs)?,
         }),
         // A permission-only drift (#65): content/kind already matches,
         // only the mode differs — reuse the line-diff renderer for a
@@ -316,6 +337,9 @@ fn classify_fs(entry: &DesiredEntry, operation: &Operation) -> Result<Change> {
             &current.to_string(),
             &desired.to_string(),
         ))),
+        Operation::RepairMetadata { current, desired } => Ok(Change::Modified(
+            ContentDiff::from_texts(&current.to_string(), &desired.to_string()),
+        )),
         Operation::Deferred => {
             anyhow::bail!("entry classification is deferred without a scaffold blocker")
         }
@@ -329,9 +353,9 @@ fn classify_conflict(entry: &DesiredEntry, current: &ActualState) -> Result<Chan
         // A file-symlink was expected, a real file occupies the target:
         // both sides are regular files, just not linked yet — diff their
         // content.
-        (MaterializationIntent::SymlinkFile { source, .. }, ActualState::File) => {
-            Ok(Change::Modified(content_diff_files(&entry.target, source)?))
-        }
+        (MaterializationIntent::SymlinkFile { source, .. }, ActualState::File) => Ok(
+            Change::Modified(content_diff_files(&entry.target, source, &entry.access.fs)?),
+        ),
         // Either symlink kind was expected, a symlink pointing elsewhere
         // is there: diff the target *paths*, never content.
         (
@@ -349,7 +373,10 @@ fn classify_conflict(entry: &DesiredEntry, current: &ActualState) -> Result<Chan
         // diff just the block's content, not the whole file — the rest of
         // the target is never `over`'s concern.
         (MaterializationIntent::PartialFile { content, marker }, ActualState::File) => {
-            let current_text = fs::read_to_string(&entry.target)
+            let current_text = entry
+                .access
+                .fs
+                .read_to_string(&entry.target)
                 .with_context(|| format!("failed to read {}", entry.target.display()))?;
             let existing_block = match partial::find_block(&current_text, marker) {
                 BlockState::Found(x) => x.to_string(),
@@ -375,8 +402,13 @@ fn classify_conflict(entry: &DesiredEntry, current: &ActualState) -> Result<Chan
 /// Read both sides of a file-vs-would-be-symlinked-file conflict and diff
 /// their content, falling back to a binary marker if either side isn't
 /// valid UTF-8 (mirrors git's own "binary files differ").
-fn content_diff_files(actual_path: &Path, desired_path: &Path) -> Result<ContentDiff> {
-    let old = fs::read(actual_path)
+fn content_diff_files(
+    actual_path: &Path,
+    desired_path: &Path,
+    fs: &crate::target_fs::TargetFs,
+) -> Result<ContentDiff> {
+    let old = fs
+        .read(actual_path)
         .with_context(|| format!("failed to read {}", actual_path.display()))?;
     let new = fs::read(desired_path)
         .with_context(|| format!("failed to read {}", desired_path.display()))?;
@@ -548,7 +580,11 @@ fn build_virtual_checkout_file_diffs(
                                 .context("staged modification has no blob")?,
                         )?
                     } else {
-                        fs::read(&on_disk)
+                        entry
+                            .access
+                            .child(&change.path, false)
+                            .fs
+                            .read(&on_disk)
                             .with_context(|| format!("failed to read {}", on_disk.display()))?
                     };
                     Some(
@@ -790,6 +826,7 @@ mod tests {
         )
         .unwrap();
         let entry = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: crate::desired::Provenance::PartialSidecar {
                 overlay: "ov".to_string(),
@@ -828,6 +865,7 @@ mod tests {
         .unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(0o000)).unwrap();
         let entry = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: crate::desired::Provenance::PartialSidecar {
                 overlay: "ov".to_string(),
@@ -855,6 +893,7 @@ mod tests {
         // `Malformed`, which has no block-shaped region to diff against.
         fs::write(&target, "# >>> over: m >>>\nstray, no end marker\n").unwrap();
         let entry = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: crate::desired::Provenance::PartialSidecar {
                 overlay: "ov".to_string(),
@@ -1019,6 +1058,7 @@ mod tests {
     #[test]
     fn dangling_soft_symlink_noop_is_broken() {
         let entry = DesiredEntry {
+            access: Default::default(),
             target: std::path::PathBuf::from("/tmp/target"),
             provenance: crate::desired::Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -1040,6 +1080,7 @@ mod tests {
         let target = td.path().join("target");
         std::fs::create_dir_all(&target).unwrap();
         let entry = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: crate::desired::Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -1121,6 +1162,7 @@ mod tests {
         fs::write(td.path().join("README.md"), "changed").unwrap();
 
         let entry = DesiredEntry {
+            access: Default::default(),
             target: td.path().to_path_buf(),
             provenance: crate::desired::Provenance::Git {
                 overlay: "ov".to_string(),
@@ -1176,6 +1218,7 @@ mod tests {
         repo.remote("origin", url).unwrap();
 
         DesiredEntry {
+            access: Default::default(),
             target: path.to_path_buf(),
             provenance: crate::desired::Provenance::Git {
                 overlay: "ov".to_string(),
@@ -1240,6 +1283,7 @@ mod tests {
         source: std::path::PathBuf,
     ) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: crate::desired::Provenance::Overlay {
                 overlay: "ov".to_string(),

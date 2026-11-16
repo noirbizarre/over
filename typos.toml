@@ -20,3 +20,7 @@ descrption = "descrption"
 
 # `git2::FetchOptions`, not a word — short-lived local variable, not a typo.
 fo = "fo"
+
+[default.extend-identifiers]
+# Native msghdr field used for Unix descriptor passing, not an English word.
+msg_controllen = "msg_controllen"

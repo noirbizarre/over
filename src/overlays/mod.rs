@@ -28,7 +28,7 @@ pub(crate) mod schema;
 
 pub use data::{DataMap, DataValue};
 pub use overlay::Overlay;
-pub use permissions::FileMode;
+pub use permissions::{FileMode, Identity, Permissions};
 pub use repository::{ApplyConfig, Repository, SyncConfig};
 pub use rules::{MaterializationKind, Rule};
 

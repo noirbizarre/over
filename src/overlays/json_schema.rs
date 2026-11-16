@@ -9,7 +9,7 @@ use crate::actions::git::config::AllGitForms;
 use crate::hooks::Hooks;
 
 use super::repository::RootConfig;
-use super::{FileMode, MaterializationKind, Rule};
+use super::{FileMode, MaterializationKind, Permissions, Rule};
 
 pub const CONFIG_SCHEMA_URL: &str = "https://noirbizarre.github.io/over/schemas/config.json";
 pub const OVERLAY_SCHEMA_URL: &str = "https://noirbizarre.github.io/over/schemas/overlay.json";
@@ -68,8 +68,10 @@ struct OverlayDescriptor {
     )]
     mode: Option<MaterializationKind>,
     /// Octal permissions for managed content.
-    #[schemars(default, with = "FileMode", skip_serializing_if = "Option::is_none")]
-    permissions: Option<FileMode>,
+    #[schemars(default, with = "Permissions", skip_serializing_if = "Option::is_none")]
+    permissions: Option<Permissions>,
+    #[schemars(default, with = "bool", skip_serializing_if = "Option::is_none")]
+    sudo: Option<bool>,
     /// Ordered declaration-relative policy overrides.
     #[schemars(default, with = "Vec<Rule>", skip_serializing_if = "Option::is_none")]
     rules: Option<Vec<Rule>>,
@@ -132,6 +134,20 @@ pub(crate) fn file_mode(_: &mut SchemaGenerator) -> Schema {
     // Match the u32 parser's range while permitting leading zeroes, its optional plus sign,
     // and the repeated prefixes removed by trim_start_matches in FileMode::parse.
     json_schema!({"type": "string", "pattern": r"^(0o)*\+?0*([0-7]{1,10}|[0-3][0-7]{10})$"})
+}
+
+pub(crate) fn permissions(generator: &mut SchemaGenerator) -> Schema {
+    let mode = generator.subschema_for::<FileMode>();
+    let identity = json_schema!({"anyOf": [
+        {"type": "integer", "minimum": 0, "maximum": 4294967294_u64},
+        {"type": "string", "pattern": r"^[^\u0000]*[^\s\u0000][^\u0000]*$", "not": {"pattern": "^[0-9]+$"}},
+        {"type": "string", "pattern": "^0*([0-9]{1,9}|[0-3][0-9]{9}|4[01][0-9]{8}|42[0-8][0-9]{7}|429[0-3][0-9]{6}|4294[0-8][0-9]{5}|42949[0-5][0-9]{4}|429496[0-6][0-9]{3}|4294967[01][0-9]{2}|42949672[0-8][0-9]|429496729[0-4])$"}
+    ]});
+    json_schema!({"anyOf": [mode.clone(), {
+        "type": "object", "additionalProperties": false,
+        "properties": {"mode": mode, "owner": identity.clone(), "group": identity},
+        "anyOf": [{"required": ["mode"]}, {"required": ["owner"]}, {"required": ["group"]}]
+    }]})
 }
 
 pub(crate) fn git_config(_: &mut SchemaGenerator) -> Schema {
@@ -276,6 +292,13 @@ mod tests {
 
     #[rstest]
     #[case(json!({}))]
+    #[case(json!({"sudo":true}))]
+    #[case(json!({"sudo":false}))]
+    #[case(json!({"permissions":{"mode":"0600","owner":"root","group":0}}))]
+    #[case(json!({"permissions":{"owner":"0004294967294"}}))]
+    #[case(json!({"rules":[{"path":"config","sudo":false}]}))]
+    #[case(json!({"permissions":"0644","rules":[{"path":"config","permissions":{"owner":123}}]}))]
+    #[case(json!({"hooks":{"post-apply":[{"command":"true","sudo":true}]}}))]
     #[case(json!({"$schema": CONFIG_SCHEMA_URL}))]
     #[case(json!({"$schema": OVERLAY_SCHEMA_URL}))]
     #[case(json!({"target":"~", "description":"Editor", "uses":["base"]}))]
@@ -360,6 +383,14 @@ mod tests {
     #[case(json!({"permissions":644}))]
     #[case(json!({"permissions":"999"}))]
     #[case(json!({"permissions":null}))]
+    #[case(json!({"sudo":null}))]
+    #[case(json!({"sudo":"true"}))]
+    #[case(json!({"permissions":{}}))]
+    #[case(json!({"permissions":{"owner":4294967295_u64}}))]
+    #[case(json!({"permissions":{"group":"4294967295"}}))]
+    #[case(json!({"permissions":{"owner":""}}))]
+    #[case(json!({"permissions":{"user":"root"}}))]
+    #[case(json!({"hooks":{"install":[{"command":"true","sudo":"true"}]}}))]
     #[case(json!({"rules":null}))]
     #[case(json!({"rules":[{"path":"config"}]}))]
     #[case(json!({"rules":[{"path":".", "target":"~/redirected"}]}))]

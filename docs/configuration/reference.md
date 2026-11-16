@@ -40,7 +40,8 @@ Defaults below apply when no inherited value or matching rule supplies a value.
 | `uses` | Both | List of strings | No dependencies | Literal repository-relative overlay identifiers, composed in order. |
 | `exclude` | Both | String or list of strings | No exclusions | Source exclusion globs relative to the declaring descriptor. |
 | `mode` | Both | [Materialization mode](#materialization-mode) | `symlink` | Materialization baseline for this scope. |
-| `permissions` | Both | [Octal string](#permissions) | No explicit assignment | Permission baseline for partial and generated outputs. |
+| `permissions` | Both | [Octal string or object](#permissions) | No explicit assignment | Mode and ownership policy for managed destinations. |
+| `sudo` | Both | Boolean | `false` | Use elevated target-filesystem access; rules can override it. |
 | `rules` | Both | List of [rule objects](#rules) | No local rules | Ordered source-path assignments of target, mode, and permissions. |
 | `data` | Both | Mapping | Empty mapping | Local-only consumer metadata for templates and external tools. |
 | `host` | Both | Mapping | Empty mapping | Local host defaults, overridden by the configured host overlay's own mapping. |
@@ -105,7 +106,7 @@ selected overlay:
 | --- | --- |
 | `description`, `target` | Nearest declaration wins. |
 | `uses`, `exclude` | Nearest declaration replaces the inherited value; `[]` clears it. |
-| `mode`, `permissions`, `rules` | At each scope, explicit baselines apply before that scope's rules. Rules accumulate; `rules: []` does not clear inherited rules. |
+| `mode`, `permissions`, `sudo`, `rules` | At each scope, explicit baselines apply before that scope's rules. Permission components inherit independently. Rules accumulate; `rules: []` does not clear inherited rules. |
 | `data`, `host` | Local declarations only; never inherited. Both must be mappings. Effective `host` merges local defaults with configured-host overrides; lists, scalars, and nested nulls replace. |
 | `git` | Tables merge by key; nearer conflicting values replace earlier values. |
 | `hooks` | Never inherited. Root hooks remain repository-scoped; child hooks belong to their own overlay. |
@@ -153,9 +154,21 @@ ownership, target-mapping constraints, and lifecycle guidance.
 
 ### Permissions
 
-`permissions` and `rules[].permissions` require quoted octal strings, such as
-`"600"`, `"0644"`, or `"0o644"`, in both root and overlay descriptors.
-They manage partial-file and generated outputs (including
+`permissions` and `rules[].permissions` accept quoted octal strings, such as
+`"600"`, `"0644"`, or `"0o644"`, or an object with the following fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `mode` | Octal string | Desired access mode, with the same coverage as the shorthand. |
+| `owner` | Account name or numeric UID | Desired destination owner. |
+| `group` | Group name or numeric GID | Desired destination group. |
+
+At least one component is required. Components inherit independently: assigning
+an owner does not clear an inherited mode or group. Unspecified ownership is
+preserved. Names are resolved using the local account database; decimal strings
+also accept numeric IDs. Ownership assignments do not implicitly enable sudo.
+
+Modes manage partial-file and generated outputs (including
 extension-stripped files and generated checkout leaves), without
 chmod of tracked symlink sources or independent chmod of ordinary virtual
 checkout content. Without an assignment, partial permissions are unmanaged;
@@ -165,10 +178,34 @@ access permissions unless explicitly assigned; sync repairs explicit permission
 drift even when content matches.
 See [File permissions](overlay.md#file-permissions).
 
+Owner/group also apply to ordinary checkout files, managed directories, and
+destination symlinks. Symlink ownership changes affect the link itself, never its
+referent. Hardlinked regular outputs detach before metadata changes, subject to
+the existing platform metadata-preservation limits. A declared hard link needing
+an owner/group different from its source uses the existing soft-link fallback;
+this preserves independent ownership and verifiable link provenance.
+
+### Elevated access (`sudo`)
+
+Set `sudo: true` on an overlay or a rule to use elevated access to its managed
+targets. Explicit `sudo: false` overrides inherited elevation. Target inspection
+and mutation share one lazily started sudo helper per invocation, including
+explicitly elevated hooks. Valid cached sudo credentials are reused according to
+system sudo policy; Over does not collect passwords. `--no-prompt` uses sudo's
+noninteractive mode, allowing cached/passwordless authorization and failing if
+interaction is required. Previews may authenticate for protected reads, but
+cannot mutate targets or execute hooks.
+
+Git, rendering, secrets resolution, source updates, and XDG state/artifacts retain
+the invoking account. Declared Git provisioning cannot use sudo. Newly created
+implicit parents use the creating account's defaults; existing implicit parents
+are not assigned the leaf's ownership. Whole-directory symlinks reject child
+policies they cannot represent. Elevation and owner/group policy require Unix.
+
 ## Rules
 
 Each `rules` entry requires `path` and at least one non-null assignment among
-`target`, `mode`, `permissions`, `template`, and `strip_extension`.
+`target`, `mode`, `permissions`, `sudo`, `template`, and `strip_extension`.
 
 | Attribute | Scope | Type | Default / requirement | Purpose |
 | --- | --- | --- | --- | --- |
@@ -177,7 +214,8 @@ Each `rules` entry requires `path` and at least one non-null assignment among
 | `rules[].strip_extension` | Both | Boolean | `false` | Remove the final source filename extension independently of rendering. |
 | `rules[].target` | Both | String | No assignment | Templated destination prefix replacing the matched literal source prefix. |
 | `rules[].mode` | Both | Materialization mode | No assignment | Assign `symlink`, `symlink-directory`, or `checkout`. |
-| `rules[].permissions` | Both | Octal string | No assignment | Assign permissions independently of target and mode. |
+| `rules[].permissions` | Both | Octal string or permissions object | No assignment | Assign mode, owner, and group independently. |
+| `rules[].sudo` | Both | Boolean | Inherit | Explicitly enable or disable elevated target access. |
 
 Selectors and targets must not be empty or whitespace-only. `.` selectors are
 forbidden; set overlay-wide baselines directly. Globs may assign mode and
@@ -341,6 +379,7 @@ are available in both descriptor scopes, subject to their event's scope.
 | Attribute | Scope | Type | Default / requirement | Purpose |
 | --- | --- | --- | --- | --- |
 | `command` | Both | String | Required | Nonempty shell command; templated before execution through `sh -c`. |
+| `sudo` | Both | Boolean | `false` | Execute this command through the invocation's shared sudo helper. |
 | `env` | Both | Mapping of names to strings | No overrides | Additional process environment; values are templated, names are literal. |
 | `cwd` | Both | String | Repository source root for root hooks; owning overlay source root for child hooks | Templated working directory; explicit relative paths are repository-root-relative. |
 | `when` | Both | String | Always run | Bare MiniJinja condition expression, without `{{ }}`. |
@@ -381,6 +420,11 @@ dependency-first in `uses` order; shared dependencies run once. Metadata-only
 participation, dry runs, and read-only commands do not execute hooks. Each
 command runs in a separate shell; template substitution is not shell escaping.
 Failures stop later hooks without undoing completed effects.
+Hook elevation is explicit: overlay/rule `sudo` does not elevate unmarked hooks.
+Elevated commands use sudo's environment, HOME, and PATH, plus explicit hook
+`env` and authoritative lifecycle variables. Rendering and condition evaluation
+remain unprivileged. Working directories and interactive standard streams are
+preserved; `--no-prompt` governs authentication, not the hook program's own input.
 See [Lifecycle hooks](root.md#lifecycle-hooks) for context, secrets, environment,
 ordering, and retry behavior, and [Install hooks](../install-config.md) for examples.
 

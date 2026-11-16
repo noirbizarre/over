@@ -177,7 +177,24 @@ fn replace_file_with_policy(
                     );
                 }
             }
-            let mut output = fs::OpenOptions::new().write(true).open(target)?;
+            let mut options = fs::OpenOptions::new();
+            options.write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                // A raced-in symlink must not redirect a write, especially in the sudo helper.
+                options.custom_flags(libc::O_NOFOLLOW);
+            }
+            let mut output = options.open(target)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let opened = output.metadata()?;
+                anyhow::ensure!(
+                    opened.dev() == metadata.dev() && opened.ino() == metadata.ino(),
+                    "target changed before writing"
+                );
+            }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -239,6 +256,18 @@ fn replace_file_with_policy(
     fs::set_permissions(&prepared, desired)?;
     fs::rename(&prepared, target)?;
     Ok(())
+}
+
+/// Metadata repair may detach a readonly inode without authorizing a content write.
+#[cfg(unix)]
+pub(crate) fn detach_for_metadata(path: &Path) -> Result<()> {
+    let bytes = fs::read(path)?;
+    replace_file_with_policy(
+        path,
+        bytes,
+        |permissions| permissions,
+        PreparationPolicy::PermissionRepair,
+    )
 }
 
 #[cfg(target_os = "linux")]

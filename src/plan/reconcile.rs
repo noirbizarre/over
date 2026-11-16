@@ -4,7 +4,7 @@ use anyhow::{Context as _, Result};
 
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent};
 use crate::exec::Ctx;
-use crate::materialize::MaterializerRegistry;
+use crate::materialize::{Materializer, MaterializerRegistry};
 use crate::ui::style;
 
 use super::step::{Operation, PlanStep};
@@ -17,6 +17,7 @@ fn is_actionable(operation: &Operation) -> bool {
         Operation::Create
         | Operation::Conflict { .. }
         | Operation::Repair { .. }
+        | Operation::RepairMetadata { .. }
         | Operation::NeedsUnlock => true,
         Operation::Migrate { blocked, .. } => blocked.is_none(),
         Operation::Noop | Operation::Deferred => false,
@@ -63,7 +64,7 @@ fn classify(
         };
         if !owned {
             operation = Operation::Conflict {
-                current: super::actual::inspect(&entry.target)?,
+                current: super::actual::inspect_with(&entry.target, &entry.access.fs)?,
             };
         }
     }
@@ -86,7 +87,32 @@ fn classify(
             blocked: Some("checkout to recursive links requires unapplying its old layout first".into()),
         };
     }
+    if matches!(operation, Operation::Noop)
+        && let Some((current, desired)) = metadata_drift(entry)?
+    {
+        operation = Operation::RepairMetadata { current, desired };
+    }
     Ok(operation)
+}
+
+fn metadata_drift(
+    entry: &DesiredEntry,
+) -> Result<Option<(crate::overlays::Permissions, crate::overlays::Permissions)>> {
+    let drift = if entry.intent.is_virtual_checkout() {
+        crate::materialize::virtual_checkout::metadata::drift(entry)?
+    } else {
+        entry.access.metadata_drift(&entry.target)?
+    };
+    #[cfg(unix)]
+    if drift.is_some() && matches!(entry.intent, MaterializationIntent::EncryptedFile(_)) {
+        use std::os::unix::fs::MetadataExt;
+        // Metadata repair must not bypass encrypted output's no-plaintext-staging invariant.
+        anyhow::ensure!(
+            entry.access.fs.metadata(&entry.target, false)?.nlink() == 1,
+            "hard-linked encrypted destinations are unsupported"
+        );
+    }
+    Ok(drift)
 }
 
 /// The reconciliation plan for a [`DesiredTree`]: one [`PlanStep`] per
@@ -138,7 +164,10 @@ impl Plan {
             }
             let operation = if reporting && entry.intent.is_virtual_checkout() {
                 // Materializer classification repeats Git/state reads and can discover untracked targets.
-                Operation::Noop
+                match metadata_drift(entry)? {
+                    Some((current, desired)) => Operation::RepairMetadata { current, desired },
+                    None => Operation::Noop,
+                }
             } else {
                 classify(desired, entry, &registry)?
             };
@@ -154,7 +183,11 @@ impl Plan {
                 if reporting || blocker.is_some() {
                     Ok(None)
                 } else {
-                    crate::materialize::disposal::PathGuard::capture(&step.entry.target).map(Some)
+                    crate::materialize::disposal::PathGuard::capture_with(
+                        &step.entry.target,
+                        &step.entry.access.fs,
+                    )
+                    .map(Some)
                 }
             })
             .collect::<Result<_>>()?;
@@ -243,8 +276,14 @@ impl Plan {
             guard.verify()?;
         }
         let progress = ctx.ui_progress.phase("Reconciling files");
+        let mut directory_metadata = Vec::new();
 
         for (index, step) in self.steps.iter().enumerate() {
+            if ctx.defer_partials
+                && matches!(step.entry.intent, MaterializationIntent::PartialFile { .. })
+            {
+                continue;
+            }
             let refreshed;
             let step = if let Some(parent) = &self.blocked_by[index] {
                 if ctx.dry_run {
@@ -309,6 +348,48 @@ impl Plan {
             }
             progress.set_message(format!("{step}"));
 
+            if let Operation::RepairMetadata { desired, .. } = &step.operation {
+                if !ctx.dry_run {
+                    if matches!(
+                        step.entry.intent,
+                        MaterializationIntent::SymlinkFile {
+                            link_type: crate::actions::symlink::LinkType::Hard,
+                            ..
+                        }
+                    ) {
+                        crate::materialize::SymlinkMaterializer
+                            .materialize(ctx.clone(), step)
+                            .await?;
+                        anyhow::ensure!(
+                            matches!(
+                                crate::materialize::SymlinkMaterializer.classify(&step.entry)?,
+                                Operation::Noop
+                            ),
+                            "hard-link target changed during ownership repair"
+                        );
+                    }
+                    if step.entry.intent.is_virtual_checkout() {
+                        let entry = step.entry.clone();
+                        tokio::task::spawn_blocking(move || {
+                            crate::materialize::virtual_checkout::metadata::apply(&entry)
+                        })
+                        .await??;
+                        continue;
+                    }
+                    if matches!(step.entry.intent, MaterializationIntent::Directory) {
+                        directory_metadata
+                            .push((step.entry.access.clone(), step.entry.target.clone()));
+                        continue;
+                    }
+                    let fs = step.entry.access.fs.clone();
+                    let target = step.entry.target.clone();
+                    let desired = desired.clone();
+                    tokio::task::spawn_blocking(move || fs.set_metadata(&target, &desired))
+                        .await??;
+                }
+                continue;
+            }
+
             let materializer = registry.find(&step.entry.intent).with_context(|| {
                 format!(
                     "no materializer registered for '{}'",
@@ -321,6 +402,24 @@ impl Plan {
                 .with_context(|| {
                     format!("failed to reconcile '{}'", step.entry.target.display())
                 })?;
+            if !ctx.dry_run
+                && step.entry.access.has_metadata()
+                && matches!(
+                    materializer.classify(&step.entry)?,
+                    Operation::Noop | Operation::Repair { .. }
+                )
+            {
+                let access = step.entry.access.clone();
+                let target = step.entry.target.clone();
+                if matches!(step.entry.intent, MaterializationIntent::Directory) {
+                    directory_metadata.push((access, target));
+                } else {
+                    tokio::task::spawn_blocking(move || {
+                        access.fs.set_metadata(&target, &access.permissions)
+                    })
+                    .await??;
+                }
+            }
             if !ctx.dry_run
                 && step.entry.target.is_dir()
                 && !step.entry.target.is_symlink()
@@ -346,6 +445,13 @@ impl Plan {
             }
         }
 
+        // Restrictive ownership/modes belong after child publication, deepest first.
+        for (access, target) in directory_metadata.into_iter().rev() {
+            tokio::task::spawn_blocking(move || {
+                access.fs.set_metadata(&target, &access.permissions)
+            })
+            .await??;
+        }
         Ok(())
     }
 
@@ -507,6 +613,7 @@ mod tests {
         let source = td.path().join("source");
         std::fs::write(&source, "overlay").unwrap();
         let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            access: Default::default(),
             target: alias.join("file"),
             provenance: Provenance::Overlay {
                 overlay: "ov".into(),
@@ -558,6 +665,7 @@ mod tests {
             .into_iter()
             .map(|operation| PlanStep {
                 entry: DesiredEntry {
+                    access: Default::default(),
                     target: PathBuf::from("/target"),
                     provenance: Provenance::Overlay {
                         overlay: "ov".into(),
@@ -742,6 +850,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         td.child("blocker").write_str("unmanaged").unwrap();
         let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            access: Default::default(),
             target: td.path().join("blocker").join(suffix),
             provenance: Provenance::Overlay {
                 overlay: "ov".into(),
@@ -1061,6 +1170,7 @@ mod tests {
         let c = ctx(td.path().to_path_buf(), repo, None);
         let target = td.path().join("some_target");
         let entry = DesiredEntry {
+            access: Default::default(),
             target: target.clone(),
             provenance: Provenance::Overlay {
                 overlay: "ov".to_string(),
@@ -1431,5 +1541,43 @@ mod tests {
             "local edit",
             "uncommitted change must remain"
         );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn encrypted_ownership_repair_cannot_detach_plaintext_into_a_scratch_file() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("private");
+        let alias = temp.path().join("unowned");
+        std::fs::write(&target, "private").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::hard_link(&target, &alias).unwrap();
+        let uid = std::fs::metadata(&target).unwrap().uid();
+        let mut access = crate::target_fs::Access::default();
+        access.permissions.owner =
+            Some(crate::overlays::Identity::Id(if uid == 0 { 1 } else { 0 }));
+        let entry = crate::desired::DesiredEntry {
+            access,
+            target: target.clone(),
+            provenance: crate::desired::Provenance::Overlay {
+                overlay: "private".into(),
+                source: temp.path().join("unused.age"),
+            },
+            intent: crate::desired::MaterializationIntent::EncryptedFile(
+                crate::secrets::EncryptedFile {
+                    source: temp.path().join("unused.age"),
+                    crypto: std::sync::Arc::default(),
+                },
+            ),
+            permissions: None,
+        };
+        assert!(
+            super::metadata_drift(&entry)
+                .unwrap_err()
+                .to_string()
+                .contains("hard-linked encrypted")
+        );
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 2);
+        assert_eq!(std::fs::metadata(target).unwrap().nlink(), 2);
     }
 }

@@ -101,7 +101,7 @@ fn inherited_local_git_sources_keep_the_declaring_root() {
 #[case("rules: [{path: config, materialization: checkout}]\n", "mode")]
 #[case(
     "rules: [{path: config}]\n",
-    "must set target, mode, permissions, template or strip_extension"
+    "must set target, mode, permissions, sudo, template or strip_extension"
 )]
 #[case(
     "rules: [{path: '.', target: '~/redirected'}]\n",

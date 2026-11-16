@@ -155,6 +155,10 @@ schemars = { version = "1", optional = true }
 # Safe xattr access includes POSIX ACLs; replacement must not drop either.
 xattr = "1.6"
 
+[target.'cfg(unix)'.dependencies]
+# NSS account lookup and descriptor passing keep privileged I/O out of subprocess arguments.
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 # Already used by same-file; std's Windows link count is not stable.
 winapi-util = "0.1"

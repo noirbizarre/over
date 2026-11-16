@@ -76,10 +76,13 @@ impl Materializer for PartialFileMaterializer {
         let MaterializationIntent::PartialFile { content, marker } = &entry.intent else {
             unreachable!("MaterializerRegistry only calls classify() after handles() passed")
         };
-        match actual::inspect(&entry.target)? {
+        match actual::inspect_with(&entry.target, &entry.access.fs)? {
             ActualState::Missing => Ok(Operation::Create),
             ActualState::File => {
-                let current = fs::read_to_string(&entry.target)
+                let current = entry
+                    .access
+                    .fs
+                    .read_to_string(&entry.target)
                     .with_context(|| format!("failed to read {}", entry.target.display()))?;
                 Ok(match find_block(&current, marker) {
                     // No block yet: inserting one is purely additive, same
@@ -89,7 +92,7 @@ impl Materializer for PartialFileMaterializer {
                     // (#65) might still be wrong, in which case only a
                     // `chmod` is needed, not a rewrite.
                     BlockState::Found(existing) if existing == canonical_content(content) => {
-                        match permission_drift(&entry.target, entry.permissions)? {
+                        match permission_drift_with(entry)? {
                             Some((current, desired)) => Operation::Repair { current, desired },
                             None => Operation::Noop,
                         }
@@ -112,6 +115,56 @@ impl Materializer for PartialFileMaterializer {
         let MaterializationIntent::PartialFile { content, marker } = &step.entry.intent else {
             unreachable!("MaterializerRegistry only calls materialize() after handles() passed")
         };
+        if step.entry.access.fs.is_privileged() {
+            if ctx.dry_run {
+                return Ok(());
+            }
+            let entry = step.entry.clone();
+            let marker = marker.clone();
+            let content = content.clone();
+            return tokio::task::spawn_blocking(move || -> Result<()> {
+                let fs = &entry.access.fs;
+                if matches!(step_operation(&entry)?, Operation::Repair { .. }) {
+                    return fs.set_metadata(&entry.target, &entry.access.permissions);
+                }
+                let current = match actual::inspect_with(&entry.target, fs)? {
+                    ActualState::Missing => String::new(),
+                    ActualState::File => fs.read_to_string(&entry.target)?,
+                    _ => anyhow::bail!("protected partial target is not a regular file"),
+                };
+                let updated = match find_block(&current, &marker) {
+                    BlockState::Absent => {
+                        crate::actions::partial::append_block(&current, &marker, &content)
+                    }
+                    BlockState::Found(existing) if existing == canonical_content(&content) => {
+                        current
+                    }
+                    BlockState::Found(_) | BlockState::Malformed => {
+                        if !crate::actions::partial::resolve_block_conflict(
+                            &ctx,
+                            &entry.target,
+                            &marker,
+                            &current,
+                            &content,
+                        )? {
+                            return Ok(());
+                        }
+                        match find_block(&current, &marker) {
+                            BlockState::Found(_) => {
+                                crate::actions::partial::replace_block(&current, &marker, &content)
+                            }
+                            _ => crate::actions::partial::append_block(&current, &marker, &content),
+                        }
+                    }
+                };
+                if let Some(parent) = entry.target.parent() {
+                    fs.create_dir_all(parent)?;
+                }
+                fs.write(&entry.target, updated.as_bytes(), entry.permissions)?;
+                fs.set_metadata(&entry.target, &entry.access.permissions)
+            })
+            .await?;
+        }
         // Content already matches (#65) — only the permission mode needs
         // fixing, so skip `EnsurePartialBlock` entirely (it would otherwise
         // rewrite an already-correct block for no reason).
@@ -127,6 +180,107 @@ impl Materializer for PartialFileMaterializer {
     }
 }
 
+fn step_operation(entry: &DesiredEntry) -> Result<Operation> {
+    PartialFileMaterializer.classify(entry)
+}
+
+fn permission_drift_with(entry: &DesiredEntry) -> Result<Option<(FileMode, FileMode)>> {
+    if !entry.access.fs.is_privileged() {
+        return permission_drift(&entry.target, entry.permissions);
+    }
+    #[cfg(unix)]
+    if let Some(desired) = entry.permissions {
+        use std::os::unix::fs::PermissionsExt;
+        let current = FileMode::from_bits(
+            entry
+                .access
+                .fs
+                .metadata(&entry.target, false)?
+                .permissions()
+                .mode(),
+        );
+        return Ok((current != desired).then_some((current, desired)));
+    }
+    Ok(None)
+}
+
+pub(crate) fn reconcile_partials(entries: &[DesiredEntry], ctx: Ctx) -> Result<()> {
+    use crate::actions::partial::{
+        append_block, authorize_structural_conflict, replace_block, resolve_block_conflict,
+    };
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<std::path::PathBuf, Vec<&DesiredEntry>> = BTreeMap::new();
+    for entry in entries
+        .iter()
+        .filter(|entry| matches!(entry.intent, MaterializationIntent::PartialFile { .. }))
+    {
+        groups
+            .entry(entry.access.fs.location(&entry.target)?)
+            .or_default()
+            .push(entry);
+    }
+    for group in groups.values() {
+        let entry = group[0];
+        let fs = &entry.access.fs;
+        let guard = crate::materialize::disposal::PathGuard::capture_with(&entry.target, fs)?;
+        let current = actual::inspect_with(&entry.target, fs)?;
+        let original = if matches!(current, ActualState::File) {
+            fs.read_to_string(&entry.target)?
+        } else {
+            String::new()
+        };
+        let structural = matches!(
+            current,
+            ActualState::Directory | ActualState::Symlink { .. }
+        );
+        if structural {
+            entry.access.validate_removal(&entry.target)?;
+            if !authorize_structural_conflict(&ctx, &entry.target)? {
+                continue;
+            }
+        }
+        let mut updated = original.clone();
+        let mut permissions = crate::overlays::Permissions::default();
+        for entry in group {
+            let MaterializationIntent::PartialFile { content, marker } = &entry.intent else {
+                unreachable!()
+            };
+            match find_block(&updated, marker) {
+                BlockState::Absent => updated = append_block(&updated, marker, content),
+                BlockState::Found(existing) if existing == canonical_content(content) => {}
+                BlockState::Found(_) | BlockState::Malformed => {
+                    if !resolve_block_conflict(&ctx, &entry.target, marker, &updated, content)? {
+                        continue;
+                    }
+                    updated = match find_block(&updated, marker) {
+                        BlockState::Found(_) => replace_block(&updated, marker, content),
+                        _ => append_block(&updated, marker, content),
+                    };
+                }
+            }
+            permissions.merge(&entry.access.permissions);
+        }
+        guard.verify()?;
+        if matches!(current, ActualState::File) {
+            anyhow::ensure!(
+                fs.read_to_string(&entry.target)? == original,
+                "partial target changed while awaiting authorization"
+            );
+        }
+        if structural {
+            entry.access.remove_target(&entry.target)?;
+        }
+        if updated != original || !matches!(current, ActualState::File) {
+            if let Some(parent) = entry.target.parent() {
+                fs.create_dir_all(parent)?;
+            }
+            fs.write(&entry.target, updated.as_bytes(), permissions.mode)?;
+        }
+        fs.set_metadata(&entry.target, &permissions)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,6 +291,7 @@ mod tests {
 
     fn entry(target: PathBuf, content: &str, marker: &str) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::PartialSidecar {
                 overlay: "ov".to_string(),

@@ -41,6 +41,7 @@ pub struct ResolvedMappings {
     /// Only layout discontinuities become independently walked roots.
     pub boundaries: BTreeMap<PathBuf, PathBuf>,
     assignments: Vec<TargetAssignment>,
+    access: crate::target_fs::Access,
 }
 
 /// Normalize lexically: resolving symlinks would turn managed target links
@@ -224,6 +225,12 @@ impl ResolvedMappings {
             base,
             boundaries: BTreeMap::new(),
             assignments,
+            access: crate::target_fs::Access::new(
+                ctx,
+                std::sync::Arc::new(overlay.clone()),
+                Path::new(""),
+                true,
+            ),
         };
         let mut prefixes: Vec<_> = routing
             .assignments
@@ -255,7 +262,11 @@ impl ResolvedMappings {
         // Validate final regions, not dead declarations superseded by later rules.
         for (source, target) in &routing.boundaries {
             let key = source.display();
-            let physical_target = physical_destination(target, &root.join(source))?;
+            let properties = super::rules::resolve_with_origins(overlay, source, false);
+            let access =
+                ctx.target_fs
+                    .target(properties.sudo, ctx.no_prompt, ctx.dry_run || ctx.read_only);
+            let physical_target = access.physical_destination(target, &root.join(source))?;
             let physical_root = physical(&root)?;
             ensure!(
                 !overlay
@@ -303,7 +314,11 @@ impl ResolvedMappings {
             && routing.target_for(Path::new("")) != routing.base
         {
             let root_target = routing.target_for(Path::new(""));
-            let physical_target = physical_destination(&root_target, &root)?;
+            let properties = super::rules::resolve_with_origins(overlay, Path::new(""), true);
+            let access =
+                ctx.target_fs
+                    .target(properties.sudo, ctx.no_prompt, ctx.dry_run || ctx.read_only);
+            let physical_target = access.physical_destination(&root_target, &root)?;
             let physical_root = physical(&root)?;
             ensure!(
                 !root_target.starts_with(&root)
@@ -354,14 +369,32 @@ impl ResolvedMappings {
         let mut matches = BTreeMap::new();
         // Lexical routing remains usable beneath a broken link or obstructed scaffold.
         // Such paths still need status/repair; an unavailable alias adds no evidence.
-        let identity = alias_location(&target)?;
+        let query_access = std::iter::once((Path::new(""), &self.base))
+            .chain(
+                self.assignments
+                    .iter()
+                    .map(|assignment| (assignment.source.as_path(), &assignment.target)),
+            )
+            .filter_map(|(source, destination)| {
+                target
+                    .strip_prefix(destination)
+                    .ok()
+                    .map(|tail| join_suffix(source, tail))
+            })
+            .filter(|source| self.target_for(source) == target)
+            .map(|source| self.access.child(&source, false).fs)
+            .find(|access| access.is_privileged());
+        let identity = match query_access {
+            Some(access) => alias_location_with(&target, &access)?,
+            None => alias_location(&target)?,
+        };
         for (source, destination) in std::iter::once((Path::new(""), &self.base)).chain(
             self.assignments
                 .iter()
                 .map(|assignment| (assignment.source.as_path(), &assignment.target)),
         ) {
             let destination_identity = if identity.is_some() {
-                alias_location(destination)?
+                alias_location_with(destination, &self.access.child(source, true).fs)?
             } else {
                 None
             };
@@ -371,9 +404,13 @@ impl ResolvedMappings {
                     continue;
                 }
                 reserved |= target.starts_with(boundary_target);
-                if let (Some(identity), Some(boundary)) =
-                    (&identity, alias_location(boundary_target)?)
-                {
+                if let (Some(identity), Some(boundary)) = (
+                    &identity,
+                    alias_location_with(
+                        boundary_target,
+                        &self.access.child(boundary_source, true).fs,
+                    )?,
+                ) {
                     reserved |= identity.starts_with(boundary);
                 }
                 if reserved {
@@ -395,7 +432,9 @@ impl ResolvedMappings {
                     let aliases_match = if forward != target
                         && let Some(identity) = &identity
                     {
-                        alias_location(&forward)?.as_ref() == Some(identity)
+                        alias_location_with(&forward, &self.access.child(&logical, false).fs)?
+                            .as_ref()
+                            == Some(identity)
                     } else {
                         false
                     };
@@ -463,6 +502,29 @@ fn alias_location(path: &Path) -> Result<Option<PathBuf>> {
         {
             // A broken link or obstructed scaffold has lexical ownership but no alias evidence.
             tracing::debug!(%error, path = %path.display(), "path has no physical alias evidence");
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn alias_location_with(
+    path: &Path,
+    access: &crate::target_fs::TargetFs,
+) -> Result<Option<PathBuf>> {
+    if !access.is_privileged() {
+        return alias_location(path);
+    }
+    match access.location(path) {
+        Ok(location) => Ok(Some(location)),
+        Err(error)
+            if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                )
+            }) =>
+        {
             Ok(None)
         }
         Err(error) => Err(error),

@@ -423,7 +423,7 @@ fn stage_entries_with(
             );
             // Leaf metadata alone follows ancestor links and can import external
             // secrets. Share patch staging's root-and-ancestor checked read.
-            match snapshot::target_content(&entry.target, &relative)? {
+            match snapshot::target_content(&entry.target, &relative, &entry.access)? {
                 Some((bytes, mode)) => {
                     let (oid, mode) = snapshot::canonical_entry(
                         repo,

@@ -83,6 +83,7 @@ fn execute_blocking(home: PathBuf, verbose: bool, args: &Params) -> Result<()> {
             .map_err(|error| anyhow!("{error}"))?,
         (None, false) => {
             let ctx = Context::builder()
+                .read_only(true)
                 .root(root.clone())
                 .repository(repo.clone())
                 .build();

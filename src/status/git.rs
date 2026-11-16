@@ -415,6 +415,7 @@ mod tests {
 
     fn entry(target: std::path::PathBuf, config: GitRepoConfig) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Git {
                 overlay: "ov".to_string(),
@@ -811,6 +812,7 @@ mod tests {
     /// distinction `inspect` branches on.
     fn declared_entry(target: std::path::PathBuf, config: GitRepoConfig) -> DesiredEntry {
         DesiredEntry {
+            access: Default::default(),
             target,
             provenance: Provenance::Git {
                 overlay: "ov".to_string(),

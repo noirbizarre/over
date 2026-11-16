@@ -54,7 +54,8 @@ other's files; overlapping ownership is a conflict.
 | `uses` | List of repository-relative overlay names | Nearest list replaces the inherited list; `[]` clears it |
 | `exclude` | Source exclusion glob or list of globs | Nearest declaration wins with its original base; `[]` clears it |
 | `mode` | Directory materialization baseline | Ordered policy cascade |
-| `permissions` | Octal baseline for directly written content | Ordered policy cascade, independent of mode |
+| `permissions` | Octal mode or mode/owner/group object | Ordered cascade, independent per component |
+| `sudo` | Elevated target-filesystem access | Ordered cascade; explicit false disables inheritance |
 | `rules` | Ordered path-specific target/mode/permission assignments | All scopes contribute; `[]` does not clear ancestor rules |
 | `data` | Consumer-owned metadata mapping | Local only; never inherited |
 | `host` | Local host defaults | Never inherited; configured host overrides local defaults |
@@ -368,7 +369,7 @@ guidance. Mode and permissions use the same rule cascade as target routing.
 
 ### File permissions
 
-Use an octal **string** for a baseline or path-specific assignment:
+Use an octal **string** for a mode baseline or path-specific assignment:
 
 ```toml
 # ~/.dotfiles/apps/shell/over.toml
@@ -396,6 +397,46 @@ checkout files preserve access permissions unless explicitly assigned. Generated
 selectors use the source path before extension stripping. Permission drift is a
 pending change fixed by apply or generated-checkout sync, not a blocking content
 conflict.
+
+To assign ownership, use a permissions object. Each component inherits
+independently, and mode strings remain supported:
+
+```yaml
+sudo: true
+permissions:
+  owner: root
+  group: root
+rules:
+  - path: daemon
+    permissions:
+      mode: "0644"
+  - path: user-files
+    sudo: false
+```
+
+Use the sidecar stem as the selector (for `daemon.partial.yaml`, use `daemon`).
+Owner/group accept local names or numeric IDs and apply to managed destinations,
+including directories and ordinary checkout files. Destination symlink ownership
+is independent of its source; Over never chowns the referent. Hardlinks are
+detached when required to protect other aliases. Declared hard links use a soft
+link fallback when owner/group must differ from the source, preserving ownership
+without treating an unmarked regular copy as a managed link.
+
+### Sudo mode
+
+Set `sudo: true` for the entire overlay or individual rules. The normal sudo
+authentication mechanism is used once per invocation, reusing an existing valid
+credential cache when sudo policy permits. One helper stays available for all
+selected overlays and explicitly elevated hooks. `--no-prompt` permits only
+noninteractive sudo authorization. Dry runs and inspection may authenticate when
+reading protected targets, without changing them.
+
+Git, source files, templates, and user state remain under your account. Hook
+commands opt in separately with `command: ...` and `sudo: true`; they do not
+inherit overlay elevation. See [Elevated access](reference.md#elevated-access-sudo)
+for ownership, platform, and directory-boundary behavior. Privileged layout
+migrations that cannot preserve these boundaries require unapplying the old
+layout first.
 
 ## Link sidecars
 

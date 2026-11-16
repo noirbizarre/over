@@ -285,7 +285,7 @@ hooks:
 ```
 
 Each entry can also be an object with a required `command` string and optional
-`env` mapping, `cwd` string, and `when` expression:
+`env` mapping, `cwd` string, `when` expression, and `sudo` boolean:
 
 ```yaml
 hooks:
@@ -407,11 +407,19 @@ relative to the source repository root, even for overlay-local hooks. It must
 resolve to an existing directory that can be entered. No shell or tilde
 expansion is performed on cwd.
 
-Hooks inherit the caller's environment and standard streams. Hook-specific
+Ordinary hooks inherit the caller's environment and standard streams. Hook-specific
 `env` values override inherited values, are passed directly to the process,
 and do not affect later hooks. Templates see the inherited environment, not
 other entries in the hook's `env` mapping. The lifecycle variables below are
 reserved: attempting to override one is a configuration error.
+
+An explicit `sudo: true` on a command hook uses the same sudo session as protected
+target operations. It starts with sudo's environment, HOME, and PATH, plus the
+hook's explicit `env` overrides and lifecycle variables. Conditions and templates
+are still evaluated as the invoking user. Working directories, redirected input
+and output, and interactive standard streams are preserved. Overlay/rule sudo
+does not elevate an unmarked hook. `--no-prompt` controls sudo authentication;
+the command may still request its own input.
 
 | Variable | Availability and meaning |
 | --- | --- |
