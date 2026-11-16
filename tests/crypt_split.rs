@@ -1029,3 +1029,52 @@ fn aggregate_case_collisions_fail_before_changing_the_store_index_or_head(
         assert_eq!(fixture.value("token"), b"another original");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn access_mutations_preserve_unrelated_non_utf8_git_names_and_staging() {
+    use std::os::unix::ffi::OsStringExt as _;
+    let fixture = Fixture::new();
+    let names = [
+        PathBuf::from(std::ffi::OsString::from_vec(b"notes-\xff".to_vec())),
+        PathBuf::from(std::ffi::OsString::from_vec(b"archive-\xfe".to_vec())).join("readme"),
+        PathBuf::from(".over").join(std::ffi::OsString::from_vec(b"cache-\xfd".to_vec())),
+    ];
+    for path in &names {
+        fs::create_dir_all(fixture.root.join(path).parent().unwrap()).unwrap();
+        fs::write(fixture.root.join(path), b"unrelated original bytes").unwrap();
+        success(
+            fixture
+                .command(Path::new("git"))
+                .args(["add", "--"])
+                .arg(path)
+                .output()
+                .unwrap(),
+        );
+    }
+    fixture.git(&["commit", "-qm", "unrelated raw filenames"]);
+    let repo = git2::Repository::open(&fixture.root).unwrap();
+    let before = repo.head().unwrap().peel_to_tree().unwrap();
+    let blobs: Vec<_> = names
+        .iter()
+        .map(|path| before.get_path(path).unwrap().id())
+        .collect();
+    fs::write(fixture.root.join("pending"), b"leave staged").unwrap();
+    fixture.git(&["add", "pending"]);
+    fixture.enroll("bob");
+    success(fixture.over(&["user", "key", "detach", "bob", "default"]));
+    success(fixture.secret("TOKEN", b"independent secret", false));
+    let after = repo.head().unwrap().peel_to_tree().unwrap();
+    for (path, blob) in names.iter().zip(blobs) {
+        assert_eq!(after.get_path(path).unwrap().id(), blob);
+        assert_eq!(repo.index().unwrap().get_path(path, 0).unwrap().id, blob);
+        assert_eq!(
+            fs::read(fixture.root.join(path)).unwrap(),
+            b"unrelated original bytes"
+        );
+    }
+    assert_eq!(
+        fixture.git(&["diff", "--cached", "--name-only"]),
+        b"pending\n"
+    );
+}

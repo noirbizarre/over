@@ -2041,25 +2041,53 @@ pub fn validate_tree(repo: &git2::Repository, tree: &git2::Tree<'_>) -> Result<(
     let mut index = git2::Index::open(&index_path)?;
     index.read_tree(tree)?;
     index.write()?;
+    let input_path = temporary.path().join("paths");
+    let mut input = fs::File::create(&input_path)?;
     for entry in index.iter() {
-        let path = std::str::from_utf8(&entry.path).context("crypt requires UTF-8 paths")?;
-        let attributes = git_command(repo)?
-            .args(["check-attr", "--cached", "-z", "filter", "--", path])
-            .env("GIT_INDEX_FILE", &index_path)
-            .output()?;
+        input.write_all(&entry.path)?;
+        input.write_all(b"\0")?;
+    }
+    drop(input);
+    // NUL-delimited raw paths preserve Unix filenames without decoding them.
+    // File-backed stdin also avoids filling two child pipes in opposite directions.
+    let attributes = git_command(repo)?
+        .args(["check-attr", "--cached", "-z", "--stdin", "filter"])
+        .env("GIT_INDEX_FILE", &index_path)
+        .stdin(Stdio::from(fs::File::open(input_path)?))
+        .output()?;
+    ensure!(
+        attributes.status.success(),
+        "could not validate candidate encryption attributes"
+    );
+    let mut fields = attributes.stdout.split(|byte| *byte == 0);
+    for entry in index.iter() {
         ensure!(
-            attributes.status.success(),
-            "could not validate candidate encryption attributes"
+            fields.next() == Some(entry.path.as_slice())
+                && fields.next() == Some(b"filter".as_slice()),
+            "unexpected candidate attribute response"
         );
-        if attributes.stdout.split(|b| *b == 0).nth(2) == Some(b"over") {
+        let filter = fields
+            .next()
+            .context("incomplete candidate attribute response")?;
+        if filter == b"over" {
             let blob = repo.find_blob(entry.id)?;
             format::inspect(blob.content()).with_context(|| {
+                let path = entry
+                    .path
+                    .iter()
+                    .flat_map(|byte| std::ascii::escape_default(*byte))
+                    .map(char::from)
+                    .collect::<String>();
                 format!(
                     "candidate commit exposes protected plaintext at {path}; run over crypt add"
                 )
             })?;
         }
     }
+    ensure!(
+        fields.next() == Some(b"".as_slice()) && fields.next().is_none(),
+        "unexpected trailing candidate attribute response"
+    );
     Ok(())
 }
 
@@ -2684,6 +2712,35 @@ pub fn migrate(repo: &git2::Repository) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn candidate_policy_validation_checks_protected_non_utf8_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(directory.path()).unwrap();
+        let mut index = repo.index().unwrap();
+        stage_blob(
+            &mut index,
+            &repo,
+            Path::new("template"),
+            b"protected plaintext",
+        )
+        .unwrap();
+        let mut entry = index.get_path(Path::new("template"), 0).unwrap();
+        index.remove_path(Path::new("template")).unwrap();
+        entry.path = b"notes-\xff".to_vec();
+        index.add(&entry).unwrap();
+        stage_blob(
+            &mut index,
+            &repo,
+            Path::new(".gitattributes"),
+            b"notes-* filter=over -text\n",
+        )
+        .unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let error = validate_tree(&repo, &tree).unwrap_err();
+        assert!(format!("{error:#}").contains("protected plaintext at notes-\\xff"));
+    }
 
     #[test]
     fn newly_staged_native_paths_use_git_separators_in_the_index_and_tree() {

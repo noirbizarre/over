@@ -64,6 +64,9 @@ record preserving empty users. `.over/crypt.json` holds only the version,
 repository ID, and active generation. Adding another key leaves the header and
 existing key files unchanged. User/key names must be portable filesystem names;
 case-colliding and platform-reserved names are rejected.
+These naming requirements apply to access records, not unrelated Git paths;
+Unix repositories may retain unrelated non-UTF-8 tracked filenames during access
+mutations without renaming or committing their pending changes.
 
 Each `user.json` contains `{"version":2}`: public existence metadata, not a
 credential or profile. Git cannot represent an empty directory, so the record

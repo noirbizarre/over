@@ -95,6 +95,17 @@ pub(crate) fn is_path(path: &Path) -> bool {
             .any(|layout| path == Path::new(layout.header) || path.starts_with(layout.users))
 }
 
+fn is_raw_path(path: &[u8]) -> bool {
+    path == LEGACY.as_bytes()
+        || [FLAT, NESTED].iter().any(|layout| {
+            path == layout.header.as_bytes()
+                || path == layout.users.as_bytes()
+                || path
+                    .strip_prefix(layout.users.as_bytes())
+                    .is_some_and(|suffix| suffix.starts_with(b"/"))
+        })
+}
+
 /// Public bootstrap must remain readable before any repository key is available.
 pub(crate) fn is_bootstrap_path(path: &Path) -> bool {
     path.file_name()
@@ -427,7 +438,21 @@ pub(crate) fn tree(repo: &git2::Repository, tree: &git2::Tree<'_>) -> Result<Fil
         files: &mut Files,
     ) -> Result<()> {
         for entry in tree.iter() {
-            let path = prefix.join(entry.name().context("non-UTF-8 access metadata path")?);
+            let name = match std::str::from_utf8(entry.name_bytes()) {
+                Ok(name) => name,
+                Err(_) => {
+                    // Only ASCII bootstrap prefixes are relevant outside users/;
+                    // unrelated raw Git names must not prevent an access mutation.
+                    ensure!(
+                        ![FLAT, NESTED]
+                            .iter()
+                            .any(|layout| prefix.starts_with(layout.users)),
+                        "non-UTF-8 access metadata path"
+                    );
+                    continue;
+                }
+            };
+            let path = prefix.join(name);
             if entry.kind() == Some(git2::ObjectType::Tree) {
                 ensure!(
                     ![LEGACY, HEADER, PREVIOUS_HEADER]
@@ -472,8 +497,10 @@ pub(crate) fn tree(repo: &git2::Repository, tree: &git2::Tree<'_>) -> Result<Fil
 pub(crate) fn index(repo: &git2::Repository, index: &git2::Index) -> Result<Files> {
     let mut files = Files::new();
     for entry in index.iter() {
-        let path = PathBuf::from(std::str::from_utf8(&entry.path).context("non-UTF-8 index path")?);
-        if is_path(&path) {
+        if is_raw_path(&entry.path) {
+            let path = PathBuf::from(
+                std::str::from_utf8(&entry.path).context("non-UTF-8 access metadata path")?,
+            );
             ensure!(
                 entry.flags & 0x3000 == 0 && matches!(entry.mode, 0o100644 | 0o100755),
                 "conflicted or nonregular access metadata in index"
@@ -665,5 +692,24 @@ mod tests {
             access::metadata_path(&repo).unwrap(),
             directory.path().join(layout.header)
         );
+    }
+
+    #[test]
+    fn non_utf8_names_inside_access_metadata_are_still_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(directory.path()).unwrap();
+        let files = encode(&registry()).unwrap();
+        let mut staged = repo.index().unwrap();
+        for (path, bytes) in &files {
+            super::super::policy::stage_blob(&mut staged, &repo, path, bytes).unwrap();
+        }
+        let mut entry = staged
+            .get_path(Path::new(".over/users/alice/laptop"), 0)
+            .unwrap();
+        entry.path = b".over/users/invalid-\xff/key".to_vec();
+        staged.add(&entry).unwrap();
+        assert!(index(&repo, &staged).is_err());
+        let tree = repo.find_tree(staged.write_tree().unwrap()).unwrap();
+        assert!(self::tree(&repo, &tree).is_err());
     }
 }
