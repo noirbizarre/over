@@ -1,7 +1,0 @@
-target = '~/feature-right'
-uses = ['shared']
-
-[hooks]
-post-apply = [
-  'test -f "$HOME/feature-left/left" && printf "right\n" >> "$HOME/feature-trace"',
-]

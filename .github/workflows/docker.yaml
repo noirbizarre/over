@@ -11,18 +11,6 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  feature:
-    name: 📦 Release Dev Container feature
-    needs: merge
-    # Only published releases with a successful manifest may publish immutable Features.
-    if: github.event_name == 'release'
-    uses: ./.github/workflows/devcontainer.yaml
-    permissions:
-      contents: read
-      packages: write
-    with:
-      publish: true
-
   build:
     name: 📦 Build (${{ matrix.platform }})
     # Main CI already publishes images; the rolling release must not duplicate them.

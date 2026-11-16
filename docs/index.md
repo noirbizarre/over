@@ -32,8 +32,8 @@ Or download a binary from the
 See [all installation options](https://github.com/noirbizarre/over#installation)
 for supported platforms. The walkthrough below uses Git and a POSIX shell.
 
-For development containers, use the [Over Dev Container Feature](devcontainer.md)
-to install Over and apply an overlay during container creation.
+For development containers, [copy Over into your image](devcontainer.md) and run
+its normal CLI commands during container creation.
 
 ### Create your first overlay
 

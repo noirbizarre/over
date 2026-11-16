@@ -2,7 +2,6 @@
 target/**
 !target/**/over
 .git/
-features/
 .github/
 *.md
 .gitignore

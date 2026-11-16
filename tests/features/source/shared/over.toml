@@ -1,4 +1,0 @@
-target = '~/feature-shared'
-
-[hooks]
-post-apply = ['printf "shared\n" >> "$HOME/feature-trace"']

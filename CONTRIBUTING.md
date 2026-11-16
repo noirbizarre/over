@@ -145,7 +145,7 @@ emulation. For a binary downloaded into a separate directory, use
 `docker build --file Dockerfile --build-arg BINARY=over --tag over:local <binary-directory>`.
 
 CI uploads each target's executable directly as an Actions artifact. Docker
-and Feature tests reuse the same run's Linux binaries. PRs produce debug
+jobs reuse the same run's Linux binaries. PRs produce debug
 candidates; main produces release-profile binaries for the `main`, `latest`
 and commit-SHA image tags. Release image jobs download the exact versioned
 archives from the public GitHub Release, so both distribution formats contain
@@ -172,8 +172,7 @@ Releases are run by [gh-ship](https://github.com/noirbizarre/gh-ship).
 
 1. A push to `main` triggers 🚢 Ship, which runs `gh ship run` and selects preparation.
 2. `prepare` dispatches 🚀 Prepare Release, which asks git-cliff for the next
-   version, writes `CHANGELOG.md`, updates Cargo and the Dev Container Feature's
-   version and default binary version together, commits, and uploads a
+   version, writes `CHANGELOG.md`, updates Cargo, commits, and uploads a
    `ship.release.json` artifact describing what would ship.
 3. gh-ship opens (or updates) the Release PR from `release/next`. Review it.
 4. Merging it triggers 🚢 Ship again, where `gh ship run` selects publication: it tags the
@@ -183,16 +182,11 @@ Releases are run by [gh-ship](https://github.com/noirbizarre/gh-ship).
 
 Once the GitHub Release is public, `release: published` triggers Docker to
 download its versioned binaries and publish the multi-architecture image.
-Docker then calls the Dev Container Feature workflow, which tests the matching
-image on amd64 and arm64 before publishing `ghcr.io/noirbizarre/features/over`.
-Docker/Feature publication failures are separate from GitHub Release completion.
+Image publication failures are separate from GitHub Release completion.
 Rolling development releases skip this path; main CI already publishes their
-images, and they must not publish immutable Feature versions. PR/main Feature
-tests use the CI build artifacts as their lifecycle candidates and an available
-image override for installation so release-preparation metadata can be tested
-before its image exists.
-See [feature contributor instructions](devcontainer/README.md) for local testing
-and the new GHCR packages' visibility/access requirements.
+images. Dev Containers copy the executable from the published Over image and
+run ordinary CLI commands; there is no separate Feature release. See the
+[Dev Containers guide](docs/devcontainer.md) for the consumer configuration.
 
 Nothing to release is the normal case for step 1, and costs one workflow run
 reporting `changed: false`.
