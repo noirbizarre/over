@@ -850,7 +850,10 @@ fn a_passphrase_key_remains_usable_after_a_missing_or_failed_plugin(#[case] miss
             "recovery",
             "--passphrase",
         ],
-        &[("New Age key passphrase", "recovery-sentinel\n")],
+        &[
+            ("New Age key passphrase", "recovery-sentinel\n"),
+            ("Confirm new Age key passphrase", "recovery-sentinel\n"),
+        ],
         "success",
     ));
     fixture.run(&["lock"]);
@@ -863,6 +866,92 @@ fn a_passphrase_key_remains_usable_after_a_missing_or_failed_plugin(#[case] miss
         "absent",
     ));
     assert!(fixture.repo.join(".git/over-crypt/key").exists());
+}
+
+#[rstest]
+#[case(true, false)]
+#[case(true, true)]
+#[case(false, false)]
+fn a_new_passphrase_key_requires_matching_hidden_confirmation(
+    #[case] new_user: bool,
+    #[case] choose_method: bool,
+    #[values(false, true)] mismatch: bool,
+) {
+    let fixture = Fixture::new();
+    if !new_user {
+        fixture.enroll();
+    }
+    let mut args = vec!["user"];
+    if !new_user {
+        args.push("key");
+    }
+    args.extend(["add", "alice", "--name", "recovery"]);
+    let mut steps = Vec::new();
+    if choose_method {
+        steps.push(("First key type", "\x1b[B\x1b[B\x1b[B\n"));
+    } else {
+        args.push("--passphrase");
+    }
+    if mismatch {
+        steps.extend([
+            ("New Age key passphrase", "recovery-sentinel-discarded\n"),
+            ("Confirm new Age key passphrase", "recovery-sentinel-typo\n"),
+        ]);
+    }
+    steps.extend([
+        ("New Age key passphrase", "recovery-sentinel\n"),
+        ("Confirm new Age key passphrase", "recovery-sentinel\n"),
+    ]);
+    let output = success(fixture.terminal(&args, &steps, "success"));
+    if mismatch {
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Passphrases do not match"));
+    }
+    fixture.run(&["lock"]);
+    success(fixture.terminal(
+        &["unlock", "--user", "alice", "--key", "recovery"],
+        &[("Age key passphrase: ", "recovery-sentinel\n")],
+        "success",
+    ));
+    assert!(fixture.repo.join(".git/over-crypt/key").exists());
+}
+
+#[rstest]
+#[case(true)]
+#[case(false)]
+fn cancelling_passphrase_confirmation_cannot_publish_access(#[case] new_user: bool) {
+    let fixture = Fixture::new();
+    if !new_user {
+        fixture.enroll();
+    }
+    let registry = fixture.repo.join(".over/crypt/access.json");
+    let before = if new_user {
+        None
+    } else {
+        Some(fs::read(&registry).unwrap())
+    };
+    let mut args = vec!["user"];
+    if !new_user {
+        args.push("key");
+    }
+    args.extend(["add", "alice", "--name", "recovery", "--passphrase"]);
+    assert!(
+        !fixture
+            .terminal(
+                &args,
+                &[
+                    ("New Age key passphrase", "recovery-sentinel\n"),
+                    ("Confirm new Age key passphrase", "\x03"),
+                ],
+                "success",
+            )
+            .status
+            .success()
+    );
+    if let Some(before) = before {
+        assert_eq!(fs::read(&registry).unwrap(), before);
+    } else {
+        assert!(!registry.exists());
+    }
 }
 
 #[test]

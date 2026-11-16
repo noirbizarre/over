@@ -275,14 +275,24 @@ fn can_prompt() -> bool {
 }
 
 fn passphrase(label: &str) -> Result<age::secrecy::SecretString> {
+    passphrase_with_confirmation(label, None)
+}
+
+fn passphrase_with_confirmation(
+    label: &str,
+    confirmation: Option<&str>,
+) -> Result<age::secrecy::SecretString> {
     ensure!(
         can_prompt(),
         "unlock requires a terminal credential prompt; use --identity for noninteractive access"
     );
     let _pause = crate::ui::progress::pause()?;
+    let mut prompt = dialoguer::Password::new().with_prompt(label);
+    if let Some(confirmation) = confirmation {
+        prompt = prompt.with_confirmation(confirmation, "Passphrases do not match");
+    }
     let entered = zeroize::Zeroizing::new(
-        dialoguer::Password::new()
-            .with_prompt(label)
+        prompt
             .interact()
             .map_err(|_| anyhow::anyhow!("secure credential input unavailable"))?,
     );
@@ -414,7 +424,11 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
         recipient = Some(identity.to_public().to_string());
         generated = Some((path, identity));
     } else if opt.passphrase {
-        password = Some(passphrase("New Age key passphrase")?);
+        // Catch enrollment typos before granting access with an unusable passphrase.
+        password = Some(passphrase_with_confirmation(
+            "New Age key passphrase",
+            Some("Confirm new Age key passphrase"),
+        )?);
     }
     // Publish a generated identity before granting access; a failure leaves recovery material.
     if let Some((path, identity)) = &generated {
