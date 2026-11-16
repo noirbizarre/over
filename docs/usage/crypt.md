@@ -130,7 +130,8 @@ secrets/** filter=over diff=over -text
 Patterns follow [Git attributes syntax](https://git-scm.com/docs/gitattributes),
 including its directory and precedence rules. Check nested `.gitattributes`,
 global attributes, and `.git/info/attributes` for overrides. Keep bootstrap
-attributes and `.over/crypt/` outside protection.
+attributes, `.over/crypt.json`, `.over/users/`, and historical `.over/crypt/`
+outside protection.
 
 `filter=over` enables encryption on clean (staging) and decryption on smudge
 (unlocked checkout). `diff=over` selects Over's authenticated text conversion so
@@ -199,7 +200,7 @@ index/worktree. It stages the current content of the selected files, including
 any edits you make before re-staging.
 
 1. Set up the first user/key if needed and run `over unlock` **before** adding new
-   protection rules. Commit/review the initial access metadata separately.
+   protection rules. Initial user enrollment already commits its access metadata.
 2. Edit `.gitattributes`, for example with the rules above. Check effective rules
    for each selected file, then stage the policy:
 
@@ -462,9 +463,12 @@ no active keys. Add a trusted recovery key before revoking the last usable metho
 
 Rotation preflights and validates **every retained passphrase again**, because
 Age scrypt has no public recipient that can wrap a fresh key unattended. Missing
-or wrong credentials abort without publication. Resolve unstaged protected edits
-first. New metadata/content are staged for explicit review/commit; old commits
-are not rewritten. A generation change on another branch/clone requires unlock
+or wrong credentials abort without publication. Commit or restore staged and
+unstaged protected content, protection policy, and access edits first. Rotation
+commits only its metadata/content transition on the initiating branch, honoring
+Git hooks/signing and preserving unrelated unprotected staging. Linked worktrees
+receive staged generation updates; their branches are not auto-committed. Old
+commits are not rewritten. A generation change on another branch/clone requires unlock
 using that generation's trusted envelope.
 
 Rotation also needs each retained recipient's wrapping implementation, including
@@ -560,9 +564,14 @@ over crypt recover
 Recovery rolls back recorded state only if current bytes match the old or
 prepared version; intervening edits cause refusal rather than data loss. A
 successfully published commit is recognized and preserved. Recovery snapshots
-include encrypted source/target bytes and index metadata, never plaintext keys.
-If a process died while owning Git's `index.lock`, first verify that process has
-exited, inspect the lock, and remove only that stale lock before retrying recovery.
+include encrypted source/target bytes, index metadata, and pending key-finalization
+state. Access/secret mutation journals retain a private recovery key under Git
+administration, protected like the installed unlocked key; preserve both until
+recovery finishes. This supports first enrollment before an active key exists.
+After HEAD publication, recovery finalizes the new key rather than undoing the commit.
+Mutation journals recognize their own index-lock ownership tokens after a crash.
+For older journals or unrecognized `index.lock` files, verify the original process
+has exited, inspect the lock, and remove only that stale lock before retrying.
 Over never guesses that another Git process's lock is stale. A changed unrelated
 `HEAD` also requires inspection before rollback.
 The journal records each participating worktree's `HEAD` and the initiating
@@ -570,21 +579,84 @@ worktree, so recovery from a sibling cannot overlook another branch advancing.
 Changed ancestry, permissions, symlinks, or ingestion inode identity cause
 refusal before rollback. Existing unrelated files and nonempty new scaffolds
 are retained.
-After a completed rotation with a stale local key, unlock through the new
-envelopes.
+If a mutation journal remains, use `over crypt recover`. After a completed older
+rotation with a stale local key and no journal, unlock through the new envelopes.
+Unlock refuses pending access/secret mutation journals before authentication or
+key installation. Rotation keeps the original sibling index/file observations
+through publication and rejects intervening edits rather than adopting them as
+a new baseline. Git-equivalent CRLF attribute checkouts are accepted as clean.
 
 ## Committed metadata and pre-checkout detection
 
 Over can identify repository encryption directly from a committed Git tree,
 including in a bare repository or immediately after `git clone --no-checkout`.
-The existing `.over/crypt/access.json` is the versioned public marker; no extra
-enablement file is required. Commit it, the applicable `.gitattributes` files,
-and protected ciphertext together. A first-user setup without protected files
-still needs its access metadata committed to be discoverable after clone.
+The public `.over/crypt.json` header identifies the current layout;
+individual access methods live under `.over/users/`, alongside `.over/secrets/`.
+First-user enrollment
+commits the complete bootstrap automatically, even before protected files exist.
+Ordinary protection commands still stage ciphertext and policy for explicit review.
 
-### Access registry version 1
+### Split access metadata version 2
 
-The registry is a regular tracked JSON blob, limited to 16 MiB:
+```text
+.over/
+  crypt.json
+  users/
+    alice/
+      user.json
+      laptop
+      recovery
+  secrets/
+    github-token
+```
+
+The regular JSON header contains `version: 2`, `repository`, and `generation`.
+Each extensionless key record repeats these fields and contains `recipient` and
+`envelope`, using the byte-array representations described below. Record identities
+must match the header; stale-generation or foreign records are invalid.
+
+`user.json` is a public user-existence record containing only:
+
+```json
+{"version":2}
+```
+
+Git cannot track an empty directory, so this record retains a user after their
+last key is detached or revoked. Deleting an empty user removes the record.
+It contains no credential, envelope, private identity, or profile data. Its JSON
+filename cannot collide with key names, which do not allow dots.
+
+There is no shared user/key list. Ordinary enrollment/detachment changes only
+owned records, preserving unchanged header/key bytes and formatting. Independent
+edits therefore merge at file granularity; rotation still changes the generation,
+all retained envelopes, and protected ciphertext. Clean merges must also pass
+semantic checks such as unique recipients and matching generations.
+
+Metadata is bounded to 16 MiB in total, with 16 KiB envelopes. Paths must use
+portable non-colliding names, real directories, and regular files. Secret names,
+user names, and key names are public paths. Bootstrap metadata remains unencrypted.
+Detection and initial smudge load the complete access inventory from one pinned
+tree, independently of working-file checkout order.
+For an unlocked linked worktree's first checkout, smudge may use pinned HEAD
+metadata while Git owns the initial index lock, provided already materialized
+metadata matches HEAD. Clean filtering and ordinary reads never use that exception.
+
+Both aggregate v1 metadata and the earlier nested split layout
+(`.over/crypt/repository.json`, `.over/crypt/users/<user>/.user` and key files)
+migrate automatically on the next user/key mutation. The flattened layout keeps
+the same version-2 JSON schema; moving split records preserves their bytes,
+including formatting, additive fields, IDs, generations, and envelopes. The
+migration also adds exclusions keeping `crypt.json` and `users/**` unencrypted.
+Reads/unlock
+do not migrate. Secret-store migration is independent and occurs on secret
+mutation; `over crypt migrate` can migrate both explicitly. Conflicting old/new
+access layouts are rejected rather than merging access grants, even when their
+repository IDs match.
+
+### Legacy access registry version 1
+
+Existing `.over/crypt/access.json` registries remain readable. This legacy layout
+is a regular tracked JSON blob, limited to 16 MiB:
 
 | Field | Version 1 representation and meaning |
 | --- | --- |

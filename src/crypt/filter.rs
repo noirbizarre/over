@@ -23,7 +23,10 @@ fn transform_for_git(
     let registry = if clean {
         None
     } else {
-        super::bootstrap::environment_registry(repo)?
+        match super::bootstrap::environment_registry(repo)? {
+            Some(registry) => Some(registry),
+            None => super::bootstrap::initial_checkout_registry(repo)?,
+        }
     };
     transform_with_registry(repo, clean, input, registry.as_ref())
 }

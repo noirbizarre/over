@@ -61,7 +61,7 @@ pub(crate) fn parse_registry(bytes: &[u8]) -> Result<Registry> {
     Ok(registry)
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Registry {
     pub version: u32,
     pub repository: [u8; 16],
@@ -69,7 +69,7 @@ pub struct Registry {
     pub users: BTreeMap<String, BTreeMap<String, AccessKey>>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct AccessKey {
     /// A passphrase has no reusable public recipient; rotation must prompt again.
     pub recipient: Option<String>,
@@ -82,11 +82,31 @@ pub fn root(repo: &git2::Repository) -> Result<&Path> {
 }
 
 pub fn metadata_path(repo: &git2::Repository) -> Result<PathBuf> {
-    Ok(root(repo)?.join(".over/crypt/access.json"))
+    let files = super::access_storage::worktree(repo)?;
+    let path = match super::access_storage::layout(&files)? {
+        Some(super::access_storage::Layout::Split(layout)) => layout.header,
+        // Low-level legacy setup still writes its original aggregate format.
+        _ => super::access_storage::LEGACY,
+    };
+    Ok(root(repo)?.join(path))
 }
 
 pub fn configured(repo: &git2::Repository) -> Result<bool> {
-    Ok(metadata_path(repo)?.try_exists()?)
+    let root = root(repo)?;
+    for path in [
+        super::access_storage::LEGACY,
+        super::access_storage::HEADER,
+        super::access_storage::USERS,
+        super::access_storage::PREVIOUS_HEADER,
+        super::access_storage::PREVIOUS_USERS,
+    ] {
+        match fs::symlink_metadata(root.join(path)) {
+            Ok(_) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(false)
 }
 
 pub fn worktrees(repo: &git2::Repository) -> Result<Vec<git2::Repository>> {
@@ -122,7 +142,7 @@ fn check_real(path: &Path, directory: bool) -> Result<()> {
     Ok(())
 }
 
-fn prepare_private(repo: &git2::Repository) -> Result<PathBuf> {
+pub(crate) fn prepare_private(repo: &git2::Repository) -> Result<PathBuf> {
     let path = private_dir(repo);
     if !path.try_exists()? {
         #[cfg(unix)]
@@ -145,7 +165,7 @@ fn prepare_private(repo: &git2::Repository) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn check_private(repo: &git2::Repository, path: &Path, directory: bool) -> Result<()> {
+pub(crate) fn check_private(repo: &git2::Repository, path: &Path, directory: bool) -> Result<()> {
     check_real(path, directory)?;
     #[cfg(unix)]
     {
@@ -222,7 +242,8 @@ pub fn guard(repo: &git2::Repository, exclusive: bool) -> Result<File> {
 pub(crate) fn lifecycle_guard(repo: &git2::Repository, exclusive: bool) -> Result<File> {
     let file = raw_guard(repo, exclusive)?;
     ensure!(
-        !private_dir(repo).join("transaction.json").try_exists()?,
+        !private_dir(repo).join("transaction.json").try_exists()?
+            && !super::mutation::pending(repo)?,
         "interrupted crypt transaction; run over crypt recover before continuing"
     );
     Ok(file)
@@ -254,6 +275,7 @@ pub(crate) fn raw_guard(repo: &git2::Repository, exclusive: bool) -> Result<File
     check_private(repo, &path, false)?;
     if exclusive {
         file.lock()?;
+        super::mutation::cleanup_orphan(repo)?;
         // Only exclusive lifecycle/recovery operations can know these writers have exited.
         for entry in fs::read_dir(&directory)? {
             let entry = entry?;
@@ -279,16 +301,8 @@ pub(crate) fn raw_guard(repo: &git2::Repository, exclusive: bool) -> Result<File
 }
 
 pub fn load(repo: &git2::Repository) -> Result<Registry> {
-    let path = metadata_path(repo)?;
-    for parent in [root(repo)?.join(".over"), root(repo)?.join(".over/crypt")] {
-        check_real(&parent, true)?;
-    }
-    check_real(&path, false)?;
-    ensure!(
-        fs::metadata(&path)?.len() <= METADATA_LIMIT as u64,
-        "repository access metadata exceeds the supported size limit"
-    );
-    let registry = parse_registry(&fs::read(path)?)?;
+    let registry = super::access_storage::parse(&super::access_storage::worktree(repo)?)?
+        .context("repository access metadata is missing")?;
     ensure!(
         !registry.users.is_empty(),
         "repository has no recovery user"
@@ -315,8 +329,26 @@ pub(crate) fn save(repo: &git2::Repository, registry: &Registry) -> Result<()> {
         // !diff restores normal diffs, while -text preserves access-envelope bytes verbatim.
         atomic_write(
             &attributes,
-            b"crypt/** -filter !diff -text\n.gitattributes -filter !diff\nsecrets.yaml filter=over diff=over -text\n",
+            &super::access_storage::bootstrap_attributes(&[]),
         )?;
+    }
+    let before = super::access_storage::worktree(repo)?;
+    if let Some(super::access_storage::Layout::Split(layout)) =
+        super::access_storage::layout(&before)?
+    {
+        for (path, bytes) in super::access_storage::delta(
+            &before,
+            &super::access_storage::encode_preserving_as(registry, &before, layout)?,
+        ) {
+            let path = root(repo)?.join(path);
+            crate::materialize::disposal::validate_relative_ancestors(root(repo)?, &path)?;
+            if let Some(bytes) = bytes {
+                atomic_write(&path, &bytes)?;
+            } else {
+                fs::remove_file(path)?;
+            }
+        }
+        return Ok(());
     }
     let bytes = serde_json::to_vec_pretty(registry)?;
     // A writer must not publish a registry that its own bounded reader rejects.
@@ -343,7 +375,7 @@ fn checked_local_key(repo: &git2::Repository) -> Result<RepositoryKey> {
     let directory = private_dir(repo);
     check_private(repo, &directory, true).context("repository is locked; run over unlock")?;
     ensure!(
-        !directory.join("transaction.json").try_exists()?,
+        !directory.join("transaction.json").try_exists()? && !super::mutation::pending(repo)?,
         "interrupted crypt transaction; run over crypt recover"
     );
     let path = directory.join("key");
@@ -418,7 +450,7 @@ pub(crate) fn remove_key(repo: &git2::Repository) -> Result<()> {
     Ok(())
 }
 
-fn validate_name(name: &str) -> Result<()> {
+pub(crate) fn validate_name(name: &str) -> Result<()> {
     ensure!(
         !name.is_empty()
             && name.len() <= 128
@@ -533,10 +565,56 @@ pub fn add_keys<C: age::Callbacks>(
     new_user: bool,
     callbacks: C,
 ) -> Result<()> {
+    let _guard = guard(repo, true)?;
+    let (registry, key, existing) = prepare_keys(repo, user, entries, new_user, callbacks)?;
+    // This low-level writer remains available for compatibility and fixture setup;
+    // CLI operations use the isolated, journaled add_keys_committed entry point.
+    configure_filters(repo)?;
+    let path = metadata_path(repo)?;
+    let previous = match fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    save(repo, &registry)?;
+    if existing {
+        return Ok(());
+    }
+    if let Err(error) = install(repo, &key) {
+        let installed = private_dir(repo).join("key");
+        if check_private(repo, &installed, false).is_ok()
+            && File::open(&installed)
+                .ok()
+                .and_then(|file| read_key_bytes(file).ok())
+                .is_some_and(|bytes| bytes[..] == key.encode()[..])
+        {
+            return Err(error);
+        }
+        match previous {
+            Some(bytes) => atomic_write(&path, &bytes)?,
+            None => fs::remove_file(&path)?,
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn prepare_keys<C: age::Callbacks>(
+    repo: &git2::Repository,
+    user: &str,
+    entries: Vec<(String, Option<String>, Option<SecretString>)>,
+    new_user: bool,
+    callbacks: C,
+) -> Result<(Registry, RepositoryKey, bool)> {
     validate_name(user)?;
     ensure!(!entries.is_empty(), "configure at least one key");
-    let _guard = guard(repo, true)?;
     let existing = configured(repo)?;
+    if !existing {
+        ensure!(
+            local_key_missing(repo)?,
+            "encryption metadata is missing but a local key exists; preserve and reconcile it before enrollment"
+        );
+    }
     let (mut registry, key) = if existing {
         (load(repo)?, local_key(repo)?)
     } else {
@@ -574,47 +652,122 @@ pub fn add_keys<C: age::Callbacks>(
         ensure!(!keys.contains_key(&name), "key already exists");
         keys.insert(name, access);
     }
-    // Fail on config contention before publishing any access metadata or key.
+    Ok((registry, key, existing))
+}
+
+pub(crate) fn prepare_registry(
+    repo: &git2::Repository,
+    registry: &Registry,
+    message: String,
+) -> Result<super::mutation::Mutation> {
+    let before = super::mutation::clean_metadata(repo)?;
+    let mut delta = super::access_storage::delta(
+        &before,
+        &super::access_storage::encode_preserving(registry, &before)?,
+    );
+    let original =
+        super::buffer::read_optional(&root(repo)?.join(super::access_storage::ATTRIBUTES))?;
+    let attributes = super::access_storage::bootstrap_attributes(
+        original
+            .as_deref()
+            .map(|bytes| bytes.as_slice())
+            .unwrap_or_default(),
+    );
+    if original.as_deref().map(|bytes| bytes.as_slice()) != Some(attributes.as_slice()) {
+        delta.insert(
+            PathBuf::from(super::access_storage::ATTRIBUTES),
+            Some(attributes),
+        );
+    }
+    super::mutation::Mutation::prepare(repo, delta, message, &[])
+}
+
+pub fn add_keys_committed<C: age::Callbacks>(
+    repo: &git2::Repository,
+    user: &str,
+    entries: Vec<(String, Option<String>, Option<SecretString>)>,
+    new_user: bool,
+    callbacks: C,
+) -> Result<()> {
+    let _ownership = super::mutation::ownership(repo)?;
+    let guard = guard(repo, true)?;
+    let names: Vec<_> = entries.iter().map(|(name, _, _)| name.clone()).collect();
+    let mut context = serde_json::json!({"user":user,"keys":names,"count":names.len()});
+    if names.len() == 1 {
+        context["key"] = serde_json::json!(names[0]);
+    }
+    let message =
+        super::config::message(repo, if new_user { "user_add" } else { "key_add" }, context)?;
+    let (registry, key, existing) = prepare_keys(repo, user, entries, new_user, callbacks)?;
     configure_filters(repo)?;
-    let path = metadata_path(repo)?;
-    let previous = match fs::read(&path) {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
-    };
-    // The complete public registry includes envelopes, so a user cannot persist empty.
-    save(repo, &registry)?;
-    if existing {
-        // The validated key is unchanged. Reinstalling could report failure after granting
-        // access, because the old identical key cannot prove whether replacement occurred.
-        return Ok(());
+    let mutation = prepare_registry(repo, &registry, message)?;
+    drop(guard);
+    mutation.commit(repo, &key, if existing { None } else { Some(&key) })
+}
+
+pub fn detach_committed(repo: &git2::Repository, user: &str, name: &str) -> Result<()> {
+    let _ownership = super::mutation::ownership(repo)?;
+    let guard = guard(repo, true)?;
+    let key = local_key(repo)?;
+    let mut registry = load(repo)?;
+    ensure!(
+        registry.users.values().map(BTreeMap::len).sum::<usize>() > 1,
+        "cannot detach the only recovery key"
+    );
+    ensure!(
+        registry
+            .users
+            .get_mut(user)
+            .and_then(|keys| keys.remove(name))
+            .is_some(),
+        "unknown user/key"
+    );
+    let message = super::config::message(
+        repo,
+        "key_detach",
+        serde_json::json!({"user":user,"key":name}),
+    )?;
+    let mutation = prepare_registry(repo, &registry, message)?;
+    drop(guard);
+    mutation.commit(repo, &key, None)
+}
+
+pub fn delete_user_committed(repo: &git2::Repository, user: &str) -> Result<()> {
+    let _ownership = super::mutation::ownership(repo)?;
+    let guard = guard(repo, true)?;
+    let key = local_key(repo)?;
+    let mut registry = load(repo)?;
+    ensure!(
+        registry.users.get(user).is_some_and(BTreeMap::is_empty),
+        "delete requires an existing user with no keys; detach or revoke explicitly"
+    );
+    registry.users.remove(user);
+    let message = super::config::message(repo, "user_delete", serde_json::json!({"user":user}))?;
+    let mutation = prepare_registry(repo, &registry, message)?;
+    drop(guard);
+    mutation.commit(repo, &key, None)
+}
+
+pub(crate) fn migrate_committed(repo: &git2::Repository) -> Result<bool> {
+    let _ownership = super::mutation::ownership(repo)?;
+    let guard = guard(repo, true)?;
+    let files = super::access_storage::worktree(repo)?;
+    let layout = super::access_storage::layout(&files)?;
+    if layout.is_none()
+        || layout
+            == Some(super::access_storage::Layout::Split(
+                super::access_storage::FLAT,
+            ))
+    {
+        return Ok(false);
     }
-    if let Err(error) = install(repo, &key) {
-        // A parent fsync can fail after rename. Keep matching metadata when the
-        // new key is already visible, rather than rolling back only half the pair.
-        let installed = private_dir(repo).join("key");
-        if check_private(repo, &installed, false).is_ok()
-            && File::open(&installed)
-                .ok()
-                .and_then(|file| read_key_bytes(file).ok())
-                .is_some_and(|bytes| bytes[..] == key.encode()[..])
-        {
-            return Err(error);
-        }
-        // Installation publishes atomically, so a pre-publication failure leaves the
-        // previous key intact and its matching public registry can be restored.
-        let rollback = match previous {
-            Some(bytes) => atomic_write(&path, &bytes),
-            None => fs::remove_file(&path).map_err(anyhow::Error::from),
-        };
-        rollback.with_context(|| {
-            format!("key installation failed ({error}); access metadata rollback also failed")
-        })?;
-        #[cfg(unix)]
-        File::open(path.parent().context("access metadata has no parent")?)?.sync_all()?;
-        return Err(error);
-    }
-    Ok(())
+    let registry = load(repo)?;
+    let key = local_key(repo)?;
+    let message = super::config::message(repo, "migrate", serde_json::json!({}))?;
+    let mutation = prepare_registry(repo, &registry, message)?;
+    drop(guard);
+    mutation.commit(repo, &key, None)?;
+    Ok(true)
 }
 
 pub fn unlock(

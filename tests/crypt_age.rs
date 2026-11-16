@@ -27,7 +27,22 @@ impl Fixture {
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let repo = directory.path().join("repo");
-        git2::Repository::init(&repo).unwrap();
+        let repository = git2::Repository::init(&repo).unwrap();
+        repository
+            .config()
+            .unwrap()
+            .set_str("user.name", "Age test")
+            .unwrap();
+        repository
+            .config()
+            .unwrap()
+            .set_str("user.email", "age@example.invalid")
+            .unwrap();
+        repository
+            .config()
+            .unwrap()
+            .set_bool("commit.gpgSign", false)
+            .unwrap();
         let bin = directory.path().join("bin");
         fs::create_dir(&bin).unwrap();
         let plugin = bin.join("age-plugin-overfixture");
@@ -923,12 +938,14 @@ fn cancelling_passphrase_confirmation_cannot_publish_access(#[case] new_user: bo
     if !new_user {
         fixture.enroll();
     }
-    let registry = fixture.repo.join(".over/crypt/access.json");
+    let repository = git2::Repository::open(&fixture.repo).unwrap();
+    let registry = fixture.repo.join(".over/crypt.json");
     let before = if new_user {
         None
     } else {
-        Some(fs::read(&registry).unwrap())
+        Some(over::crypt::access::load(&repository).unwrap())
     };
+    let head = repository.head().ok().and_then(|head| head.target());
     let mut args = vec!["user"];
     if !new_user {
         args.push("key");
@@ -948,10 +965,13 @@ fn cancelling_passphrase_confirmation_cannot_publish_access(#[case] new_user: bo
             .success()
     );
     if let Some(before) = before {
-        assert_eq!(fs::read(&registry).unwrap(), before);
+        assert_eq!(over::crypt::access::load(&repository).unwrap(), before);
     } else {
         assert!(!registry.exists());
+        assert!(!fixture.repo.join(".over/users/alice/user.json").exists());
     }
+    assert!(!fixture.repo.join(".over/users/alice/recovery").exists());
+    assert_eq!(repository.head().ok().and_then(|head| head.target()), head);
 }
 
 #[test]

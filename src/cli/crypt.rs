@@ -467,7 +467,7 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
         vec![(name, recipient, password)]
     };
     let names: Vec<_> = entries.iter().map(|(name, _, _)| name.clone()).collect();
-    access::add_keys(
+    access::add_keys_committed(
         repo,
         &opt.user,
         entries,
@@ -494,8 +494,8 @@ pub fn user(cli: &super::CLI, command: &UserCommands) -> Result<()> {
     let repo = repository(cli)?;
     match command {
         UserCommands::Add(opt) => add_key(&repo, opt, true),
-        UserCommands::Delete { user } => access::delete_user(&repo, user),
-        UserCommands::Revoke { user } => policy::rotate_with(
+        UserCommands::Delete { user } => access::delete_user_committed(&repo, user),
+        UserCommands::Revoke { user } => policy::rotate_committed_with(
             &repo,
             Some((user, None)),
             passphrase,
@@ -506,9 +506,9 @@ pub fn user(cli: &super::CLI, command: &UserCommands) -> Result<()> {
             eprintln!(
                 "Detaching only removes the current envelope; it does not revoke a learned key or historical access."
             );
-            access::detach(&repo, user, key)
+            access::detach_committed(&repo, user, key)
         }
-        UserCommands::Key(UserKeyCommands::Revoke { user, key }) => policy::rotate_with(
+        UserCommands::Key(UserKeyCommands::Revoke { user, key }) => policy::rotate_committed_with(
             &repo,
             Some((user, Some(key))),
             passphrase,
@@ -545,7 +545,7 @@ pub fn user(cli: &super::CLI, command: &UserCommands) -> Result<()> {
 }
 
 pub fn key(cli: &super::CLI, _command: &KeyCommands) -> Result<()> {
-    policy::rotate_with(
+    policy::rotate_committed_with(
         &repository(cli)?,
         None,
         passphrase,

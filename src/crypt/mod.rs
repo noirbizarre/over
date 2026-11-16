@@ -1,17 +1,21 @@
 //! Repository-scoped encryption shared by Git filters and native secrets.
 
 pub mod access;
+pub(crate) mod access_storage;
 pub mod age;
 pub(crate) mod bootstrap;
 pub(crate) mod buffer;
+pub(crate) mod config;
 pub mod detect;
 pub mod filter;
 pub mod format;
 pub(crate) mod ingest;
+pub(crate) mod mutation;
 pub mod policy;
 pub mod protection;
 pub mod textconv;
 pub(crate) mod transaction;
+pub use config::{AccessCommitMessages, CryptConfig};
 #[cfg(windows)]
 pub(crate) mod windows;
 

@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context as _, Result, ensure};
 use git2::{ErrorCode, Oid, Repository, Tree};
 
-use super::{access, format};
+use super::{access, access_storage, format};
 
 const METADATA_PATH: &str = ".over/crypt/access.json";
 
@@ -129,15 +129,22 @@ pub fn inspect_tree(repo: &Repository, tree: &Tree<'_>) -> Result<Detection> {
     let mut result = empty_detection(Some(tree.id()));
     let mut entries = BTreeMap::new();
     collect_entries(repo, tree, Path::new(""), &mut entries)?;
-    let registry = if let Some((oid, mode)) = entries.get(Path::new(METADATA_PATH)) {
+    let metadata_path = if entries.keys().any(|path| {
+        path == Path::new(access_storage::HEADER) || path.starts_with(access_storage::USERS)
+    }) {
+        access_storage::HEADER
+    } else if entries.keys().any(|path| {
+        path == Path::new(access_storage::PREVIOUS_HEADER)
+            || path.starts_with(access_storage::PREVIOUS_USERS)
+    }) {
+        access_storage::PREVIOUS_HEADER
+    } else {
+        METADATA_PATH
+    };
+    let registry = if entries.keys().any(|path| access_storage::is_path(path)) {
         let parsed = (|| -> Result<access::Registry> {
-            ensure!(regular(*mode), "access metadata must be a regular Git blob");
-            let (size, _) = repo.odb()?.read_header(*oid)?;
-            ensure!(
-                size <= access::METADATA_LIMIT,
-                "repository access metadata exceeds the supported size limit"
-            );
-            access::parse_registry(repo.find_blob(*oid)?.content())
+            access_storage::parse(&access_storage::tree(repo, tree)?)?
+                .context("committed access metadata is missing its repository header")
         })();
         match parsed {
             Ok(registry) => {
@@ -156,7 +163,7 @@ pub fn inspect_tree(repo: &Repository, tree: &Tree<'_>) -> Result<Detection> {
                     }
                 }
                 if result.usable_access_methods == 0 {
-                    result.diagnostic(DiagnosticCode::NoAccessMethod, METADATA_PATH, "no structurally usable repository key envelope; repair committed access metadata");
+                    result.diagnostic(DiagnosticCode::NoAccessMethod, metadata_path, "no structurally usable repository key envelope; repair committed access metadata");
                 }
                 Some(registry)
             }
@@ -170,7 +177,7 @@ pub fn inspect_tree(repo: &Repository, tree: &Tree<'_>) -> Result<Detection> {
                     result.metadata = Metadata::Malformed;
                     DiagnosticCode::InvalidMetadata
                 };
-                result.diagnostic(code, METADATA_PATH, error.to_string());
+                result.diagnostic(code, metadata_path, error.to_string());
                 None
             }
         }
@@ -187,7 +194,7 @@ pub fn inspect_tree(repo: &Repository, tree: &Tree<'_>) -> Result<Detection> {
     let attributes = committed_attributes(&source, tree.id(), &paths)?;
     let blobs: BTreeSet<_> = entries
         .iter()
-        .filter(|(path, (_, mode))| regular(*mode) && *path != Path::new(METADATA_PATH))
+        .filter(|(path, (_, mode))| regular(*mode) && !access_storage::is_path(path))
         .map(|(_, (oid, _))| *oid)
         .collect();
     let headers = source.blob_headers(&blobs)?;
@@ -206,11 +213,7 @@ pub fn inspect_tree(repo: &Repository, tree: &Tree<'_>) -> Result<Detection> {
                     "protected paths must be regular Git blobs",
                 );
             }
-            if path
-                .file_name()
-                .is_some_and(|name| name == ".gitattributes")
-                || path.starts_with(".over/crypt")
-            {
+            if access_storage::is_bootstrap_path(path) {
                 result.diagnostic(
                     DiagnosticCode::ProtectedBootstrap,
                     &location,
@@ -220,7 +223,7 @@ pub fn inspect_tree(repo: &Repository, tree: &Tree<'_>) -> Result<Detection> {
         }
         // Registry validation above already rejects encrypted or oversized metadata;
         // loading it again here would bypass the pre-allocation size check.
-        if !regular(*mode) || path == Path::new(METADATA_PATH) {
+        if !regular(*mode) || access_storage::is_path(path) {
             continue;
         }
         let (bytes, length) = &headers[oid];

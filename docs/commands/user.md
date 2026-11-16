@@ -53,7 +53,27 @@ over user key add alice --name recovery --recipient age1...
 over user key list alice
 ```
 
-Enrollment writes access metadata; do not assume it stages or commits that metadata.
+Each enrollment, detach, deletion, or revocation creates an isolated commit,
+honoring Git identity, hooks, signing, and message cleanup. Batch enrollment
+commits all imported keys together. Unrelated staged work is preserved; pending
+access-metadata edits must be committed or restored first. Configure
+[access commit messages](../configuration/root.md#access-commit-messages) at the root.
+
+New access methods live in `.over/users/<user>/<key>`, with a stable `user.json`
+record preserving empty users. `.over/crypt.json` holds only the version,
+repository ID, and active generation. Adding another key leaves the header and
+existing key files unchanged. User/key names must be portable filesystem names;
+case-colliding and platform-reserved names are rejected.
+These naming requirements apply to access records, not unrelated Git paths;
+Unix repositories may retain unrelated non-UTF-8 tracked filenames during access
+mutations without renaming or committing their pending changes.
+
+Each `user.json` contains `{"version":2}`: public existence metadata, not a
+credential or profile. Git cannot represent an empty directory, so the record
+retains the user after their last key is detached/revoked. `user delete` removes it.
+
+Existing aggregate and nested split access metadata migrate automatically in the
+next user/key mutation's commit. List/show/unlock remain compatible without migration.
 
 ## Inspect and remove access
 
@@ -66,8 +86,10 @@ through it. The only recovery key cannot be detached. `user delete` requires an
 existing user with no remaining keys.
 
 `user revoke` and `user key revoke` rotate current protected content for remaining
-trusted access. Retained passphrase keys require credential reacquisition. Review
-and commit the staged transition. Other mutations have no machine-readable success
+trusted access. Retained passphrase keys require credential reacquisition.
+Protected files and policy must be clean. The initiating branch is committed;
+generation updates in linked worktrees remain staged and are reported.
+Mutations have no machine-readable success
 payload; errors are stderr/nonzero.
 
 See [users, hardware compatibility and access recovery](../usage/crypt.md#users-and-keys)

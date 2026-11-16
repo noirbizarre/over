@@ -1097,11 +1097,7 @@ pub(crate) fn commit_staged_prepared(
     before_publish: &mut dyn FnMut(Oid) -> Result<()>,
 ) -> Result<Oid> {
     let index_path = repo.path().join("index");
-    let mut index_lock = if prepared.is_empty() {
-        None
-    } else {
-        Some(crate::actions::git::index::IndexLock::acquire(&index_path)?)
-    };
+    let original_head = fs::read(repo.path().join("HEAD"))?;
     let original_index = crate::actions::git::index::read_index(&index_path)?;
     let parent = repo.head()?.peel_to_commit()?;
     let head = parent.tree()?;
@@ -1137,6 +1133,8 @@ pub(crate) fn commit_staged_prepared(
     }
     let workdir = repo.workdir().context("source has no working directory")?;
     let mut updates = Vec::new();
+    let mut source_snapshots = Vec::new();
+    let honor_mode = super::snapshot::honors_filemode(repo)?;
     let mut builder = git2::build::TreeUpdateBuilder::new();
     // Overlapping selections must not back up and replace the same path twice.
     for path in paths.iter().collect::<std::collections::BTreeSet<_>>() {
@@ -1155,6 +1153,7 @@ pub(crate) fn commit_staged_prepared(
         );
         let new = staged.as_ref().map(|entry| (entry.id, entry.mode as i32));
         let file = workdir.join(path);
+        source_snapshots.push((file.clone(), hook_source_snapshot(&file, honor_mode)?));
         let current = super::snapshot::canonical_source_entry(repo, path)?;
         anyhow::ensure!(
             if let Some(update) = prepared.get(path) {
@@ -1199,9 +1198,30 @@ pub(crate) fn commit_staged_prepared(
     }
     let tree = repo.find_tree(builder.create_updated(repo, &head)?)?;
     crate::crypt::policy::validate_tree(repo, &tree)?;
-    let signature = crate::actions::git::sync::signature(repo)?;
-    // A stable commit object lets the generated journal recognize HEAD after interruption.
-    let planned_commit = repo.commit(None, &signature, &signature, message, &tree, &[&parent])?;
+    let commit = crate::actions::git::commit::PreparedCommit::prepare(
+        repo,
+        tree.id(),
+        message,
+        Some(parent.id()),
+    )?;
+    let mut index_lock = Some(crate::actions::git::index::IndexLock::acquire(&index_path)?);
+    commit.validate(repo)?;
+    anyhow::ensure!(
+        fs::read(repo.path().join("HEAD"))? == original_head,
+        "source branch changed while preparing selected snapshots"
+    );
+    anyhow::ensure!(
+        crate::actions::git::index::read_index(&index_path)? == original_index,
+        "source index changed while preparing selected snapshots"
+    );
+    for (file, expected) in source_snapshots {
+        anyhow::ensure!(
+            hook_source_snapshot(&file, honor_mode)? == expected,
+            "source file '{}' changed during commit hooks",
+            file.display()
+        );
+    }
+    let planned_commit = commit.oid;
     let mut protected_updates = false;
     for (path, _) in &updates {
         // Attribute inspection errors must never select plaintext rollback handling.
@@ -1211,7 +1231,7 @@ pub(crate) fn commit_staged_prepared(
     let mut crypt_guard = None;
     if protected_updates {
         // Create the commit object before journaling, so recovery can recognize a published HEAD.
-        let committed = repo.commit(None, &signature, &signature, message, &tree, &[&parent])?;
+        let committed = planned_commit;
         crypt_guard = Some(crate::crypt::access::guard(repo, true)?);
         let key = crate::crypt::access::local_key(repo)?;
         let expected = updates
@@ -1286,21 +1306,14 @@ pub(crate) fn commit_staged_prepared(
                 fs::remove_file(file)?;
             }
         }
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            message,
-            &tree,
-            &[&parent],
-        )
-        .context("failed to create commit")
+        // Reference hooks may invoke filters; the journal excludes competing
+        // crypt writers without keeping a lifecycle lock across external code.
+        drop(crypt_guard.take());
+        commit.publish(repo).context("failed to publish commit")
     })();
     match result {
         Ok(oid) => {
-            if crypt_guard.is_some()
-                && let Err(error) = crate::crypt::policy::finish(repo)
-            {
+            if protected_updates && let Err(error) = crate::crypt::policy::finish(repo) {
                 // HEAD is already authoritative; do not invite a duplicate commit on retry.
                 tracing::warn!(
                     "commit {oid} was published, but encrypted recovery cleanup failed: {error:#}; run over crypt recover"
@@ -1312,6 +1325,9 @@ pub(crate) fn commit_staged_prepared(
                     "commit {oid} succeeded, but source backup cleanup failed: {error:#}"
                 );
             }
+            drop(crypt_guard.take());
+            drop(index_lock.take());
+            crate::actions::git::commit::post_commit(repo);
             Ok(oid)
         }
         Err(error) => {
@@ -1323,7 +1339,7 @@ pub(crate) fn commit_staged_prepared(
             transaction
                 .rollback()
                 .with_context(|| format!("{error:#}; source rollback also failed"))?;
-            if crypt_guard.is_some() {
+            if protected_updates {
                 // Release the exclusive guard before the recovery routine reacquires it.
                 drop(crypt_guard.take());
                 drop(index_lock.take());
@@ -1331,6 +1347,29 @@ pub(crate) fn commit_staged_prepared(
             }
             Err(error)
         }
+    }
+}
+
+fn hook_source_snapshot(
+    path: &Path,
+    honor_mode: bool,
+) -> Result<Option<(zeroize::Zeroizing<Vec<u8>>, u32)>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            anyhow::ensure!(
+                metadata.is_file() && !metadata.is_symlink(),
+                "source file '{}' is no longer regular",
+                path.display()
+            );
+            let mode = if honor_mode {
+                i32::from(on_disk_filemode(path)?) as u32
+            } else {
+                0o100644
+            };
+            Ok(Some((crate::crypt::buffer::read_file(path)?, mode)))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
     }
 }
 

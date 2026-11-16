@@ -20,9 +20,7 @@ fn invalid_crypt_metadata_stops_init_before_drivers_checkout_or_hooks(
     let fixture = Fixture::new(false, true);
     let source = git2::Repository::open(&fixture.source).unwrap();
     let mut index = source.index().unwrap();
-    let mut entry = index
-        .get_path(Path::new(".over/crypt/access.json"), 0)
-        .unwrap();
+    let mut entry = index.get_path(Path::new(".over/crypt.json"), 0).unwrap();
     // Publish a deliberately invalid raw blob without asking clean filters to validate it.
     entry.id = source.blob(metadata).unwrap();
     index.add(&entry).unwrap();
@@ -416,7 +414,7 @@ fn no_unlock_completes_locked_and_conflicts_with_explicit_unlock() {
 #[test]
 fn metadata_only_repositories_install_drivers_without_attempting_explicit_unlock() {
     let fixture = Fixture::new(false, false);
-    fixture.git(&fixture.source, &["rm", "token", ".over/secrets.yaml"]);
+    fixture.git(&fixture.source, &["rm", "-r", "token", ".over/secrets"]);
     fixture.git(
         &fixture.source,
         &["commit", "-qm", "metadata without ciphertext"],
@@ -448,7 +446,7 @@ fn native_secret_ciphertext_alone_triggers_the_default_unlock_confirmation() {
         &mut fixture.init(),
         &[("Unlock repository encryption", "n")],
     ));
-    over::crypt::format::inspect(&fs::read(fixture.clone.join(".over/secrets.yaml")).unwrap())
+    over::crypt::format::inspect(&fs::read(fixture.clone.join(".over/secrets/TOKEN")).unwrap())
         .unwrap();
     assert!(!fixture.clone.join(".git/over-crypt/key").exists());
 }

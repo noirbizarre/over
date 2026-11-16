@@ -34,6 +34,124 @@ fn add_secret(root: &Path, name: &str, value: &[u8]) {
     assert!(child.wait().unwrap().success());
 }
 
+fn replace_secret(root: &Path, value: &[u8]) -> Output {
+    use std::io::Write;
+    let mut child = Command::new(cargo_bin("over"))
+        .current_dir(root)
+        .env_remove("OVER_HOME")
+        .args([
+            "--home",
+            root.to_str().unwrap(),
+            "secret",
+            "add",
+            "TOKEN",
+            "--replace",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(value).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn native_mutations_commit_only_the_store_and_preserve_unrelated_staging() {
+    let (root, _) = repository();
+    fs::write(root.path().join("unrelated"), b"staged work").unwrap();
+    git(root.path(), &["add", "unrelated"]);
+    add_secret(root.path(), "TOKEN", b"first\0\xff");
+    assert_eq!(
+        git(root.path(), &["log", "-1", "--format=%s"]).stdout,
+        b"chore(secrets): added TOKEN\n"
+    );
+    let paths = git(root.path(), &["ls-tree", "-r", "--name-only", "HEAD"]).stdout;
+    assert!(!String::from_utf8_lossy(&paths).contains("unrelated"));
+    assert_eq!(
+        git(root.path(), &["diff", "--cached", "--name-only"]).stdout,
+        b"unrelated\n"
+    );
+    let stored = git(root.path(), &["show", "HEAD:.over/secrets/TOKEN"]).stdout;
+    over::crypt::format::inspect(&stored).unwrap();
+    assert_eq!(
+        stored,
+        fs::read(root.path().join(".over/secrets/TOKEN")).unwrap()
+    );
+    let head = git(root.path(), &["rev-parse", "HEAD"]).stdout;
+    assert!(replace_secret(root.path(), b"first\0\xff").status.success());
+    assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).stdout, head);
+    assert!(replace_secret(root.path(), b"second").status.success());
+    assert_eq!(
+        git(root.path(), &["log", "-1", "--format=%s"]).stdout,
+        b"chore(secrets): replaced TOKEN\n"
+    );
+    over(
+        root.path(),
+        &[
+            "--home",
+            root.path().to_str().unwrap(),
+            "secret",
+            "remove",
+            "TOKEN",
+        ],
+    );
+    assert_eq!(
+        git(root.path(), &["log", "-1", "--format=%s"]).stdout,
+        b"chore(secrets): removed TOKEN\n"
+    );
+    assert_eq!(
+        git(root.path(), &["diff", "--cached", "--name-only"]).stdout,
+        b"unrelated\n"
+    );
+}
+
+#[test]
+fn custom_messages_are_used_without_committing_the_descriptor() {
+    let (root, _) = repository();
+    fs::write(root.path().join("over.toml"), "[secrets.commit_messages]\nadd = 'chore: stored a credential'\nreplace = '{{ missing }}'\n").unwrap();
+    add_secret(root.path(), "TOKEN", b"first");
+    assert_eq!(
+        git(root.path(), &["log", "-1", "--format=%s"]).stdout,
+        b"chore: stored a credential\n"
+    );
+    assert!(
+        !String::from_utf8_lossy(
+            &git(root.path(), &["ls-tree", "-r", "--name-only", "HEAD"]).stdout
+        )
+        .contains("over.toml")
+    );
+    let stored = fs::read(root.path().join(".over/secrets/TOKEN")).unwrap();
+    let head = git(root.path(), &["rev-parse", "HEAD"]).stdout;
+    assert!(!replace_secret(root.path(), b"second").status.success());
+    assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).stdout, head);
+    assert_eq!(
+        fs::read(root.path().join(".over/secrets/TOKEN")).unwrap(),
+        stored
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_rejected_secret_commit_leaves_the_store_index_and_head_unchanged() {
+    use std::os::unix::fs::PermissionsExt;
+    let (root, _) = repository();
+    add_secret(root.path(), "TOKEN", b"first");
+    let stored = fs::read(root.path().join(".over/secrets/TOKEN")).unwrap();
+    let index = fs::read(root.path().join(".git/index")).unwrap();
+    let head = git(root.path(), &["rev-parse", "HEAD"]).stdout;
+    let hook = root.path().join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!replace_secret(root.path(), b"second").status.success());
+    assert_eq!(
+        fs::read(root.path().join(".over/secrets/TOKEN")).unwrap(),
+        stored
+    );
+    assert_eq!(fs::read(root.path().join(".git/index")).unwrap(), index);
+    assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).stdout, head);
+}
+
 #[test]
 fn revocation_rotates_current_files_and_secrets_for_remaining_users_only() {
     let (root, identities) = repository();
@@ -129,9 +247,10 @@ fn native_secrets_use_the_same_unlock_and_remain_ciphertext_in_the_worktree() {
         "TOKEN",
     ];
     assert_eq!(over(root.path(), &args).stdout, b"secret sentinel\0\xff");
-    over::crypt::format::inspect(&fs::read(root.path().join(".over/secrets.yaml")).unwrap())
+    over::crypt::format::inspect(&fs::read(root.path().join(".over/secrets/TOKEN")).unwrap())
         .unwrap();
-    git(root.path(), &["add", ".over"]);
+    over::crypt::format::inspect(&git(root.path(), &["show", "HEAD:.over/secrets/TOKEN"]).stdout)
+        .unwrap();
     over(root.path(), &["lock"]);
     let rejected = Command::new(cargo_bin("over"))
         .env_remove("OVER_HOME")
@@ -545,7 +664,8 @@ fn policy_updates_preserve_existing_comments_rules_and_legacy_guards() {
     ".gitattributes"
 )]
 #[case("nested/** filter=over -text\n", None, "nested/.gitattributes")]
-#[case("", Some(".over/crypt/** filter=over\n"), ".over/crypt/access.json")]
+#[case("", Some(".over/crypt.json filter=over\n"), ".over/crypt.json")]
+#[case("", Some(".over/users/** filter=over\n"), ".over/users/alice/default")]
 fn unsafe_bootstrap_policy_fails_before_policy_index_or_plaintext_publication(
     #[case] policy: &str,
     #[case] local: Option<&str>,
@@ -677,7 +797,8 @@ fn unstaged_bootstrap_exemptions_cannot_conceal_unsafe_indexed_policy(#[case] tr
 #[case("**")]
 #[case(".*")]
 #[case(".over/**")]
-#[case(".over/crypt/**")]
+#[case(".over/crypt.json")]
+#[case(".over/users/**")]
 fn broad_selections_cannot_encrypt_bootstrap_files(#[case] selection: &str) {
     let (root, _) = repository();
     fs::create_dir(root.path().join("nested")).unwrap();
@@ -703,7 +824,12 @@ fn nested_administrative_policy_preserves_bootstrap_metadata_under_broad_root_ru
     for _ in 0..2 {
         over(root.path(), &["crypt", "add", "token"]);
         over::crypt::format::inspect(&git(root.path(), &["show", ":token"]).stdout).unwrap();
-        for path in [".over/.gitattributes", ".over/crypt/access.json"] {
+        for path in [
+            ".over/.gitattributes",
+            ".over/crypt.json",
+            ".over/users/alice/user.json",
+            ".over/users/alice/default",
+        ] {
             assert_eq!(
                 git(
                     root.path(),
@@ -729,6 +855,204 @@ fn nested_administrative_policy_preserves_bootstrap_metadata_under_broad_root_ru
         .unwrap()
         .validate_checkout()
         .unwrap();
+}
+
+#[rstest::rstest]
+#[case(".over/secrets")]
+#[case(".over/secrets.yaml")]
+fn an_old_aggregate_is_read_without_migration_and_split_by_the_next_mutation(
+    #[case] old_path: &str,
+) {
+    let (root, _) = repository();
+    let repo = git2::Repository::open(root.path()).unwrap();
+    let key = over::crypt::access::local_key(&repo).unwrap();
+    let map = std::collections::BTreeMap::from([("TOKEN", b"original\0\xff".to_vec())]);
+    let old = key
+        .encrypt(&serde_json::to_vec(&(map, 1u32)).unwrap(), 1)
+        .unwrap();
+    fs::write(root.path().join(old_path), &old).unwrap();
+    git(root.path(), &["add", old_path]);
+    git(root.path(), &["commit", "-qm", "old layout"]);
+    let head = git(root.path(), &["rev-parse", "HEAD"]).stdout;
+    assert_eq!(
+        over(
+            root.path(),
+            &[
+                "--home",
+                root.path().to_str().unwrap(),
+                "secret",
+                "get",
+                "TOKEN"
+            ]
+        )
+        .stdout,
+        b"original\0\xff"
+    );
+    assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).stdout, head);
+    assert!(root.path().join(old_path).is_file());
+    assert!(
+        replace_secret(root.path(), b"original\0\xff")
+            .status
+            .success()
+    );
+    assert!(!root.path().join(".over/secrets.yaml").exists());
+    over::crypt::format::inspect(&fs::read(root.path().join(".over/secrets/TOKEN")).unwrap())
+        .unwrap();
+    let backups: Vec<_> = fs::read_dir(root.path().join(".git/over-crypt"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("legacy-state-backup-")
+        })
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(fs::read(&backups[0]).unwrap(), old);
+    assert!(
+        git(root.path(), &["status", "--porcelain"])
+            .stdout
+            .is_empty()
+    );
+}
+
+fn legacy_secret_repository() -> (tempfile::TempDir, tempfile::TempDir) {
+    let (root, identities) = repository();
+    let legacy = age::scrypt::Recipient::new("migration credential".into());
+    fs::create_dir(root.path().join(".over/secrets")).unwrap();
+    fs::write(
+        root.path().join(".over/secrets/TOKEN.age"),
+        age::encrypt(&legacy, b"original\0\xff").unwrap(),
+    )
+    .unwrap();
+    git(root.path(), &["add", "."]);
+    git(root.path(), &["commit", "-qm", "legacy secrets"]);
+    (root, identities)
+}
+
+fn mutate_legacy_secret(root: &Path) -> Output {
+    use std::io::Write;
+    let mut child = Command::new(cargo_bin("over"))
+        .current_dir(root)
+        .env_remove("OVER_HOME")
+        .env("OVER_SECRET", "migration credential")
+        .args([
+            "--home",
+            root.to_str().unwrap(),
+            "secret",
+            "add",
+            "TOKEN",
+            "--replace",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"updated\0\xff")
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn a_secret_mutation_migrates_the_legacy_directory_in_the_same_commit() {
+    let (root, _) = legacy_secret_repository();
+    let original = fs::read(root.path().join(".over/secrets/TOKEN.age")).unwrap();
+    let result = mutate_legacy_secret(root.path());
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(root.path().join(".over/secrets/TOKEN").is_file());
+    assert_eq!(
+        git(root.path(), &["log", "-1", "--format=%s"]).stdout,
+        b"chore(secrets): replaced TOKEN\n"
+    );
+    assert_eq!(
+        over(
+            root.path(),
+            &[
+                "--home",
+                root.path().to_str().unwrap(),
+                "secret",
+                "get",
+                "TOKEN"
+            ]
+        )
+        .stdout,
+        b"updated\0\xff"
+    );
+    let backups: Vec<_> = fs::read_dir(root.path().join(".git/over-crypt"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("legacy-state-backup-")
+        })
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(fs::read(backups[0].join("TOKEN.age")).unwrap(), original);
+    assert!(
+        git(root.path(), &["status", "--porcelain"])
+            .stdout
+            .is_empty()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rejected_ref_publication_restores_the_legacy_directory_and_index() {
+    use std::os::unix::fs::PermissionsExt;
+    let (root, _) = legacy_secret_repository();
+    let original = fs::read(root.path().join(".over/secrets/TOKEN.age")).unwrap();
+    let index = fs::read(root.path().join(".git/index")).unwrap();
+    let head = git(root.path(), &["rev-parse", "HEAD"]).stdout;
+    let hook = root.path().join(".git/hooks/reference-transaction");
+    fs::write(
+        &hook,
+        "#!/bin/sh\nif [ \"$1\" = prepared ]; then exit 1; fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let result = mutate_legacy_secret(root.path());
+    assert!(!result.status.success());
+    assert_eq!(
+        fs::read(root.path().join(".over/secrets/TOKEN.age")).unwrap(),
+        original
+    );
+    assert_eq!(fs::read(root.path().join(".git/index")).unwrap(), index);
+    assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).stdout, head);
+    assert!(
+        !root
+            .path()
+            .join(".git/over-crypt/transaction.json")
+            .exists()
+    );
+}
+
+#[test]
+fn competing_aggregate_paths_are_rejected_without_mutating_either() {
+    let (root, _) = repository();
+    add_secret(root.path(), "TOKEN", b"original");
+    let bytes = fs::read(root.path().join(".over/secrets/TOKEN")).unwrap();
+    fs::write(root.path().join(".over/secrets.yaml"), &bytes).unwrap();
+    assert!(!replace_secret(root.path(), b"updated").status.success());
+    assert_eq!(
+        fs::read(root.path().join(".over/secrets/TOKEN")).unwrap(),
+        bytes
+    );
+    assert_eq!(
+        fs::read(root.path().join(".over/secrets.yaml")).unwrap(),
+        bytes
+    );
 }
 
 #[test]
@@ -1112,7 +1436,7 @@ fn detaching_one_key_keeps_the_other_independently_usable_without_rotation() {
 #[test]
 fn generating_a_private_identity_cannot_publish_it_inside_a_working_tree() {
     let (root, _) = repository();
-    let before = fs::read(root.path().join(".over/crypt/access.json")).unwrap();
+    let before = fs::read(root.path().join(".over/users/alice/default")).unwrap();
     let output = root.path().join(".over/private.age");
     let rejected = Command::new(cargo_bin("over"))
         .current_dir(root.path())
@@ -1132,7 +1456,7 @@ fn generating_a_private_identity_cannot_publish_it_inside_a_working_tree() {
     assert!(!rejected.status.success());
     assert!(!output.exists());
     assert_eq!(
-        fs::read(root.path().join(".over/crypt/access.json")).unwrap(),
+        fs::read(root.path().join(".over/users/alice/default")).unwrap(),
         before
     );
 }
@@ -1150,16 +1474,10 @@ fn one_damaged_envelope_does_not_block_an_independent_trusted_key() {
             identities.path().join("alternate.age").to_str().unwrap(),
         ],
     );
-    let path = root.path().join(".over/crypt/access.json");
-    let mut registry: over::crypt::access::Registry =
+    let path = root.path().join(".over/users/aardvark/default");
+    let mut registry: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    registry
-        .users
-        .get_mut("aardvark")
-        .unwrap()
-        .get_mut("default")
-        .unwrap()
-        .envelope = b"corrupt envelope".to_vec();
+    registry["envelope"] = serde_json::json!(b"corrupt envelope".to_vec());
     fs::write(path, serde_json::to_vec(&registry).unwrap()).unwrap();
     over(root.path(), &["lock"]);
     over(

@@ -575,7 +575,7 @@ mod tests {
 
         let source_repo = git2::Repository::open(&ov).unwrap();
         let head = source_repo.head().unwrap().peel_to_commit().unwrap();
-        assert_eq!(head.message(), Ok("edit a.txt"));
+        assert_eq!(head.message(), Ok("edit a.txt\n"));
         let tree = head.tree().unwrap();
         let blob = tree
             .get_path(std::path::Path::new("a.txt"))

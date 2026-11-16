@@ -481,6 +481,15 @@ impl Fixture {
         .unwrap();
         fs::write(source.join("app/plain"), "ordinary\n").unwrap();
         let repo = git2::Repository::init(&source).unwrap();
+        // Native commits require an explicit identity in this globally isolated fixture.
+        repo.config()
+            .unwrap()
+            .set_str("user.name", "Template test")
+            .unwrap();
+        repo.config()
+            .unwrap()
+            .set_str("user.email", "template@example.invalid")
+            .unwrap();
         // Background Git housekeeping must not race byte-for-byte administrative snapshots.
         repo.config()
             .unwrap()
@@ -699,7 +708,7 @@ fn key_rotation_refuses_to_strand_protected_snapshot_bases_before_publishing_any
     fixture.protect();
     fixture.apply();
     let key = fs::read(fixture.source.join(".git/over-crypt/key")).unwrap();
-    let registry = fs::read(fixture.source.join(".over/crypt/access.json")).unwrap();
+    let registry = fs::read(fixture.source.join(".over/crypt.json")).unwrap();
     let index = fs::read(fixture.source.join(".git/index")).unwrap();
     let snapshot = fixture.snapshot();
     fixture
@@ -713,7 +722,7 @@ fn key_rotation_refuses_to_strand_protected_snapshot_bases_before_publishing_any
         key
     );
     assert_eq!(
-        fs::read(fixture.source.join(".over/crypt/access.json")).unwrap(),
+        fs::read(fixture.source.join(".over/crypt.json")).unwrap(),
         registry
     );
     assert_eq!(fs::read(fixture.source.join(".git/index")).unwrap(), index);
@@ -3101,7 +3110,7 @@ fn sync_can_commit_an_ordinary_sibling_with_consent_without_recording_generated_
             .peel_to_commit()
             .unwrap()
             .message(),
-        Ok("record ordinary sibling")
+        Ok("record ordinary sibling\n")
     );
     assert_eq!(
         fs::read(fixture.source.join("app/plain")).unwrap(),

@@ -680,8 +680,10 @@ fn incomplete_access_cannot_offer_unlock(#[case] missing: &str) {
     assert!(result.validate_checkout().is_err());
 }
 
-#[test]
-fn passphrase_access_and_native_secret_ciphertext_need_no_credential() {
+#[rstest]
+#[case("secrets")]
+#[case("secrets.yaml")]
+fn passphrase_access_and_native_secret_ciphertext_need_no_credential(#[case] filename: &str) {
     let directory = tempfile::tempdir().unwrap();
     let repo = Repository::init_bare(directory.path()).unwrap();
     let key = RepositoryKey::generate().unwrap();
@@ -696,11 +698,11 @@ fn passphrase_access_and_native_secret_ciphertext_need_no_credential() {
             (ACCESS, &serde_json::to_vec(&registry).unwrap(), 0o100644),
             (
                 ".over/.gitattributes",
-                b"secrets.yaml filter=over\n",
+                format!("{filename} filter=over\n").as_bytes(),
                 0o100644,
             ),
             (
-                ".over/secrets.yaml",
+                &format!(".over/{filename}"),
                 &key.encrypt(b"native secret sentinel", 1).unwrap(),
                 0o100644,
             ),
@@ -711,7 +713,7 @@ fn passphrase_access_and_native_secret_ciphertext_need_no_credential() {
     assert!(result.diagnostics.is_empty());
     assert_eq!(
         result.ciphertext_paths,
-        vec![PathBuf::from(".over/secrets.yaml")]
+        vec![PathBuf::from(format!(".over/{filename}"))]
     );
     assert!(!format!("{result:?}").contains("sentinel"));
 }

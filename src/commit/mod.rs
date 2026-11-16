@@ -404,16 +404,38 @@ fn commit_blocking(
     if crate::crypt::access::configured(&repo)? {
         let index = repo.index()?;
         let head = repo.head()?.peel_to_tree()?;
-        for path in [
-            ".gitattributes",
-            ".over/.gitattributes",
-            ".over/crypt/access.json",
-        ] {
-            let relative = PathBuf::from(path);
+        let current = crate::crypt::access_storage::index(&repo, &index)?;
+        let committed = crate::crypt::access_storage::tree(&repo, &head)?;
+        let bootstrap: std::collections::BTreeSet<_> = current
+            .keys()
+            .chain(committed.keys())
+            .cloned()
+            .chain([
+                PathBuf::from(".gitattributes"),
+                PathBuf::from(".over/.gitattributes"),
+            ])
+            .collect();
+        for relative in bootstrap {
+            if index.get_path(&relative, 0).is_none() && head.get_path(&relative).is_ok() {
+                // Deletion is not an additive encryption-policy extension and
+                // must not consume unrelated staged attributes in a selected commit.
+                anyhow::ensure!(
+                    relative != std::path::Path::new(".gitattributes"),
+                    "staged .gitattributes deletion must be committed explicitly with Git"
+                );
+                anyhow::ensure!(
+                    !crate::crypt::access::root(&repo)?
+                        .join(&relative)
+                        .try_exists()?,
+                    "resolve unstaged crypt metadata before committing"
+                );
+                paths.push(relative);
+                continue;
+            }
             if let Some(entry) = index.get_path(&relative, 0)
                 && head.get_path(&relative).ok().map(|old| old.id()) != Some(entry.id)
             {
-                if path == ".gitattributes" {
+                if relative == std::path::Path::new(".gitattributes") {
                     let old = head
                         .get_path(&relative)
                         .ok()
@@ -431,7 +453,7 @@ fn commit_blocking(
                     crate::crypt::policy::bootstrap_equal(
                         &relative,
                         repo.find_blob(entry.id)?.content(),
-                        &std::fs::read(crate::crypt::access::root(&repo)?.join(path))?
+                        &std::fs::read(crate::crypt::access::root(&repo)?.join(&relative))?
                     ),
                     "resolve unstaged crypt metadata before committing"
                 );
@@ -708,7 +730,7 @@ mod tests {
 
         let commit_oid = git2::Oid::from_str(&oid).unwrap();
         let created_commit = repo.find_commit(commit_oid).unwrap();
-        assert_eq!(created_commit.message(), Ok("update a.txt"));
+        assert_eq!(created_commit.message(), Ok("update a.txt\n"));
         assert_eq!(created_commit.parent_count(), 1);
         let tree = created_commit.tree().unwrap();
         let blob = tree

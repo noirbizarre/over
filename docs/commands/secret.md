@@ -16,8 +16,22 @@ Storage requires the source Git repository root. There are no overlay,
 target, JSON, or credential options.
 
 All operations require an existing [`over unlock`](unlock.md), including
-listing/removing names. The entire map, including names, is ciphertext in
-`.over/secrets.yaml` even while unlocked. Commands do not stage or commit it.
+listing/removing names. Each value is ciphertext in `.over/secrets/<name>` even
+while unlocked. Names are public filenames in Git history. Each add, replacement, or removal
+automatically commits the encrypted update, preserving unrelated staged changes.
+Replacing a value with identical bytes creates no commit. Reads create no commit.
+Commits honor Git identity, hooks, and signing configuration; failures prevent
+publication. Recursive secret mutations from Git commit hooks are rejected.
+Customize the default `chore(secrets): added/replaced/removed NAME` messages in
+[root configuration](../configuration/root.md#secret-commit-messages).
+
+Existing `.over/secrets` / `.over/secrets.yaml` aggregate files and legacy Age
+directories migrate automatically on the next mutation, in that same commit.
+Reads retain compatibility without migrating. Legacy Age entries additionally
+require their original passphrase. Conflicting stores are rejected for explicit
+reconciliation. Directory migrations retain an encrypted backup under Git's
+private `over-crypt/legacy-state-backup-*` path. Getting an entry reads only that
+value; listing reads names while retaining the unlock requirement.
 
 | Subcommand | Input and output |
 | --- | --- |

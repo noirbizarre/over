@@ -66,6 +66,8 @@ impl Fixture {
     fn command(&self, command: &str) -> Command {
         let mut cmd = Command::cargo_bin("over").unwrap();
         cmd.env("XDG_STATE_HOME", self.temp.path().join("state"))
+            .env("GIT_CONFIG_GLOBAL", self.temp.path().join("gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .arg("--home")
             .arg(&self.source)
             .arg(command);
@@ -120,6 +122,120 @@ fn commit_index(repo: &git2::Repository) {
         &parents,
     )
     .unwrap();
+}
+
+fn install_hook(fixture: &Fixture, name: &str, body: &str) {
+    let path = fixture.source.join(".git/hooks").join(name);
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_git_failure_after_publication_does_not_restore_old_checkout_sources() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.target.join("file"), b"committed source update").unwrap();
+    fixture.add();
+    install_hook(
+        &fixture,
+        "reference-transaction",
+        "if [ \"$1\" = committed ]; then kill -KILL \"$PPID\"; fi",
+    );
+    fixture.commit_command().assert().success();
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"committed source update"
+    );
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let entry = repo
+        .head()
+        .unwrap()
+        .peel_to_tree()
+        .unwrap()
+        .get_path(Path::new("ov/file"))
+        .unwrap();
+    assert_eq!(
+        repo.find_blob(entry.id()).unwrap().content(),
+        b"committed source update"
+    );
+    assert_eq!(
+        repo.index()
+            .unwrap()
+            .get_path(Path::new("ov/file"), 0)
+            .unwrap()
+            .id,
+        entry.id()
+    );
+}
+
+#[test]
+fn a_hooks_executable_bit_edit_is_preserved_and_blocks_checkout_publication() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.target.join("file"), b"staged change").unwrap();
+    fixture.add();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let head = repo.head().unwrap().target();
+    install_hook(&fixture, "pre-commit", "chmod +x ov/file");
+    fixture
+        .commit_command()
+        .assert()
+        .failure()
+        .stderr(contains("changed during commit hooks"));
+    assert_eq!(repo.head().unwrap().target(), head);
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"original"
+    );
+    assert_ne!(
+        fs::metadata(fixture.source.join("ov/file"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o111,
+        0
+    );
+}
+
+#[test]
+fn unrelated_root_attributes_deletion_stays_staged_outside_selected_commits() {
+    let fixture = Fixture::new();
+    let recipient = age::x25519::Identity::generate().to_public().to_string();
+    fixture
+        .command("user")
+        .args(["add", "alice", "--recipient", &recipient])
+        .assert()
+        .success();
+    fs::write(fixture.source.join(".gitattributes"), "*.txt text\n").unwrap();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new(".gitattributes")).unwrap();
+    index.write().unwrap();
+    commit_index(&repo);
+    fixture.apply();
+    fs::write(fixture.target.join("file"), b"selected change").unwrap();
+    fixture.add();
+    fs::remove_file(fixture.source.join(".gitattributes")).unwrap();
+    let mut index = repo.index().unwrap();
+    // over add updated the index in another process; retain that staged file
+    // rather than overwriting it through this fixture's cached libgit2 handle.
+    index.read(true).unwrap();
+    index.remove_path(Path::new(".gitattributes")).unwrap();
+    index.write().unwrap();
+    let head = repo.head().unwrap().target();
+    fixture
+        .commit_command()
+        .assert()
+        .failure()
+        .stderr(contains(".gitattributes deletion"));
+    assert_eq!(repo.head().unwrap().target(), head);
+    assert!(
+        repo.index()
+            .unwrap()
+            .get_path(Path::new(".gitattributes"), 0)
+            .is_none()
+    );
+    assert!(!fixture.source.join(".gitattributes").exists());
 }
 
 #[rstest]
@@ -382,7 +498,7 @@ fn interactive_message_input_starts_below_the_question_and_records_edited_text()
     let repo = git2::Repository::open(&fixture.source).unwrap();
     assert_eq!(
         repo.head().unwrap().peel_to_commit().unwrap().message(),
-        Ok("focused")
+        Ok("focused\n")
     );
 }
 
