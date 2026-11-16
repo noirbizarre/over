@@ -213,23 +213,6 @@ jobs:
       - name: Check
         run: cargo check --all-targets
 
-  docker:
-    name: 🐳 Docker
-    needs: build
-    uses: ./.github/workflows/docker.yaml
-    permissions:
-      contents: read
-      packages: write
-
-  feature:
-    name: 📦 Dev Container
-    needs: build
-    uses: ./.github/workflows/devcontainer.yaml
-    # The reusable workflow's publishing job requires this ceiling even when skipped.
-    permissions:
-      contents: read
-      packages: write
-
   # PRs check every target cheaply; main also supplies optimized binaries for images.
   build:
     name: 🏗️ Build (${{ matrix.build.label }})
@@ -291,3 +274,20 @@ jobs:
           path: target/${{ matrix.build.target }}/${{ github.event_name == 'pull_request' && 'debug' || 'release' }}/over${{ matrix.build.ext }}
           if-no-files-found: error
           retention-days: 7
+
+  docker:
+    name: 🐳 Docker
+    needs: build
+    uses: ./.github/workflows/docker.yaml
+    permissions:
+      contents: read
+      packages: write
+
+  feature:
+    name: 📦 Dev Container
+    needs: build
+    uses: ./.github/workflows/devcontainer.yaml
+    # The reusable workflow's publishing job requires this ceiling even when skipped.
+    permissions:
+      contents: read
+      packages: write
