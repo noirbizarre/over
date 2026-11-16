@@ -24,11 +24,11 @@ names with your own:
 
 The Feature contains both Linux amd64 and arm64 binaries and installs the matching
 one during image construction. Supported bases are Debian 12+ and Ubuntu 24.04+
-with Bash and glibc. Required Git and common-utils Features are installed
-automatically through `dependsOn`, supplying Git and CA certificates before Over's
-installer runs. Common-utils includes its standard utilities, with optional Zsh
-setup, package upgrades and user creation disabled. There is no crane bootstrap,
-separate binary download or Docker-image extraction.
+with Bash and glibc. The installer checks for Git and a CA certificate bundle;
+it runs `apt-get` only if a prerequisite is missing. If common-utils or Git
+Features were selected, `installsAfter` orders Over after them without requiring
+those Features. There is no crane bootstrap, separate binary download or
+Docker-image extraction.
 
 Initialization and application run during `postCreateCommand`, as `vscode` in
 this example. Over's normal home resolution therefore defaults to

@@ -24,16 +24,8 @@
         }
     },
     "postCreateCommand": "/usr/local/share/over/setup.sh",
-    "dependsOn": {
-        "ghcr.io/devcontainers/features/common-utils:2": {
-            "installZsh": false,
-            "installOhMyZsh": false,
-            "installOhMyZshConfig": false,
-            "upgradePackages": false,
-            "username": "none"
-        },
-        "ghcr.io/devcontainers/features/git:1": {
-            "version": "os-provided"
-        }
-    }
+    "installsAfter": [
+        "ghcr.io/devcontainers/features/common-utils",
+        "ghcr.io/devcontainers/features/git"
+    ]
 }
