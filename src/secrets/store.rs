@@ -102,6 +102,21 @@ impl SecretStore {
     pub fn check_add(&self, name: &SecretName, replace: bool) -> Result<()> {
         if let Some(repo) = self.unified()? {
             let _guard = crate::crypt::access::guard(&repo, false)?;
+            if matches!(
+                super::layout::inspect(&self.repository)?,
+                super::layout::Layout::Legacy
+            ) {
+                crate::crypt::access::local_key(&repo)?;
+                ensure!(
+                    replace
+                        || !self
+                            .root
+                            .join(format!("{}.age", name.as_str()))
+                            .try_exists()?,
+                    "secret already exists; use --replace to replace it"
+                );
+                return Ok(());
+            }
             ensure!(
                 replace || !self.read_map(&repo)?.0.contains_key(name.as_str()),
                 "secret already exists; use --replace to replace it"
@@ -126,7 +141,7 @@ impl SecretStore {
         if let Some(repo) = self.unified()? {
             let _mutation = super::commit::mutation_guard(&repo)?;
             let guard = crate::crypt::access::guard(&repo, true)?;
-            let mut map = self.read_map(&repo)?;
+            let mut map = self.read_map_with_prompt(&repo, prompt)?;
             ensure!(
                 replace || !map.0.contains_key(name.as_str()),
                 "secret already exists; use --replace to replace it"
@@ -140,11 +155,20 @@ impl SecretStore {
                 .0
                 .get(name.as_str())
                 .is_some_and(|current| current.as_slice() == value.expose())
+                && matches!(super::layout::inspect(&self.repository)?, super::layout::Layout::Native(path) if path == Path::new(super::layout::PATH))
+                // An existing untracked aggregate still needs its first commit.
+                && repo.head().ok().and_then(|head| head.peel_to_tree().ok())
+                    .is_some_and(|tree| tree.get_path(Path::new(super::layout::PATH)).is_ok())
             {
                 return Ok(());
             }
-            map.0
-                .insert(name.as_str().to_owned(), value.expose().to_vec());
+            if let Some(mut previous) = map
+                .0
+                .insert(name.as_str().to_owned(), value.expose().to_vec())
+            {
+                use zeroize::Zeroize;
+                previous.zeroize();
+            }
             let mutation = self.prepare_map(&repo, &map, name, operation)?;
             drop(guard);
             return mutation.commit(&repo);
@@ -179,7 +203,7 @@ impl SecretStore {
     pub fn get(&self, name: &SecretName, prompt: bool) -> Result<SecretBytes> {
         if let Some(repo) = self.unified()? {
             let _guard = crate::crypt::access::guard(&repo, false)?;
-            let mut map = self.read_map(&repo)?;
+            let mut map = self.read_map_with_prompt(&repo, prompt)?;
             return Ok(SecretBytes::new(
                 map.0
                     .remove(name.as_str())
@@ -207,7 +231,7 @@ impl SecretStore {
                 return Err(ProviderError::SessionUnavailable);
             }
             let mut map = self
-                .read_map(&repo)
+                .read_map_with_prompt(&repo, prompt)
                 .map_err(|_| ProviderError::DecryptionFailed)?;
             return map
                 .0
@@ -259,7 +283,7 @@ impl SecretStore {
         if let Some(repo) = self.unified()? {
             let _mutation = super::commit::mutation_guard(&repo)?;
             let guard = crate::crypt::access::guard(&repo, true)?;
-            let mut map = self.read_map(&repo)?;
+            let mut map = self.read_map_with_prompt(&repo, true)?;
             use zeroize::Zeroize;
             map.0
                 .remove(name.as_str())
@@ -291,23 +315,33 @@ impl SecretStore {
             self.repository.canonicalize()? == crate::crypt::access::root(&repo)?.canonicalize()?,
             "select the source Git repository root with --home for repository-key secrets"
         );
-        ensure!(
-            !self.root.try_exists()?,
-            "legacy secret store exists; run over crypt migrate before using repository secrets"
-        );
+        super::layout::inspect(&self.repository)?;
         Ok(Some(repo))
     }
 
     fn read_map(&self, repo: &git2::Repository) -> Result<SecretMap> {
+        self.read_map_with_prompt(repo, false)
+    }
+
+    fn read_map_with_prompt(&self, repo: &git2::Repository, prompt: bool) -> Result<SecretMap> {
         let key = crate::crypt::access::local_key(repo)?;
-        let path = self.repository.join(".over/secrets.yaml");
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(SecretMap::default());
+        let path = match super::layout::inspect(&self.repository)? {
+            super::layout::Layout::Missing => return Ok(SecretMap::default()),
+            super::layout::Layout::Native(path) => self.repository.join(path),
+            super::layout::Layout::Legacy => {
+                let mut map = SecretMap::default();
+                for (filename, ciphertext) in super::layout::legacy_files(&self.root)? {
+                    let name = filename
+                        .file_stem()
+                        .and_then(|name| name.to_str())
+                        .context("invalid legacy secret name")?;
+                    let plaintext = self.crypto.decrypt(&ciphertext, prompt)?;
+                    map.0.insert(name.to_owned(), plaintext.expose().to_vec());
+                }
+                return Ok(map);
             }
-            Err(error) => return Err(error.into()),
         };
+        let bytes = fs::read(&path)?;
         ensure!(
             !fs::symlink_metadata(&path)?.file_type().is_symlink(),
             "secret store must not be a symlink"
@@ -331,18 +365,68 @@ impl SecretStore {
     ) -> Result<super::commit::Mutation> {
         let config = crate::overlays::Repository::new(self.repository.clone()).secrets_config()?;
         let message = config.commit_messages.render(operation, name)?;
+        self.prepare_map_with_message(repo, map, message)
+    }
+
+    fn prepare_map_with_message(
+        &self,
+        repo: &git2::Repository,
+        map: &SecretMap,
+        message: String,
+    ) -> Result<super::commit::Mutation> {
         let key = crate::crypt::access::local_key(repo)?;
         let plaintext = crate::crypt::buffer::to_json(map)?;
-        super::commit::Mutation::prepare(
-            repo,
-            [(
-                PathBuf::from(".over/secrets.yaml"),
-                Some(key.encrypt(&plaintext, 1)?),
-            )]
-            .into(),
-            message,
-        )
+        let mut updates: std::collections::BTreeMap<_, _> = [(
+            PathBuf::from(super::layout::PATH),
+            Some(key.encrypt(&plaintext, 1)?),
+        )]
+        .into();
+        match super::layout::inspect(&self.repository)? {
+            super::layout::Layout::Native(path) if path != Path::new(super::layout::PATH) => {
+                updates.insert(path, None);
+            }
+            super::layout::Layout::Legacy => {
+                for filename in super::layout::legacy_files(&self.root)?.keys() {
+                    updates.insert(PathBuf::from(super::layout::PATH).join(filename), None);
+                }
+            }
+            _ => {}
+        }
+        let attributes = self.repository.join(".over/.gitattributes");
+        let mut policy = fs::read(&attributes)?;
+        let rule = b"secrets filter=over diff=over -text\n";
+        if !policy
+            .split_inclusive(|byte| *byte == b'\n')
+            .any(|line| line == rule)
+        {
+            if !policy.ends_with(b"\n") {
+                policy.push(b'\n');
+            }
+            policy.extend_from_slice(rule);
+            updates.insert(PathBuf::from(".over/.gitattributes"), Some(policy));
+        }
+        super::commit::Mutation::prepare(repo, updates, message)
     }
+}
+
+pub(crate) fn migrate_native(repo: &git2::Repository) -> Result<bool> {
+    let root = crate::crypt::access::root(repo)?;
+    let _mutation = super::commit::mutation_guard(repo)?;
+    let guard = crate::crypt::access::guard(repo, true)?;
+    match super::layout::inspect(root)? {
+        super::layout::Layout::Missing => return Ok(false),
+        super::layout::Layout::Native(path) if path == Path::new(super::layout::PATH) => {
+            return Ok(false);
+        }
+        _ => {}
+    }
+    let store = SecretStore::new(root, Arc::new(CryptoService::default()))?;
+    let map = store.read_map_with_prompt(repo, true)?;
+    let mutation =
+        store.prepare_map_with_message(repo, &map, "chore(secrets): migrated store".into())?;
+    drop(guard);
+    mutation.commit(repo)?;
+    Ok(true)
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

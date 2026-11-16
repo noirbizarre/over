@@ -31,14 +31,14 @@ The entire binary-safe map is one versionable ciphertext file:
 
 ```text
 .over/
-  secrets.yaml
+  secrets
 ```
 
 Repository-root `.over` is reserved administration: overlay discovery and
 materialization always exclude it, even if `.overignore` negations select it.
 Each mutation automatically commits this file and required initial encryption
-metadata, preserving unrelated staged work. Despite its
-filename, `secrets.yaml` contains a versioned binary encrypted payload, including
+metadata, preserving unrelated staged work. The extensionless `secrets` file
+contains a versioned binary encrypted payload, including
 in the working tree while unlocked. Secret operations and explicit Git textconv
 display decrypt its contents in memory. Aggregate updates are serialized across processes and atomically
 publish ciphertext, preventing lost updates or partial writes.
@@ -52,6 +52,14 @@ Commit pending changes to the tracked store or encryption metadata before
 mutating secrets. Reads do not stage or commit anything, and identical-value
 replacements create no empty commit. Git commit hooks may read secrets but
 cannot recursively mutate them.
+
+Older `.over/secrets.yaml` files are renamed automatically on the next mutation;
+their encrypted format is unchanged. Legacy `.over/secrets/` directories migrate
+to the aggregate in the same commit as the requested mutation, after decrypting
+all entries with their original Age passphrase. The original encrypted directory
+is retained under Git's private `over-crypt/legacy-secrets-backup-*` path.
+Read-only commands do not migrate or commit. Resolve competing stores before
+continuing; Over does not silently merge them.
 
 Names contain 1–128 ASCII letters, digits, underscores, or hyphens, and start
 with a letter or digit. Platform-reserved device names such as `CON` and `LPT1`

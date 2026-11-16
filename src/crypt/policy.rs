@@ -237,6 +237,18 @@ struct Snapshot {
     identities: BTreeMap<PathBuf, String>,
     #[serde(default)]
     created_directories: Vec<PathBuf>,
+    #[serde(default)]
+    directory_moves: BTreeMap<PathBuf, DirectoryMove>,
+    #[serde(default)]
+    head_references: BTreeMap<PathBuf, Vec<u8>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DirectoryMove {
+    backup: PathBuf,
+    files: BTreeMap<PathBuf, Vec<u8>>,
+    #[serde(default)]
+    identity: Option<String>,
 }
 
 impl Drop for Snapshot {
@@ -268,6 +280,27 @@ pub(crate) fn begin_commit(
     expected: BTreeMap<PathBuf, Option<Vec<u8>>>,
 ) -> Result<()> {
     begin_commit_with_links(repo, key, files, committed, expected, BTreeMap::new())
+}
+
+pub(crate) fn begin_secret_commit(
+    repo: &git2::Repository,
+    key: &format::RepositoryKey,
+    committed: String,
+    expected: BTreeMap<PathBuf, Option<Vec<u8>>>,
+    directory_backup: Option<PathBuf>,
+) -> Result<()> {
+    begin_operation(
+        repo,
+        key,
+        &expected.keys().cloned().collect::<Vec<_>>(),
+        Some(committed),
+        expected,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        Operation::Generic,
+        false,
+        directory_backup,
+    )
 }
 
 pub(crate) fn begin_commit_with_links(
@@ -328,6 +361,7 @@ fn begin_states(
         expected_modes,
         Operation::Generic,
         false,
+        None,
     )
 }
 
@@ -342,6 +376,7 @@ fn begin_operation(
     expected_modes: BTreeMap<PathBuf, u32>,
     operation: Operation,
     replacing: bool,
+    directory_backup: Option<PathBuf>,
 ) -> Result<()> {
     // Own all sensitive buffers before the first fallible read, including partial preparation.
     let mut snapshot = Snapshot {
@@ -361,11 +396,17 @@ fn begin_operation(
         heads: BTreeMap::new(),
         identities: BTreeMap::new(),
         created_directories: Vec::new(),
+        directory_moves: BTreeMap::new(),
+        head_references: BTreeMap::new(),
     };
     snapshot.administrative = fs::canonicalize(repo.commondir())?;
     snapshot.origin = Some(fs::canonicalize(repo.path())?);
     snapshot.base_head = head_value(repo);
     for worktree in access::worktrees(repo)? {
+        snapshot.head_references.insert(
+            fs::canonicalize(worktree.path())?,
+            fs::read(worktree.path().join("HEAD"))?,
+        );
         snapshot
             .heads
             .insert(fs::canonicalize(worktree.path())?, head_value(&worktree));
@@ -385,6 +426,33 @@ fn begin_operation(
             )?,
         );
         let bytes = match fs::symlink_metadata(path) {
+            Ok(metadata)
+                if metadata.is_dir()
+                    && directory_backup.is_some()
+                    && *path == access::root(repo)?.join(crate::secrets::layout::PATH) =>
+            {
+                let backup = directory_backup
+                    .as_ref()
+                    .context("missing directory backup")?;
+                ensure!(
+                    backup.parent() == Some(access::private_dir(repo).as_path())
+                        && !backup.try_exists()?,
+                    "invalid or occupied legacy directory backup"
+                );
+                snapshot.directory_moves.insert(
+                    path.clone(),
+                    DirectoryMove {
+                        backup: backup.clone(),
+                        files: crate::secrets::layout::legacy_files(path)?,
+                        #[cfg(unix)]
+                        identity: Some(super::transaction::file_identity(path)?),
+                        // std::fs::File::open cannot identify directories on Windows.
+                        #[cfg(not(unix))]
+                        identity: None,
+                    },
+                );
+                None
+            }
             Ok(metadata) if metadata.is_symlink() => {
                 snapshot.links.insert(path.clone(), fs::read_link(path)?);
                 None
@@ -530,6 +598,12 @@ fn restore_snapshot(repo: &git2::Repository, mut snapshot: Snapshot, finalize: b
             head_value(&git2::Repository::open(directory)?) == *expected,
             "a participating worktree HEAD changed after the interrupted transaction; preserve that commit before recovery"
         );
+        if let Some(reference) = snapshot.head_references.get(directory) {
+            ensure!(
+                fs::read(directory.join("HEAD"))? == *reference,
+                "a participating worktree switched branches after the interrupted transaction; preserve that branch before recovery"
+            );
+        }
     }
     if published {
         // HEAD publication is authoritative; never undo source changes after a successful commit.
@@ -549,6 +623,45 @@ fn restore_snapshot(repo: &git2::Repository, mut snapshot: Snapshot, finalize: b
     }
     // Refuse intervening edits before restoring even the first path.
     for (path, old) in &snapshot.files {
+        if let Some(directory) = snapshot.directory_moves.get(path) {
+            let original = fs::symlink_metadata(path)
+                .is_ok_and(|metadata| metadata.is_dir() && !metadata.is_symlink());
+            if original {
+                if let Some(parent) = snapshot.parents.get(path) {
+                    ensure!(
+                        crate::overlays::mapping::location(
+                            path.parent().context("directory has no parent")?
+                        )? == *parent,
+                        "legacy directory ancestry changed before recovery"
+                    );
+                }
+                if let Some(identity) = &directory.identity {
+                    ensure!(
+                        super::transaction::file_identity(path)? == *identity,
+                        "legacy directory identity changed before recovery"
+                    );
+                }
+                ensure!(
+                    crate::secrets::layout::legacy_files(path)? == directory.files
+                        && !directory.backup.try_exists()?,
+                    "legacy directory changed before recovery"
+                );
+                continue;
+            }
+            ensure!(
+                directory.backup.parent() == Some(access::private_dir(repo).as_path())
+                    && fs::symlink_metadata(&directory.backup)
+                        .is_ok_and(|metadata| metadata.is_dir() && !metadata.is_symlink())
+                    && crate::secrets::layout::legacy_files(&directory.backup)? == directory.files,
+                "legacy directory backup changed or disappeared; preserve remaining data before recovery"
+            );
+            if let Some(identity) = &directory.identity {
+                ensure!(
+                    super::transaction::file_identity(&directory.backup)? == *identity,
+                    "legacy directory backup identity changed before recovery"
+                );
+            }
+        }
         if let Some(parent) = snapshot.parents.get(path) {
             ensure!(
                 crate::overlays::mapping::location(
@@ -644,6 +757,17 @@ fn restore_snapshot(repo: &git2::Repository, mut snapshot: Snapshot, finalize: b
         fs::rename(source, input).context(
             "could not move the original ingestion inode back; recovery journal retained",
         )?;
+    }
+    // Restore the original directory inode before generic files; children were
+    // never rewritten and the authenticated backup retains their permissions.
+    for (path, directory) in &snapshot.directory_moves {
+        if !fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+            if path.try_exists()? {
+                fs::remove_file(path)?;
+            }
+            fs::rename(&directory.backup, path)?;
+        }
+        snapshot.files.remove(path);
     }
     let mut restore: Vec<_> = snapshot.files.iter().collect();
     // Restore attributes/files first, publishing the coherent old index last.
@@ -1492,6 +1616,7 @@ impl Refresh {
             BTreeMap::new(),
             operation,
             replacing,
+            None,
         )?;
         let result = (|| {
             for file in &self.files {
@@ -1789,7 +1914,8 @@ pub fn inspect(repo: &git2::Repository) -> Result<Vec<Diagnostic>> {
             findings.push(Diagnostic::Warning(format!("WARNING {}: protected path does not select diff=over; review attribute overrides or add diff=over for readable diffs", path.display())));
         }
         let declared = intended.get(&path).copied().unwrap_or(false)
-            || path == Path::new(".over/secrets.yaml");
+            || path == Path::new(crate::secrets::layout::OLD_PATH)
+            || path == Path::new(crate::secrets::layout::PATH);
         let previously_protected = committed.get(&path).copied().unwrap_or(false);
         if !actual && !declared && !previously_protected {
             continue;
@@ -2026,10 +2152,13 @@ pub fn rotate_with<C: age::Callbacks>(
             "resolve index conflicts before rotation"
         );
         let mut protected_paths = tracked(repo)?;
-        if root.join(".over/secrets.yaml").try_exists()?
-            && !protected_paths.contains(&PathBuf::from(".over/secrets.yaml"))
-        {
-            protected_paths.push(PathBuf::from(".over/secrets.yaml"));
+        for path in [
+            crate::secrets::layout::PATH,
+            crate::secrets::layout::OLD_PATH,
+        ] {
+            if root.join(path).is_file() && !protected_paths.contains(&PathBuf::from(path)) {
+                protected_paths.push(PathBuf::from(path));
+            }
         }
         for path in protected_paths {
             let selected = protected(repo, &path)?;
@@ -2133,39 +2262,15 @@ pub fn rotate_with<C: age::Callbacks>(
 }
 
 pub fn migrate(repo: &git2::Repository) -> Result<()> {
+    // Native migration owns an isolated commit, including directory-to-file recovery.
+    let migrated_secrets = crate::secrets::migrate_native(repo)?;
     let root = access::root(repo)?;
     let key = access::local_key(repo)?;
     let legacy = crate::secrets::CryptoService::default();
     let mut prepared = BTreeMap::new();
     let mut originals = BTreeMap::new();
-    let mut secrets = BTreeMap::new();
     let index = repo.index()?;
-    let mut candidates = tracked(repo)?;
-    let legacy_store = root.join(".over/secrets");
-    if legacy_store.try_exists()? {
-        ensure!(
-            !fs::symlink_metadata(&legacy_store)?
-                .file_type()
-                .is_symlink(),
-            "legacy secret store must not be a symlink"
-        );
-        for entry in fs::read_dir(&legacy_store)? {
-            let entry = entry?;
-            if entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "age")
-            {
-                candidates.push(entry.path().strip_prefix(root)?.to_path_buf());
-            } else {
-                anyhow::bail!(
-                    "legacy secret store contains unrecognized files; preserve and resolve them before migration"
-                );
-            }
-        }
-    }
-    candidates.sort();
-    candidates.dedup();
+    let candidates = tracked(repo)?;
     for path in candidates {
         if path.extension().is_none_or(|extension| extension != "age") {
             continue;
@@ -2186,48 +2291,22 @@ pub fn migrate(repo: &git2::Repository) -> Result<()> {
             );
         }
         let plaintext = legacy.decrypt(&ciphertext, true)?;
-        if path.starts_with(".over/secrets") {
-            let name = path
-                .file_stem()
-                .and_then(|name| name.to_str())
-                .context("invalid legacy secret name")?;
-            crate::secrets::SecretName::parse(name)?;
-            secrets.insert(name.to_owned(), plaintext);
-        } else {
-            let destination = path.with_extension("");
-            let encrypted = key.encrypt(plaintext.expose(), 0)?;
-            if root.join(&destination).try_exists()? {
-                let current = zeroize::Zeroizing::new(fs::read(root.join(&destination))?);
-                ensure!(
-                    current.as_slice() == encrypted || current.as_slice() == plaintext.expose(),
-                    "migration destination {} has different content; preserve edits and resolve the collision first",
-                    destination.display()
-                );
-            }
-            prepared.insert(destination, encrypted);
-        }
-        originals.insert(path, ciphertext);
-    }
-    if !secrets.is_empty() {
-        let values: BTreeMap<_, _> = secrets
-            .iter()
-            .map(|(name, value)| (name, value.expose()))
-            .collect();
-        let plaintext = zeroize::Zeroizing::new(serde_json::to_vec(&(values, 1u32))?);
-        let ciphertext = key.encrypt(&plaintext, 1)?;
-        if root.join(".over/secrets.yaml").try_exists()? {
+        let destination = path.with_extension("");
+        let encrypted = key.encrypt(plaintext.expose(), 0)?;
+        if root.join(&destination).try_exists()? {
+            let current = zeroize::Zeroizing::new(fs::read(root.join(&destination))?);
             ensure!(
-                fs::read(root.join(".over/secrets.yaml"))? == ciphertext,
-                "legacy/new secret stores differ; preserve and merge their contents explicitly before migration"
+                current.as_slice() == encrypted || current.as_slice() == plaintext.expose(),
+                "migration destination {} has different content; preserve edits and resolve the collision first",
+                destination.display()
             );
         }
-        prepared.insert(PathBuf::from(".over/secrets.yaml"), ciphertext);
+        prepared.insert(destination, encrypted);
+        originals.insert(path, ciphertext);
     }
-    if originals.is_empty() && access::private_dir(repo).join("legacy-backup").is_dir() {
-        if legacy_store.try_exists()? {
-            fs::remove_dir(&legacy_store)
-                .context("inspect remaining legacy files before completing migration")?;
-        }
+    if originals.is_empty()
+        && (migrated_secrets || access::private_dir(repo).join("legacy-backup").is_dir())
+    {
         return refresh(repo, false);
     }
     ensure!(!originals.is_empty(), "no legacy Age data found");
@@ -2263,10 +2342,6 @@ pub fn migrate(repo: &git2::Repository) -> Result<()> {
     update_with_removals(repo, &patterns, true, &BTreeMap::new(), &removals)?;
     for path in originals.keys().filter(|path| !tracked.contains(*path)) {
         fs::remove_file(root.join(path))?;
-    }
-    if legacy_store.try_exists()? {
-        fs::remove_dir(&legacy_store)
-            .context("legacy store contains unrecognized files; inspect before cleanup")?;
     }
     refresh(repo, false)?;
     eprintln!(
@@ -2365,6 +2440,56 @@ mod tests {
         )
         .unwrap();
         git2::Repository::open(root).unwrap()
+    }
+
+    #[rstest::rstest]
+    #[case(0, false)]
+    #[case(1, false)]
+    #[case(2, false)]
+    #[case(2, true)]
+    fn interrupted_secret_directory_replacement_restores_or_keeps_the_published_state(
+        #[case] writes: usize,
+        #[case] published: bool,
+    ) {
+        let (directory, repo, key) = protected_repository();
+        let store = directory.path().join(crate::secrets::layout::PATH);
+        fs::create_dir(&store).unwrap();
+        fs::write(store.join("TOKEN.age"), b"legacy encrypted bytes").unwrap();
+        let backup = access::private_dir(&repo).join("legacy-secrets-test-backup");
+        let ciphertext = key.encrypt(b"native encrypted map", 1).unwrap();
+        let planned = advance_head(&repo, false);
+        begin_secret_commit(
+            &repo,
+            &key,
+            planned.to_string(),
+            [(store.clone(), Some(ciphertext.clone()))].into(),
+            Some(backup.clone()),
+        )
+        .unwrap();
+        if writes > 0 {
+            fs::rename(&store, &backup).unwrap();
+        }
+        if writes > 1 {
+            super::super::transaction::worktree_write(&store, &ciphertext, None).unwrap();
+        }
+        if published {
+            repo.set_head_detached(planned).unwrap();
+        }
+        recover_source(&repo).unwrap();
+        if published {
+            assert_eq!(fs::read(&store).unwrap(), ciphertext);
+            assert_eq!(
+                fs::read(backup.join("TOKEN.age")).unwrap(),
+                b"legacy encrypted bytes"
+            );
+        } else {
+            assert_eq!(
+                fs::read(store.join("TOKEN.age")).unwrap(),
+                b"legacy encrypted bytes"
+            );
+            assert!(!backup.exists());
+        }
+        assert!(!access::private_dir(&repo).join("transaction.json").exists());
     }
 
     fn advance_head(repo: &git2::Repository, publish: bool) -> git2::Oid {
@@ -2478,6 +2603,7 @@ mod tests {
             BTreeMap::new(),
             Operation::Unlock { repair: false },
             false,
+            None,
         )
         .unwrap();
         for file in prepared.files.iter().take(published) {

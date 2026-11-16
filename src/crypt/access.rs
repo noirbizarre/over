@@ -315,7 +315,7 @@ pub(crate) fn save(repo: &git2::Repository, registry: &Registry) -> Result<()> {
         // !diff restores normal diffs, while -text preserves access-envelope bytes verbatim.
         atomic_write(
             &attributes,
-            b"crypt/** -filter !diff -text\n.gitattributes -filter !diff\nsecrets.yaml filter=over diff=over -text\n",
+            b"crypt/** -filter !diff -text\n.gitattributes -filter !diff\nsecrets filter=over diff=over -text\nsecrets.yaml filter=over diff=over -text\n",
         )?;
     }
     let bytes = serde_json::to_vec_pretty(registry)?;

@@ -50,6 +50,10 @@ Canonical `.gitattributes` is the policy authority. Policy helpers use native Gi
 filtering and verify ciphertext before index publication. Virtual checkouts map
 to source policy/index and compare in ciphertext space. Native secrets remain
 direct ciphertext even in unlocked working trees, decrypting only in memory.
+The aggregate lives at `.over/secrets`; native mutations create isolated commits
+with configurable messages and Git hooks/signing. Historical aggregate filenames
+and per-entry directories migrate on the next mutation, preserving ciphertext
+backups for directory conversion.
 Recovery journals are authenticated ciphertext, record old/prepared states, and
 refuse intervening edits. Revocation rotates the key after trusted recovery/retained
 passphrase preflight, never just deleting metadata.

@@ -72,12 +72,9 @@ fn native_mutations_commit_only_the_store_and_preserve_unrelated_staging() {
         git(root.path(), &["diff", "--cached", "--name-only"]).stdout,
         b"unrelated\n"
     );
-    let stored = git(root.path(), &["show", "HEAD:.over/secrets.yaml"]).stdout;
+    let stored = git(root.path(), &["show", "HEAD:.over/secrets"]).stdout;
     over::crypt::format::inspect(&stored).unwrap();
-    assert_eq!(
-        stored,
-        fs::read(root.path().join(".over/secrets.yaml")).unwrap()
-    );
+    assert_eq!(stored, fs::read(root.path().join(".over/secrets")).unwrap());
     let head = git(root.path(), &["rev-parse", "HEAD"]).stdout;
     assert!(replace_secret(root.path(), b"first\0\xff").status.success());
     assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).stdout, head);
@@ -121,14 +118,11 @@ fn custom_messages_are_used_without_committing_the_descriptor() {
         )
         .contains("over.toml")
     );
-    let stored = fs::read(root.path().join(".over/secrets.yaml")).unwrap();
+    let stored = fs::read(root.path().join(".over/secrets")).unwrap();
     let head = git(root.path(), &["rev-parse", "HEAD"]).stdout;
     assert!(!replace_secret(root.path(), b"second").status.success());
     assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).stdout, head);
-    assert_eq!(
-        fs::read(root.path().join(".over/secrets.yaml")).unwrap(),
-        stored
-    );
+    assert_eq!(fs::read(root.path().join(".over/secrets")).unwrap(), stored);
 }
 
 #[cfg(unix)]
@@ -137,17 +131,14 @@ fn a_rejected_secret_commit_leaves_the_store_index_and_head_unchanged() {
     use std::os::unix::fs::PermissionsExt;
     let (root, _) = repository();
     add_secret(root.path(), "TOKEN", b"first");
-    let stored = fs::read(root.path().join(".over/secrets.yaml")).unwrap();
+    let stored = fs::read(root.path().join(".over/secrets")).unwrap();
     let index = fs::read(root.path().join(".git/index")).unwrap();
     let head = git(root.path(), &["rev-parse", "HEAD"]).stdout;
     let hook = root.path().join(".git/hooks/pre-commit");
     fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
     fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(!replace_secret(root.path(), b"second").status.success());
-    assert_eq!(
-        fs::read(root.path().join(".over/secrets.yaml")).unwrap(),
-        stored
-    );
+    assert_eq!(fs::read(root.path().join(".over/secrets")).unwrap(), stored);
     assert_eq!(fs::read(root.path().join(".git/index")).unwrap(), index);
     assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).stdout, head);
 }
@@ -247,9 +238,8 @@ fn native_secrets_use_the_same_unlock_and_remain_ciphertext_in_the_worktree() {
         "TOKEN",
     ];
     assert_eq!(over(root.path(), &args).stdout, b"secret sentinel\0\xff");
-    over::crypt::format::inspect(&fs::read(root.path().join(".over/secrets.yaml")).unwrap())
-        .unwrap();
-    over::crypt::format::inspect(&git(root.path(), &["show", "HEAD:.over/secrets.yaml"]).stdout)
+    over::crypt::format::inspect(&fs::read(root.path().join(".over/secrets")).unwrap()).unwrap();
+    over::crypt::format::inspect(&git(root.path(), &["show", "HEAD:.over/secrets"]).stdout)
         .unwrap();
     over(root.path(), &["lock"]);
     let rejected = Command::new(cargo_bin("over"))
@@ -848,6 +838,194 @@ fn nested_administrative_policy_preserves_bootstrap_metadata_under_broad_root_ru
         .unwrap()
         .validate_checkout()
         .unwrap();
+}
+
+#[test]
+fn an_old_aggregate_is_read_without_migration_and_renamed_by_the_next_mutation() {
+    let (root, _) = repository();
+    add_secret(root.path(), "TOKEN", b"original\0\xff");
+    git(root.path(), &["mv", ".over/secrets", ".over/secrets.yaml"]);
+    // Reconstruct a repository created before the extensionless rule existed.
+    let attributes = root.path().join(".over/.gitattributes");
+    let policy = fs::read_to_string(&attributes)
+        .unwrap()
+        .replace("secrets filter=over diff=over -text\n", "");
+    fs::write(&attributes, policy).unwrap();
+    git(root.path(), &["add", ".over/.gitattributes"]);
+    git(root.path(), &["commit", "-qm", "old layout"]);
+    let old = fs::read(root.path().join(".over/secrets.yaml")).unwrap();
+    let head = git(root.path(), &["rev-parse", "HEAD"]).stdout;
+    assert_eq!(
+        over(
+            root.path(),
+            &[
+                "--home",
+                root.path().to_str().unwrap(),
+                "secret",
+                "get",
+                "TOKEN"
+            ]
+        )
+        .stdout,
+        b"original\0\xff"
+    );
+    assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).stdout, head);
+    assert!(root.path().join(".over/secrets.yaml").is_file());
+    assert!(
+        replace_secret(root.path(), b"original\0\xff")
+            .status
+            .success()
+    );
+    assert!(!root.path().join(".over/secrets.yaml").exists());
+    assert_eq!(fs::read(root.path().join(".over/secrets")).unwrap(), old);
+    assert_eq!(
+        git(
+            root.path(),
+            &["diff", "--no-renames", "HEAD^", "HEAD", "--name-only"]
+        )
+        .stdout,
+        b".over/.gitattributes\n.over/secrets\n.over/secrets.yaml\n"
+    );
+    assert!(
+        git(root.path(), &["status", "--porcelain"])
+            .stdout
+            .is_empty()
+    );
+}
+
+fn legacy_secret_repository() -> (tempfile::TempDir, tempfile::TempDir) {
+    let (root, identities) = repository();
+    let legacy = age::scrypt::Recipient::new("migration credential".into());
+    fs::create_dir(root.path().join(".over/secrets")).unwrap();
+    fs::write(
+        root.path().join(".over/secrets/TOKEN.age"),
+        age::encrypt(&legacy, b"original\0\xff").unwrap(),
+    )
+    .unwrap();
+    git(root.path(), &["add", "."]);
+    git(root.path(), &["commit", "-qm", "legacy secrets"]);
+    (root, identities)
+}
+
+fn mutate_legacy_secret(root: &Path) -> Output {
+    use std::io::Write;
+    let mut child = Command::new(cargo_bin("over"))
+        .current_dir(root)
+        .env_remove("OVER_HOME")
+        .env("OVER_SECRET", "migration credential")
+        .args([
+            "--home",
+            root.to_str().unwrap(),
+            "secret",
+            "add",
+            "TOKEN",
+            "--replace",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"updated\0\xff")
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn a_secret_mutation_migrates_the_legacy_directory_in_the_same_commit() {
+    let (root, _) = legacy_secret_repository();
+    let original = fs::read(root.path().join(".over/secrets/TOKEN.age")).unwrap();
+    let result = mutate_legacy_secret(root.path());
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(root.path().join(".over/secrets").is_file());
+    assert_eq!(
+        git(root.path(), &["log", "-1", "--format=%s"]).stdout,
+        b"chore(secrets): replaced TOKEN\n"
+    );
+    assert_eq!(
+        over(
+            root.path(),
+            &[
+                "--home",
+                root.path().to_str().unwrap(),
+                "secret",
+                "get",
+                "TOKEN"
+            ]
+        )
+        .stdout,
+        b"updated\0\xff"
+    );
+    let backups: Vec<_> = fs::read_dir(root.path().join(".git/over-crypt"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("legacy-secrets-backup-")
+        })
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(fs::read(backups[0].join("TOKEN.age")).unwrap(), original);
+    assert!(
+        git(root.path(), &["status", "--porcelain"])
+            .stdout
+            .is_empty()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rejected_ref_publication_restores_the_legacy_directory_and_index() {
+    use std::os::unix::fs::PermissionsExt;
+    let (root, _) = legacy_secret_repository();
+    let original = fs::read(root.path().join(".over/secrets/TOKEN.age")).unwrap();
+    let index = fs::read(root.path().join(".git/index")).unwrap();
+    let head = git(root.path(), &["rev-parse", "HEAD"]).stdout;
+    let hook = root.path().join(".git/hooks/reference-transaction");
+    fs::write(
+        &hook,
+        "#!/bin/sh\nif [ \"$1\" = prepared ]; then exit 1; fi\n",
+    )
+    .unwrap();
+    fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let result = mutate_legacy_secret(root.path());
+    assert!(!result.status.success());
+    assert_eq!(
+        fs::read(root.path().join(".over/secrets/TOKEN.age")).unwrap(),
+        original
+    );
+    assert_eq!(fs::read(root.path().join(".git/index")).unwrap(), index);
+    assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).stdout, head);
+    assert!(
+        !root
+            .path()
+            .join(".git/over-crypt/transaction.json")
+            .exists()
+    );
+}
+
+#[test]
+fn competing_aggregate_paths_are_rejected_without_mutating_either() {
+    let (root, _) = repository();
+    add_secret(root.path(), "TOKEN", b"original");
+    let bytes = fs::read(root.path().join(".over/secrets")).unwrap();
+    fs::write(root.path().join(".over/secrets.yaml"), &bytes).unwrap();
+    assert!(!replace_secret(root.path(), b"updated").status.success());
+    assert_eq!(fs::read(root.path().join(".over/secrets")).unwrap(), bytes);
+    assert_eq!(
+        fs::read(root.path().join(".over/secrets.yaml")).unwrap(),
+        bytes
+    );
 }
 
 #[test]

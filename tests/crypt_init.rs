@@ -416,7 +416,7 @@ fn no_unlock_completes_locked_and_conflicts_with_explicit_unlock() {
 #[test]
 fn metadata_only_repositories_install_drivers_without_attempting_explicit_unlock() {
     let fixture = Fixture::new(false, false);
-    fixture.git(&fixture.source, &["rm", "token", ".over/secrets.yaml"]);
+    fixture.git(&fixture.source, &["rm", "token", ".over/secrets"]);
     fixture.git(
         &fixture.source,
         &["commit", "-qm", "metadata without ciphertext"],
@@ -448,8 +448,7 @@ fn native_secret_ciphertext_alone_triggers_the_default_unlock_confirmation() {
         &mut fixture.init(),
         &[("Unlock repository encryption", "n")],
     ));
-    over::crypt::format::inspect(&fs::read(fixture.clone.join(".over/secrets.yaml")).unwrap())
-        .unwrap();
+    over::crypt::format::inspect(&fs::read(fixture.clone.join(".over/secrets")).unwrap()).unwrap();
     assert!(!fixture.clone.join(".git/over-crypt/key").exists());
 }
 
