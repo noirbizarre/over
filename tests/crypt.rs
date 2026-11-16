@@ -664,7 +664,8 @@ fn policy_updates_preserve_existing_comments_rules_and_legacy_guards() {
     ".gitattributes"
 )]
 #[case("nested/** filter=over -text\n", None, "nested/.gitattributes")]
-#[case("", Some(".over/crypt/** filter=over\n"), ".over/crypt/access.json")]
+#[case("", Some(".over/crypt.json filter=over\n"), ".over/crypt.json")]
+#[case("", Some(".over/users/** filter=over\n"), ".over/users/alice/default")]
 fn unsafe_bootstrap_policy_fails_before_policy_index_or_plaintext_publication(
     #[case] policy: &str,
     #[case] local: Option<&str>,
@@ -796,7 +797,8 @@ fn unstaged_bootstrap_exemptions_cannot_conceal_unsafe_indexed_policy(#[case] tr
 #[case("**")]
 #[case(".*")]
 #[case(".over/**")]
-#[case(".over/crypt/**")]
+#[case(".over/crypt.json")]
+#[case(".over/users/**")]
 fn broad_selections_cannot_encrypt_bootstrap_files(#[case] selection: &str) {
     let (root, _) = repository();
     fs::create_dir(root.path().join("nested")).unwrap();
@@ -822,7 +824,12 @@ fn nested_administrative_policy_preserves_bootstrap_metadata_under_broad_root_ru
     for _ in 0..2 {
         over(root.path(), &["crypt", "add", "token"]);
         over::crypt::format::inspect(&git(root.path(), &["show", ":token"]).stdout).unwrap();
-        for path in [".over/.gitattributes", ".over/crypt/access.json"] {
+        for path in [
+            ".over/.gitattributes",
+            ".over/crypt.json",
+            ".over/users/alice/user.json",
+            ".over/users/alice/default",
+        ] {
             assert_eq!(
                 git(
                     root.path(),

@@ -1164,11 +1164,9 @@ fn update_with_ingestion(
     }
     let scratch = tempfile::tempdir()?;
     let indexed = tempfile::tempdir()?;
-    let mut bootstrap_paths = std::collections::BTreeSet::from([
-        PathBuf::from(".gitattributes"),
-        PathBuf::from(".over/.gitattributes"),
-        PathBuf::from(".over/crypt/access.json"),
-    ]);
+    // Retain the active working/index inventory across both supported layouts;
+    // an absent legacy header must not replace the flattened bootstrap paths.
+    let mut bootstrap_paths = bootstrap_paths;
     for entry in index.iter() {
         let path = PathBuf::from(std::str::from_utf8(&entry.path)?);
         if is_bootstrap(&path) {
