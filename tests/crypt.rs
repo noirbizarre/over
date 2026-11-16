@@ -496,11 +496,250 @@ fn legacy_migration_preserves_age_backups_and_native_binary_values() {
 }
 
 #[test]
+fn repeated_narrow_additions_keep_policy_minimal_and_index_blobs_encrypted() {
+    let (root, _) = repository();
+    for name in ["first.env", "second.env"] {
+        fs::write(root.path().join(name), name).unwrap();
+    }
+    for (selection, protected) in [
+        ("first.env", vec!["first.env"]),
+        ("second.env", vec!["first.env", "second.env"]),
+        ("first.env", vec!["first.env", "second.env"]),
+    ] {
+        over(root.path(), &["crypt", "add", selection]);
+        let policy = fs::read_to_string(root.path().join(".gitattributes")).unwrap();
+        assert!(
+            policy
+                .lines()
+                .all(|line| line.ends_with("filter=over diff=over -text"))
+        );
+        assert!(!policy.contains(".gitattributes"));
+        assert!(!policy.contains(".over/crypt"));
+        for name in protected {
+            over::crypt::format::inspect(&git(root.path(), &["show", &format!(":{name}")]).stdout)
+                .unwrap();
+            assert_eq!(fs::read(root.path().join(name)).unwrap(), name.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn policy_updates_preserve_existing_comments_rules_and_legacy_guards() {
+    let (root, _) = repository();
+    let original = "# User policy\n*.md diff=markdown\n.gitattributes -filter !diff\n.over/crypt/** -filter !diff -text\n# A legacy duplicate stays in its original position\n.gitattributes -filter !diff\n.over/crypt/** -filter !diff -text\n";
+    fs::write(root.path().join(".gitattributes"), original).unwrap();
+    fs::write(root.path().join("token"), "secret").unwrap();
+    over(root.path(), &["crypt", "add", "token"]);
+    assert_eq!(
+        fs::read_to_string(root.path().join(".gitattributes")).unwrap(),
+        format!("{original}\"/token\" filter=over diff=over -text\n")
+    );
+    over::crypt::format::inspect(&git(root.path(), &["show", ":token"]).stdout).unwrap();
+}
+
+#[rstest::rstest]
+#[case("* filter=over diff=over -text\n", None, ".gitattributes")]
+#[case(
+    "* filter=over diff=over -text\n",
+    Some(".gitattributes -filter\n"),
+    ".gitattributes"
+)]
+#[case("nested/** filter=over -text\n", None, "nested/.gitattributes")]
+#[case("", Some(".over/crypt/** filter=over\n"), ".over/crypt/access.json")]
+fn unsafe_bootstrap_policy_fails_before_policy_index_or_plaintext_publication(
+    #[case] policy: &str,
+    #[case] local: Option<&str>,
+    #[case] offending: &str,
+) {
+    let (root, _) = repository();
+    fs::create_dir(root.path().join("nested")).unwrap();
+    fs::write(
+        root.path().join("nested/.gitattributes"),
+        "# nested policy\n",
+    )
+    .unwrap();
+    // Establish an index before introducing unsafe policy, without storing the sentinel.
+    git(root.path(), &["add", ".over"]);
+    fs::write(root.path().join(".gitattributes"), policy).unwrap();
+    if let Some(local) = local {
+        fs::write(root.path().join(".git/info/attributes"), local).unwrap();
+    }
+    let plaintext = b"bootstrap rejection sentinel never stored";
+    fs::write(root.path().join("token"), plaintext).unwrap();
+    let before = fs::read(root.path().join(".git/index")).unwrap();
+    let rejected = Command::new(cargo_bin("over"))
+        .current_dir(root.path())
+        .env_remove("OVER_HOME")
+        .args(["crypt", "add", "token"])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    let diagnostic = String::from_utf8_lossy(&rejected.stderr);
+    assert!(diagnostic.contains(offending), "{diagnostic}");
+    assert!(diagnostic.contains("-filter override"), "{diagnostic}");
+    assert_eq!(fs::read(root.path().join(".git/index")).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(root.path().join(".gitattributes")).unwrap(),
+        policy
+    );
+    let oid = git2::Oid::hash_object(git2::ObjectType::Blob, plaintext).unwrap();
+    assert!(
+        !git2::Repository::open(root.path())
+            .unwrap()
+            .odb()
+            .unwrap()
+            .exists(oid)
+    );
+}
+
+#[test]
+fn indexed_bootstrap_policy_is_checked_when_its_working_file_is_missing() {
+    let (root, _) = repository();
+    fs::create_dir(root.path().join("nested")).unwrap();
+    fs::write(
+        root.path().join("nested/.gitattributes"),
+        "# indexed policy\n",
+    )
+    .unwrap();
+    git(root.path(), &["add", "nested/.gitattributes"]);
+    fs::remove_file(root.path().join("nested/.gitattributes")).unwrap();
+    let policy = "nested/** filter=over -text\n";
+    fs::write(root.path().join(".gitattributes"), policy).unwrap();
+    fs::write(root.path().join("token"), "secret").unwrap();
+    let before = fs::read(root.path().join(".git/index")).unwrap();
+    let rejected = Command::new(cargo_bin("over"))
+        .current_dir(root.path())
+        .env_remove("OVER_HOME")
+        .args(["crypt", "add", "token"])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("nested/.gitattributes"));
+    assert_eq!(fs::read(root.path().join(".git/index")).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(root.path().join(".gitattributes")).unwrap(),
+        policy
+    );
+}
+
+#[rstest::rstest]
+#[case(true)]
+#[case(false)]
+fn unstaged_bootstrap_exemptions_cannot_conceal_unsafe_indexed_policy(#[case] tracked: bool) {
+    let (root, _) = repository();
+    fs::create_dir(root.path().join("nested")).unwrap();
+    let nested = root.path().join("nested/.gitattributes");
+    fs::write(&nested, "# policy without an exemption\n").unwrap();
+    git(root.path(), &["add", ".over"]);
+    if tracked {
+        git(root.path(), &["add", "nested/.gitattributes"]);
+    }
+    fs::write(&nested, ".gitattributes -filter !diff\n").unwrap();
+    let policy = "nested/** filter=over diff=over -text\n";
+    fs::write(root.path().join(".gitattributes"), policy).unwrap();
+    let plaintext = b"unstaged exemption sentinel never stored";
+    fs::write(root.path().join("nested/token"), plaintext).unwrap();
+    let before = fs::read(root.path().join(".git/index")).unwrap();
+    let rejected = Command::new(cargo_bin("over"))
+        .current_dir(root.path())
+        .env_remove("OVER_HOME")
+        .args(["crypt", "add", "nested/token"])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    let diagnostic = String::from_utf8_lossy(&rejected.stderr);
+    assert!(diagnostic.contains("nested/.gitattributes"), "{diagnostic}");
+    assert!(diagnostic.contains("-filter override"), "{diagnostic}");
+    assert_eq!(fs::read(root.path().join(".git/index")).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(root.path().join(".gitattributes")).unwrap(),
+        policy
+    );
+    assert_eq!(
+        fs::read_to_string(nested).unwrap(),
+        ".gitattributes -filter !diff\n"
+    );
+    let oid = git2::Oid::hash_object(git2::ObjectType::Blob, plaintext).unwrap();
+    assert!(
+        !git2::Repository::open(root.path())
+            .unwrap()
+            .odb()
+            .unwrap()
+            .exists(oid)
+    );
+}
+
+#[rstest::rstest]
+#[case("nested")]
+#[case("*")]
+#[case("**")]
+#[case(".*")]
+#[case(".over/**")]
+#[case(".over/crypt/**")]
+fn broad_selections_cannot_encrypt_bootstrap_files(#[case] selection: &str) {
+    let (root, _) = repository();
+    fs::create_dir(root.path().join("nested")).unwrap();
+    fs::write(root.path().join("nested/.gitattributes"), "# policy\n").unwrap();
+    fs::write(root.path().join("nested/token"), "secret").unwrap();
+    let rejected = Command::new(cargo_bin("over"))
+        .current_dir(root.path())
+        .env_remove("OVER_HOME")
+        .args(["crypt", "add", selection])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("select narrower paths"));
+    assert!(!root.path().join(".gitattributes").exists());
+}
+
+#[test]
+fn nested_administrative_policy_preserves_bootstrap_metadata_under_broad_root_rules() {
+    let (root, _) = repository();
+    let original = "* filter=over diff=over -text\n/.gitattributes -filter !diff\n";
+    fs::write(root.path().join(".gitattributes"), original).unwrap();
+    fs::write(root.path().join("token"), "secret").unwrap();
+    for _ in 0..2 {
+        over(root.path(), &["crypt", "add", "token"]);
+        over::crypt::format::inspect(&git(root.path(), &["show", ":token"]).stdout).unwrap();
+        for path in [".over/.gitattributes", ".over/crypt/access.json"] {
+            assert_eq!(
+                git(
+                    root.path(),
+                    &["check-attr", "-z", "filter", "diff", "--", path]
+                )
+                .stdout,
+                format!("{path}\0filter\0unset\0{path}\0diff\0unspecified\0").as_bytes()
+            );
+            assert_eq!(
+                git(root.path(), &["show", &format!(":{path}")]).stdout,
+                fs::read(root.path().join(path)).unwrap()
+            );
+        }
+        assert!(
+            !fs::read_to_string(root.path().join(".gitattributes"))
+                .unwrap()
+                .contains(".over/crypt/**")
+        );
+    }
+    git(root.path(), &["commit", "-qm", "safe broad policy"]);
+    let repo = git2::Repository::open(root.path()).unwrap();
+    over::crypt::detect::inspect(&repo)
+        .unwrap()
+        .validate_checkout()
+        .unwrap();
+}
+
+#[test]
 fn explicit_policy_removal_stages_plaintext_without_changing_working_content() {
     let (root, _) = repository();
     fs::write(root.path().join("token"), b"deliberate plaintext").unwrap();
     over(root.path(), &["crypt", "add", "token"]);
     over(root.path(), &["crypt", "remove", "token", "--yes"]);
+    let policy = fs::read_to_string(root.path().join(".gitattributes")).unwrap();
+    assert_eq!(
+        policy,
+        "\"/token\" filter=over diff=over -text\n\"/token\" -filter !diff -text\n"
+    );
     assert_eq!(
         git(root.path(), &["show", ":token"]).stdout,
         b"deliberate plaintext"

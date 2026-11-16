@@ -311,6 +311,8 @@ pub(crate) fn save(repo: &git2::Repository, registry: &Registry) -> Result<()> {
     }
     let attributes = root(repo)?.join(".over/.gitattributes");
     if !attributes.try_exists()? {
+        // Nearer policy keeps access metadata and this policy readable under broad root rules;
+        // !diff restores normal diffs, while -text preserves access-envelope bytes verbatim.
         atomic_write(
             &attributes,
             b"crypt/** -filter !diff -text\n.gitattributes -filter !diff\nsecrets.yaml filter=over diff=over -text\n",
