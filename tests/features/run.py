@@ -85,8 +85,9 @@ def main():
         test "$(over --version)" = {shlex.quote('over ' + metadata['version'])}
         test "$(sha256sum /usr/local/bin/over | cut -d ' ' -f1)" = {checksum}
         test ! -e "$HOME/.dotfiles"
+        git --version
+        test -s /etc/ssl/certs/ca-certificates.crt
         ! command -v crane
-        ! command -v curl
     """)
     scenario("clone and composed application with repeatable setup",
              {"repository": "/opt/dotfiles", "overlay": " right , left ,right "}, f"""

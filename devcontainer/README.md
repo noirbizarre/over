@@ -8,6 +8,11 @@ The Feature contains `bin/amd64/over` and `bin/arm64/over`, built by the existin
 binary jobs. The installer selects and copies one; it does not download binaries
 or extract a Docker image. The Feature reference selects the binary release.
 
+Hard dependencies provide OS-provided Git and common-utils (including CA
+certificates) before Over's installer runs. Common-utils retains its standard
+utilities, but optional Zsh setup, package upgrades and user creation are disabled.
+Over's installer does not manage packages itself.
+
 `setup.sh` only adapts the repository, CSV overlay selection and explicit home
 options to CLI calls. Defaults, initialization policy, errors and conflicts stay
 with Over. Empty options install only the binary.
