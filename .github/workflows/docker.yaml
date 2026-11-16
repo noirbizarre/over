@@ -1,8 +1,10 @@
 name: 🐳 Docker
 
 on:
-  # Producers call this workflow only after same-run binary assets are available.
+  # CI supplies same-run artifacts; releases are packaged only once their assets are public.
   workflow_call:
+  release:
+    types: [published]
 
 env:
   REGISTRY: ghcr.io
@@ -12,8 +14,8 @@ jobs:
   feature:
     name: 📦 Release Dev Container feature
     needs: merge
-    # Development/non-release tags must not publish immutable Feature versions.
-    if: startsWith(github.ref, 'refs/tags/') && github.ref_name != 'development'
+    # Only published releases with a successful manifest may publish immutable Features.
+    if: github.event_name == 'release'
     uses: ./.github/workflows/devcontainer.yaml
     permissions:
       contents: read
@@ -23,6 +25,10 @@ jobs:
 
   build:
     name: 📦 Build (${{ matrix.platform }})
+    # Main CI already publishes images; the rolling release must not duplicate them.
+    if: >-
+      github.event_name != 'release'
+      || (github.event.release.tag_name != 'development' && github.event.release.tag_name != vars.PRERELEASE_NAME)
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -41,17 +47,32 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
 
       - name: Download Linux asset
+        if: github.event_name != 'release'
         uses: actions/download-artifact@v8
         with:
           name: asset-linux-${{ matrix.arch }}
-          path: ${{ runner.temp }}/over-asset
+          path: ${{ runner.temp }}/over-image
 
-      - name: Extract and check binary
+      - name: Download published Linux binary
+        if: github.event_name == 'release'
+        env:
+          ARCH: ${{ matrix.arch }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
           mkdir -p "$RUNNER_TEMP/over-image"
-          tar -xzf "$RUNNER_TEMP"/over-asset/*.tar.gz -C "$RUNNER_TEMP/over-image"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "over_${TAG}_linux-${ARCH}.tar.gz" --dir "$RUNNER_TEMP/over-release"
+          tar -xzf "$RUNNER_TEMP/over-release/over_${TAG}_linux-${ARCH}.tar.gz" -C "$RUNNER_TEMP/over-image"
+
+      - name: Check binary
+        run: |
+          # Actions artifacts do not retain the executable permission.
+          chmod +x "$RUNNER_TEMP/over-image/over"
           "$RUNNER_TEMP/over-image/over" --version
 
       - name: Set up Docker Buildx
@@ -77,6 +98,7 @@ jobs:
         with:
           context: ${{ runner.temp }}/over-image
           file: Dockerfile
+          build-args: BINARY=over
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}

@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 
-# Stage the canonical binary as `over` in the build context; never rebuild it here.
 FROM gcr.io/distroless/cc-debian12
 
-COPY --chmod=755 over /usr/local/bin/over
+# Local builds use mise's output; CI selects its downloaded binary instead.
+ARG BINARY=target/debug/over
+COPY --chmod=755 ${BINARY} /usr/local/bin/over
 
 ENTRYPOINT ["over"]

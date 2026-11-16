@@ -230,7 +230,7 @@ jobs:
       contents: read
       packages: write
 
-  # PRs check every target cheaply; main supplies optimized Linux binaries for images.
+  # PRs check every target cheaply; main also supplies optimized binaries for images.
   build:
     name: 🏗️ Build (${{ matrix.build.label }})
     runs-on: ${{ matrix.build.runner }}
@@ -242,18 +242,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Main only needs the architectures consumed by Docker and Feature tests.
-        build: ${{ fromJSON(github.event_name == 'pull_request' && '[
-          {"label":"linux-amd64","target":"x86_64-unknown-linux-gnu","runner":"ubuntu-latest","cross":true},
-          {"label":"linux-arm64","target":"aarch64-unknown-linux-gnu","runner":"ubuntu-latest","cross":true},
-          {"label":"linux-amd64-musl","target":"x86_64-unknown-linux-musl","runner":"ubuntu-latest","cross":true},
-          {"label":"darwin-amd64","target":"x86_64-apple-darwin","runner":"macos-latest"},
-          {"label":"darwin-arm64","target":"aarch64-apple-darwin","runner":"macos-latest"},
-          {"label":"windows-amd64","target":"x86_64-pc-windows-msvc","runner":"windows-latest"}
-          ]' || '[
-          {"label":"linux-amd64","target":"x86_64-unknown-linux-gnu","runner":"ubuntu-latest","cross":true},
-          {"label":"linux-arm64","target":"aarch64-unknown-linux-gnu","runner":"ubuntu-latest","cross":true}
-          ]') }}
+        build:
+          - { label: linux-amd64, target: x86_64-unknown-linux-gnu, runner: ubuntu-latest, cross: true }
+          - { label: linux-arm64, target: aarch64-unknown-linux-gnu, runner: ubuntu-latest, cross: true }
+          - { label: linux-amd64-musl, target: x86_64-unknown-linux-musl, runner: ubuntu-latest, cross: true }
+          - { label: darwin-amd64, target: x86_64-apple-darwin, runner: macos-latest }
+          - { label: darwin-arm64, target: aarch64-apple-darwin, runner: macos-latest }
+          - { label: windows-amd64, target: x86_64-pc-windows-msvc, runner: windows-latest, ext: ".exe" }
     steps:
       - uses: actions/checkout@v7
         with:
@@ -289,22 +284,10 @@ jobs:
             cargo build --profile "$PROFILE" --locked --target "$TARGET" --features vendored
           fi
 
-      - name: Stage Linux image asset
-        if: startsWith(matrix.build.label, 'linux-') && endsWith(matrix.build.target, '-gnu')
-        env:
-          TARGET: ${{ matrix.build.target }}
-          LABEL: ${{ matrix.build.label }}
-          BUILD_DIRECTORY: ${{ github.event_name == 'pull_request' && 'debug' || 'release' }}
-        # Archives retain executable permissions across Actions artifact transport.
-        run: |
-          mkdir -p dist
-          tar -C "target/$TARGET/$BUILD_DIRECTORY" -czf "dist/over_${LABEL}.tar.gz" over
-
-      - name: Upload Linux image asset
-        if: startsWith(matrix.build.label, 'linux-') && endsWith(matrix.build.target, '-gnu')
+      - name: Upload binary
         uses: actions/upload-artifact@v7
         with:
           name: asset-${{ matrix.build.label }}
-          path: dist/*.tar.gz
+          path: target/${{ matrix.build.target }}/${{ github.event_name == 'pull_request' && 'debug' || 'release' }}/over${{ matrix.build.ext }}
           if-no-files-found: error
           retention-days: 7

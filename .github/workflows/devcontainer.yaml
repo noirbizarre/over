@@ -85,13 +85,13 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: asset-linux-${{ matrix.arch }}
-          path: ${{ runner.temp }}/over-asset
+          path: ${{ runner.temp }}/over-candidate
 
-      - name: Extract and check candidate binary
+      - name: Check candidate binary
         if: inputs.publish != true
         run: |
-          mkdir -p "$RUNNER_TEMP/over-candidate"
-          tar -xzf "$RUNNER_TEMP"/over-asset/*.tar.gz -C "$RUNNER_TEMP/over-candidate"
+          # Actions artifacts do not retain the executable permission.
+          chmod +x "$RUNNER_TEMP/over-candidate/over"
           "$RUNNER_TEMP/over-candidate/over" --version
 
       - name: Check option parsing and local lifecycle

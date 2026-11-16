@@ -31,15 +31,15 @@ behavior, or release preparation names an unpublished image, use
 options still take precedence. Without this override the suite checks that the
 default binary matches the Feature version.
 
-For unreleased CLI behavior, stage a Debian-compatible candidate with the
-[local image build task](../CONTRIBUTING.md#docker-images) and mount the staged
-binary directly into lifecycle tests. An installed `cross` toolchain keeps the
-binary compatible with the suite's Debian base; native Cargo builds work with a
-compatible Linux toolchain. Installation still exercises the published image:
+For unreleased CLI behavior, build a candidate and mount it directly into
+lifecycle tests. The native Linux toolchain must be compatible with the suite's
+Debian base; see [custom/cross image builds](../CONTRIBUTING.md#docker-images)
+for other toolchains and architectures, and adjust the candidate path accordingly.
+Installation still exercises the published image:
 
 ```sh
-mise run docker:build --cross
-OVER_FEATURE_TEST_BINARY="$PWD/target/docker/$(rustc --print host-tuple)/over" \
+mise run build
+OVER_FEATURE_TEST_BINARY="$PWD/target/debug/over" \
   OVER_FEATURE_TEST_VERSION=latest mise run test:features
 ```
 
@@ -47,11 +47,11 @@ The unittest suite can also exercise the real setup script with a locally built
 binary, without Docker or registry access:
 
 ```sh
-cargo build --features vendored
+mise run build
 OVER_FEATURE_TEST_BINARY="$PWD/target/debug/over" python3 -m unittest discover -s tests/features -p 'test_*.py'
 ```
 
-PR/main CI downloads the matching Linux binary from the same run's build jobs
+PR/main CI downloads the matching raw Linux binary from the same run's build jobs
 and uses this candidate override on both native architectures. The Docker jobs
 package those artifacts with the runtime-only root Dockerfile; neither consumer
 compiles Rust. Release publication tests use the matching published image without
@@ -68,12 +68,15 @@ image/build caches remain.
 ## Release publication
 
 Release preparation updates Cargo, Feature metadata and the default binary
-version together. The release build jobs produce archives consumed by both
-GitHub Release upload and Docker image packaging, preserving the exact compiled
-binary in each format. After the release's amd64/arm64 image manifest is
-published, CI tests the matching default on both architectures, then uses the
+version together. Once gh-ship makes the GitHub Release public, Docker downloads
+its exact versioned binary archives and packages them without recompiling.
+After the release's amd64/arm64 image manifest is published, CI tests the
+matching default on both architectures, then uses the
 same mise-locked CLI to publish this single Feature directory. Exact Feature
 versions are immutable; changes ship with the next Over release through gh-ship.
+Rolling development releases skip image/Feature publication; main CI supplies
+their images. Docker and Feature publication failures do not undo the public
+GitHub Release.
 
 Collection metadata lives at `ghcr.io/noirbizarre/features:latest`, separate from
 the binary image's `ghcr.io/noirbizarre/over:latest`. The new GHCR Feature and

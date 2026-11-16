@@ -89,7 +89,16 @@ depends = ["format", "lint", "lint:actions", "lint:md", "build", "test"]
 
 [tasks.build]
 description = "Build the project"
-run = "cargo build"
+sources = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "rust-toolchain.toml",
+  "src/**/*",
+  ".cargo/**/*",
+]
+outputs = ["target/debug/over{% if os() == 'windows' %}.exe{% endif %}"]
+# Keep freshness checks and Docker's default input aligned even with CARGO_TARGET_DIR set.
+run = "cargo build --target-dir target"
 
 [tasks.test]
 description = "Run tests (accepts nextest selectors)"
@@ -253,36 +262,9 @@ description = "Test Dev Container Feature installation and lifecycle (requires D
 run = "python3 tests/features/run.py"
 
 [tasks."docker:build"]
-description = "Build and stage a Linux binary, then package the runtime image"
-usage = '''
-flag "--target <target>" help="Linux GNU target (defaults to the Rust host)"
-flag "--tag <tag>" help="Local Docker image tag" default="over:local"
-flag "--cross" help="Use an installed cross toolchain for a Debian-compatible binary"
-'''
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-target=${usage_target:-$(rustc --print host-tuple)}
-case "$target" in
-  x86_64-unknown-linux-gnu) platform=linux/amd64 ;;
-  aarch64-unknown-linux-gnu) platform=linux/arm64 ;;
-  *)
-    # A host binary for macOS or Windows cannot run in the Linux runtime image.
-    echo "Select --target x86_64-unknown-linux-gnu or aarch64-unknown-linux-gnu (and configure cross-compilation)." >&2
-    exit 1
-    ;;
-esac
-builder=cargo
-if [ "${usage_cross:-false}" = true ]; then
-  builder=cross
-fi
-# Pin the output directory so CARGO_TARGET_DIR cannot make staging pick up a stale binary.
-"$builder" build --release --locked --target "$target" --target-dir target --features vendored --bin over
-context="target/docker/$target"
-mkdir -p "$context"
-install -m 755 "target/$target/release/over" "$context/over"
-docker build --platform "$platform" --file Dockerfile --tag "${usage_tag:?}" "$context"
-'''
+description = "Build the native binary and package the runtime image"
+depends = ["build"]
+run = "docker build --tag over:local ."
 
 [tasks."schemas:generate"]
 description = "Regenerate the published configuration schemas"
