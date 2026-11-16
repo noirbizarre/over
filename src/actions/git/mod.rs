@@ -1,4 +1,5 @@
 pub mod association;
+pub(crate) mod commit;
 pub mod config;
 pub(crate) mod diff;
 pub(crate) mod index;

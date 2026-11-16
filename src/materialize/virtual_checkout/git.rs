@@ -1097,11 +1097,6 @@ pub(crate) fn commit_staged_prepared(
     before_publish: &mut dyn FnMut(Oid) -> Result<()>,
 ) -> Result<Oid> {
     let index_path = repo.path().join("index");
-    let mut index_lock = if prepared.is_empty() {
-        None
-    } else {
-        Some(crate::actions::git::index::IndexLock::acquire(&index_path)?)
-    };
     let original_index = crate::actions::git::index::read_index(&index_path)?;
     let parent = repo.head()?.peel_to_commit()?;
     let head = parent.tree()?;
@@ -1199,9 +1194,28 @@ pub(crate) fn commit_staged_prepared(
     }
     let tree = repo.find_tree(builder.create_updated(repo, &head)?)?;
     crate::crypt::policy::validate_tree(repo, &tree)?;
-    let signature = crate::actions::git::sync::signature(repo)?;
-    // A stable commit object lets the generated journal recognize HEAD after interruption.
-    let planned_commit = repo.commit(None, &signature, &signature, message, &tree, &[&parent])?;
+    let source_snapshots = paths
+        .iter()
+        .map(|path| {
+            let file = workdir.join(path);
+            Ok((file.clone(), crate::actions::git::index::read_index(&file)?))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let commit = crate::actions::git::commit::PreparedCommit::prepare(repo, tree.id(), message)?;
+    let mut index_lock = Some(crate::actions::git::index::IndexLock::acquire(&index_path)?);
+    commit.validate(repo)?;
+    anyhow::ensure!(
+        crate::actions::git::index::read_index(&index_path)? == original_index,
+        "source index changed while preparing selected snapshots"
+    );
+    for (file, expected) in source_snapshots {
+        anyhow::ensure!(
+            crate::actions::git::index::read_index(&file)? == expected,
+            "source file '{}' changed during commit hooks",
+            file.display()
+        );
+    }
+    let planned_commit = commit.oid;
     let mut protected_updates = false;
     for (path, _) in &updates {
         // Attribute inspection errors must never select plaintext rollback handling.
@@ -1211,7 +1225,7 @@ pub(crate) fn commit_staged_prepared(
     let mut crypt_guard = None;
     if protected_updates {
         // Create the commit object before journaling, so recovery can recognize a published HEAD.
-        let committed = repo.commit(None, &signature, &signature, message, &tree, &[&parent])?;
+        let committed = planned_commit;
         crypt_guard = Some(crate::crypt::access::guard(repo, true)?);
         let key = crate::crypt::access::local_key(repo)?;
         let expected = updates
@@ -1286,15 +1300,7 @@ pub(crate) fn commit_staged_prepared(
                 fs::remove_file(file)?;
             }
         }
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            message,
-            &tree,
-            &[&parent],
-        )
-        .context("failed to create commit")
+        commit.publish(repo).context("failed to publish commit")
     })();
     match result {
         Ok(oid) => {
@@ -1312,6 +1318,9 @@ pub(crate) fn commit_staged_prepared(
                     "commit {oid} succeeded, but source backup cleanup failed: {error:#}"
                 );
             }
+            drop(crypt_guard.take());
+            drop(index_lock.take());
+            crate::actions::git::commit::post_commit(repo);
             Ok(oid)
         }
         Err(error) => {
