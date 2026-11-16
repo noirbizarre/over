@@ -98,7 +98,21 @@ working content, and requires unlock. Future commits may expose that content.
 Removing protection does not remove historical ciphertext or plaintext.
 
 Bootstrap `.gitattributes` and `.over/crypt/` access metadata must remain readable
-without the filter. Do not protect them with broad overriding rules.
+without the filter. Narrow selections need no automatic root exemptions, so
+policy updates append only the requested selection rules. Existing rules and
+comments, including legacy exemptions, are retained. Broad rules that would
+encrypt bootstrap files are rejected before publication; narrow the selection
+or provide appropriate scoped overrides. Local exemptions cannot make unsafe
+repository policy safe for a fresh clone. Stage nested policy exemptions before
+changing encryption policy; unstaged exemptions cannot protect the committed tree.
+
+The separate generated `.over/.gitattributes` provides administrative policy:
+`crypt/** -filter !diff -text` keeps public access metadata unfiltered, restores
+normal diffs, and preserves its bytes without text normalization.
+`.gitattributes -filter !diff` keeps that policy itself readable, while
+`secrets.yaml filter=over diff=over -text` protects native secrets. These nearer
+rules override root assignments; deeper rules or `.git/info/attributes` can
+override them and must also keep bootstrap metadata unfiltered.
 
 ## Manage attributes manually
 
@@ -111,8 +125,6 @@ add these rules to the source repository's root `.gitattributes`:
 .env filter=over diff=over -text
 .env.* filter=over diff=over -text
 secrets/** filter=over diff=over -text
-.gitattributes -filter !diff
-.over/crypt/** -filter !diff -text
 ```
 
 Patterns follow [Git attributes syntax](https://git-scm.com/docs/gitattributes),
@@ -126,6 +138,12 @@ Git can display readable encrypted diffs. `-text` prevents Git's text/EOL
 normalization from changing protected bytes. Slashless `*.secret` matches those
 basenames at any depth; a directory rule alone is not recursive, so use `/**`.
 Git attributes do not support negative patterns: use later attribute overrides.
+If a broad rule also matches policy files, explicitly exempt them where needed
+with `.gitattributes -filter !diff`. That slashless pattern matches policy files
+at any depth; `/.gitattributes` exempts only the root file. `!diff` resets the
+attribute to unspecified, allowing normal diffs; `-diff` instead disables textual
+diffs. Neither a filter exemption nor a diff reset is needed for paths that do not
+match an encryption assignment.
 
 ### Configure the driver
 
