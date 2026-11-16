@@ -417,6 +417,12 @@ fn commit_blocking(
             .collect();
         for relative in bootstrap {
             if index.get_path(&relative, 0).is_none() && head.get_path(&relative).is_ok() {
+                // Deletion is not an additive encryption-policy extension and
+                // must not consume unrelated staged attributes in a selected commit.
+                anyhow::ensure!(
+                    relative != std::path::Path::new(".gitattributes"),
+                    "staged .gitattributes deletion must be committed explicitly with Git"
+                );
                 anyhow::ensure!(
                     !crate::crypt::access::root(&repo)?
                         .join(&relative)

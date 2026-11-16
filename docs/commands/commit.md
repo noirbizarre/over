@@ -104,6 +104,13 @@ Inspect hook-created working-file changes and retry. Hook or signing failures
 do not publish the commit. `post-commit` runs after HEAD advances; a failure in
 that hook does not undo the successful commit.
 
+Preparation remains bound to the original source parent and index. Source checks
+include file type and Git-relevant executable bits, so mode-only hook edits are
+preserved and require a retry. If Git exits unsuccessfully after publishing the
+prepared commit, Over recognizes that commit and finalizes it instead of restoring
+old source files. Staged deletion of root `.gitattributes` requires an explicit Git
+commit; it is not included implicitly with a selected checkout change.
+
 Sync preserves independent staged and unstaged edits while reconciling
 non-conflicting source advancement. Source updates are prepared before HEAD
 advances; failures applying them or creating the commit attempt to restore

@@ -32,6 +32,17 @@ pub(crate) fn command(repo: &Repository) -> Result<Command> {
         command.env_remove(name);
     }
     command.arg("--git-dir").arg(repo.path());
+    #[cfg(all(test, unix))]
+    {
+        // Unit tests must not execute a developer's global hooks/signing setup.
+        // Per-command overrides avoid racing process-global environment changes.
+        command
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1");
+        for name in ["GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"] {
+            command.env_remove(name);
+        }
+    }
     Ok(command)
 }
 
@@ -46,13 +57,24 @@ fn checked(command: &mut Command) -> Result<Output> {
 }
 
 impl PreparedCommit {
-    pub(crate) fn prepare(repo: &Repository, tree: Oid, message: &str) -> Result<Self> {
+    pub(crate) fn prepare(
+        repo: &Repository,
+        tree: Oid,
+        message: &str,
+        expected_parent: Option<Oid>,
+    ) -> Result<Self> {
         let head = fs::read(repo.path().join("HEAD"))?;
         let parent = match repo.head() {
             Ok(head) => Some(head.peel_to_commit()?.id()),
             Err(error) if error.code() == git2::ErrorCode::UnbornBranch => None,
             Err(error) => return Err(error.into()),
         };
+        // The tree belongs to the caller's original parent, not a newer tip
+        // observed after tree construction; adopting it would revert unrelated changes.
+        ensure!(
+            parent == expected_parent,
+            "branch changed before commit preparation"
+        );
         let index = read_index(&repo.path().join("index"))?;
         let temporary = tempfile::tempdir_in(repo.path())?;
         let objects = temporary.path().join("objects");
@@ -194,7 +216,7 @@ impl PreparedCommit {
             .trim()
             .strip_prefix("ref: ")
             .unwrap_or("HEAD");
-        checked(
+        let published = checked(
             command(repo)?
                 .env("OVER_COMMIT_REPOSITORY", repo.commondir().canonicalize()?)
                 .args([
@@ -205,7 +227,30 @@ impl PreparedCommit {
                     &self.oid.to_string(),
                     &self.parent.unwrap_or(Oid::ZERO_SHA1).to_string(),
                 ]),
-        )?;
+        );
+        if let Err(error) = published {
+            let reference = match repo.find_reference(reference) {
+                Ok(reference) => Some(reference),
+                Err(error) if error.code() == git2::ErrorCode::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
+            let current = reference
+                .map(|reference| reference.peel_to_commit().map(|commit| commit.id()))
+                .transpose()?;
+            let authoritative = match current {
+                Some(current) => {
+                    current == self.oid || repo.graph_descendant_of(current, self.oid)?
+                }
+                None => false,
+            };
+            // A reference-transaction hook can kill Git after its ref update.
+            // All callers must finalize that published OID instead of rolling it back.
+            ensure!(authoritative, "{error:#}");
+            tracing::warn!(
+                "commit {} succeeded despite Git's publication error: {error:#}",
+                self.oid
+            );
+        }
         Ok(self.oid)
     }
 }
@@ -254,7 +299,7 @@ mod tests {
             "printf 'chore: hook message\\n' > \"$1\"",
         );
         hook(&repo, "post-commit", "git rev-parse HEAD > published");
-        let prepared = PreparedCommit::prepare(&repo, tree, "original").unwrap();
+        let prepared = PreparedCommit::prepare(&repo, tree, "original", None).unwrap();
         assert!(repo.head().is_err());
         assert_eq!(
             repo.find_commit(prepared.oid).unwrap().message().unwrap(),
@@ -279,7 +324,7 @@ mod tests {
             "printf private > hook-file\ngit add hook-file",
         );
         let blob = Oid::hash_object(git2::ObjectType::Blob, b"private").unwrap();
-        assert!(PreparedCommit::prepare(&repo, tree, "message").is_err());
+        assert!(PreparedCommit::prepare(&repo, tree, "message", None).is_err());
         assert!(repo.head().is_err());
         assert!(!repo.path().join("index").exists());
         assert!(!repo.odb().unwrap().exists(blob));
@@ -319,7 +364,7 @@ mod tests {
         config
             .set_str("gpg.ssh.allowedSignersFile", allowed.to_str().unwrap())
             .unwrap();
-        let prepared = PreparedCommit::prepare(&repo, tree, "chore: signed").unwrap();
+        let prepared = PreparedCommit::prepare(&repo, tree, "chore: signed", None).unwrap();
         prepared.publish(&repo).unwrap();
         checked(command(&repo).unwrap().args(["verify-commit", "HEAD"])).unwrap();
     }
@@ -331,7 +376,7 @@ mod tests {
         config.set_bool("commit.gpgSign", true).unwrap();
         config.set_str("gpg.program", "false").unwrap();
         config.set_str("gpg.format", "openpgp").unwrap();
-        assert!(PreparedCommit::prepare(&repo, tree, "chore: cannot sign").is_err());
+        assert!(PreparedCommit::prepare(&repo, tree, "chore: cannot sign", None).is_err());
         assert!(repo.head().is_err());
         assert!(!repo.path().join("index").exists());
     }
@@ -346,7 +391,8 @@ mod tests {
             .unwrap()
             .set_str("commit.cleanup", cleanup)
             .unwrap();
-        let prepared = PreparedCommit::prepare(&repo, tree, "\nsubject  \n# comment\n\n").unwrap();
+        let prepared =
+            PreparedCommit::prepare(&repo, tree, "\nsubject  \n# comment\n\n", None).unwrap();
         assert_eq!(
             repo.find_commit(prepared.oid)
                 .unwrap()
@@ -374,10 +420,72 @@ mod tests {
         )
         .unwrap()
         .stdout;
-        let prepared = PreparedCommit::prepare(&repo, tree, "original").unwrap();
+        let prepared = PreparedCommit::prepare(&repo, tree, "original", None).unwrap();
         assert_eq!(
             repo.find_commit(prepared.oid).unwrap().message_bytes(),
             branch
+        );
+    }
+
+    #[test]
+    fn a_newer_parent_cannot_be_adopted_for_an_already_built_tree() {
+        let (_directory, repo, tree) = fixture();
+        let signature = repo.signature().unwrap();
+        let original = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "initial",
+                &repo.find_tree(tree).unwrap(),
+                &[],
+            )
+            .unwrap();
+        let blob = repo.blob(b"concurrent unrelated change").unwrap();
+        let mut builder = repo
+            .treebuilder(Some(&repo.find_tree(tree).unwrap()))
+            .unwrap();
+        builder.insert("unrelated", blob, 0o100644).unwrap();
+        let newer = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "concurrent",
+                &repo.find_tree(builder.write().unwrap()).unwrap(),
+                &[&repo.find_commit(original).unwrap()],
+            )
+            .unwrap();
+        assert!(PreparedCommit::prepare(&repo, tree, "selected", Some(original)).is_err());
+        assert_eq!(repo.head().unwrap().target(), Some(newer));
+        assert_eq!(
+            repo.head()
+                .unwrap()
+                .peel_to_tree()
+                .unwrap()
+                .get_name("unrelated")
+                .unwrap()
+                .id(),
+            blob
+        );
+    }
+
+    #[test]
+    fn unit_git_commands_disable_external_configuration_without_changing_the_process() {
+        let (_directory, repo, _) = fixture();
+        let command = command(&repo).unwrap();
+        let overrides: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        assert_eq!(
+            overrides[std::ffi::OsStr::new("GIT_CONFIG_GLOBAL")],
+            Some(std::ffi::OsStr::new("/dev/null"))
+        );
+        assert_eq!(
+            overrides[std::ffi::OsStr::new("GIT_CONFIG_NOSYSTEM")],
+            Some(std::ffi::OsStr::new("1"))
+        );
+        assert_eq!(
+            overrides[std::ffi::OsStr::new("GIT_CONFIG_PARAMETERS")],
+            None
         );
     }
 }

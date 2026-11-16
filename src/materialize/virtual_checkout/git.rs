@@ -1097,6 +1097,7 @@ pub(crate) fn commit_staged_prepared(
     before_publish: &mut dyn FnMut(Oid) -> Result<()>,
 ) -> Result<Oid> {
     let index_path = repo.path().join("index");
+    let original_head = fs::read(repo.path().join("HEAD"))?;
     let original_index = crate::actions::git::index::read_index(&index_path)?;
     let parent = repo.head()?.peel_to_commit()?;
     let head = parent.tree()?;
@@ -1132,6 +1133,8 @@ pub(crate) fn commit_staged_prepared(
     }
     let workdir = repo.workdir().context("source has no working directory")?;
     let mut updates = Vec::new();
+    let mut source_snapshots = Vec::new();
+    let honor_mode = super::snapshot::honors_filemode(repo)?;
     let mut builder = git2::build::TreeUpdateBuilder::new();
     // Overlapping selections must not back up and replace the same path twice.
     for path in paths.iter().collect::<std::collections::BTreeSet<_>>() {
@@ -1150,6 +1153,7 @@ pub(crate) fn commit_staged_prepared(
         );
         let new = staged.as_ref().map(|entry| (entry.id, entry.mode as i32));
         let file = workdir.join(path);
+        source_snapshots.push((file.clone(), hook_source_snapshot(&file, honor_mode)?));
         let current = super::snapshot::canonical_source_entry(repo, path)?;
         anyhow::ensure!(
             if let Some(update) = prepared.get(path) {
@@ -1194,23 +1198,25 @@ pub(crate) fn commit_staged_prepared(
     }
     let tree = repo.find_tree(builder.create_updated(repo, &head)?)?;
     crate::crypt::policy::validate_tree(repo, &tree)?;
-    let source_snapshots = paths
-        .iter()
-        .map(|path| {
-            let file = workdir.join(path);
-            Ok((file.clone(), crate::actions::git::index::read_index(&file)?))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let commit = crate::actions::git::commit::PreparedCommit::prepare(repo, tree.id(), message)?;
+    let commit = crate::actions::git::commit::PreparedCommit::prepare(
+        repo,
+        tree.id(),
+        message,
+        Some(parent.id()),
+    )?;
     let mut index_lock = Some(crate::actions::git::index::IndexLock::acquire(&index_path)?);
     commit.validate(repo)?;
+    anyhow::ensure!(
+        fs::read(repo.path().join("HEAD"))? == original_head,
+        "source branch changed while preparing selected snapshots"
+    );
     anyhow::ensure!(
         crate::actions::git::index::read_index(&index_path)? == original_index,
         "source index changed while preparing selected snapshots"
     );
     for (file, expected) in source_snapshots {
         anyhow::ensure!(
-            crate::actions::git::index::read_index(&file)? == expected,
+            hook_source_snapshot(&file, honor_mode)? == expected,
             "source file '{}' changed during commit hooks",
             file.display()
         );
@@ -1341,6 +1347,29 @@ pub(crate) fn commit_staged_prepared(
             }
             Err(error)
         }
+    }
+}
+
+fn hook_source_snapshot(
+    path: &Path,
+    honor_mode: bool,
+) -> Result<Option<(zeroize::Zeroizing<Vec<u8>>, u32)>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            anyhow::ensure!(
+                metadata.is_file() && !metadata.is_symlink(),
+                "source file '{}' is no longer regular",
+                path.display()
+            );
+            let mode = if honor_mode {
+                i32::from(on_disk_filemode(path)?) as u32
+            } else {
+                0o100644
+            };
+            Ok(Some((crate::crypt::buffer::read_file(path)?, mode)))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
     }
 }
 

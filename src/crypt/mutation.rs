@@ -511,7 +511,8 @@ impl Mutation {
         next_key: Option<&RepositoryKey>,
     ) -> Result<()> {
         self.validate(repo)?;
-        let prepared = commit::PreparedCommit::prepare(repo, self.tree, &self.message)?;
+        let prepared =
+            commit::PreparedCommit::prepare(repo, self.tree, &self.message, self.parent)?;
         let guard = access::guard(repo, true)?;
         let index_path = repo.path().join("index");
         let mut locks = BTreeMap::new();
