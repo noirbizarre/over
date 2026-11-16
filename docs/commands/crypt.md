@@ -121,14 +121,16 @@ git commit -m 'Migrate legacy encryption'
 
 The command processes tracked `.age` files and entries in the legacy
 `.over/secrets/` directory. Ordinary files migrate to the same path with the `.age`
-extension removed; native secrets migrate to `.over/secrets`, preserving
+extension removed; native secrets migrate to `.over/secrets/<name>`, preserving
 binary values. All inputs must be real regular files. Tracked legacy files must
 match their index snapshots, and incompatible destination content or unrecognized
 legacy-store entries must be resolved before migration.
 
-Native secret migration creates an isolated `chore(secrets): migrated store`
+Legacy `access.json` migrates first into `repository.json` and individual
+`users/<user>/<key>` records, with an isolated configurable `chore(crypt)` commit.
+Native secret migration then creates an isolated `chore(secrets): migrated store`
 commit, honoring Git hooks and signing. It also accepts an existing
-`.over/secrets.yaml` aggregate. Ordinary `.age` files are processed afterward;
+`.over/secrets` or `.over/secrets.yaml` aggregate. Ordinary `.age` files are processed afterward;
 their ciphertext, policy, and legacy removals are staged for explicit review and
 commit. A later ordinary-file migration failure does not undo a successful native
 secret migration commit. Old history is unchanged.
@@ -136,6 +138,6 @@ secret migration commit. Old history is unchanged.
 Original ordinary-file Age ciphertext is preserved under
 `over-crypt/legacy-backup/` in Git's administrative directory, retaining its
 repository-relative paths. Native directory migration instead retains the
-original directory under `over-crypt/legacy-secrets-backup-*`. These local backups
+original file/directory under `over-crypt/legacy-state-backup-*`. These local backups
 are not committed. Native secret mutations also migrate historical stores
 automatically; read-only secret commands do not migrate.

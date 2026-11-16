@@ -282,6 +282,7 @@ pub(crate) fn begin_commit(
     begin_commit_with_links(repo, key, files, committed, expected, BTreeMap::new())
 }
 
+#[cfg(test)]
 pub(crate) fn begin_secret_commit(
     repo: &git2::Repository,
     key: &format::RepositoryKey,
@@ -530,10 +531,14 @@ pub(crate) fn finish(repo: &git2::Repository) -> Result<()> {
 }
 
 pub fn recover(repo: &git2::Repository) -> Result<()> {
+    let _mutation = super::mutation::ownership(repo)?;
     // Check migration state only after ownership: it can become pending while waiting for crypto.
     let _ownership =
         crate::materialize::virtual_checkout::generated_migration::ownership_guard(repo)?;
     let _guard = access::raw_guard(repo, true)?;
+    if super::mutation::pending(repo)? {
+        return super::mutation::recover_locked(repo);
+    }
     if crate::materialize::virtual_checkout::generated_migration::recover(repo)?
         && !access::private_dir(repo)
             .join("transaction.json")
@@ -548,6 +553,9 @@ pub fn recover(repo: &git2::Repository) -> Result<()> {
 pub(crate) fn recover_source(repo: &git2::Repository) -> Result<()> {
     // Source rollback may already own checkout mutation; it never recovers generated migrations.
     let _guard = access::raw_guard(repo, true)?;
+    if super::mutation::pending(repo)? {
+        return super::mutation::recover_locked(repo);
+    }
     crate::materialize::virtual_checkout::generated_migration::ensure_ready(repo)?;
     let key = access::recovery_key(repo)?;
     recover_locked(repo, &key)
@@ -866,7 +874,9 @@ pub(crate) fn stage_blob(
         "crypt only supports regular files"
     );
     entry.id = repo.blob(bytes)?;
-    entry.file_size = bytes.len().try_into()?;
+    // Ciphertext length is not the unlocked worktree length. A nonzero blob
+    // size makes Git report size-only dirtiness without invoking clean.
+    entry.file_size = 0;
     // Converted blobs must invalidate stat data so Git runs clean on the next comparison.
     entry.mtime = git2::IndexTime::new(0, 0);
     index.add(&entry)?;
@@ -1127,19 +1137,27 @@ fn update_with_ingestion(
         !index.has_conflicts(),
         "resolve Git index conflicts before changing crypt policy"
     );
-    for path in [
-        ".gitattributes",
-        ".over/crypt/access.json",
-        ".over/.gitattributes",
-    ] {
-        if let Some(entry) = index.get_path(Path::new(path), 0) {
+    let access_files = super::access_storage::worktree(repo)?;
+    let indexed_access = super::access_storage::index(repo, &index)?;
+    let bootstrap_paths: std::collections::BTreeSet<_> = access_files
+        .keys()
+        .chain(indexed_access.keys())
+        .cloned()
+        .chain([
+            PathBuf::from(".gitattributes"),
+            PathBuf::from(".over/.gitattributes"),
+        ])
+        .collect();
+    for path in &bootstrap_paths {
+        if let Some(entry) = index.get_path(path, 0) {
             ensure!(
                 bootstrap_equal(
-                    Path::new(path),
+                    path,
                     repo.find_blob(entry.id)?.content(),
                     &fs::read(root.join(path))?
                 ),
-                "resolve staged/worktree divergence in {path} before changing policy"
+                "resolve staged/worktree divergence in {} before changing policy",
+                path.display()
             );
         }
     }
@@ -1188,10 +1206,9 @@ fn update_with_ingestion(
         }
     }
     atomic_write(&scratch.path().join(".gitattributes"), proposed.as_bytes())?;
-    atomic_write(
-        &scratch.path().join(".over/crypt/access.json"),
-        &fs::read(access::metadata_path(repo)?)?,
-    )?;
+    for (path, bytes) in &access_files {
+        atomic_write(&scratch.path().join(path), bytes)?;
+    }
     // These two policies are staged by this operation; other nested policies retain index state.
     for path in [".gitattributes", ".over/.gitattributes"] {
         atomic_write(
@@ -1274,14 +1291,21 @@ fn update_with_ingestion(
         Path::new(".gitattributes"),
         proposed.as_bytes(),
     )?;
-    for path in [".over/crypt/access.json", ".over/.gitattributes"] {
-        let bytes = fs::read(root.join(path))?;
-        let bytes = if path.ends_with(".gitattributes") {
+    for path in access_files
+        .keys()
+        .cloned()
+        .chain([PathBuf::from(".over/.gitattributes")])
+    {
+        let bytes = fs::read(root.join(&path))?;
+        let bytes = if path
+            .file_name()
+            .is_some_and(|name| name == ".gitattributes")
+        {
             attribute_bytes(&bytes)
         } else {
             bytes
         };
-        stage_blob(&mut index, repo, Path::new(path), &bytes)?;
+        stage_blob(&mut index, repo, &path, &bytes)?;
     }
     for path in removals {
         index.remove_path(path)?;
@@ -2065,6 +2089,16 @@ pub fn rotate_with<C: age::Callbacks>(
     mut password: impl FnMut(&str) -> Result<age::secrecy::SecretString>,
     callbacks: C,
 ) -> Result<()> {
+    for worktree in access::worktrees(repo)? {
+        if access::root(&worktree)?
+            .join(super::access_storage::HEADER)
+            .try_exists()?
+        {
+            // A legacy caller must not serialize an aggregate into a linked
+            // worktree's v2 header; mixed layouts use the inventory-based path.
+            return rotate_committed_with(repo, revoke, password, callbacks);
+        }
+    }
     let _ownership =
         crate::materialize::virtual_checkout::generated_migration::ownership_guard(repo)?;
     let _guard = access::guard(repo, true)?;
@@ -2261,7 +2295,259 @@ pub fn rotate_with<C: age::Callbacks>(
     Ok(())
 }
 
+/// Rotate committed snapshots, preserving unrelated staging and unlocked representations.
+pub fn rotate_committed_with<C: age::Callbacks>(
+    repo: &git2::Repository,
+    revoke: Option<(&str, Option<&str>)>,
+    mut password: impl FnMut(&str) -> Result<age::secrecy::SecretString>,
+    callbacks: C,
+) -> Result<()> {
+    let _mutation = super::mutation::ownership(repo)?;
+    let _generated =
+        crate::materialize::virtual_checkout::generated_migration::ownership_guard(repo)?;
+    let guard = access::guard(repo, true)?;
+    crate::materialize::virtual_checkout::generated_migration::rotation_preflight(repo)?;
+    let old = access::local_key(repo)?;
+    let original = access::load(repo)?;
+    let mut registry = original.clone();
+    let mut new = format::RepositoryKey::generate()?;
+    new.repository = old.repository;
+    let revoked_passwords: Vec<_> = revoke
+        .and_then(|(user, _)| registry.users.get(user))
+        .into_iter()
+        .flat_map(|keys| keys.iter())
+        .filter(|(name, method)| {
+            revoke.is_some_and(|(_, selected)| {
+                selected.is_none_or(|selected| selected == name.as_str())
+            }) && method.recipient.is_none()
+        })
+        .map(|(_, method)| method.clone())
+        .collect();
+    if let Some((user, name)) = revoke {
+        let keys = registry.users.get_mut(user).context("unknown user")?;
+        if let Some(name) = name {
+            ensure!(keys.remove(name).is_some(), "unknown key");
+        } else {
+            ensure!(!keys.is_empty(), "user has no keys to revoke");
+            keys.clear();
+        }
+    }
+    ensure!(
+        registry.users.values().any(|keys| !keys.is_empty()),
+        "cannot revoke the only recovery key; add a trusted recovery key first"
+    );
+    let (operation, context) = match revoke {
+        Some((user, Some(key))) => ("key_revoke", serde_json::json!({"user":user,"key":key})),
+        Some((user, None)) => ("user_revoke", serde_json::json!({"user":user})),
+        None => ("key_rotate", serde_json::json!({})),
+    };
+    let message = super::config::message(repo, operation, context)?;
+    for (user, keys) in &mut registry.users {
+        for (name, method) in keys {
+            let passphrase = if method.recipient.is_none() {
+                let passphrase = password(&format!("Passphrase for retained key {user}/{name}"))?;
+                access::verify_passphrase(method, passphrase.clone(), &old)?;
+                ensure!(
+                    !revoked_passwords
+                        .iter()
+                        .any(|revoked| access::verify_passphrase(
+                            revoked,
+                            passphrase.clone(),
+                            &old
+                        )
+                        .is_ok()),
+                    "a retained passphrase also unlocks a revoked key; replace that reused credential before revocation"
+                );
+                Some(passphrase)
+            } else {
+                None
+            };
+            *method = access::envelope_with(
+                &new,
+                method.recipient.as_deref(),
+                passphrase,
+                callbacks.clone(),
+            )?;
+        }
+    }
+    registry.generation = new.generation;
+    let worktrees = access::worktrees(repo)?;
+    let mut primary = None;
+    let mut locals = Vec::new();
+    for worktree in &worktrees {
+        ensure!(
+            access::load(worktree)? == original,
+            "linked worktrees have divergent access metadata; reconcile before rotation"
+        );
+        let before = super::mutation::clean_metadata(worktree)?;
+        let encoded = super::access_storage::encode_preserving(&registry, &before)?;
+        let root = access::root(worktree)?;
+        let head = worktree.head()?.peel_to_tree()?;
+        let mut index = worktree.index()?;
+        ensure!(
+            !index.has_conflicts(),
+            "resolve index conflicts before rotation"
+        );
+        let mut paths: std::collections::BTreeSet<_> = tracked(worktree)?.into_iter().collect();
+        for bytes in git(worktree, &["ls-tree", "-r", "-z", "--name-only", "HEAD"])?
+            .split(|byte| *byte == 0)
+            .filter(|bytes| !bytes.is_empty())
+        {
+            paths.insert(PathBuf::from(std::str::from_utf8(bytes)?));
+        }
+        let mut attributes: std::collections::BTreeSet<_> = paths
+            .iter()
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name == ".gitattributes")
+            })
+            .cloned()
+            .collect();
+        for entry in walkdir::WalkDir::new(root)
+            .into_iter()
+            .filter_entry(|entry| entry.file_name() != ".git")
+        {
+            let entry = entry?;
+            if entry.file_name() == ".gitattributes" {
+                attributes.insert(entry.path().strip_prefix(root)?.to_path_buf());
+            }
+        }
+        for path in attributes {
+            let old_entry = head.get_path(&path).ok();
+            let staged = index.get_path(&path, 0);
+            let current = super::buffer::read_optional(&root.join(&path))?;
+            ensure!(
+                old_entry.as_ref().map(|entry| entry.id()) == staged.as_ref().map(|entry| entry.id)
+                    && match old_entry {
+                        Some(entry) => current.as_ref().is_some_and(|bytes| worktree
+                            .find_blob(entry.id())
+                            .is_ok_and(|blob| blob.content() == bytes.as_slice())),
+                        None => current.is_none(),
+                    },
+                "commit or restore protection-policy changes before rotation"
+            );
+        }
+        let mut delta = super::access_storage::delta(&before, &encoded);
+        let mut working = BTreeMap::new();
+        let mut preserved = Vec::new();
+        for path in paths {
+            let selected = protected(worktree, &path)?;
+            let committed_ciphertext = head
+                .get_path(&path)
+                .ok()
+                .filter(|entry| entry.kind() == Some(git2::ObjectType::Blob))
+                .map(|entry| worktree.find_blob(entry.id()))
+                .transpose()?
+                .is_some_and(|blob| format::recognized(blob.content()));
+            ensure!(
+                selected || !committed_ciphertext,
+                "effective attributes disable committed ciphertext; resolve policy overrides before rotation"
+            );
+            if !selected {
+                continue;
+            }
+            let committed = head
+                .get_path(&path)
+                .context("commit protected additions before rotation")?;
+            let entry = index
+                .get_path(&path, 0)
+                .context("commit protected deletions before rotation")?;
+            ensure!(
+                committed.id() == entry.id && committed.filemode() as u32 == entry.mode,
+                "commit or restore staged protected changes before rotation"
+            );
+            let stored = worktree.find_blob(committed.id())?;
+            let domain = format::file_domain(stored.content())?;
+            let plaintext = old.decrypt(stored.content(), domain)?;
+            let physical = root.join(&path);
+            crate::materialize::disposal::validate_relative_ancestors(root, &physical)?;
+            let metadata = fs::symlink_metadata(&physical)?;
+            ensure!(
+                metadata.is_file() && !metadata.is_symlink() && !metadata.permissions().readonly(),
+                "rotation requires writable regular protected files"
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                if worktree.config()?.get_bool("core.filemode").unwrap_or(true) {
+                    ensure!(
+                        (metadata.permissions().mode() & 0o111 != 0) == (entry.mode == 0o100755),
+                        "commit protected executable-bit edits before rotation"
+                    );
+                }
+            }
+            let current = super::buffer::read_file(&physical)?;
+            ensure!(
+                current.as_slice() == stored.content()
+                    || (domain == 0 && current.as_slice() == plaintext.as_slice()),
+                "commit or restore protected working edits before rotation"
+            );
+            let ciphertext = new.encrypt(&plaintext, domain)?;
+            if domain == 0 && current.as_slice() == plaintext.as_slice() {
+                preserved.push(physical.clone());
+            } else {
+                working.insert(physical, Some(ciphertext.clone()));
+            }
+            delta.insert(path.clone(), Some(ciphertext));
+        }
+        for path in crate::secrets::layout::native_paths(root)? {
+            if index.get_path(&path, 0).is_none() {
+                let bytes = fs::read(root.join(&path))?;
+                let domain = format::file_domain(&bytes)?;
+                let plaintext = old.decrypt(&bytes, domain)?;
+                working.insert(root.join(path), Some(new.encrypt(&plaintext, domain)?));
+            }
+        }
+        for (path, bytes) in &delta {
+            if let Some(bytes) = bytes {
+                stage_blob(&mut index, worktree, path, bytes)?;
+            } else if index.get_path(path, 0).is_some() {
+                index.remove_path(path)?;
+            }
+        }
+        for (path, bytes) in &super::access_storage::delta(&before, &encoded) {
+            working.insert(root.join(path), bytes.clone());
+        }
+        if worktree.path() == repo.path() {
+            primary = Some(delta);
+        } else {
+            working.insert(
+                worktree.path().join("index"),
+                Some(index_bytes(worktree, &index)?),
+            );
+        }
+        locals.push((worktree, working, preserved));
+    }
+    let mut mutation = super::mutation::Mutation::prepare(
+        repo,
+        primary.context("initiating worktree is not registered")?,
+        message,
+        &[],
+    )?;
+    for (worktree, updates, preserved) in locals {
+        mutation.add_local(worktree, updates)?;
+        for path in preserved {
+            mutation.observe_file(path.clone())?;
+            if worktree.path() == repo.path() {
+                mutation.preserve_worktree(path);
+            }
+        }
+    }
+    drop(guard);
+    mutation.commit(repo, &old, Some(&new))?;
+    if worktrees.len() > 1 {
+        eprintln!(
+            "Rotation committed this branch; generation updates remain staged in linked worktrees."
+        );
+    }
+    eprintln!(
+        "Rotation protects new state only; old history and copied plaintext remain accessible with old keys."
+    );
+    Ok(())
+}
+
 pub fn migrate(repo: &git2::Repository) -> Result<()> {
+    let migrated_access = access::migrate_committed(repo)?;
     // Native migration owns an isolated commit, including directory-to-file recovery.
     let migrated_secrets = crate::secrets::migrate_native(repo)?;
     let root = access::root(repo)?;
@@ -2305,7 +2591,9 @@ pub fn migrate(repo: &git2::Repository) -> Result<()> {
         originals.insert(path, ciphertext);
     }
     if originals.is_empty()
-        && (migrated_secrets || access::private_dir(repo).join("legacy-backup").is_dir())
+        && (migrated_access
+            || migrated_secrets
+            || access::private_dir(repo).join("legacy-backup").is_dir())
     {
         return refresh(repo, false);
     }

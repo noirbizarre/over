@@ -198,6 +198,37 @@ pub(crate) fn delta(before: &Files, after: &Files) -> Delta {
         .collect()
 }
 
+/// Preserve formatting and additive public fields on semantically unchanged
+/// records; an unrelated enrollment must not normalize every file in the repo.
+pub(crate) fn encode_preserving(registry: &Registry, before: &Files) -> Result<Files> {
+    let mut files = encode(registry)?;
+    if !before.contains_key(Path::new(HEADER)) {
+        return Ok(files);
+    }
+    let old = parse(before)?.context("missing original access metadata")?;
+    let same_generation =
+        old.repository == registry.repository && old.generation == registry.generation;
+    if same_generation {
+        files.insert(PathBuf::from(HEADER), before[Path::new(HEADER)].clone());
+    }
+    for (user, keys) in &registry.users {
+        let directory = PathBuf::from(USERS).join(user);
+        let marker = directory.join(".user");
+        if let Some(bytes) = before.get(&marker) {
+            files.insert(marker, bytes.clone());
+        }
+        for (name, key) in keys {
+            if same_generation && old.users.get(user).and_then(|keys| keys.get(name)) == Some(key) {
+                let path = directory.join(name);
+                if let Some(bytes) = before.get(&path) {
+                    files.insert(path, bytes.clone());
+                }
+            }
+        }
+    }
+    Ok(files)
+}
+
 pub(crate) fn worktree(repo: &git2::Repository) -> Result<Files> {
     let root = access::root(repo)?;
     let mut files = Files::new();

@@ -404,16 +404,32 @@ fn commit_blocking(
     if crate::crypt::access::configured(&repo)? {
         let index = repo.index()?;
         let head = repo.head()?.peel_to_tree()?;
-        for path in [
-            ".gitattributes",
-            ".over/.gitattributes",
-            ".over/crypt/access.json",
-        ] {
-            let relative = PathBuf::from(path);
+        let current = crate::crypt::access_storage::index(&repo, &index)?;
+        let committed = crate::crypt::access_storage::tree(&repo, &head)?;
+        let bootstrap: std::collections::BTreeSet<_> = current
+            .keys()
+            .chain(committed.keys())
+            .cloned()
+            .chain([
+                PathBuf::from(".gitattributes"),
+                PathBuf::from(".over/.gitattributes"),
+            ])
+            .collect();
+        for relative in bootstrap {
+            if index.get_path(&relative, 0).is_none() && head.get_path(&relative).is_ok() {
+                anyhow::ensure!(
+                    !crate::crypt::access::root(&repo)?
+                        .join(&relative)
+                        .try_exists()?,
+                    "resolve unstaged crypt metadata before committing"
+                );
+                paths.push(relative);
+                continue;
+            }
             if let Some(entry) = index.get_path(&relative, 0)
                 && head.get_path(&relative).ok().map(|old| old.id()) != Some(entry.id)
             {
-                if path == ".gitattributes" {
+                if relative == std::path::Path::new(".gitattributes") {
                     let old = head
                         .get_path(&relative)
                         .ok()
@@ -431,7 +447,7 @@ fn commit_blocking(
                     crate::crypt::policy::bootstrap_equal(
                         &relative,
                         repo.find_blob(entry.id)?.content(),
-                        &std::fs::read(crate::crypt::access::root(&repo)?.join(path))?
+                        &std::fs::read(crate::crypt::access::root(&repo)?.join(&relative))?
                     ),
                     "resolve unstaged crypt metadata before committing"
                 );

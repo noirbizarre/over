@@ -53,7 +53,20 @@ over user key add alice --name recovery --recipient age1...
 over user key list alice
 ```
 
-Enrollment writes access metadata; do not assume it stages or commits that metadata.
+Each enrollment, detach, deletion, or revocation creates an isolated commit,
+honoring Git identity, hooks, signing, and message cleanup. Batch enrollment
+commits all imported keys together. Unrelated staged work is preserved; pending
+access-metadata edits must be committed or restored first. Configure
+[access commit messages](../configuration/root.md#access-commit-messages) at the root.
+
+New access methods live in `.over/crypt/users/<user>/<key>`, with a stable `.user`
+marker preserving empty users. `.over/crypt/repository.json` holds only the version,
+repository ID, and active generation. Adding another key leaves the header and
+existing key files unchanged. User/key names must be portable filesystem names;
+case-colliding and platform-reserved names are rejected.
+
+Existing aggregate access metadata migrates automatically in the next user/key
+mutation's commit. List/show/unlock remain compatible without migration.
 
 ## Inspect and remove access
 
@@ -66,8 +79,10 @@ through it. The only recovery key cannot be detached. `user delete` requires an
 existing user with no remaining keys.
 
 `user revoke` and `user key revoke` rotate current protected content for remaining
-trusted access. Retained passphrase keys require credential reacquisition. Review
-and commit the staged transition. Other mutations have no machine-readable success
+trusted access. Retained passphrase keys require credential reacquisition.
+Protected files and policy must be clean. The initiating branch is committed;
+generation updates in linked worktrees remain staged and are reported.
+Mutations have no machine-readable success
 payload; errors are stderr/nonzero.
 
 See [users, hardware compatibility and access recovery](../usage/crypt.md#users-and-keys)

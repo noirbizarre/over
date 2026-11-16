@@ -209,7 +209,7 @@ fn crypt_ingestion_refuses_checkout_source_drift_before_publication(#[case] drif
 }
 
 #[rstest::rstest]
-#[case(".over/crypt/access.json")]
+#[case(".over/crypt/repository.json")]
 #[case(".over/.gitattributes")]
 fn bootstrap_divergence_is_refused_without_replacing_the_index(#[case] metadata: &str) {
     let (root, _identities) = repository();

@@ -12,6 +12,7 @@ pub(crate) const OLD_PATH: &str = ".over/secrets.yaml";
 pub(super) enum Layout {
     Missing,
     Native(PathBuf),
+    Entries(Vec<String>),
     Legacy,
 }
 
@@ -31,8 +32,44 @@ pub(super) fn inspect(root: &Path) -> Result<Layout> {
     if let Some(metadata) = current {
         ensure!(!metadata.is_symlink(), "secret store must not be a symlink");
         if metadata.is_dir() {
-            legacy_files(&root.join(PATH))?;
-            return Ok(Layout::Legacy);
+            let mut names = Vec::new();
+            let mut legacy = false;
+            let mut native = false;
+            for entry in fs::read_dir(root.join(PATH))? {
+                let entry = entry?;
+                let metadata = fs::symlink_metadata(entry.path())?;
+                ensure!(
+                    metadata.is_file() && !metadata.is_symlink(),
+                    "secret entries must be real regular files"
+                );
+                let filename = entry.file_name();
+                let filename = filename.to_str().context("non-UTF-8 secret filename")?;
+                let name = if let Some(name) = filename.strip_suffix(".age") {
+                    legacy = true;
+                    name
+                } else {
+                    native = true;
+                    filename
+                };
+                super::SecretName::parse(name)?;
+                ensure!(
+                    !names
+                        .iter()
+                        .any(|other: &String| other.eq_ignore_ascii_case(name)),
+                    "case-colliding secret names"
+                );
+                names.push(name.to_owned());
+            }
+            ensure!(
+                !(legacy && native),
+                "mixed Age and native secret files; reconcile them before continuing"
+            );
+            names.sort();
+            return if legacy {
+                Ok(Layout::Legacy)
+            } else {
+                Ok(Layout::Entries(names))
+            };
         }
         ensure!(metadata.is_file(), "secret store must be a regular file");
         return Ok(Layout::Native(PathBuf::from(PATH)));
@@ -73,4 +110,15 @@ pub(crate) fn legacy_files(directory: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>
         files.insert(PathBuf::from(filename), fs::read(entry.path())?);
     }
     Ok(files)
+}
+
+pub(crate) fn native_paths(root: &Path) -> Result<Vec<PathBuf>> {
+    Ok(match inspect(root)? {
+        Layout::Native(path) => vec![path],
+        Layout::Entries(names) => names
+            .into_iter()
+            .map(|name| PathBuf::from(PATH).join(name))
+            .collect(),
+        _ => Vec::new(),
+    })
 }

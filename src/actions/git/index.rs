@@ -20,6 +20,16 @@ pub(crate) struct IndexLock {
 }
 
 impl IndexLock {
+    /// Journaled callers can recognize their own lock after a process crash.
+    pub(crate) fn mark_ownership(&mut self) -> Result<Vec<u8>> {
+        let mut token = vec![0u8; 32];
+        getrandom::fill(&mut token)
+            .map_err(|error| anyhow::anyhow!("could not create index ownership token: {error}"))?;
+        self.file.write_all(&token)?;
+        self.file.sync_all()?;
+        Ok(token)
+    }
+
     pub(crate) fn acquire(index: &Path) -> Result<Self> {
         let mut path = index.as_os_str().to_os_string();
         path.push(".lock");

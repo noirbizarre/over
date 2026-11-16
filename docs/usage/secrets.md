@@ -27,37 +27,41 @@ The store belongs to the repository selected by `--home` / `OVER_HOME`, with
 current Git repository, or the target `--target`. The repository directory must
 already exist.
 
-The entire binary-safe map is one versionable ciphertext file:
+Each binary-safe value has its own versionable ciphertext file:
 
 ```text
 .over/
-  secrets
+  secrets/
+    github-token
+    database-password
 ```
 
 Repository-root `.over` is reserved administration: overlay discovery and
 materialization always exclude it, even if `.overignore` negations select it.
-Each mutation automatically commits this file and required initial encryption
-metadata, preserving unrelated staged work. The extensionless `secrets` file
-contains a versioned binary encrypted payload, including
-in the working tree while unlocked. Secret operations and explicit Git textconv
-display decrypt its contents in memory. Aggregate updates are serialized across processes and atomically
-publish ciphertext, preventing lost updates or partial writes.
+Each mutation automatically commits only its entry and required initial encryption
+metadata, preserving unrelated staged work. Entries remain encrypted in unlocked
+working trees; their versioned records authenticate both name and binary value.
+Secret commands and explicit Git textconv decrypt in memory. Independent secret
+changes touch independent Git paths and can merge without an aggregate-file conflict.
+Writers serialize locally and publish through a recoverable isolated commit.
 
 Automatic commits honor Git identity, hooks, and signing configuration, using
 the same isolated commit behavior as [`over commit`](../commands/commit.md).
-The default messages include secret names in plaintext Git metadata; configure
+Secret names are public in filenames and Git history, even while locked.
+The default messages include names too; configure
 [message templates](../configuration/root.md#secret-commit-messages) to customize
-them or omit names. Secret values are never available to message templates.
-Commit pending changes to the tracked store or encryption metadata before
+them or omit names from messages. Secret values are never available to templates.
+Commit pending changes to the selected entry or encryption metadata before
 mutating secrets. Reads do not stage or commit anything, and identical-value
 replacements create no empty commit. Git commit hooks may read secrets but
 cannot recursively mutate them.
 
-Older `.over/secrets.yaml` files are renamed automatically on the next mutation;
-their encrypted format is unchanged. Legacy `.over/secrets/` directories migrate
-to the aggregate in the same commit as the requested mutation, after decrypting
-all entries with their original Age passphrase. The original encrypted directory
-is retained under Git's private `over-crypt/legacy-secrets-backup-*` path.
+Older aggregate files at `.over/secrets` or `.over/secrets.yaml` are split
+automatically on the next mutation. Legacy `.over/secrets/<name>.age` directories
+also migrate in that same commit, after decrypting all entries with their original
+Age passphrase. The original encrypted file/directory is retained under Git's
+private `over-crypt/legacy-state-backup-*` path. Access metadata migrates separately
+on a user/key mutation; secret changes do not force an access-format migration.
 Read-only commands do not migrate or commit. Resolve competing stores before
 continuing; Over does not silently merge them.
 
@@ -92,15 +96,17 @@ publication files.
 ### List, retrieve, or remove
 
 `list` prints sorted names only. All operations require the shared unlock state,
-including `list` and `remove`, because names reside inside the encrypted map.
-Reading a missing store does not create one.
+including `list` and `remove`. Listing validates filenames without reading every
+value. Getting one native entry does not authenticate unrelated entries, so a
+corrupt value does not prevent retrieving another secret. Reading a missing
+store does not create one.
 
 `get` intentionally writes the fully decrypted value to stdout, without adding
 a newline. This is the explicit plaintext-output command; redirect or pipe it
 only where that value is intended. Authentication failure emits no partial
 plaintext. Other diagnostics and Debug output redact values and passphrases.
 
-`remove` updates the aggregate ciphertext. As with any versioned data, removing
+`remove` deletes the selected entry. As with any versioned data, removing
 a value does not erase prior Git history.
 
 ## Use secrets in hooks

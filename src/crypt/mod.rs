@@ -10,6 +10,7 @@ pub mod detect;
 pub mod filter;
 pub mod format;
 pub(crate) mod ingest;
+pub(crate) mod mutation;
 pub mod policy;
 pub mod protection;
 pub mod textconv;

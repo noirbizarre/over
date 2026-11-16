@@ -50,19 +50,23 @@ Canonical `.gitattributes` is the policy authority. Policy helpers use native Gi
 filtering and verify ciphertext before index publication. Virtual checkouts map
 to source policy/index and compare in ciphertext space. Native secrets remain
 direct ciphertext even in unlocked working trees, decrypting only in memory.
-The aggregate lives at `.over/secrets`; native mutations create isolated commits
-with configurable messages and Git hooks/signing. Historical aggregate filenames
-and per-entry directories migrate on the next mutation, preserving ciphertext
-backups for directory conversion.
+Native values live independently at `.over/secrets/<name>`. Public access uses
+`.over/crypt/repository.json` plus `users/<user>/<key>` records and `.user` markers.
+Normal mutations avoid shared manifests and create isolated commits with
+configurable messages and Git hooks/signing. Historical layouts migrate on the
+relevant mutation, preserving ciphertext backups for secret-store conversion.
+Rotation requires clean protected state and commits the initiating branch;
+other linked worktrees retain staged generation transitions.
 Recovery journals are authenticated ciphertext, record old/prepared states, and
 refuse intervening edits. Revocation rotates the key after trusted recovery/retained
 passphrase preflight, never just deleting metadata.
 
 ## Consequences
 
-For #302, the existing versioned `.over/crypt/access.json`, committed attributes,
-and raw ciphertext headers form the pre-checkout discovery contract. A second
-marker would duplicate state and could diverge from manually edited policy.
+For #302, versioned access metadata, committed attributes, and raw ciphertext
+headers form the pre-checkout discovery contract. The original v1 `access.json`
+and current v2 split inventory are both read from the pinned tree. A separate
+enablement marker would duplicate state and could diverge from policy.
 Detection therefore inspects a pinned Git tree and evaluates its attributes in
 isolated scratch Git state, without keys, filters, or source-repository writes.
 Structural envelope eligibility permits offering unlock but cannot establish

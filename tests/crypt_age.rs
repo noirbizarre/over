@@ -27,7 +27,22 @@ impl Fixture {
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let repo = directory.path().join("repo");
-        git2::Repository::init(&repo).unwrap();
+        let repository = git2::Repository::init(&repo).unwrap();
+        repository
+            .config()
+            .unwrap()
+            .set_str("user.name", "Age test")
+            .unwrap();
+        repository
+            .config()
+            .unwrap()
+            .set_str("user.email", "age@example.invalid")
+            .unwrap();
+        repository
+            .config()
+            .unwrap()
+            .set_bool("commit.gpgSign", false)
+            .unwrap();
         let bin = directory.path().join("bin");
         fs::create_dir(&bin).unwrap();
         let plugin = bin.join("age-plugin-overfixture");
