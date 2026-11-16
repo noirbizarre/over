@@ -526,6 +526,9 @@ impl SecretStore {
         message: String,
     ) -> Result<super::commit::Mutation> {
         let key = crate::crypt::access::local_key(repo)?;
+        // Aggregates allowed case variants that cannot coexist in the portable
+        // per-file namespace. Refuse the entire destination before encrypting entries.
+        super::layout::validate_names(map.0.keys().map(String::as_str))?;
         let mut updates = std::collections::BTreeMap::new();
         for (name, value) in &map.0 {
             let name = SecretName::parse(name)?;

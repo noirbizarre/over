@@ -989,3 +989,43 @@ fn unlock_cannot_install_a_key_for_an_unpublished_enrollment() {
     assert!(!fixture.root.join(".git/over-crypt/key").exists());
     fixture.enroll("bob");
 }
+
+#[rstest::rstest]
+#[case(".over/secrets", false)]
+#[case(".over/secrets", true)]
+#[case(".over/secrets.yaml", false)]
+#[case(".over/secrets.yaml", true)]
+fn aggregate_case_collisions_fail_before_changing_the_store_index_or_head(
+    #[case] path: &str,
+    #[case] incoming_collision: bool,
+) {
+    let fixture = Fixture::new();
+    let repo = git2::Repository::open(&fixture.root).unwrap();
+    let key = over::crypt::access::local_key(&repo).unwrap();
+    let mut values = std::collections::BTreeMap::from([("TOKEN", b"original".to_vec())]);
+    if !incoming_collision {
+        values.insert("token", b"another original".to_vec());
+    }
+    let original = key
+        .encrypt(&serde_json::to_vec(&(values, 1u32)).unwrap(), 1)
+        .unwrap();
+    fs::write(fixture.root.join(path), &original).unwrap();
+    fixture.git(&["add", path]);
+    fixture.git(&["commit", "-qm", "historical aggregate"]);
+    let head = fixture.git(&["rev-parse", "HEAD"]);
+    let index = fs::read(fixture.root.join(".git/index")).unwrap();
+    let output = if incoming_collision {
+        fixture.secret("token", b"new value", false)
+    } else {
+        fixture.over(&["crypt", "migrate"])
+    };
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("case-colliding secret names"));
+    assert_eq!(fixture.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(fs::read(fixture.root.join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(fixture.root.join(path)).unwrap(), original);
+    assert_eq!(fixture.value("TOKEN"), b"original");
+    if !incoming_collision {
+        assert_eq!(fixture.value("token"), b"another original");
+    }
+}

@@ -64,6 +64,10 @@ private `over-crypt/legacy-state-backup-*` path. Access metadata migrates separa
 on a user/key mutation; secret changes do not force an access-format migration.
 Read-only commands do not migrate or commit. Resolve competing stores before
 continuing; Over does not silently merge them.
+Secret mutations validate all migration destination names before publication.
+Aggregates with case-colliding names (or mutations introducing a case variant)
+are rejected; the failed secret mutation leaves the original store, index, and
+HEAD unchanged.
 
 Names contain 1–128 ASCII letters, digits, underscores, or hyphens, and start
 with a letter or digit. Platform-reserved device names such as `CON` and `LPT1`

@@ -1,6 +1,6 @@
 //! Distinguish historical directories from the extensionless encrypted aggregate.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -51,19 +51,13 @@ pub(super) fn inspect(root: &Path) -> Result<Layout> {
                     native = true;
                     filename
                 };
-                super::SecretName::parse(name)?;
-                ensure!(
-                    !names
-                        .iter()
-                        .any(|other: &String| other.eq_ignore_ascii_case(name)),
-                    "case-colliding secret names"
-                );
                 names.push(name.to_owned());
             }
             ensure!(
                 !(legacy && native),
                 "mixed Age and native secret files; reconcile them before continuing"
             );
+            validate_names(names.iter().map(String::as_str))?;
             names.sort();
             return if legacy {
                 Ok(Layout::Legacy)
@@ -82,6 +76,18 @@ pub(super) fn inspect(root: &Path) -> Result<Layout> {
         return Ok(Layout::Native(PathBuf::from(OLD_PATH)));
     }
     Ok(Layout::Missing)
+}
+
+pub(super) fn validate_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<()> {
+    let mut spellings = BTreeSet::new();
+    for name in names {
+        super::SecretName::parse(name)?;
+        ensure!(
+            spellings.insert(name.to_ascii_lowercase()),
+            "case-colliding secret names"
+        );
+    }
+    Ok(())
 }
 
 fn metadata(path: &Path) -> Result<Option<fs::Metadata>> {
