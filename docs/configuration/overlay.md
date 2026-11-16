@@ -126,6 +126,22 @@ partial content, and metadata strings remain literal. See
 [Host overlay context](root.md#host-overlay-context) for bootstrap
 template limitations.
 
+### Template filters
+
+The `yesno` filter converts a value to the string `yes` or `no` in all supported
+template scopes:
+
+```jinja
+{{ data.enabled | yesno }}
+```
+
+It follows Jinja truthiness: `false`, `none`, numeric zero, empty strings, and
+empty collections produce `no`; truthy values produce `yes`. Nonempty strings
+such as `"false"`, `"no"`, and `"0"` are truthy and produce `yes`.
+
+Undefined values still fail template evaluation. Provide an explicit default
+for optional inputs: `{{ data.enabled | default(false) | yesno }}`.
+
 ### File templates
 
 Enable MiniJinja rendering through the existing ordered rules:
