@@ -97,8 +97,14 @@ impl State {
                 return Ok(());
             }
             *closed = true;
-            stream.shutdown(std::net::Shutdown::Write)?;
-            stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+            // macOS rejects socket options after both halves close, so configure the
+            // timeout before EOF lets the helper exit and close its end of the socket.
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .context("could not configure privileged helper shutdown timeout")?;
+            stream
+                .shutdown(std::net::Shutdown::Write)
+                .context("could not close privileged helper request stream")?;
             // Background sudo supervises the helper. EOF confirms filesystem cleanup
             // has finished before the caller returns and sudo reaps its command.
             let mut pending = [0_u8; 256];
@@ -1367,6 +1373,25 @@ mod tests {
                 .to_string()
                 .contains("size limit")
         );
+    }
+
+    #[test]
+    fn shutdown_succeeds_when_the_peer_has_already_finished_writing() {
+        let (mut stream, peer) = UnixStream::pair().unwrap();
+        // Establish EOF before shutdown so macOS deterministically rejects setting
+        // socket options after the caller also closes its write half.
+        peer.shutdown(std::net::Shutdown::Write).unwrap();
+        assert_eq!(stream.read(&mut [0_u8; 1]).unwrap(), 0);
+        // A harmless child supplies lifecycle ownership without authenticating in this test.
+        let child = Command::new("true").spawn().unwrap();
+        let mut state = State::Active {
+            stream,
+            child,
+            closed: false,
+        };
+
+        state.shutdown().unwrap();
+        state.shutdown().unwrap();
     }
 
     #[test]
