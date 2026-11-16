@@ -1,5 +1,6 @@
 pub mod fs;
 pub mod git;
+pub(crate) mod ingest;
 pub mod partial;
 pub mod symlink;
 

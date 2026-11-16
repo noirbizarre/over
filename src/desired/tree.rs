@@ -116,6 +116,23 @@ impl DesiredTree {
 
     /// Reconstruct checkout ownership from Git names, never from untracked directories.
     pub(crate) fn build_commit(ctx: &exec::Context, overlay: &Overlay) -> Result<Self> {
+        Self::build_checkout_inventory(ctx, overlay)
+    }
+
+    pub(crate) fn build_restore(ctx: &exec::Context, overlay: &Overlay) -> Result<Self> {
+        let mut tree = Self::build_own(ctx, overlay)?;
+        let inventory = Self::build_checkout_inventory(ctx, overlay)?;
+        for entry in inventory.entries {
+            // Live entries retain generated-output scopes and independent materialization boundaries.
+            if !tree.entries.iter().any(|live| live.target == entry.target) {
+                tree.entries.push(entry);
+            }
+        }
+        tree.entries.sort_by(|a, b| a.target.cmp(&b.target));
+        Ok(tree)
+    }
+
+    fn build_checkout_inventory(ctx: &exec::Context, overlay: &Overlay) -> Result<Self> {
         let (repo, managed) =
             crate::materialize::virtual_checkout::git::discover_source(&overlay.root)?;
         let head = repo.head()?.peel_to_tree()?;

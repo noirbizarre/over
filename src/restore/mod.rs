@@ -78,7 +78,7 @@ fn restore_blocking(
     } else {
         Some(state::mutation_guard()?)
     };
-    let tree = DesiredTree::build_own(ctx, overlay)?;
+    let tree = DesiredTree::build_restore(ctx, overlay)?;
     let routing = overlay.resolve_mappings(ctx)?;
     let policy = crate::overlays::ignore::SourcePolicy::new(&ctx.repository.root, overlay)?;
     let mut checked = BTreeSet::new();

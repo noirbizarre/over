@@ -96,6 +96,49 @@ fn refused_crypt_ingestion_preserves_policy_and_index(#[case] name: &str) {
     );
 }
 
+#[test]
+fn consecutive_crypt_ingestions_keep_root_policy_minimal_and_index_blobs_encrypted() {
+    let (root, _identities) = repository();
+    let target = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("ov")).unwrap();
+    for name in ["first", "second"] {
+        fs::write(target.path().join(name), name).unwrap();
+        let output = over(
+            root.path(),
+            &[
+                "--home",
+                root.path().to_str().unwrap(),
+                "add",
+                "--crypt",
+                "--overlay",
+                "ov",
+                "--target",
+                target.path().to_str().unwrap(),
+                target.path().join(name).to_str().unwrap(),
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let policy = fs::read_to_string(root.path().join(".gitattributes")).unwrap();
+        assert!(policy.lines().all(
+            |line| line.starts_with("\"/ov/") && line.ends_with("filter=over diff=over -text")
+        ));
+        for protected in ["first", name] {
+            over::crypt::format::inspect(
+                &git(root.path(), &["show", &format!(":ov/{protected}")]).stdout,
+            )
+            .unwrap();
+            assert_eq!(
+                fs::read(target.path().join(protected)).unwrap(),
+                protected.as_bytes()
+            );
+        }
+    }
+}
+
 #[rstest::rstest]
 #[case("staged")]
 #[case("unstaged")]

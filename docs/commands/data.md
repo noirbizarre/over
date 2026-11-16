@@ -59,7 +59,7 @@ Diagnostics go to stderr. Selection, resolution, or serialization errors return 
 nonzero exit status without a JSON payload.
 
 ```sh
-# Inspect the configured host, or contextual overlay when no host is configured
+# Inspect the contextual overlay, falling back to the configured host
 over data
 
 # Inspect one overlay's stable scope

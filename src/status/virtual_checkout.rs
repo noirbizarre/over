@@ -151,7 +151,6 @@ fn inspect_with_details(
     let base_tree = git::base_tree(&repo, Some(&record.base_oid))?;
     let base_entries =
         git::scoped_entries_with_index(&repo, &base_tree, &managed_path, &scope, index_snapshot)?;
-    let base_blobs = blob_ids(&base_entries);
 
     let head_tree = git::base_tree(&repo, None)?;
     let head_entries = if head_tree.id() == base_tree.id() {
@@ -159,7 +158,6 @@ fn inspect_with_details(
     } else {
         git::scoped_entries_with_index(&repo, &head_tree, &managed_path, &scope, index_snapshot)?
     };
-    let head_blobs = blob_ids(&head_entries);
 
     let mut converged = false;
     let (local_changes, unstaged) = if tracked_only {
@@ -204,7 +202,8 @@ fn inspect_with_details(
         Status::Conflict
     } else if tracked_only && (!source_drifted || converged) {
         Status::Applied
-    } else if tracked_only && conflicting_paths(&base_blobs, &head_blobs, &local_changes).is_empty()
+    } else if tracked_only
+        && conflicting_paths(&base_entries, &head_entries, &local_changes).is_empty()
     {
         let base_commit = repo.find_commit(Oid::from_str(&record.base_oid)?)?;
         let head_commit = repo.head()?.peel_to_commit()?;
@@ -233,7 +232,7 @@ fn inspect_with_details(
                 )?)
             }
             (false, true) => {
-                if conflicting_paths(&base_blobs, &head_blobs, &local_changes).is_empty() {
+                if conflicting_paths(&base_entries, &head_entries, &local_changes).is_empty() {
                     let base_commit = repo.find_commit(Oid::from_str(&record.base_oid)?)?;
                     let head_commit = repo.head()?.peel_to_commit()?;
                     Status::Diverged {
@@ -276,19 +275,17 @@ fn conflicts(entry: &DesiredEntry) -> Result<Vec<PathBuf>> {
 
     let base_tree = git::base_tree(&repo, Some(&record.base_oid))?;
     let base_entries = git::scoped_entries(&repo, &base_tree, &managed_path, &scope)?;
-    let base_blobs = blob_ids(&base_entries);
     let local_changes =
         git::diff_canonical_target(&repo, &managed_path, &entry.target, &base_entries, &scope)?;
 
     let head_tree = git::base_tree(&repo, None)?;
-    let head_blobs = blob_ids(&git::scoped_entries(
-        &repo,
-        &head_tree,
-        &managed_path,
-        &scope,
-    )?);
+    let head_entries = git::scoped_entries(&repo, &head_tree, &managed_path, &scope)?;
 
-    Ok(conflicting_paths(&base_blobs, &head_blobs, &local_changes))
+    Ok(conflicting_paths(
+        &base_entries,
+        &head_entries,
+        &local_changes,
+    ))
 }
 
 /// Commit only needs known selected paths; reconciliation's untracked walk is unnecessary.
@@ -319,8 +316,8 @@ pub(crate) fn commit_conflicts(entry: &DesiredEntry, paths: &[PathBuf]) -> Resul
         &[&base_entries, &head_entries],
     )?;
     Ok(conflicting_paths(
-        &blob_ids(&base_entries),
-        &blob_ids(&head_entries),
+        &base_entries,
+        &head_entries,
         &git::entry_changes(&base_entries, &target),
     ))
 }
@@ -356,13 +353,6 @@ pub(crate) fn staged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
     };
     let (repo, managed) = git::discover_source(source)?;
     git::staged_changes(&repo, &managed, &entry.intent.checkout_scope())
-}
-
-fn blob_ids(entries: &BTreeMap<PathBuf, (Oid, i32)>) -> BTreeMap<PathBuf, Oid> {
-    entries
-        .iter()
-        .map(|(path, (oid, _))| (path.clone(), *oid))
-        .collect()
 }
 
 pub(crate) fn unstaged_changes(entry: &DesiredEntry) -> Result<Vec<FileChange>> {
@@ -423,7 +413,7 @@ fn indexed_entries_from(
 }
 
 /// Paths that changed both locally (since `base`) and in the source
-/// repository (`base` -> `head`), to genuinely different content — the
+/// repository (`base` -> `head`), to genuinely different content or executable modes — the
 /// only case that's unsafe to reconcile automatically in either
 /// direction. A path where the local edit happens to already match
 /// exactly what the source moved to (both sides independently converged)
@@ -432,23 +422,22 @@ fn indexed_entries_from(
 /// checkout permanently stuck with no way to clear the flag short of
 /// re-adopting from scratch.
 fn conflicting_paths(
-    base_blobs: &BTreeMap<PathBuf, Oid>,
-    head_blobs: &BTreeMap<PathBuf, Oid>,
+    base_entries: &BTreeMap<PathBuf, (Oid, i32)>,
+    head_entries: &BTreeMap<PathBuf, (Oid, i32)>,
     local_changes: &[FileChange],
 ) -> Vec<PathBuf> {
     local_changes
         .iter()
         .filter(|change| match change.kind {
-            // Source-side either doesn't have this path at all (never
-            // conflicting: nothing to reconcile against) or moved it away
-            // from `base` — any divergence from `base` on the source side
-            // for a path `local` also touched is unsafe to auto-resolve,
-            // unless `local` already matches exactly what `head` moved to.
+            // Complete entries distinguish converged edits from equal blobs with different modes.
             FileChangeKind::Modified | FileChangeKind::Added | FileChangeKind::Deleted => {
                 // A source deletion is a change too; treating a missing HEAD
                 // blob as "no conflict" would lose a simultaneous local edit.
-                let head = head_blobs.get(&change.path).copied();
-                base_blobs.get(&change.path).copied() != head && change.local_oid != head
+                git::entries_conflict(
+                    base_entries.get(&change.path).copied(),
+                    head_entries.get(&change.path).copied(),
+                    change.local_oid.zip(change.local_mode),
+                )
             }
         })
         .map(|change| change.path.clone())

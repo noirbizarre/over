@@ -140,6 +140,14 @@ fn selected_attribute_map(
             command.arg(format!("--source={source}"));
         }
     }
+    read_attribute_map(command, paths, attribute)
+}
+
+fn read_attribute_map(
+    mut command: Command,
+    paths: &[PathBuf],
+    attribute: &str,
+) -> Result<BTreeMap<PathBuf, bool>> {
     let mut child = command
         .arg(attribute)
         .stdin(Stdio::piped())
@@ -170,8 +178,16 @@ fn selected_attribute_map(
         "could not inspect effective Git encryption attributes"
     );
     let fields: Vec<_> = output.stdout.split(|b| *b == 0).collect();
+    ensure!(
+        fields.len() == paths.len() * 3 + 1 && fields.last() == Some(&&b""[..]),
+        "invalid Git attribute response"
+    );
     let mut result = BTreeMap::new();
-    for triple in fields.as_chunks::<3>().0 {
+    for (path, triple) in paths.iter().zip(fields.as_chunks::<3>().0) {
+        ensure!(
+            triple[0] == path.as_os_str().as_encoded_bytes() && triple[1] == attribute.as_bytes(),
+            "unexpected Git attribute response"
+        );
         result.insert(
             PathBuf::from(std::str::from_utf8(triple[0])?),
             triple[2] == b"over",
@@ -810,6 +826,54 @@ fn clean_with_policy(
     Ok(blob.content().to_vec())
 }
 
+fn is_bootstrap(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == ".gitattributes")
+        || path.starts_with(".over/crypt")
+}
+
+fn validate_bootstrap_policy(
+    repo: &git2::Repository,
+    indexed: &Path,
+    scratch: &Path,
+    paths: &[PathBuf],
+) -> Result<()> {
+    // Unstaged and local exemptions must not conceal policy that would break a fresh clone.
+    let isolated = git2::Repository::init(indexed)?;
+    let empty = indexed.join(".git/empty-attributes");
+    fs::write(&empty, [])?;
+    let mut canonical = git_command(&isolated)?;
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("GIT_") {
+            canonical.env_remove(name);
+        }
+    }
+    canonical
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", &empty)
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .arg("-c")
+        .arg(format!("core.attributesFile={}", empty.display()))
+        .args(["check-attr", "-z", "--stdin"]);
+    let mut effective = git_command(repo)?;
+    effective
+        .arg("-C")
+        .arg(scratch)
+        .env("GIT_WORK_TREE", scratch)
+        .env("GIT_DIR", repo.path())
+        .args(["check-attr", "-z", "--stdin"]);
+    for command in [canonical, effective] {
+        for (path, protected) in read_attribute_map(command, paths, "filter")? {
+            ensure!(
+                !protected,
+                "bootstrap metadata {} must remain readable without filter=over; narrow the encryption rule or add a scoped -filter override in .gitattributes, stage required nested exemptions, and resolve nested/global/info overrides",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn update(repo: &git2::Repository, patterns: &[String], add: bool) -> Result<()> {
     update_inputs(repo, patterns, add, &BTreeMap::new())
 }
@@ -925,17 +989,14 @@ fn update_with_ingestion(
             paths.push(PathBuf::from(std::str::from_utf8(path)?));
         }
     }
-    proposed.push_str(".gitattributes -filter !diff\n.over/crypt/** -filter !diff -text\n");
     paths.sort();
     paths.dedup();
     paths.extend(inputs.keys().cloned());
     paths.sort();
     paths.dedup();
     ensure!(
-        !paths
-            .iter()
-            .any(|p| p == Path::new(".gitattributes") || p.starts_with(".over/crypt")),
-        "bootstrap attributes and access envelopes cannot be protected"
+        !paths.iter().any(|p| is_bootstrap(p)),
+        "bootstrap attributes and access envelopes cannot be protected; select narrower paths that exclude .gitattributes and .over/crypt"
     );
     let mut index = repo.index()?;
     ensure!(
@@ -959,14 +1020,46 @@ fn update_with_ingestion(
         }
     }
     let scratch = tempfile::tempdir()?;
+    let indexed = tempfile::tempdir()?;
+    let mut bootstrap_paths = std::collections::BTreeSet::from([
+        PathBuf::from(".gitattributes"),
+        PathBuf::from(".over/.gitattributes"),
+        PathBuf::from(".over/crypt/access.json"),
+    ]);
+    for entry in index.iter() {
+        let path = PathBuf::from(std::str::from_utf8(&entry.path)?);
+        if is_bootstrap(&path) {
+            if path
+                .file_name()
+                .is_some_and(|name| name == ".gitattributes")
+            {
+                // Only indexed nested exemptions will be available to a fresh clone.
+                atomic_write(
+                    &indexed.path().join(&path),
+                    repo.find_blob(entry.id)?.content(),
+                )?;
+                // Git falls back to indexed attributes when a working-tree policy file is absent.
+                if !root.join(&path).try_exists()? {
+                    atomic_write(
+                        &scratch.path().join(&path),
+                        repo.find_blob(entry.id)?.content(),
+                    )?;
+                }
+            }
+            bootstrap_paths.insert(path);
+        }
+    }
     // Only public configuration is copied; content is sent to Git via stdin.
     for entry in walkdir::WalkDir::new(root)
         .into_iter()
         .filter_entry(|entry| entry.file_name() != ".git")
     {
         let entry = entry?;
+        let relative = entry.path().strip_prefix(root)?;
+        if is_bootstrap(relative) && entry.file_type().is_file() {
+            bootstrap_paths.insert(relative.to_path_buf());
+        }
         if entry.file_name() == ".gitattributes" && entry.file_type().is_file() {
-            let relative = entry.path().strip_prefix(root)?;
             atomic_write(&scratch.path().join(relative), &fs::read(entry.path())?)?;
         }
     }
@@ -974,6 +1067,19 @@ fn update_with_ingestion(
     atomic_write(
         &scratch.path().join(".over/crypt/access.json"),
         &fs::read(access::metadata_path(repo)?)?,
+    )?;
+    // These two policies are staged by this operation; other nested policies retain index state.
+    for path in [".gitattributes", ".over/.gitattributes"] {
+        atomic_write(
+            &indexed.path().join(path),
+            &fs::read(scratch.path().join(path))?,
+        )?;
+    }
+    validate_bootstrap_policy(
+        repo,
+        indexed.path(),
+        scratch.path(),
+        &bootstrap_paths.into_iter().collect::<Vec<_>>(),
     )?;
     let mut working_changes = BTreeMap::new();
     let mut working_observations = BTreeMap::new();

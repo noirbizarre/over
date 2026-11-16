@@ -53,6 +53,7 @@ See the [Git group overview](git.md) for host-repository discovery and associati
 | [`over crypt`](crypt.md) | Add/remove protection, inspect policy, and recover interrupted changes |
 | [`over crypt` Git helpers](crypt-filters.md) | Git-invoked encryption filters and readable diff conversion |
 | [`over crypt list`](crypt.md#list-policy-and-storage-diagnostics) | Inspect encryption policy, drivers and stored content |
+| [`over crypt migrate`](crypt.md#migrate-legacy-encryption) | Migrate legacy Age files and native secrets |
 | [`over lock`](lock.md) | Restore protected source ciphertext and remove the local key |
 | [`over unlock`](unlock.md) | Acquire persistent repository access and configure Git drivers |
 | [`over user`](user.md) | Manage users and independent access envelopes |

@@ -49,7 +49,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
 
-      # mold links faster than GNU ld, and clippy still has to link every test/example target it type-checks.
+      # Clippy checks target metadata, but build scripts and procedural macros still need linking.
       - uses: rui314/setup-mold@v1
 
       - uses: mozilla-actions/sccache-action@v0.0.11

@@ -98,7 +98,13 @@ async fn xdg_state_findings_in(
     match sync_file.inspect().await {
         Ok(state) => {
             for (target, record) in &state.checkouts {
-                findings.extend(stale_record_findings("sync", repo, target, &record.overlay));
+                findings.extend(stale_record_findings(
+                    "sync",
+                    repo,
+                    target,
+                    &record.overlay,
+                    true,
+                ));
             }
         }
         Err(e) => findings.push(Finding::error(format!("failed to read sync state: {e}"))),
@@ -107,12 +113,27 @@ async fn xdg_state_findings_in(
     match vc_file.inspect().await {
         Ok(state) => {
             for (target, record) in &state.checkouts {
+                let belongs = record
+                    .source_repository
+                    .as_ref()
+                    .map(|source| {
+                        Ok::<_, anyhow::Error>(
+                            crate::overlays::mapping::physical(&source.join(&record.managed_path))?
+                                .starts_with(crate::overlays::mapping::physical(&repo.root)?),
+                        )
+                    })
+                    .transpose()?;
+                // Global state can describe another collection, even with the same overlay name.
+                if belongs == Some(false) {
+                    continue;
+                }
                 findings.extend(stale_record_findings(
                     "virtual checkout",
                     repo,
                     &crate::materialize::virtual_checkout::state::target_for_key(target)?
                         .to_string_lossy(),
                     &record.overlay,
+                    belongs == Some(true),
                 ));
             }
         }
@@ -129,6 +150,7 @@ fn stale_record_findings(
     repo: &Repository,
     target: &str,
     overlay: &str,
+    check_overlay: bool,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
 
@@ -138,7 +160,8 @@ fn stale_record_findings(
         )));
     }
 
-    if repo.get(overlay).is_err() {
+    // Legacy records prove a target existed, but cannot prove membership in this collection.
+    if check_overlay && repo.get(overlay).is_err() {
         findings.push(Finding::warning(format!(
             "stale {kind} record: overlay '{overlay}' no longer found (target '{target}')"
         )));
@@ -332,6 +355,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn doctor_does_not_attribute_foreign_checkout_records_to_this_collection() {
+        let current = TempDir::new().unwrap();
+        let foreign = TempDir::new().unwrap();
+        let repo = repo_with_overlay(&current, "shared");
+        let (sync_file, vc_file) = empty_state_files(&current);
+        let target = foreign.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let foreign_root = foreign.path().to_path_buf();
+        vc_file
+            .update(move |state| {
+                for name in ["shared", "foreign-only"] {
+                    state.checkouts.insert(
+                        target.join(name).to_string_lossy().into_owned(),
+                        VirtualCheckoutRecord {
+                            overlay: name.into(),
+                            source_repository: Some(foreign_root.clone()),
+                            managed_path: name.into(),
+                            ..Default::default()
+                        },
+                    );
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let findings = xdg_state_findings_in(&repo, &sync_file, &vc_file)
+            .await
+            .unwrap();
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[tokio::test]
     async fn xdg_state_findings_covers_virtual_checkout_records_too() {
         let tmp = TempDir::new().unwrap();
         let repo = Repository::new(tmp.path().to_path_buf());
@@ -358,8 +413,46 @@ mod tests {
         let findings = xdg_state_findings_in(&repo, &sync_file, &vc_file)
             .await
             .unwrap();
-        // Both the missing target and the missing overlay are flagged.
-        assert_eq!(findings.len(), 2);
+        // Legacy state lacks source identity, so only the missing target is certain.
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].line.contains("no longer exists"));
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn missing_overlay_diagnostics_require_recorded_collection_identity(
+        #[case] legacy: bool,
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let repo = Repository::new(tmp.path().into());
+        let (sync_file, vc_file) = empty_state_files(&tmp);
+        let source = (!legacy).then(|| tmp.path().to_path_buf());
+        let target = tmp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        vc_file
+            .update(move |state| {
+                state.checkouts.insert(
+                    target.to_string_lossy().into_owned(),
+                    VirtualCheckoutRecord {
+                        overlay: "gone".into(),
+                        source_repository: source,
+                        managed_path: "gone".into(),
+                        ..Default::default()
+                    },
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let findings = xdg_state_findings_in(&repo, &sync_file, &vc_file)
+            .await
+            .unwrap();
+        assert_eq!(findings.len(), usize::from(!legacy));
+        if !legacy {
+            assert!(findings[0].line.contains("no longer found"));
+        }
     }
 
     #[tokio::test]
