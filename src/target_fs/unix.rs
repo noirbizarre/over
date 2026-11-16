@@ -164,6 +164,8 @@ fn start(no_prompt: bool, read_only: bool) -> Result<(UnixStream, Child)> {
     loop {
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // BSD/macOS inherit listener O_NONBLOCK; framed reads require a blocking connection.
+                stream.set_nonblocking(false)?;
                 stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
                 let received = receive::<(u32, String)>(&mut stream);
                 if !matches!(received, Ok((1, ref received)) if received == &nonce) {
