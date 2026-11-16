@@ -2434,6 +2434,7 @@ mod tests {
             assert!(result.is_err());
         }
     }
+    #[cfg(unix)]
     #[test]
     fn encrypted_files_resolve_elevation_and_ownership_against_the_plaintext_name() {
         let temp = assert_fs::TempDir::new().unwrap();
@@ -2473,5 +2474,32 @@ mod tests {
             entry.permissions,
             Some(crate::overlays::FileMode::from_bits(0o600))
         );
+    }
+
+    #[cfg(not(unix))]
+    #[rstest]
+    #[case("sudo: true\n")]
+    #[case("permissions: { owner: 0 }\n")]
+    #[case("permissions: { group: 0 }\n")]
+    fn unix_only_policies_are_rejected_before_creating_a_target(#[case] descriptor: &str) {
+        let temp = TempDir::new().unwrap();
+        temp.child("source/app").create_dir_all().unwrap();
+        temp.child("source/app/over.yaml")
+            .write_str(descriptor)
+            .unwrap();
+        temp.child("source/app/plain").write_str("source").unwrap();
+        let repository = Repository::new(temp.path().join("source"));
+        let overlay = repository.get("app").unwrap();
+        let target = temp.path().join("target");
+        let ctx = Context::builder()
+            .repository(repository)
+            .root(target.clone())
+            .build();
+        let error = DesiredTree::build_own(&ctx, &overlay).unwrap_err();
+        assert!(
+            error.to_string().contains("policies require Unix"),
+            "{error:#}"
+        );
+        assert!(!target.exists());
     }
 }
