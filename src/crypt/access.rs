@@ -61,7 +61,7 @@ pub(crate) fn parse_registry(bytes: &[u8]) -> Result<Registry> {
     Ok(registry)
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Registry {
     pub version: u32,
     pub repository: [u8; 16],
@@ -69,7 +69,7 @@ pub struct Registry {
     pub users: BTreeMap<String, BTreeMap<String, AccessKey>>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct AccessKey {
     /// A passphrase has no reusable public recipient; rotation must prompt again.
     pub recipient: Option<String>,
@@ -82,11 +82,27 @@ pub fn root(repo: &git2::Repository) -> Result<&Path> {
 }
 
 pub fn metadata_path(repo: &git2::Repository) -> Result<PathBuf> {
+    let header = root(repo)?.join(super::access_storage::HEADER);
+    if header.try_exists()? {
+        return Ok(header);
+    }
     Ok(root(repo)?.join(".over/crypt/access.json"))
 }
 
 pub fn configured(repo: &git2::Repository) -> Result<bool> {
-    Ok(metadata_path(repo)?.try_exists()?)
+    let root = root(repo)?;
+    for path in [
+        super::access_storage::LEGACY,
+        super::access_storage::HEADER,
+        super::access_storage::USERS,
+    ] {
+        match fs::symlink_metadata(root.join(path)) {
+            Ok(_) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(false)
 }
 
 pub fn worktrees(repo: &git2::Repository) -> Result<Vec<git2::Repository>> {
@@ -122,7 +138,7 @@ fn check_real(path: &Path, directory: bool) -> Result<()> {
     Ok(())
 }
 
-fn prepare_private(repo: &git2::Repository) -> Result<PathBuf> {
+pub(crate) fn prepare_private(repo: &git2::Repository) -> Result<PathBuf> {
     let path = private_dir(repo);
     if !path.try_exists()? {
         #[cfg(unix)]
@@ -145,7 +161,7 @@ fn prepare_private(repo: &git2::Repository) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn check_private(repo: &git2::Repository, path: &Path, directory: bool) -> Result<()> {
+pub(crate) fn check_private(repo: &git2::Repository, path: &Path, directory: bool) -> Result<()> {
     check_real(path, directory)?;
     #[cfg(unix)]
     {
@@ -279,16 +295,8 @@ pub(crate) fn raw_guard(repo: &git2::Repository, exclusive: bool) -> Result<File
 }
 
 pub fn load(repo: &git2::Repository) -> Result<Registry> {
-    let path = metadata_path(repo)?;
-    for parent in [root(repo)?.join(".over"), root(repo)?.join(".over/crypt")] {
-        check_real(&parent, true)?;
-    }
-    check_real(&path, false)?;
-    ensure!(
-        fs::metadata(&path)?.len() <= METADATA_LIMIT as u64,
-        "repository access metadata exceeds the supported size limit"
-    );
-    let registry = parse_registry(&fs::read(path)?)?;
+    let registry = super::access_storage::parse(&super::access_storage::worktree(repo)?)?
+        .context("repository access metadata is missing")?;
     ensure!(
         !registry.users.is_empty(),
         "repository has no recovery user"
@@ -317,6 +325,24 @@ pub(crate) fn save(repo: &git2::Repository, registry: &Registry) -> Result<()> {
             &attributes,
             b"crypt/** -filter !diff -text\n.gitattributes -filter !diff\nsecrets filter=over diff=over -text\nsecrets.yaml filter=over diff=over -text\n",
         )?;
+    }
+    if root(repo)?
+        .join(super::access_storage::HEADER)
+        .try_exists()?
+    {
+        let before = super::access_storage::worktree(repo)?;
+        for (path, bytes) in
+            super::access_storage::delta(&before, &super::access_storage::encode(registry)?)
+        {
+            let path = root(repo)?.join(path);
+            crate::materialize::disposal::validate_relative_ancestors(root(repo)?, &path)?;
+            if let Some(bytes) = bytes {
+                atomic_write(&path, &bytes)?;
+            } else {
+                fs::remove_file(path)?;
+            }
+        }
+        return Ok(());
     }
     let bytes = serde_json::to_vec_pretty(registry)?;
     // A writer must not publish a registry that its own bounded reader rejects.
@@ -418,7 +444,7 @@ pub(crate) fn remove_key(repo: &git2::Repository) -> Result<()> {
     Ok(())
 }
 
-fn validate_name(name: &str) -> Result<()> {
+pub(crate) fn validate_name(name: &str) -> Result<()> {
     ensure!(
         !name.is_empty()
             && name.len() <= 128

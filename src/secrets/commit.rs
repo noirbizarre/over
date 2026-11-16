@@ -81,8 +81,22 @@ impl Mutation {
             "resolve index conflicts before changing secrets"
         );
         let mut metadata_snapshots = BTreeMap::new();
-        for path in [".over/.gitattributes", ".over/crypt/access.json"] {
-            let path = PathBuf::from(path);
+        let metadata = crate::crypt::access_storage::worktree(repo)?;
+        let indexed_metadata = crate::crypt::access_storage::index(repo, &staged)?;
+        ensure!(
+            indexed_metadata
+                .iter()
+                .all(|(path, bytes)| metadata.get(path) == Some(bytes)),
+            "crypt metadata has different staged changes"
+        );
+        let committed_metadata = crate::crypt::access_storage::tree(repo, &base)?;
+        ensure!(
+            committed_metadata.is_empty() || committed_metadata == metadata,
+            "commit pending crypt metadata changes before changing secrets"
+        );
+        let mut bootstrap: Vec<_> = metadata.keys().cloned().collect();
+        bootstrap.push(PathBuf::from(crate::crypt::access_storage::ATTRIBUTES));
+        for path in bootstrap {
             let bytes = fs::read(root.join(&path)).context("missing secret bootstrap metadata")?;
             let id = Oid::hash_object(git2::ObjectType::Blob, &bytes)?;
             metadata_snapshots.insert(path.clone(), Some(bytes.clone()));

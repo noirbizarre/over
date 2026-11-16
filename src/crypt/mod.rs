@@ -1,6 +1,7 @@
 //! Repository-scoped encryption shared by Git filters and native secrets.
 
 pub mod access;
+pub(crate) mod access_storage;
 pub mod age;
 pub(crate) mod bootstrap;
 pub(crate) mod buffer;

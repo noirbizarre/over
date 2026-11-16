@@ -1,6 +1,6 @@
 //! Explicit committed metadata for the initial checkout's smudge children only.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context as _, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -49,17 +49,8 @@ impl Context {
 
 pub(crate) fn registry(repo: &git2::Repository, tree: git2::Oid) -> Result<access::Registry> {
     let tree = repo.find_tree(tree)?;
-    let entry = tree.get_path(Path::new(".over/crypt/access.json"))?;
-    ensure!(
-        matches!(entry.filemode(), 0o100644 | 0o100755),
-        "committed access metadata must be a regular blob"
-    );
-    // Bound allocation before loading attacker-controlled committed metadata.
-    ensure!(
-        repo.odb()?.read_header(entry.id())?.0 <= access::METADATA_LIMIT,
-        "repository access metadata exceeds the supported size limit"
-    );
-    access::parse_registry(repo.find_blob(entry.id())?.content())
+    super::access_storage::parse(&super::access_storage::tree(repo, &tree)?)?
+        .context("committed repository access metadata is missing")
 }
 
 pub(crate) fn environment_registry(repo: &git2::Repository) -> Result<Option<access::Registry>> {
