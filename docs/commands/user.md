@@ -59,14 +59,18 @@ commits all imported keys together. Unrelated staged work is preserved; pending
 access-metadata edits must be committed or restored first. Configure
 [access commit messages](../configuration/root.md#access-commit-messages) at the root.
 
-New access methods live in `.over/crypt/users/<user>/<key>`, with a stable `.user`
-marker preserving empty users. `.over/crypt/repository.json` holds only the version,
+New access methods live in `.over/users/<user>/<key>`, with a stable `user.json`
+record preserving empty users. `.over/crypt.json` holds only the version,
 repository ID, and active generation. Adding another key leaves the header and
 existing key files unchanged. User/key names must be portable filesystem names;
 case-colliding and platform-reserved names are rejected.
 
-Existing aggregate access metadata migrates automatically in the next user/key
-mutation's commit. List/show/unlock remain compatible without migration.
+Each `user.json` contains `{"version":2}`: public existence metadata, not a
+credential or profile. Git cannot represent an empty directory, so the record
+retains the user after their last key is detached/revoked. `user delete` removes it.
+
+Existing aggregate and nested split access metadata migrate automatically in the
+next user/key mutation's commit. List/show/unlock remain compatible without migration.
 
 ## Inspect and remove access
 

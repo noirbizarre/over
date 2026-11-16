@@ -61,6 +61,9 @@ pub fn is_policy_extension(before: &[u8], after: &[u8]) -> bool {
     };
     extension.lines().all(|line| {
         if line.is_empty()
+            || super::access_storage::ROOT_BOOTSTRAP_RULES
+                .lines()
+                .any(|rule| line == rule)
             || matches!(
                 line,
                 ".gitattributes -filter"
@@ -961,9 +964,7 @@ fn clean_with_policy(
 }
 
 fn is_bootstrap(path: &Path) -> bool {
-    path.file_name()
-        .is_some_and(|name| name == ".gitattributes")
-        || path.starts_with(".over/crypt")
+    super::access_storage::is_bootstrap_path(path)
 }
 
 fn validate_bootstrap_policy(
@@ -1130,7 +1131,7 @@ fn update_with_ingestion(
     paths.dedup();
     ensure!(
         !paths.iter().any(|p| is_bootstrap(p)),
-        "bootstrap attributes and access envelopes cannot be protected; select narrower paths that exclude .gitattributes and .over/crypt"
+        "bootstrap attributes and access envelopes cannot be protected; select narrower paths that exclude .gitattributes, .over/crypt.json, .over/users, and legacy .over/crypt"
     );
     let mut index = repo.index()?;
     ensure!(
@@ -1928,10 +1929,7 @@ pub fn inspect(repo: &git2::Repository) -> Result<Vec<Diagnostic>> {
     for path in paths {
         let actual = effective.get(&path).copied().unwrap_or(false);
         let diff_selected = diff_attributes.get(&path).copied().unwrap_or(false);
-        let bootstrap = path
-            .file_name()
-            .is_some_and(|name| name == ".gitattributes")
-            || path.starts_with(".over/crypt");
+        let bootstrap = super::access_storage::is_bootstrap_path(&path);
         if diff_selected && bootstrap {
             findings.push(Diagnostic::Warning(format!("WARNING {}: bootstrap metadata selects the encrypted diff driver; clear its diff attribute", path.display())));
         } else if actual && !diff_selected {
@@ -1947,12 +1945,7 @@ pub fn inspect(repo: &git2::Repository) -> Result<Vec<Diagnostic>> {
         if declared && !actual {
             findings.push(Diagnostic::Error(format!("ERROR {} policy: effective attributes disable declared protection; resolve nested/global/info attribute overrides before over crypt add", path.display())));
         }
-        if actual
-            && (path
-                .file_name()
-                .is_some_and(|name| name == ".gitattributes")
-                || path.starts_with(".over/crypt"))
-        {
+        if actual && bootstrap {
             findings.push(Diagnostic::Error(format!("ERROR {} policy: bootstrap metadata must remain readable without filtering; correct .gitattributes before cloning or locking", path.display())));
         }
         if !filter_ok {
@@ -2090,10 +2083,10 @@ pub fn rotate_with<C: age::Callbacks>(
     callbacks: C,
 ) -> Result<()> {
     for worktree in access::worktrees(repo)? {
-        if access::root(&worktree)?
-            .join(super::access_storage::HEADER)
-            .try_exists()?
-        {
+        if matches!(
+            super::access_storage::layout(&super::access_storage::worktree(&worktree)?)?,
+            Some(super::access_storage::Layout::Split(_))
+        ) {
             // A legacy caller must not serialize an aggregate into a linked
             // worktree's v2 header; mixed layouts use the inventory-based path.
             return rotate_committed_with(repo, revoke, password, callbacks);
@@ -2429,6 +2422,24 @@ pub fn rotate_committed_with<C: age::Callbacks>(
         }
         let mut delta = super::access_storage::delta(&before, &encoded);
         let mut working = BTreeMap::new();
+        let old_attributes =
+            super::buffer::read_optional(&root.join(super::access_storage::ATTRIBUTES))?;
+        let attributes = super::access_storage::bootstrap_attributes(
+            old_attributes
+                .as_deref()
+                .map(|bytes| bytes.as_slice())
+                .unwrap_or_default(),
+        );
+        if old_attributes.as_deref().map(|bytes| bytes.as_slice()) != Some(attributes.as_slice()) {
+            delta.insert(
+                PathBuf::from(super::access_storage::ATTRIBUTES),
+                Some(attributes.clone()),
+            );
+            working.insert(
+                root.join(super::access_storage::ATTRIBUTES),
+                Some(attributes),
+            );
+        }
         let mut preserved = Vec::new();
         for path in paths {
             let selected = protected(worktree, &path)?;

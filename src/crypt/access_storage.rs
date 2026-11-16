@@ -10,11 +10,68 @@ use serde::{Deserialize, Serialize};
 use super::access::{self, AccessKey, Registry};
 
 pub(crate) const LEGACY: &str = ".over/crypt/access.json";
-pub(crate) const HEADER: &str = ".over/crypt/repository.json";
-pub(crate) const USERS: &str = ".over/crypt/users";
+pub(crate) const HEADER: &str = ".over/crypt.json";
+pub(crate) const USERS: &str = ".over/users";
+pub(crate) const MARKER: &str = "user.json";
+pub(crate) const PREVIOUS_HEADER: &str = ".over/crypt/repository.json";
+pub(crate) const PREVIOUS_USERS: &str = ".over/crypt/users";
 pub(crate) const ATTRIBUTES: &str = ".over/.gitattributes";
+pub(crate) const BOOTSTRAP_RULES: &str = "crypt/** -filter !diff -text\ncrypt.json -filter !diff -text\nusers/** -filter !diff -text\n.gitattributes -filter !diff\n";
+pub(crate) const ROOT_BOOTSTRAP_RULES: &str = ".gitattributes -filter !diff\n.over/crypt/** -filter !diff -text\n.over/crypt.json -filter !diff -text\n.over/users/** -filter !diff -text\n";
 pub(crate) type Files = BTreeMap<PathBuf, Vec<u8>>;
 pub(crate) type Delta = BTreeMap<PathBuf, Option<Vec<u8>>>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SplitLayout {
+    pub header: &'static str,
+    pub users: &'static str,
+    pub marker: &'static str,
+}
+
+pub(crate) const FLAT: SplitLayout = SplitLayout {
+    header: HEADER,
+    users: USERS,
+    marker: MARKER,
+};
+pub(crate) const NESTED: SplitLayout = SplitLayout {
+    header: PREVIOUS_HEADER,
+    users: PREVIOUS_USERS,
+    marker: ".user",
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Layout {
+    Aggregate,
+    Split(SplitLayout),
+}
+
+pub(crate) fn layout(files: &Files) -> Result<Option<Layout>> {
+    if files.contains_key(Path::new(LEGACY)) {
+        ensure!(
+            files.len() == 1,
+            "mixed legacy and split access metadata; reconcile before continuing"
+        );
+        return Ok(Some(Layout::Aggregate));
+    }
+    let mut selected = None;
+    for layout in [FLAT, NESTED] {
+        if files
+            .keys()
+            .any(|path| path == Path::new(layout.header) || path.starts_with(layout.users))
+        {
+            ensure!(
+                selected.is_none(),
+                "mixed flat and nested access metadata; reconcile before continuing"
+            );
+            selected = Some(Layout::Split(layout));
+        }
+    }
+    ensure!(
+        selected.is_some() || files.is_empty(),
+        "unexpected access metadata paths"
+    );
+    Ok(selected)
+}
 
 #[derive(Deserialize, Serialize)]
 struct Header {
@@ -32,7 +89,42 @@ struct KeyRecord {
 }
 
 pub(crate) fn is_path(path: &Path) -> bool {
-    path == Path::new(LEGACY) || path == Path::new(HEADER) || path.starts_with(USERS)
+    path == Path::new(LEGACY)
+        || [FLAT, NESTED]
+            .iter()
+            .any(|layout| path == Path::new(layout.header) || path.starts_with(layout.users))
+}
+
+/// Public bootstrap must remain readable before any repository key is available.
+pub(crate) fn is_bootstrap_path(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == ".gitattributes")
+        || path.starts_with(".over/crypt")
+        || path == Path::new(HEADER)
+        || path.starts_with(USERS)
+}
+
+pub(crate) fn bootstrap_attributes(before: &[u8]) -> Vec<u8> {
+    let mut bytes = before.to_vec();
+    for line in BOOTSTRAP_RULES.lines() {
+        if !before
+            .split(|byte| *byte == b'\n')
+            .any(|existing| existing.strip_suffix(b"\r").unwrap_or(existing) == line.as_bytes())
+        {
+            if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+                bytes.push(b'\n');
+            }
+            bytes.extend_from_slice(line.as_bytes());
+            bytes.push(b'\n');
+        }
+    }
+    if before.is_empty() {
+        // Do not filter legacy Age children before secret-store migration removes them.
+        bytes.extend_from_slice(
+            b"secrets filter=over diff=over -text\nsecrets.yaml filter=over diff=over -text\n",
+        );
+    }
+    bytes
 }
 
 pub(crate) fn portable_name(name: &str) -> Result<()> {
@@ -72,19 +164,16 @@ fn check_version(bytes: &[u8], expected: u64) -> Result<()> {
 
 pub(crate) fn parse(files: &Files) -> Result<Option<Registry>> {
     bounded(files)?;
-    if let Some(bytes) = files.get(Path::new(LEGACY)) {
-        ensure!(
-            files.len() == 1,
-            "mixed legacy and split access metadata; reconcile before continuing"
-        );
-        return access::parse_registry(bytes).map(Some);
-    }
-    if files.is_empty() {
-        return Ok(None);
-    }
+    let layout = match layout(files)? {
+        None => return Ok(None),
+        Some(Layout::Aggregate) => {
+            return access::parse_registry(&files[Path::new(LEGACY)]).map(Some);
+        }
+        Some(Layout::Split(layout)) => layout,
+    };
     let bytes = files
-        .get(Path::new(HEADER))
-        .context("split access metadata is missing repository.json")?;
+        .get(Path::new(layout.header))
+        .with_context(|| format!("split access metadata is missing {}", layout.header))?;
     check_version(bytes, 2)?;
     let header: Header =
         serde_json::from_slice(bytes).context("invalid repository encryption header")?;
@@ -98,10 +187,10 @@ pub(crate) fn parse(files: &Files) -> Result<Option<Registry>> {
     let mut spellings = BTreeMap::new();
     for (path, bytes) in files
         .iter()
-        .filter(|(path, _)| path.as_path() != Path::new(HEADER))
+        .filter(|(path, _)| path.as_path() != Path::new(layout.header))
     {
         let relative = path
-            .strip_prefix(USERS)
+            .strip_prefix(layout.users)
             .context("unexpected access metadata path")?;
         let parts = relative
             .iter()
@@ -117,7 +206,7 @@ pub(crate) fn parse(files: &Files) -> Result<Option<Registry>> {
             ensure!(existing == user, "case-colliding user names");
         }
         let keys = registry.users.entry(user.into()).or_default();
-        if name == ".user" {
+        if name == layout.marker {
             check_version(bytes, 2)?;
             markers.insert(user);
         } else {
@@ -146,7 +235,8 @@ pub(crate) fn parse(files: &Files) -> Result<Option<Registry>> {
             .users
             .keys()
             .all(|user| markers.contains(user.as_str())),
-        "user metadata is missing its .user marker"
+        "user metadata is missing its {} record",
+        layout.marker
     );
     let mut recipients = BTreeSet::new();
     for method in registry.users.values().flat_map(|keys| keys.values()) {
@@ -161,16 +251,23 @@ pub(crate) fn parse(files: &Files) -> Result<Option<Registry>> {
 }
 
 pub(crate) fn encode(registry: &Registry) -> Result<Files> {
+    encode_for(registry, FLAT)
+}
+
+fn encode_for(registry: &Registry, layout: SplitLayout) -> Result<Files> {
     let header = || Header {
         version: 2,
         repository: registry.repository,
         generation: registry.generation,
     };
-    let mut files = Files::from([(PathBuf::from(HEADER), serde_json::to_vec_pretty(&header())?)]);
+    let mut files = Files::from([(
+        PathBuf::from(layout.header),
+        serde_json::to_vec_pretty(&header())?,
+    )]);
     for (user, keys) in &registry.users {
         portable_name(user)?;
-        let directory = PathBuf::from(USERS).join(user);
-        files.insert(directory.join(".user"), b"{\"version\":2}\n".to_vec());
+        let directory = PathBuf::from(layout.users).join(user);
+        files.insert(directory.join(layout.marker), b"{\"version\":2}\n".to_vec());
         for (name, key) in keys {
             portable_name(name)?;
             files.insert(
@@ -201,26 +298,41 @@ pub(crate) fn delta(before: &Files, after: &Files) -> Delta {
 /// Preserve formatting and additive public fields on semantically unchanged
 /// records; an unrelated enrollment must not normalize every file in the repo.
 pub(crate) fn encode_preserving(registry: &Registry, before: &Files) -> Result<Files> {
-    let mut files = encode(registry)?;
-    if !before.contains_key(Path::new(HEADER)) {
+    encode_preserving_as(registry, before, FLAT)
+}
+
+pub(crate) fn encode_preserving_as(
+    registry: &Registry,
+    before: &Files,
+    target: SplitLayout,
+) -> Result<Files> {
+    let mut files = if target == FLAT {
+        encode(registry)?
+    } else {
+        encode_for(registry, target)?
+    };
+    let Some(Layout::Split(source)) = layout(before)? else {
         return Ok(files);
-    }
+    };
     let old = parse(before)?.context("missing original access metadata")?;
     let same_generation =
         old.repository == registry.repository && old.generation == registry.generation;
     if same_generation {
-        files.insert(PathBuf::from(HEADER), before[Path::new(HEADER)].clone());
+        files.insert(
+            PathBuf::from(target.header),
+            before[Path::new(source.header)].clone(),
+        );
     }
     for (user, keys) in &registry.users {
-        let directory = PathBuf::from(USERS).join(user);
-        let marker = directory.join(".user");
-        if let Some(bytes) = before.get(&marker) {
-            files.insert(marker, bytes.clone());
+        let directory = PathBuf::from(target.users).join(user);
+        let original = PathBuf::from(source.users).join(user);
+        if let Some(bytes) = before.get(&original.join(source.marker)) {
+            files.insert(directory.join(target.marker), bytes.clone());
         }
         for (name, key) in keys {
             if same_generation && old.users.get(user).and_then(|keys| keys.get(name)) == Some(key) {
                 let path = directory.join(name);
-                if let Some(bytes) = before.get(&path) {
+                if let Some(bytes) = before.get(&original.join(name)) {
                     files.insert(path, bytes.clone());
                 }
             }
@@ -240,38 +352,35 @@ pub(crate) fn worktree(repo: &git2::Repository) -> Result<Files> {
             );
         }
     }
-    for path in [LEGACY, HEADER] {
+    for path in [LEGACY, HEADER, PREVIOUS_HEADER] {
         read_file(root, Path::new(path), &mut files)?;
     }
-    let users = root.join(USERS);
-    match fs::symlink_metadata(&users) {
-        Ok(metadata) => {
-            ensure!(
-                metadata.is_dir() && !metadata.is_symlink(),
-                "users must be a real directory"
-            );
-            for user in fs::read_dir(users)? {
-                let user = user?;
-                let metadata = fs::symlink_metadata(user.path())?;
+    for layout in [FLAT, NESTED] {
+        let users = root.join(layout.users);
+        match fs::symlink_metadata(&users) {
+            Ok(metadata) => {
                 ensure!(
                     metadata.is_dir() && !metadata.is_symlink(),
-                    "user metadata must be a real directory"
+                    "users must be a real directory"
                 );
-                let name = user.file_name();
-                portable_name(name.to_str().context("non-UTF-8 user name")?)?;
-                for key in fs::read_dir(user.path())? {
-                    let key = key?;
-                    read_file(root, key.path().strip_prefix(root)?, &mut files)?;
+                for user in fs::read_dir(users)? {
+                    let user = user?;
+                    let metadata = fs::symlink_metadata(user.path())?;
+                    ensure!(
+                        metadata.is_dir() && !metadata.is_symlink(),
+                        "user metadata must be a real directory"
+                    );
+                    let name = user.file_name();
+                    portable_name(name.to_str().context("non-UTF-8 user name")?)?;
+                    for key in fs::read_dir(user.path())? {
+                        let key = key?;
+                        read_file(root, key.path().strip_prefix(root)?, &mut files)?;
+                    }
                 }
             }
-            ensure!(
-                !files.keys().any(|path| path.starts_with(USERS))
-                    || files.contains_key(Path::new(HEADER)),
-                "users directory is missing repository.json"
-            );
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
     }
     Ok(files)
 }
@@ -316,15 +425,22 @@ pub(crate) fn tree(repo: &git2::Repository, tree: &git2::Tree<'_>) -> Result<Fil
             let path = prefix.join(entry.name().context("non-UTF-8 access metadata path")?);
             if entry.kind() == Some(git2::ObjectType::Tree) {
                 ensure!(
-                    path != Path::new(LEGACY) && path != Path::new(HEADER),
+                    ![LEGACY, HEADER, PREVIOUS_HEADER]
+                        .iter()
+                        .any(|header| path == Path::new(header)),
                     "access header must be a regular Git blob"
                 );
-                if path.starts_with(USERS) || Path::new(USERS).starts_with(&path) {
-                    ensure!(
-                        path.components().count() <= 4,
-                        "unexpected access metadata nesting"
-                    );
-                    walk(repo, &repo.find_tree(entry.id())?, &path, files)?;
+                for layout in [FLAT, NESTED] {
+                    if path.starts_with(layout.users) || Path::new(layout.users).starts_with(&path)
+                    {
+                        ensure!(
+                            path.components().count()
+                                <= Path::new(layout.users).components().count() + 1,
+                            "unexpected access metadata nesting"
+                        );
+                        walk(repo, &repo.find_tree(entry.id())?, &path, files)?;
+                        break;
+                    }
                 }
             } else if is_path(&path) {
                 ensure!(
@@ -401,7 +517,7 @@ mod tests {
         let registry = registry();
         let files = encode(&registry).unwrap();
         assert_eq!(parse(&files).unwrap(), Some(registry));
-        assert!(files.contains_key(Path::new(".over/crypt/users/empty/.user")));
+        assert!(files.contains_key(Path::new(".over/users/empty/user.json")));
     }
 
     #[test]
@@ -418,7 +534,7 @@ mod tests {
         let changes = delta(&before, &encode(&registry).unwrap());
         assert_eq!(
             changes.keys().collect::<Vec<_>>(),
-            vec![Path::new(".over/crypt/users/alice/recovery")]
+            vec![Path::new(".over/users/alice/recovery")]
         );
     }
 
@@ -432,19 +548,21 @@ mod tests {
         );
         assert!(parse(&files).is_err());
         files.remove(Path::new(LEGACY));
-        let path = Path::new(".over/crypt/users/alice/laptop");
+        let path = Path::new(".over/users/alice/laptop");
         let mut record: KeyRecord = serde_json::from_slice(&files[path]).unwrap();
         record.header.generation[0] ^= 1;
         files.insert(path.to_path_buf(), serde_json::to_vec(&record).unwrap());
         assert!(parse(&files).is_err());
     }
 
-    #[test]
-    fn bootstrap_loads_all_split_files_from_one_committed_tree() {
+    #[rstest::rstest]
+    #[case(FLAT)]
+    #[case(NESTED)]
+    fn bootstrap_loads_all_split_files_from_one_committed_tree(#[case] layout: SplitLayout) {
         let directory = tempfile::tempdir().unwrap();
         let repo = git2::Repository::init(directory.path()).unwrap();
         let registry = registry();
-        let files = encode(&registry).unwrap();
+        let files = encode_for(&registry, layout).unwrap();
         let mut staged = repo.index().unwrap();
         for (path, bytes) in &files {
             super::super::policy::stage_blob(&mut staged, &repo, path, bytes).unwrap();
@@ -461,6 +579,86 @@ mod tests {
                 .unwrap()
                 .metadata,
             super::super::detect::Metadata::Supported
+        );
+    }
+
+    #[test]
+    fn flattening_preserves_header_key_and_user_record_bytes() {
+        let registry = registry();
+        let mut before = encode_for(&registry, NESTED).unwrap();
+        for bytes in before.values_mut() {
+            bytes.insert(0, b'\n');
+            bytes.push(b'\n');
+        }
+        let after = encode_preserving(&registry, &before).unwrap();
+        assert_eq!(parse(&after).unwrap(), Some(registry));
+        assert_eq!(after[Path::new(HEADER)], before[Path::new(PREVIOUS_HEADER)]);
+        assert_eq!(
+            after[Path::new(".over/users/alice/user.json")],
+            before[Path::new(".over/crypt/users/alice/.user")]
+        );
+        assert_eq!(
+            after[Path::new(".over/users/alice/laptop")],
+            before[Path::new(".over/crypt/users/alice/laptop")]
+        );
+        assert_eq!(
+            after[Path::new(".over/users/empty/user.json")],
+            before[Path::new(".over/crypt/users/empty/.user")]
+        );
+        assert!(portable_name(MARKER).is_err());
+    }
+
+    #[test]
+    fn mixed_namespaces_are_rejected_even_with_the_same_repository_and_generation() {
+        let registry = registry();
+        let mut files = encode(&registry).unwrap();
+        files.extend(encode_for(&registry, NESTED).unwrap());
+        assert!(parse(&files).is_err());
+    }
+
+    #[rstest::rstest]
+    #[case(FLAT)]
+    #[case(NESTED)]
+    fn orphan_records_and_incompatible_user_record_names_are_rejected(#[case] layout: SplitLayout) {
+        let mut files = encode_for(&registry(), layout).unwrap();
+        let header = files.remove(Path::new(layout.header)).unwrap();
+        assert!(parse(&files).is_err());
+        files.insert(PathBuf::from(layout.header), header);
+        let marker = files
+            .remove(
+                &PathBuf::from(layout.users)
+                    .join("alice")
+                    .join(layout.marker),
+            )
+            .unwrap();
+        let wrong = if layout == FLAT { ".user" } else { MARKER };
+        files.insert(
+            PathBuf::from(layout.users).join("alice").join(wrong),
+            marker,
+        );
+        assert!(parse(&files).is_err());
+    }
+
+    #[rstest::rstest]
+    #[case(FLAT)]
+    #[case(NESTED)]
+    fn compatibility_writers_preserve_the_existing_split_layout(#[case] layout: SplitLayout) {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(directory.path()).unwrap();
+        let mut registry = registry();
+        for (path, bytes) in encode_for(&registry, layout).unwrap() {
+            let path = directory.path().join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        registry.users.remove("empty");
+        access::save(&repo, &registry).unwrap();
+        let files = worktree(&repo).unwrap();
+        assert_eq!(self::layout(&files).unwrap(), Some(Layout::Split(layout)));
+        assert_eq!(access::load(&repo).unwrap(), registry);
+        assert_eq!(
+            access::metadata_path(&repo).unwrap(),
+            directory.path().join(layout.header)
         );
     }
 }

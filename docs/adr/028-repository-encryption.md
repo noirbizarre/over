@@ -51,7 +51,10 @@ filtering and verify ciphertext before index publication. Virtual checkouts map
 to source policy/index and compare in ciphertext space. Native secrets remain
 direct ciphertext even in unlocked working trees, decrypting only in memory.
 Native values live independently at `.over/secrets/<name>`. Public access uses
-`.over/crypt/repository.json` plus `users/<user>/<key>` records and `.user` markers.
+`.over/crypt.json` plus `.over/users/<user>/<key>` records and `user.json`
+user-existence records. Those public JSON records contain only a schema version,
+preserving empty users without tracking a shared user list. Historical nested
+split paths remain readable and migrate without changing record bytes or keys.
 Normal mutations avoid shared manifests and create isolated commits with
 configurable messages and Git hooks/signing. Historical layouts migrate on the
 relevant mutation, preserving ciphertext backups for secret-store conversion.

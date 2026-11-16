@@ -20,9 +20,7 @@ fn invalid_crypt_metadata_stops_init_before_drivers_checkout_or_hooks(
     let fixture = Fixture::new(false, true);
     let source = git2::Repository::open(&fixture.source).unwrap();
     let mut index = source.index().unwrap();
-    let mut entry = index
-        .get_path(Path::new(".over/crypt/repository.json"), 0)
-        .unwrap();
+    let mut entry = index.get_path(Path::new(".over/crypt.json"), 0).unwrap();
     // Publish a deliberately invalid raw blob without asking clean filters to validate it.
     entry.id = source.blob(metadata).unwrap();
     index.add(&entry).unwrap();

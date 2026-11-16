@@ -82,11 +82,13 @@ pub fn root(repo: &git2::Repository) -> Result<&Path> {
 }
 
 pub fn metadata_path(repo: &git2::Repository) -> Result<PathBuf> {
-    let header = root(repo)?.join(super::access_storage::HEADER);
-    if header.try_exists()? {
-        return Ok(header);
-    }
-    Ok(root(repo)?.join(".over/crypt/access.json"))
+    let files = super::access_storage::worktree(repo)?;
+    let path = match super::access_storage::layout(&files)? {
+        Some(super::access_storage::Layout::Split(layout)) => layout.header,
+        // Low-level legacy setup still writes its original aggregate format.
+        _ => super::access_storage::LEGACY,
+    };
+    Ok(root(repo)?.join(path))
 }
 
 pub fn configured(repo: &git2::Repository) -> Result<bool> {
@@ -95,6 +97,8 @@ pub fn configured(repo: &git2::Repository) -> Result<bool> {
         super::access_storage::LEGACY,
         super::access_storage::HEADER,
         super::access_storage::USERS,
+        super::access_storage::PREVIOUS_HEADER,
+        super::access_storage::PREVIOUS_USERS,
     ] {
         match fs::symlink_metadata(root.join(path)) {
             Ok(_) => return Ok(true),
@@ -325,17 +329,16 @@ pub(crate) fn save(repo: &git2::Repository, registry: &Registry) -> Result<()> {
         // !diff restores normal diffs, while -text preserves access-envelope bytes verbatim.
         atomic_write(
             &attributes,
-            b"crypt/** -filter !diff -text\n.gitattributes -filter !diff\nsecrets filter=over diff=over -text\nsecrets.yaml filter=over diff=over -text\n",
+            &super::access_storage::bootstrap_attributes(&[]),
         )?;
     }
-    if root(repo)?
-        .join(super::access_storage::HEADER)
-        .try_exists()?
+    let before = super::access_storage::worktree(repo)?;
+    if let Some(super::access_storage::Layout::Split(layout)) =
+        super::access_storage::layout(&before)?
     {
-        let before = super::access_storage::worktree(repo)?;
         for (path, bytes) in super::access_storage::delta(
             &before,
-            &super::access_storage::encode_preserving(registry, &before)?,
+            &super::access_storage::encode_preserving_as(registry, &before, layout)?,
         ) {
             let path = root(repo)?.join(path);
             crate::materialize::disposal::validate_relative_ancestors(root(repo)?, &path)?;
@@ -662,11 +665,19 @@ pub(crate) fn prepare_registry(
         &before,
         &super::access_storage::encode_preserving(registry, &before)?,
     );
-    if !root(repo)?
-        .join(super::access_storage::ATTRIBUTES)
-        .try_exists()?
-    {
-        delta.insert(PathBuf::from(super::access_storage::ATTRIBUTES), Some(b"crypt/** -filter !diff -text\n.gitattributes -filter !diff\nsecrets filter=over diff=over -text\nsecrets.yaml filter=over diff=over -text\n".to_vec()));
+    let original =
+        super::buffer::read_optional(&root(repo)?.join(super::access_storage::ATTRIBUTES))?;
+    let attributes = super::access_storage::bootstrap_attributes(
+        original
+            .as_deref()
+            .map(|bytes| bytes.as_slice())
+            .unwrap_or_default(),
+    );
+    if original.as_deref().map(|bytes| bytes.as_slice()) != Some(attributes.as_slice()) {
+        delta.insert(
+            PathBuf::from(super::access_storage::ATTRIBUTES),
+            Some(attributes),
+        );
     }
     super::mutation::Mutation::prepare(repo, delta, message, &[])
 }
@@ -740,9 +751,13 @@ pub fn delete_user_committed(repo: &git2::Repository, user: &str) -> Result<()> 
 pub(crate) fn migrate_committed(repo: &git2::Repository) -> Result<bool> {
     let _ownership = super::mutation::ownership(repo)?;
     let guard = guard(repo, true)?;
-    if !root(repo)?
-        .join(super::access_storage::LEGACY)
-        .try_exists()?
+    let files = super::access_storage::worktree(repo)?;
+    let layout = super::access_storage::layout(&files)?;
+    if layout.is_none()
+        || layout
+            == Some(super::access_storage::Layout::Split(
+                super::access_storage::FLAT,
+            ))
     {
         return Ok(false);
     }

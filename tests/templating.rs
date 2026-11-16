@@ -708,7 +708,7 @@ fn key_rotation_refuses_to_strand_protected_snapshot_bases_before_publishing_any
     fixture.protect();
     fixture.apply();
     let key = fs::read(fixture.source.join(".git/over-crypt/key")).unwrap();
-    let registry = fs::read(fixture.source.join(".over/crypt/repository.json")).unwrap();
+    let registry = fs::read(fixture.source.join(".over/crypt.json")).unwrap();
     let index = fs::read(fixture.source.join(".git/index")).unwrap();
     let snapshot = fixture.snapshot();
     fixture
@@ -722,7 +722,7 @@ fn key_rotation_refuses_to_strand_protected_snapshot_bases_before_publishing_any
         key
     );
     assert_eq!(
-        fs::read(fixture.source.join(".over/crypt/repository.json")).unwrap(),
+        fs::read(fixture.source.join(".over/crypt.json")).unwrap(),
         registry
     );
     assert_eq!(fs::read(fixture.source.join(".git/index")).unwrap(), index);

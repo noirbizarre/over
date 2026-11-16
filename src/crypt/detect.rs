@@ -129,8 +129,15 @@ pub fn inspect_tree(repo: &Repository, tree: &Tree<'_>) -> Result<Detection> {
     let mut result = empty_detection(Some(tree.id()));
     let mut entries = BTreeMap::new();
     collect_entries(repo, tree, Path::new(""), &mut entries)?;
-    let metadata_path = if entries.contains_key(Path::new(access_storage::HEADER)) {
+    let metadata_path = if entries.keys().any(|path| {
+        path == Path::new(access_storage::HEADER) || path.starts_with(access_storage::USERS)
+    }) {
         access_storage::HEADER
+    } else if entries.keys().any(|path| {
+        path == Path::new(access_storage::PREVIOUS_HEADER)
+            || path.starts_with(access_storage::PREVIOUS_USERS)
+    }) {
+        access_storage::PREVIOUS_HEADER
     } else {
         METADATA_PATH
     };
@@ -206,11 +213,7 @@ pub fn inspect_tree(repo: &Repository, tree: &Tree<'_>) -> Result<Detection> {
                     "protected paths must be regular Git blobs",
                 );
             }
-            if path
-                .file_name()
-                .is_some_and(|name| name == ".gitattributes")
-                || path.starts_with(".over/crypt")
-            {
+            if access_storage::is_bootstrap_path(path) {
                 result.diagnostic(
                     DiagnosticCode::ProtectedBootstrap,
                     &location,

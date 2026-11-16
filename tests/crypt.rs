@@ -1429,7 +1429,7 @@ fn detaching_one_key_keeps_the_other_independently_usable_without_rotation() {
 #[test]
 fn generating_a_private_identity_cannot_publish_it_inside_a_working_tree() {
     let (root, _) = repository();
-    let before = fs::read(root.path().join(".over/crypt/users/alice/default")).unwrap();
+    let before = fs::read(root.path().join(".over/users/alice/default")).unwrap();
     let output = root.path().join(".over/private.age");
     let rejected = Command::new(cargo_bin("over"))
         .current_dir(root.path())
@@ -1449,7 +1449,7 @@ fn generating_a_private_identity_cannot_publish_it_inside_a_working_tree() {
     assert!(!rejected.status.success());
     assert!(!output.exists());
     assert_eq!(
-        fs::read(root.path().join(".over/crypt/users/alice/default")).unwrap(),
+        fs::read(root.path().join(".over/users/alice/default")).unwrap(),
         before
     );
 }
@@ -1467,7 +1467,7 @@ fn one_damaged_envelope_does_not_block_an_independent_trusted_key() {
             identities.path().join("alternate.age").to_str().unwrap(),
         ],
     );
-    let path = root.path().join(".over/crypt/users/aardvark/default");
+    let path = root.path().join(".over/users/aardvark/default");
     let mut registry: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     registry["envelope"] = serde_json::json!(b"corrupt envelope".to_vec());

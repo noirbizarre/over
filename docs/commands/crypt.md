@@ -126,8 +126,12 @@ binary values. All inputs must be real regular files. Tracked legacy files must
 match their index snapshots, and incompatible destination content or unrecognized
 legacy-store entries must be resolved before migration.
 
-Legacy `access.json` migrates first into `repository.json` and individual
-`users/<user>/<key>` records, with an isolated configurable `chore(crypt)` commit.
+Legacy `.over/crypt/access.json` or nested split `.over/crypt/repository.json`
+metadata migrate first into `.over/crypt.json` and individual
+`.over/users/<user>/<key>` records, with an isolated configurable `chore(crypt)`
+commit. The user-existence record is named `user.json`, replacing `.user` in the
+nested layout. Split-record bytes and encryption generations remain unchanged;
+bootstrap attributes are upgraded in the same commit.
 Native secret migration then creates an isolated `chore(secrets): migrated store`
 commit, honoring Git hooks and signing. It also accepts an existing
 `.over/secrets` or `.over/secrets.yaml` aggregate. Ordinary `.age` files are processed afterward;

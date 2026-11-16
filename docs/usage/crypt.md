@@ -130,7 +130,8 @@ secrets/** filter=over diff=over -text
 Patterns follow [Git attributes syntax](https://git-scm.com/docs/gitattributes),
 including its directory and precedence rules. Check nested `.gitattributes`,
 global attributes, and `.git/info/attributes` for overrides. Keep bootstrap
-attributes and `.over/crypt/` outside protection.
+attributes, `.over/crypt.json`, `.over/users/`, and historical `.over/crypt/`
+outside protection.
 
 `filter=over` enables encryption on clean (staging) and decryption on smudge
 (unlocked checkout). `diff=over` selects Over's authenticated text conversion so
@@ -585,8 +586,9 @@ rotation with a stale local key and no journal, unlock through the new envelopes
 
 Over can identify repository encryption directly from a committed Git tree,
 including in a bare repository or immediately after `git clone --no-checkout`.
-The public `.over/crypt/repository.json` header identifies the current layout;
-individual access methods live beside it under `users/`. First-user enrollment
+The public `.over/crypt.json` header identifies the current layout;
+individual access methods live under `.over/users/`, alongside `.over/secrets/`.
+First-user enrollment
 commits the complete bootstrap automatically, even before protected files exist.
 Ordinary protection commands still stage ciphertext and policy for explicit review.
 
@@ -594,13 +596,12 @@ Ordinary protection commands still stage ciphertext and policy for explicit revi
 
 ```text
 .over/
-  crypt/
-    repository.json
-    users/
-      alice/
-        .user
-        laptop
-        recovery
+  crypt.json
+  users/
+    alice/
+      user.json
+      laptop
+      recovery
   secrets/
     github-token
 ```
@@ -608,9 +609,18 @@ Ordinary protection commands still stage ciphertext and policy for explicit revi
 The regular JSON header contains `version: 2`, `repository`, and `generation`.
 Each extensionless key record repeats these fields and contains `recipient` and
 `envelope`, using the byte-array representations described below. Record identities
-must match the header; stale-generation or foreign records are invalid. `.user`
-is a small versioned existence marker, retaining users after their last key is
-detached or revoked. Deleting an empty user removes its marker.
+must match the header; stale-generation or foreign records are invalid.
+
+`user.json` is a public user-existence record containing only:
+
+```json
+{"version":2}
+```
+
+Git cannot track an empty directory, so this record retains a user after their
+last key is detached or revoked. Deleting an empty user removes the record.
+It contains no credential, envelope, private identity, or profile data. Its JSON
+filename cannot collide with key names, which do not allow dots.
 
 There is no shared user/key list. Ordinary enrollment/detachment changes only
 owned records, preserving unchanged header/key bytes and formatting. Independent
@@ -623,12 +633,21 @@ portable non-colliding names, real directories, and regular files. Secret names,
 user names, and key names are public paths. Bootstrap metadata remains unencrypted.
 Detection and initial smudge load the complete access inventory from one pinned
 tree, independently of working-file checkout order.
+For an unlocked linked worktree's first checkout, smudge may use pinned HEAD
+metadata while Git owns the initial index lock, provided already materialized
+metadata matches HEAD. Clean filtering and ordinary reads never use that exception.
 
-Older aggregate access metadata migrates automatically on the next user/key
-mutation, preserving envelope bytes and the repository generation. Reads/unlock
+Both aggregate v1 metadata and the earlier nested split layout
+(`.over/crypt/repository.json`, `.over/crypt/users/<user>/.user` and key files)
+migrate automatically on the next user/key mutation. The flattened layout keeps
+the same version-2 JSON schema; moving split records preserves their bytes,
+including formatting, additive fields, IDs, generations, and envelopes. The
+migration also adds exclusions keeping `crypt.json` and `users/**` unencrypted.
+Reads/unlock
 do not migrate. Secret-store migration is independent and occurs on secret
 mutation; `over crypt migrate` can migrate both explicitly. Conflicting old/new
-access layouts are rejected rather than merging access grants.
+access layouts are rejected rather than merging access grants, even when their
+repository IDs match.
 
 ### Legacy access registry version 1
 

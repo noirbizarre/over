@@ -110,27 +110,27 @@ fn success(output: Output) -> Output {
 fn access_and_secret_mutations_commit_only_their_independent_files() {
     let fixture = Fixture::new();
     assert!(!fixture.root.join(".over/crypt/access.json").exists());
-    assert!(
-        fixture
-            .root
-            .join(".over/crypt/users/alice/default")
-            .is_file()
+    assert!(fixture.root.join(".over/users/alice/default").is_file());
+    assert!(!fixture.root.join(".over/crypt").exists());
+    assert_eq!(
+        fs::read(fixture.root.join(".over/users/alice/user.json")).unwrap(),
+        b"{\"version\":2}\n"
     );
-    let header = fs::read(fixture.root.join(".over/crypt/repository.json")).unwrap();
-    let alice = fs::read(fixture.root.join(".over/crypt/users/alice/default")).unwrap();
+    let header = fs::read(fixture.root.join(".over/crypt.json")).unwrap();
+    let alice = fs::read(fixture.root.join(".over/users/alice/default")).unwrap();
     fs::write(fixture.root.join("unrelated"), b"staged work").unwrap();
     fixture.git(&["add", "unrelated"]);
     fixture.enroll("bob");
     assert_eq!(
         fixture.changed(),
-        b".over/crypt/users/bob/.user\n.over/crypt/users/bob/default\n"
+        b".over/users/bob/default\n.over/users/bob/user.json\n"
     );
     assert_eq!(
-        fs::read(fixture.root.join(".over/crypt/repository.json")).unwrap(),
+        fs::read(fixture.root.join(".over/crypt.json")).unwrap(),
         header
     );
     assert_eq!(
-        fs::read(fixture.root.join(".over/crypt/users/alice/default")).unwrap(),
+        fs::read(fixture.root.join(".over/users/alice/default")).unwrap(),
         alice
     );
     success(fixture.secret("A", b"first\0\xff", false));
@@ -149,9 +149,9 @@ fn access_and_secret_mutations_commit_only_their_independent_files() {
         b"unrelated\n"
     );
     success(fixture.over(&["user", "key", "detach", "bob", "default"]));
-    assert!(fixture.root.join(".over/crypt/users/bob/.user").is_file());
+    assert!(fixture.root.join(".over/users/bob/user.json").is_file());
     success(fixture.over(&["user", "delete", "bob"]));
-    assert_eq!(fixture.changed(), b".over/crypt/users/bob/.user\n");
+    assert_eq!(fixture.changed(), b".over/users/bob/user.json\n");
 }
 
 #[test]
@@ -172,7 +172,7 @@ fn independent_secret_changes_merge_without_rewriting_other_paths() {
 #[test]
 fn independent_user_enrollments_merge_without_changing_the_header() {
     let fixture = Fixture::new();
-    let header = fs::read(fixture.root.join(".over/crypt/repository.json")).unwrap();
+    let header = fs::read(fixture.root.join(".over/crypt.json")).unwrap();
     fixture.git(&["branch", "right"]);
     fixture.git(&["checkout", "-qb", "left"]);
     fixture.enroll("bob");
@@ -180,7 +180,7 @@ fn independent_user_enrollments_merge_without_changing_the_header() {
     fixture.enroll("carol");
     fixture.git(&["merge", "--no-edit", "left"]);
     assert_eq!(
-        fs::read(fixture.root.join(".over/crypt/repository.json")).unwrap(),
+        fs::read(fixture.root.join(".over/crypt.json")).unwrap(),
         header
     );
     let registry =
@@ -233,8 +233,9 @@ fn access_and_secret_migrations_are_triggered_independently() {
     let repo = git2::Repository::open(&fixture.root).unwrap();
     let registry = over::crypt::access::load(&repo).unwrap();
     let key = over::crypt::access::local_key(&repo).unwrap();
-    fs::remove_dir_all(fixture.root.join(".over/crypt/users")).unwrap();
-    fs::remove_file(fixture.root.join(".over/crypt/repository.json")).unwrap();
+    fs::remove_dir_all(fixture.root.join(".over/users")).unwrap();
+    fs::remove_file(fixture.root.join(".over/crypt.json")).unwrap();
+    fs::create_dir_all(fixture.root.join(".over/crypt")).unwrap();
     fs::write(
         fixture.root.join(".over/crypt/access.json"),
         serde_json::to_vec_pretty(&registry).unwrap(),
@@ -258,7 +259,7 @@ fn access_and_secret_migrations_are_triggered_independently() {
     let secret = fs::read(fixture.root.join(".over/secrets/TOKEN")).unwrap();
     fixture.enroll("bob");
     assert!(!fixture.root.join(".over/crypt/access.json").exists());
-    assert!(fixture.root.join(".over/crypt/users/bob/default").is_file());
+    assert!(fixture.root.join(".over/users/bob/default").is_file());
     assert_eq!(
         fs::read(fixture.root.join(".over/secrets/TOKEN")).unwrap(),
         secret
@@ -283,7 +284,7 @@ fn failed_initial_signing_publishes_neither_access_nor_an_active_key() {
         fixture.temp.path().join("alice.age").to_str().unwrap(),
     ]);
     assert!(!output.status.success());
-    assert!(!fixture.root.join(".over/crypt/repository.json").exists());
+    assert!(!fixture.root.join(".over/crypt.json").exists());
     assert!(!fixture.root.join(".git/over-crypt/key").exists());
     assert!(!fixture.root.join(".git/over-crypt/mutation.json").exists());
     assert!(
@@ -540,21 +541,21 @@ fn access_templates_change_messages_without_committing_the_descriptor() {
     ]);
     assert!(!output.status.success());
     assert_eq!(fixture.git(&["rev-parse", "HEAD"]), head);
-    assert!(!fixture.root.join(".over/crypt/users/carol/.user").exists());
+    assert!(!fixture.root.join(".over/users/carol/user.json").exists());
 }
 
 #[test]
 fn independent_keys_for_one_user_merge_and_preserve_existing_record_bytes() {
     let fixture = Fixture::new();
     let marker = b"\n{\"version\":2,\"note\":\"preserve formatting\"}\n";
-    fs::write(fixture.root.join(".over/crypt/users/alice/.user"), marker).unwrap();
-    let header_path = fixture.root.join(".over/crypt/repository.json");
+    fs::write(fixture.root.join(".over/users/alice/user.json"), marker).unwrap();
+    let header_path = fixture.root.join(".over/crypt.json");
     let mut header: serde_json::Value =
         serde_json::from_slice(&fs::read(&header_path).unwrap()).unwrap();
     header["note"] = serde_json::json!("preserve additive fields");
     let header = serde_json::to_vec(&header).unwrap();
     fs::write(header_path, &header).unwrap();
-    fixture.git(&["add", ".over/crypt"]);
+    fixture.git(&["add", ".over/crypt.json", ".over/users"]);
     fixture.git(&["commit", "-qm", "custom metadata formatting"]);
     fixture.git(&["branch", "right"]);
     fixture.git(&["checkout", "-qb", "left"]);
@@ -569,7 +570,7 @@ fn independent_keys_for_one_user_merge_and_preserve_existing_record_bytes() {
         "--recipient",
         &left,
     ]));
-    assert_eq!(fixture.changed(), b".over/crypt/users/alice/laptop\n");
+    assert_eq!(fixture.changed(), b".over/users/alice/laptop\n");
     fixture.git(&["checkout", "-q", "right"]);
     let right = age::x25519::Identity::generate().to_public().to_string();
     success(fixture.over(&[
@@ -584,11 +585,11 @@ fn independent_keys_for_one_user_merge_and_preserve_existing_record_bytes() {
     ]));
     fixture.git(&["merge", "--no-edit", "left"]);
     assert_eq!(
-        fs::read(fixture.root.join(".over/crypt/users/alice/.user")).unwrap(),
+        fs::read(fixture.root.join(".over/users/alice/user.json")).unwrap(),
         marker
     );
     assert_eq!(
-        fs::read(fixture.root.join(".over/crypt/repository.json")).unwrap(),
+        fs::read(fixture.root.join(".over/crypt.json")).unwrap(),
         header
     );
     assert_eq!(
@@ -652,4 +653,282 @@ fn initial_enrollment_honors_real_ssh_commit_signing() {
     fixture.enroll("alice");
     fixture.git(&["verify-commit", "HEAD"]);
     over::crypt::access::local_key(&git2::Repository::open(&fixture.root).unwrap()).unwrap();
+}
+
+fn use_nested_layout(fixture: &Fixture) {
+    fs::create_dir_all(fixture.root.join(".over/crypt")).unwrap();
+    fs::rename(
+        fixture.root.join(".over/crypt.json"),
+        fixture.root.join(".over/crypt/repository.json"),
+    )
+    .unwrap();
+    fs::rename(
+        fixture.root.join(".over/users"),
+        fixture.root.join(".over/crypt/users"),
+    )
+    .unwrap();
+    for user in fs::read_dir(fixture.root.join(".over/crypt/users")).unwrap() {
+        let user = user.unwrap().path();
+        fs::rename(user.join("user.json"), user.join(".user")).unwrap();
+    }
+    let attributes = fixture.root.join(".over/.gitattributes");
+    let previous = fs::read_to_string(&attributes)
+        .unwrap()
+        .replace("crypt.json -filter !diff -text\n", "")
+        .replace("users/** -filter !diff -text\n", "");
+    fs::write(
+        attributes,
+        format!("{previous}# preserve this policy comment\n"),
+    )
+    .unwrap();
+    fixture.git(&["add", "-A", ".over"]);
+    fixture.git(&["commit", "-qm", "previous split layout"]);
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn nested_split_metadata_is_read_without_migration_then_moved_in_one_commit(
+    #[case] explicit: bool,
+) {
+    let fixture = Fixture::new();
+    fixture.enroll("empty");
+    success(fixture.over(&["user", "key", "detach", "empty", "default"]));
+    success(fixture.secret("TOKEN", b"preserve ciphertext", false));
+    use_nested_layout(&fixture);
+    let header = fs::read(fixture.root.join(".over/crypt/repository.json")).unwrap();
+    let marker = fs::read(fixture.root.join(".over/crypt/users/alice/.user")).unwrap();
+    let key = fs::read(fixture.root.join(".over/crypt/users/alice/default")).unwrap();
+    let secret = fs::read(fixture.root.join(".over/secrets/TOKEN")).unwrap();
+    let attributes = fs::read(fixture.root.join(".over/.gitattributes")).unwrap();
+    let head = fixture.git(&["rev-parse", "HEAD"]);
+    success(fixture.over(&["user", "list"]));
+    success(fixture.over(&["lock"]));
+    success(fixture.over(&[
+        "unlock",
+        "--identity",
+        fixture.temp.path().join("alice.age").to_str().unwrap(),
+    ]));
+    assert_eq!(fixture.value("TOKEN"), b"preserve ciphertext");
+    assert_eq!(fixture.git(&["rev-parse", "HEAD"]), head);
+    assert!(!fixture.root.join(".over/crypt.json").exists());
+    over::crypt::detect::inspect(&git2::Repository::open(&fixture.root).unwrap())
+        .unwrap()
+        .validate_checkout()
+        .unwrap();
+    fs::write(fixture.root.join("unrelated"), b"pending work").unwrap();
+    fixture.git(&["add", "unrelated"]);
+    let count = fixture.git(&["rev-list", "--count", "HEAD"]);
+    if explicit {
+        success(fixture.over(&["crypt", "migrate"]));
+    } else {
+        fixture.enroll("bob");
+    }
+    let after_count = fixture.git(&["rev-list", "--count", "HEAD"]);
+    assert_eq!(
+        String::from_utf8(after_count)
+            .unwrap()
+            .trim()
+            .parse::<usize>()
+            .unwrap(),
+        String::from_utf8(count)
+            .unwrap()
+            .trim()
+            .parse::<usize>()
+            .unwrap()
+            + 1
+    );
+    assert_eq!(
+        fs::read(fixture.root.join(".over/crypt.json")).unwrap(),
+        header
+    );
+    assert_eq!(
+        fs::read(fixture.root.join(".over/users/alice/user.json")).unwrap(),
+        marker
+    );
+    assert_eq!(
+        fs::read(fixture.root.join(".over/users/alice/default")).unwrap(),
+        key
+    );
+    assert!(fixture.root.join(".over/users/empty/user.json").is_file());
+    assert!(!fixture.root.join(".over/crypt/repository.json").exists());
+    assert!(!fixture.root.join(".over/crypt/users/alice/.user").exists());
+    assert_eq!(
+        fs::read(fixture.root.join(".over/secrets/TOKEN")).unwrap(),
+        secret
+    );
+    assert!(
+        fs::read(fixture.root.join(".over/.gitattributes"))
+            .unwrap()
+            .starts_with(&attributes)
+    );
+    assert_eq!(
+        fixture.git(&["diff", "--cached", "--name-only"]),
+        b"unrelated\n"
+    );
+    let registry =
+        over::crypt::access::load(&git2::Repository::open(&fixture.root).unwrap()).unwrap();
+    assert!(registry.users["empty"].is_empty());
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn initial_linked_checkout_reads_all_access_records_before_users_are_materialized(
+    #[case] process: bool,
+) {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join(".env"), b"early protected checkout").unwrap();
+    success(fixture.over(&["crypt", "add", ".env"]));
+    fixture.git(&["commit", "-qm", "protected before bootstrap paths"]);
+    success(fixture.secret("TOKEN", b"late native entry", false));
+    if !process {
+        fixture.git(&["config", "--unset", "filter.over.process"]);
+    }
+    let sibling = fixture.temp.path().join("first-checkout");
+    fixture.git(&[
+        "worktree",
+        "add",
+        "-qb",
+        "first-checkout",
+        sibling.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        fs::read(sibling.join(".env")).unwrap(),
+        b"early protected checkout"
+    );
+    assert!(sibling.join(".over/users/alice/user.json").is_file());
+    over::crypt::format::inspect(&fs::read(sibling.join(".over/secrets/TOKEN")).unwrap()).unwrap();
+}
+
+#[test]
+fn mixed_flat_and_nested_headers_cannot_hide_access_records() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join(".over/crypt")).unwrap();
+    fs::copy(
+        fixture.root.join(".over/crypt.json"),
+        fixture.root.join(".over/crypt/repository.json"),
+    )
+    .unwrap();
+    let head = fixture.git(&["rev-parse", "HEAD"]);
+    assert!(!fixture.over(&["user", "list"]).status.success());
+    let output = fixture.over(&["user", "delete", "alice"]);
+    assert!(!output.status.success());
+    assert_eq!(fixture.git(&["rev-parse", "HEAD"]), head);
+    fixture.git(&["add", ".over/crypt/repository.json"]);
+    fixture.git(&["commit", "-qm", "conflicting layouts"]);
+    let detection =
+        over::crypt::detect::inspect(&git2::Repository::open(&fixture.root).unwrap()).unwrap();
+    assert_eq!(detection.metadata, over::crypt::detect::Metadata::Malformed);
+    assert!(detection.validate_checkout().is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn rejected_layout_migration_restores_nested_metadata_and_attributes() {
+    let fixture = Fixture::new();
+    use_nested_layout(&fixture);
+    let header = fs::read(fixture.root.join(".over/crypt/repository.json")).unwrap();
+    let key = fs::read(fixture.root.join(".over/crypt/users/alice/default")).unwrap();
+    let attributes = fs::read(fixture.root.join(".over/.gitattributes")).unwrap();
+    let index = fs::read(fixture.root.join(".git/index")).unwrap();
+    let head = fixture.git(&["rev-parse", "HEAD"]);
+    hook(
+        &fixture,
+        "reference-transaction",
+        "if [ \"$1\" = prepared ]; then exit 1; fi",
+    );
+    assert!(!fixture.over(&["crypt", "migrate"]).status.success());
+    assert_eq!(
+        fs::read(fixture.root.join(".over/crypt/repository.json")).unwrap(),
+        header
+    );
+    assert_eq!(
+        fs::read(fixture.root.join(".over/crypt/users/alice/default")).unwrap(),
+        key
+    );
+    assert_eq!(
+        fs::read(fixture.root.join(".over/.gitattributes")).unwrap(),
+        attributes
+    );
+    assert_eq!(fs::read(fixture.root.join(".git/index")).unwrap(), index);
+    assert_eq!(fixture.git(&["rev-parse", "HEAD"]), head);
+    assert!(!fixture.root.join(".over/crypt.json").exists());
+    assert!(!fixture.root.join(".over/users/alice/user.json").exists());
+}
+
+#[test]
+fn rotation_compares_logical_access_across_flat_and_nested_worktrees() {
+    let fixture = Fixture::new();
+    success(fixture.secret("TOKEN", b"same logical access", false));
+    let sibling = fixture.temp.path().join("flat-sibling");
+    fixture.git(&[
+        "worktree",
+        "add",
+        "-qb",
+        "flat-sibling",
+        sibling.to_str().unwrap(),
+    ]);
+    let sibling_head = fixture.git(&["rev-parse", "flat-sibling"]);
+    use_nested_layout(&fixture);
+    success(fixture.over(&["key", "rotate"]));
+    assert!(fixture.root.join(".over/crypt.json").is_file());
+    assert!(!fixture.root.join(".over/crypt/repository.json").exists());
+    assert_eq!(fixture.value("TOKEN"), b"same logical access");
+    assert_eq!(fixture.git(&["rev-parse", "flat-sibling"]), sibling_head);
+    let sibling_registry =
+        over::crypt::access::load(&git2::Repository::open(&sibling).unwrap()).unwrap();
+    assert_eq!(
+        sibling_registry,
+        over::crypt::access::load(&git2::Repository::open(&fixture.root).unwrap()).unwrap()
+    );
+}
+
+#[test]
+fn migration_upgrades_bootstrap_exclusions_under_a_broad_encryption_rule() {
+    let fixture = Fixture::new();
+    use_nested_layout(&fixture);
+    fs::write(
+        fixture.root.join(".gitattributes"),
+        "** filter=over diff=over -text\n.gitattributes -filter !diff\n",
+    )
+    .unwrap();
+    fixture.git(&["add", ".gitattributes"]);
+    fixture.git(&["commit", "-qm", "broad encryption policy"]);
+    success(fixture.over(&["crypt", "migrate"]));
+    for path in [
+        ".over/crypt.json",
+        ".over/users/alice/user.json",
+        ".over/users/alice/default",
+    ] {
+        assert_eq!(
+            fixture.git(&["check-attr", "filter", "--", path]),
+            format!("{path}: filter: unset\n").as_bytes()
+        );
+    }
+    over::crypt::detect::inspect(&git2::Repository::open(&fixture.root).unwrap())
+        .unwrap()
+        .validate_checkout()
+        .unwrap();
+}
+
+#[test]
+fn flattened_bootstrap_files_cannot_be_selected_for_encryption() {
+    let fixture = Fixture::new();
+    let index = fs::read(fixture.root.join(".git/index")).unwrap();
+    for path in [
+        ".over/crypt.json",
+        ".over/users/alice/user.json",
+        ".over/users/alice/default",
+    ] {
+        assert!(!fixture.over(&["crypt", "add", path]).status.success());
+        assert_eq!(fs::read(fixture.root.join(".git/index")).unwrap(), index);
+    }
+    fs::write(
+        fixture.root.join(".git/info/attributes"),
+        ".over/crypt.json filter=over diff=over\n.over/users/** filter=over diff=over\n",
+    )
+    .unwrap();
+    let findings = success(fixture.over(&["crypt", "list"]));
+    assert!(String::from_utf8_lossy(&findings.stdout).contains("bootstrap metadata"));
 }
