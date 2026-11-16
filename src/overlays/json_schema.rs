@@ -222,6 +222,7 @@ mod tests {
         let root = &DOCUMENTS["config.json"];
         let child = &DOCUMENTS["overlay.json"];
         let root_only = [
+            "secrets",
             "format",
             "repository",
             "sync",
@@ -246,6 +247,8 @@ mod tests {
             ("/definitions/HookDefinition", schema::HOOK_FIELDS),
             ("/definitions/SyncConfig", schema::SYNC_FIELDS),
             ("/definitions/ApplyConfig", schema::APPLY_FIELDS),
+            ("/definitions/SecretsConfig", schema::SECRETS_FIELDS),
+            ("/definitions/CommitMessages", schema::COMMIT_MESSAGE_FIELDS),
             ("/definitions/Rule", schema::RULE_FIELDS),
             (
                 "/definitions/WorktreeEntry/anyOf/1",
@@ -301,6 +304,7 @@ mod tests {
 
     #[rstest]
     #[case(json!({"format":"yaml"}))]
+    #[case(json!({"secrets":{"commit_messages":{"add":"chore: added {{ name }}"}}}))]
     #[case(json!({"repository":"git@example.com:dotfiles.git"}))]
     #[case(json!({"sync":{"pull":true}}))]
     #[case(json!({"sync":{"default_to_host":true}}))]
@@ -317,6 +321,8 @@ mod tests {
 
     #[rstest]
     #[case(json!({"name":"injected"}))]
+    #[case(json!({"secrets":{"commit_messages":{"add":42}}}))]
+    #[case(json!({"secrets":{"commit_messages":{"unknown":"message"}}}))]
     #[case(json!({"root":"/injected"}))]
     #[case(json!({"scopes":[]}))]
     #[case(json!({"unknown":"~"}))]

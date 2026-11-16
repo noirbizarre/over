@@ -19,11 +19,31 @@ overlays:
   - 'apps/*'
 ```
 
-`format`, `repository`, `sync`, `host_overlay`, `apply`, and `overlays` are root-only settings.
+`format`, `repository`, `sync`, `host_overlay`, `apply`, `secrets`, and `overlays` are root-only settings.
 Root hooks are also repository-scoped. Ordinary [overlay fields](overlay.md),
 such as `target` and overlay rules, may appear here as inherited policy.
 Root `data` and `host` belong only to the repository-root overlay and do not
 inherit into children; they are not additional repository preferences.
+
+## Secret commit messages
+
+Native secret mutations use operation-specific commit messages. Customize them
+in the repository-root descriptor (the following shows the defaults):
+
+```toml
+[secrets.commit_messages]
+add = "chore(secrets): added {{ name }}"
+replace = "chore(secrets): replaced {{ name }}"
+remove = "chore(secrets): removed {{ name }}"
+```
+
+Only `name` is available to these strict templates; secret values and secret
+lookup functions are unavailable. Missing settings retain their defaults.
+Empty messages, NULs, and undefined template variables are errors.
+
+The defaults expose **secret names in Git history**, even though the values
+remain encrypted. Use a name-free template such as `chore(secrets): added a secret`
+when names should stay private. YAML supports the same nested settings.
 
 ## Default materialization
 
