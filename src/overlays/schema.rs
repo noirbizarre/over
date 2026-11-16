@@ -8,6 +8,7 @@ use config::{Map, Value, ValueKind};
 
 pub(crate) const OVERLAY_KEYS: &[&str] = &[
     "$schema",
+    "crypt",
     "apply",
     "data",
     "host_overlay",
@@ -33,6 +34,16 @@ pub(super) const SYNC_FIELDS: &[&str] = &["default_to_host", "pull", "push"];
 pub(super) const APPLY_FIELDS: &[&str] = &["default_to_host"];
 pub(super) const SECRETS_FIELDS: &[&str] = &["commit_messages"];
 pub(super) const COMMIT_MESSAGE_FIELDS: &[&str] = &["add", "replace", "remove"];
+pub(super) const CRYPT_MESSAGE_FIELDS: &[&str] = &[
+    "user_add",
+    "user_delete",
+    "user_revoke",
+    "key_add",
+    "key_detach",
+    "key_revoke",
+    "key_rotate",
+    "migrate",
+];
 pub(super) const RULE_FIELDS: &[&str] = &[
     "path",
     "mode",
@@ -128,9 +139,9 @@ pub(crate) fn normalize(values: &mut Map<String, Value>, file: &Path) -> Vec<War
     fields(values, OVERLAY_KEYS, "", false, file, &mut warnings);
     for (key, value) in values {
         match key.as_str() {
-            "secrets" => {
+            "secrets" | "crypt" => {
                 if let ValueKind::Table(table) = &mut value.kind {
-                    fields(table, SECRETS_FIELDS, "secrets", false, file, &mut warnings);
+                    fields(table, SECRETS_FIELDS, key, false, file, &mut warnings);
                     if let Some(Value {
                         kind: ValueKind::Table(messages),
                         ..
@@ -138,8 +149,12 @@ pub(crate) fn normalize(values: &mut Map<String, Value>, file: &Path) -> Vec<War
                     {
                         fields(
                             messages,
-                            COMMIT_MESSAGE_FIELDS,
-                            "secrets.commit_messages",
+                            if key == "crypt" {
+                                CRYPT_MESSAGE_FIELDS
+                            } else {
+                                COMMIT_MESSAGE_FIELDS
+                            },
+                            &format!("{key}.commit_messages"),
                             false,
                             file,
                             &mut warnings,

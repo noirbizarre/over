@@ -30,6 +30,7 @@ Defaults below apply when no inherited value or matching rule supplies a value.
 | `repository` | Root | String | Preserve cloned origin | Canonical literal Git remote used by `over init`. |
 | `sync` | Root | [Sync object](#source-synchronization-sync) | Host fallback and remote operations disabled | Sync target selection and remote policy for the Over source repository. |
 | `secrets.commit_messages` | Root | Mapping of `add`, `replace`, `remove` strings | `chore(secrets): added/replaced/removed {{ name }}` | [Secret commit templates](root.md#secret-commit-messages); only `name` is available. |
+| `crypt.commit_messages` | Root | Mapping of operation-specific strings | Conventional `chore(crypt)` subjects | [Access commit templates](root.md#access-commit-messages) for enrollment, detach, deletion, revocation, rotation, and access migration. |
 | `host_overlay` | Root | String | None | Repository-relative machine context; bootstrap templates are supported. |
 | `apply` | Root | Mapping | `{}` | Apply-specific settings; see `apply.default_to_host`. |
 | `apply.default_to_host` | Root | Boolean | `false` | Allow apply to select the host when no explicit or active overlay exists. |

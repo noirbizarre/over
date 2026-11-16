@@ -358,6 +358,10 @@ impl Repository {
         Ok(self.root_config()?.secrets)
     }
 
+    pub fn crypt_config(&self) -> Result<crate::crypt::CryptConfig> {
+        Ok(self.root_config()?.crypt)
+    }
+
     /// One-shot, non-cascading read of the repository root's own
     /// descriptor. Unlike `Overlay::new`'s ancestor-chain cascade
     /// (ADR-002), this reads *only* `self.root`'s file: `format` and
@@ -402,17 +406,19 @@ impl Repository {
             validate_repository_remote(remote)
                 .with_context(|| format!("invalid `repository` in {}", basename.display()))?;
         }
-        if let Some(value) = values.get("secrets")
-            && let ValueKind::Table(settings) = &value.kind
-            && let Some(value) = settings.get("commit_messages")
-            && let ValueKind::Table(messages) = &value.kind
-        {
-            // config otherwise coerces numeric/boolean subjects into strings.
-            for value in messages.values() {
-                anyhow::ensure!(
-                    matches!(value.kind, ValueKind::String(_)),
-                    "secrets.commit_messages values must be strings"
-                );
+        for section in ["secrets", "crypt"] {
+            if let Some(value) = values.get(section)
+                && let ValueKind::Table(settings) = &value.kind
+                && let Some(value) = settings.get("commit_messages")
+                && let ValueKind::Table(messages) = &value.kind
+            {
+                // config otherwise coerces numeric/boolean subjects into strings.
+                for value in messages.values() {
+                    anyhow::ensure!(
+                        matches!(value.kind, ValueKind::String(_)),
+                        "{section}.commit_messages values must be strings"
+                    );
+                }
             }
         }
         // Deployment opt-ins must not be enabled by config's string/number coercion.
@@ -463,6 +469,9 @@ impl Repository {
 #[derive(Debug, Deserialize, Default)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub(super) struct RootConfig {
+    /// Automatically committed access mutations.
+    #[serde(default)]
+    crypt: crate::crypt::CryptConfig,
     /// Automatic native-secret commit messages.
     #[serde(default)]
     secrets: crate::secrets::SecretsConfig,

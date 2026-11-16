@@ -19,7 +19,7 @@ overlays:
   - 'apps/*'
 ```
 
-`format`, `repository`, `sync`, `host_overlay`, `apply`, `secrets`, and `overlays` are root-only settings.
+`format`, `repository`, `sync`, `host_overlay`, `apply`, `crypt`, `secrets`, and `overlays` are root-only settings.
 Root hooks are also repository-scoped. Ordinary [overlay fields](overlay.md),
 such as `target` and overlay rules, may appear here as inherited policy.
 Root `data` and `host` belong only to the repository-root overlay and do not
@@ -43,7 +43,32 @@ Empty messages, NULs, and undefined template variables are errors.
 
 The defaults expose **secret names in Git history**, even though the values
 remain encrypted. Use a name-free template such as `chore(secrets): added a secret`
-when names should stay private. YAML supports the same nested settings.
+to omit names from commit messages. Names remain visible in Git filenames.
+YAML supports the same nested settings.
+
+## Access commit messages
+
+User/key mutations, including first enrollment and rotation, create isolated
+commits. These root-only templates show their defaults:
+
+```toml
+[crypt.commit_messages]
+user_add = "chore(crypt): added user {{ user }}"
+user_delete = "chore(crypt): deleted user {{ user }}"
+user_revoke = "chore(crypt): revoked user {{ user }}"
+key_add = "chore(crypt): added keys for {{ user }}"
+key_detach = "chore(crypt): detached {{ user }}/{{ key }}"
+key_revoke = "chore(crypt): revoked {{ user }}/{{ key }}"
+key_rotate = "chore(crypt): rotated repository key"
+migrate = "chore(crypt): migrated repository metadata"
+```
+
+User operations expose `user`; enrollment also exposes `keys` and `count`, plus
+`key` for a single-key enrollment. Detach/key revocation expose `user` and `key`.
+Rotation and standalone access migration have no named inputs. Templates are
+strict, and secret values, credentials, environment data, and secret lookup
+functions are unavailable. Empty/NUL messages and non-string settings fail before
+tracked publication. Defaults apply to omitted settings. YAML uses the same keys.
 
 ## Default materialization
 
