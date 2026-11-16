@@ -2837,8 +2837,12 @@ mod tests {
         #[case] writes: usize,
         #[case] published: bool,
     ) {
-        let (directory, repo, key) = protected_repository();
-        let store = directory.path().join(crate::secrets::layout::PATH);
+        let (_directory, repo, key) = protected_repository();
+        // libgit2 resolves macOS's /var alias; journal only the repository's
+        // owned physical path, just as production mutation preparation does.
+        let store = access::root(&repo)
+            .unwrap()
+            .join(crate::secrets::layout::PATH);
         fs::create_dir(&store).unwrap();
         fs::write(store.join("TOKEN.age"), b"legacy encrypted bytes").unwrap();
         let backup = access::private_dir(&repo).join("legacy-secrets-test-backup");

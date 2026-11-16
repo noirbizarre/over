@@ -1033,27 +1033,33 @@ fn aggregate_case_collisions_fail_before_changing_the_store_index_or_head(
 #[cfg(unix)]
 #[test]
 fn access_mutations_preserve_unrelated_non_utf8_git_names_and_staging() {
-    use std::os::unix::ffi::OsStringExt as _;
+    use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
     let fixture = Fixture::new();
     let names = [
         PathBuf::from(std::ffi::OsString::from_vec(b"notes-\xff".to_vec())),
         PathBuf::from(std::ffi::OsString::from_vec(b"archive-\xfe".to_vec())).join("readme"),
         PathBuf::from(".over").join(std::ffi::OsString::from_vec(b"cache-\xfd".to_vec())),
     ];
-    for path in &names {
-        fs::create_dir_all(fixture.root.join(path).parent().unwrap()).unwrap();
-        fs::write(fixture.root.join(path), b"unrelated original bytes").unwrap();
-        success(
-            fixture
-                .command(Path::new("git"))
-                .args(["add", "--"])
-                .arg(path)
-                .output()
-                .unwrap(),
-        );
-    }
-    fixture.git(&["commit", "-qm", "unrelated raw filenames"]);
     let repo = git2::Repository::open(&fixture.root).unwrap();
+    let mut index = repo.index().unwrap();
+    let blob = repo.blob(b"unrelated original bytes").unwrap();
+    for path in &names {
+        #[cfg(target_os = "linux")]
+        {
+            fs::create_dir_all(fixture.root.join(path).parent().unwrap()).unwrap();
+            fs::write(fixture.root.join(path), b"unrelated original bytes").unwrap();
+        }
+        // APFS cannot materialize invalid UTF-8 filenames, but Git objects and
+        // index entries can contain them and must survive unrelated mutations.
+        let mut entry = index.get_path(Path::new(".over/crypt.json"), 0).unwrap();
+        entry.path = path.as_os_str().as_bytes().to_vec();
+        entry.id = blob;
+        entry.file_size = 0;
+        index.add(&entry).unwrap();
+    }
+    index.write().unwrap();
+    drop(index);
+    fixture.git(&["commit", "-qm", "unrelated raw filenames"]);
     let before = repo.head().unwrap().peel_to_tree().unwrap();
     let blobs: Vec<_> = names
         .iter()
@@ -1068,6 +1074,7 @@ fn access_mutations_preserve_unrelated_non_utf8_git_names_and_staging() {
     for (path, blob) in names.iter().zip(blobs) {
         assert_eq!(after.get_path(path).unwrap().id(), blob);
         assert_eq!(repo.index().unwrap().get_path(path, 0).unwrap().id, blob);
+        #[cfg(target_os = "linux")]
         assert_eq!(
             fs::read(fixture.root.join(path)).unwrap(),
             b"unrelated original bytes"

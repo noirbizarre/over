@@ -689,8 +689,11 @@ mod tests {
         assert_eq!(self::layout(&files).unwrap(), Some(Layout::Split(layout)));
         assert_eq!(access::load(&repo).unwrap(), registry);
         assert_eq!(
-            access::metadata_path(&repo).unwrap(),
-            directory.path().join(layout.header)
+            access::metadata_path(&repo)
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            directory.path().join(layout.header).canonicalize().unwrap()
         );
     }
 
