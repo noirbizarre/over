@@ -82,7 +82,7 @@ pub fn is_policy_extension(before: &[u8], after: &[u8]) -> bool {
     })
 }
 
-fn attribute_bytes(bytes: &[u8]) -> Vec<u8> {
+pub(crate) fn attribute_bytes(bytes: &[u8]) -> Vec<u8> {
     bytes
         .iter()
         .enumerate()
@@ -1692,6 +1692,10 @@ pub fn unlock_with(
     let _ownership =
         crate::materialize::virtual_checkout::generated_migration::ownership_guard(repo)?;
     let _guard = access::raw_guard(repo, true)?;
+    ensure!(
+        !super::mutation::pending(repo)?,
+        "interrupted encrypted mutation; run over crypt recover before unlocking"
+    );
     let pending = access::private_dir(repo)
         .join("transaction.json")
         .try_exists()?;
@@ -1773,6 +1777,10 @@ fn reserve_index(repo: &git2::Repository) -> Result<crate::actions::git::index::
 /// Inspect without weakening the lifecycle guard used by filters and other commands.
 pub(crate) fn unlock_uses_local_key(repo: &git2::Repository) -> Result<bool> {
     let _guard = access::raw_guard(repo, false)?;
+    ensure!(
+        !super::mutation::pending(repo)?,
+        "interrupted encrypted mutation; run over crypt recover before unlocking"
+    );
     if access::private_dir(repo)
         .join("transaction.json")
         .try_exists()?
@@ -2368,15 +2376,26 @@ pub fn rotate_committed_with<C: age::Callbacks>(
     let mut primary = None;
     let mut locals = Vec::new();
     for worktree in &worktrees {
+        let mut observation = super::mutation::LocalObservation::capture(worktree)?;
         ensure!(
-            access::load(worktree)? == original,
+            super::access_storage::parse(observation.metadata())?.as_ref() == Some(&original),
             "linked worktrees have divergent access metadata; reconcile before rotation"
         );
         let before = super::mutation::clean_metadata(worktree)?;
+        ensure!(
+            &before == observation.metadata(),
+            "access metadata changed during rotation preparation"
+        );
         let encoded = super::access_storage::encode_preserving(&registry, &before)?;
         let root = access::root(worktree)?;
-        let head = worktree.head()?.peel_to_tree()?;
-        let mut index = worktree.index()?;
+        let head = worktree
+            .find_commit(
+                observation
+                    .parent()
+                    .context("rotation requires a committed source")?,
+            )?
+            .tree()?;
+        let mut index = observation.take_index()?;
         ensure!(
             !index.has_conflicts(),
             "resolve index conflicts before rotation"
@@ -2406,15 +2425,21 @@ pub fn rotate_committed_with<C: age::Callbacks>(
             }
         }
         for path in attributes {
+            observation.observe_file(root.join(&path))?;
             let old_entry = head.get_path(&path).ok();
             let staged = index.get_path(&path, 0);
             let current = super::buffer::read_optional(&root.join(&path))?;
             ensure!(
                 old_entry.as_ref().map(|entry| entry.id()) == staged.as_ref().map(|entry| entry.id)
                     && match old_entry {
-                        Some(entry) => current.as_ref().is_some_and(|bytes| worktree
-                            .find_blob(entry.id())
-                            .is_ok_and(|blob| blob.content() == bytes.as_slice())),
+                        Some(entry) => match current.as_ref() {
+                            Some(bytes) => bootstrap_equal(
+                                &path,
+                                worktree.find_blob(entry.id())?.content(),
+                                bytes
+                            ),
+                            None => false,
+                        },
                         None => current.is_none(),
                     },
                 "commit or restore protection-policy changes before rotation"
@@ -2471,6 +2496,7 @@ pub fn rotate_committed_with<C: age::Callbacks>(
             let domain = format::file_domain(stored.content())?;
             let plaintext = old.decrypt(stored.content(), domain)?;
             let physical = root.join(&path);
+            observation.observe_file(physical.clone())?;
             crate::materialize::disposal::validate_relative_ancestors(root, &physical)?;
             let metadata = fs::symlink_metadata(&physical)?;
             ensure!(
@@ -2503,6 +2529,7 @@ pub fn rotate_committed_with<C: age::Callbacks>(
         }
         for path in crate::secrets::layout::native_paths(root)? {
             if index.get_path(&path, 0).is_none() {
+                observation.observe_file(root.join(&path))?;
                 let bytes = fs::read(root.join(&path))?;
                 let domain = format::file_domain(&bytes)?;
                 let plaintext = old.decrypt(&bytes, domain)?;
@@ -2517,6 +2544,7 @@ pub fn rotate_committed_with<C: age::Callbacks>(
             }
         }
         for (path, bytes) in &super::access_storage::delta(&before, &encoded) {
+            observation.observe_metadata(path)?;
             working.insert(root.join(path), bytes.clone());
         }
         if worktree.path() == repo.path() {
@@ -2527,7 +2555,12 @@ pub fn rotate_committed_with<C: age::Callbacks>(
                 Some(index_bytes(worktree, &index)?),
             );
         }
-        locals.push((worktree, working, preserved));
+        locals.push((
+            worktree.path() == repo.path(),
+            observation,
+            working,
+            preserved,
+        ));
     }
     let mut mutation = super::mutation::Mutation::prepare(
         repo,
@@ -2535,11 +2568,10 @@ pub fn rotate_committed_with<C: age::Callbacks>(
         message,
         &[],
     )?;
-    for (worktree, updates, preserved) in locals {
-        mutation.add_local(worktree, updates)?;
+    for (primary, observation, updates, preserved) in locals {
+        mutation.add_local(observation, updates)?;
         for path in preserved {
-            mutation.observe_file(path.clone())?;
-            if worktree.path() == repo.path() {
+            if primary {
                 mutation.preserve_worktree(path);
             }
         }

@@ -147,6 +147,113 @@ pub(crate) struct Mutation {
     preserved: BTreeSet<PathBuf>,
 }
 
+/// Original inputs travel with a computed sibling update. Re-reading them when
+/// registering the result would accept and then overwrite intervening staging.
+pub(crate) struct LocalObservation {
+    directory: PathBuf,
+    root: PathBuf,
+    head: Vec<u8>,
+    parent: Option<Oid>,
+    metadata: access_storage::Files,
+    observed: SensitiveFiles,
+    ancestry: Vec<crate::materialize::disposal::PathGuard>,
+    index: Option<git2::Index>,
+}
+
+impl LocalObservation {
+    pub(crate) fn capture(repo: &Repository) -> Result<Self> {
+        let index_path = repo.path().join("index");
+        // Capture decoded entries and their raw baseline under the same read
+        // reservation; otherwise an intervening writer can split those snapshots.
+        let _reservation = index::IndexLock::acquire(&index_path)?;
+        let mut observation = Self {
+            directory: repo.path().canonicalize()?,
+            root: access::root(repo)?.to_path_buf(),
+            head: fs::read(repo.path().join("HEAD"))?,
+            parent: parent(repo)?,
+            metadata: access_storage::worktree(repo)?,
+            observed: SensitiveFiles::default(),
+            ancestry: Vec::new(),
+            index: None,
+        };
+        observation.observe_file(repo.path().join("index"))?;
+        observation.observe_file(observation.root.join(access_storage::ATTRIBUTES))?;
+        let mut frozen = git2::Index::new()?;
+        if observation
+            .observed
+            .get(&index_path)
+            .is_some_and(Option::is_some)
+        {
+            let mut source = repo.index()?;
+            source.read(true)?;
+            for entry in source.iter() {
+                frozen.add(&entry)?;
+            }
+        }
+        observation.index = Some(frozen);
+        Ok(observation)
+    }
+
+    pub(crate) fn parent(&self) -> Option<Oid> {
+        self.parent
+    }
+
+    pub(crate) fn metadata(&self) -> &access_storage::Files {
+        &self.metadata
+    }
+
+    pub(crate) fn take_index(&mut self) -> Result<git2::Index> {
+        self.index
+            .take()
+            .context("rotation index snapshot has already been consumed")
+    }
+
+    pub(crate) fn observe_file(&mut self, path: PathBuf) -> Result<()> {
+        if !self.observed.contains_key(&path) {
+            self.ancestry.push(parent_guard(&path)?);
+            self.observed.insert(path.clone(), optional(&path)?);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn observe_metadata(&mut self, path: &Path) -> Result<()> {
+        ensure!(
+            access_storage::is_path(path),
+            "expected an access metadata path"
+        );
+        let absolute = self.root.join(path);
+        self.ancestry.push(parent_guard(&absolute)?);
+        // Absence is already known from the complete captured namespace; never
+        // re-baseline a newly appeared grant after computing the metadata delta.
+        self.observed
+            .insert(absolute, self.metadata.get(path).cloned());
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<()> {
+        let repo = Repository::open(&self.directory)?;
+        ensure!(
+            fs::read(self.directory.join("HEAD"))? == self.head && parent(&repo)? == self.parent,
+            "participating worktree HEAD changed during rotation preparation"
+        );
+        ensure!(
+            access_storage::worktree(&repo)? == self.metadata,
+            "participating access inventory changed during rotation preparation"
+        );
+        for ancestry in &self.ancestry {
+            ancestry.verify()?;
+        }
+        for (path, expected) in self.observed.iter() {
+            let current = zeroize::Zeroizing::new(optional(path)?);
+            ensure!(
+                *current == *expected,
+                "participating worktree input changed during rotation preparation"
+            );
+        }
+        Ok(())
+    }
+}
+
 fn parent(repo: &Repository) -> Result<Option<Oid>> {
     match repo.head() {
         Ok(head) => Ok(Some(head.peel_to_commit()?.id())),
@@ -312,18 +419,19 @@ impl Mutation {
                     let bytes = observed.get(&path).and_then(Option::as_ref);
                     // Rotation may supply a clean unlocked representation of a protected blob.
                     let stored = repo.find_blob(old.id())?;
-                    let matches = bytes.is_some_and(|bytes| bytes.as_slice() == stored.content())
-                        || (super::format::recognized(stored.content())
-                            && bytes.is_some_and(|bytes| {
-                                access::local_key(repo)
-                                    .and_then(|key| {
-                                        key.decrypt(
-                                            stored.content(),
-                                            super::format::file_domain(stored.content())?,
-                                        )
-                                    })
-                                    .is_ok_and(|plain| plain.as_slice() == bytes.as_slice())
-                            }));
+                    let matches = bytes.is_some_and(|bytes| {
+                        policy::bootstrap_equal(relative, stored.content(), bytes)
+                    }) || (super::format::recognized(stored.content())
+                        && bytes.is_some_and(|bytes| {
+                            access::local_key(repo)
+                                .and_then(|key| {
+                                    key.decrypt(
+                                        stored.content(),
+                                        super::format::file_domain(stored.content())?,
+                                    )
+                                })
+                                .is_ok_and(|plain| plain.as_slice() == bytes.as_slice())
+                        }));
                     ensure!(
                         matches,
                         "mutation path '{}' has unstaged changes; commit or restore them first",
@@ -341,7 +449,18 @@ impl Mutation {
                 );
             }
             if let Some(bytes) = after {
-                policy::stage_blob(&mut staged, repo, relative, bytes)?;
+                // Attribute blobs use Git's canonical LF representation while
+                // their prepared worktree output retains the checkout's EOLs.
+                let canonical = relative
+                    .file_name()
+                    .is_some_and(|name| name == ".gitattributes")
+                    .then(|| policy::attribute_bytes(bytes));
+                policy::stage_blob(
+                    &mut staged,
+                    repo,
+                    relative,
+                    canonical.as_deref().unwrap_or(bytes),
+                )?;
                 candidate.add(
                     &staged
                         .get_path(relative, 0)
@@ -414,21 +533,38 @@ impl Mutation {
     /// Local updates (including sibling indexes) never enter the initiating commit tree.
     pub(crate) fn add_local(
         &mut self,
-        repo: &Repository,
+        mut observation: LocalObservation,
         updates: BTreeMap<PathBuf, Option<Vec<u8>>>,
     ) -> Result<()> {
+        observation.validate()?;
         self.inventories
-            .insert(repo.path().canonicalize()?, access_storage::worktree(repo)?);
+            .insert(observation.directory.clone(), observation.metadata);
         self.heads.insert(
-            repo.path().canonicalize()?,
+            observation.directory,
             (
-                fs::read(repo.path().join("HEAD"))?,
-                parent(repo)?.map(|oid| oid.to_string()),
+                observation.head,
+                observation.parent.map(|oid| oid.to_string()),
             ),
         );
+        self.ancestry.extend(observation.ancestry);
+        for (path, before) in observation.observed.iter() {
+            if let Some(existing) = self.observed.get(path) {
+                ensure!(
+                    existing == before,
+                    "mutation input changed before local-update registration"
+                );
+            }
+        }
+        for (path, before) in &mut observation.observed.0 {
+            if !self.observed.contains_key(path) {
+                self.observed.insert(path.clone(), std::mem::take(before));
+            }
+        }
         for (path, bytes) in updates {
-            self.ancestry.push(parent_guard(&path)?);
-            self.observed.insert(path.clone(), optional(&path)?);
+            ensure!(
+                self.observed.contains_key(&path),
+                "local update has no original observation"
+            );
             self.extra.insert(path, bytes);
         }
         Ok(())
@@ -438,14 +574,6 @@ impl Mutation {
     /// into another publication buffer or writing it back to the filesystem.
     pub(crate) fn preserve_worktree(&mut self, path: PathBuf) {
         self.preserved.insert(path);
-    }
-
-    pub(crate) fn observe_file(&mut self, path: PathBuf) -> Result<()> {
-        self.ancestry.push(parent_guard(&path)?);
-        if !self.observed.contains_key(&path) {
-            self.observed.insert(path.clone(), optional(&path)?);
-        }
-        Ok(())
     }
 
     fn validate(&self, repo: &Repository) -> Result<()> {
@@ -1004,4 +1132,77 @@ fn parent_guard(path: &Path) -> Result<crate::materialize::disposal::PathGuard> 
             .context("mutation path has no existing ancestor")?;
     }
     crate::materialize::disposal::PathGuard::capture(parent)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_sibling_index_replacements_cannot_adopt_new_unrelated_staging() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = Repository::init(directory.path()).unwrap();
+        let observation = LocalObservation::capture(&repo).unwrap();
+        let replacement = policy::index_bytes(&repo, &git2::Index::new().unwrap()).unwrap();
+        fs::write(directory.path().join("unrelated"), b"concurrent staging").unwrap();
+        let mut index = repo.index().unwrap();
+        policy::stage_blob(
+            &mut index,
+            &repo,
+            Path::new("unrelated"),
+            b"concurrent staging",
+        )
+        .unwrap();
+        index.write().unwrap();
+        let concurrent = fs::read(repo.path().join("index")).unwrap();
+        let mut mutation = Mutation::prepare(
+            &repo,
+            [(PathBuf::from("managed"), Some(b"planned".to_vec()))].into(),
+            "chore: planned".into(),
+            &[],
+        )
+        .unwrap();
+        assert!(
+            mutation
+                .add_local(
+                    observation,
+                    [(repo.path().join("index"), Some(replacement))].into()
+                )
+                .is_err()
+        );
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), concurrent);
+        assert!(
+            repo.index()
+                .unwrap()
+                .get_path(Path::new("unrelated"), 0)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn local_update_registration_rejects_edits_after_the_original_file_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = Repository::init(directory.path()).unwrap();
+        let path = directory.path().join("local");
+        fs::write(&path, b"original").unwrap();
+        let mut observation = LocalObservation::capture(&repo).unwrap();
+        observation.observe_file(path.clone()).unwrap();
+        fs::write(&path, b"independent edit").unwrap();
+        let mut mutation = Mutation::prepare(
+            &repo,
+            [(PathBuf::from("managed"), Some(b"planned".to_vec()))].into(),
+            "chore: planned".into(),
+            &[],
+        )
+        .unwrap();
+        assert!(
+            mutation
+                .add_local(
+                    observation,
+                    [(path.clone(), Some(b"stale result".to_vec()))].into()
+                )
+                .is_err()
+        );
+        assert_eq!(fs::read(path).unwrap(), b"independent edit");
+    }
 }

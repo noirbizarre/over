@@ -106,16 +106,21 @@ pub(crate) fn is_bootstrap_path(path: &Path) -> bool {
 
 pub(crate) fn bootstrap_attributes(before: &[u8]) -> Vec<u8> {
     let mut bytes = before.to_vec();
+    let newline = if before.windows(2).any(|bytes| bytes == b"\r\n") {
+        b"\r\n".as_slice()
+    } else {
+        b"\n".as_slice()
+    };
     for line in BOOTSTRAP_RULES.lines() {
         if !before
             .split(|byte| *byte == b'\n')
             .any(|existing| existing.strip_suffix(b"\r").unwrap_or(existing) == line.as_bytes())
         {
             if !bytes.is_empty() && !bytes.ends_with(b"\n") {
-                bytes.push(b'\n');
+                bytes.extend_from_slice(newline);
             }
             bytes.extend_from_slice(line.as_bytes());
-            bytes.push(b'\n');
+            bytes.extend_from_slice(newline);
         }
     }
     if before.is_empty() {

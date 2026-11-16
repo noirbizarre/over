@@ -932,3 +932,60 @@ fn flattened_bootstrap_files_cannot_be_selected_for_encryption() {
     let findings = success(fixture.over(&["crypt", "list"]));
     assert!(String::from_utf8_lossy(&findings.stdout).contains("bootstrap metadata"));
 }
+
+#[test]
+fn clean_crlf_attributes_allow_secret_creation_and_rotation() {
+    let fixture = Fixture::new();
+    fixture.git(&["config", "core.autocrlf", "true"]);
+    let path = fixture.root.join(".over/.gitattributes");
+    let attributes = fs::read_to_string(&path).unwrap().replace('\n', "\r\n");
+    fs::write(&path, attributes).unwrap();
+    assert!(fixture.git(&["status", "--porcelain"]).is_empty());
+    success(fixture.secret("TOKEN", b"line endings are not edits", false));
+    assert!(fixture.git(&["status", "--porcelain"]).is_empty());
+    success(fixture.over(&["key", "rotate"]));
+    assert_eq!(fixture.value("TOKEN"), b"line endings are not edits");
+    assert!(fixture.git(&["status", "--porcelain"]).is_empty());
+    let attributes = fs::read(&path).unwrap();
+    assert!(attributes.windows(2).any(|bytes| bytes == b"\r\n"));
+    assert!(
+        !fixture
+            .git(&["show", "HEAD:.over/.gitattributes"])
+            .contains(&b'\r')
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unlock_cannot_install_a_key_for_an_unpublished_enrollment() {
+    let fixture = Fixture::empty();
+    hook(
+        &fixture,
+        "reference-transaction",
+        "if [ \"$1\" = prepared ]; then set -- $(ps -o ppid= -p \"$PPID\"); kill -KILL \"$1\"; exit 1; fi",
+    );
+    let identity = fixture.temp.path().join("alice.age");
+    assert!(
+        !fixture
+            .over(&[
+                "user",
+                "add",
+                "alice",
+                "--identity-output",
+                identity.to_str().unwrap()
+            ])
+            .status
+            .success()
+    );
+    assert!(fixture.root.join(".git/over-crypt/mutation.json").is_file());
+    assert!(!fixture.root.join(".git/over-crypt/key").exists());
+    fs::remove_file(fixture.root.join(".git/hooks/reference-transaction")).unwrap();
+    let unlock = fixture.over(&["unlock", "--identity", identity.to_str().unwrap()]);
+    assert!(!unlock.status.success());
+    assert!(String::from_utf8_lossy(&unlock.stderr).contains("recover"));
+    assert!(!fixture.root.join(".git/over-crypt/key").exists());
+    success(fixture.over(&["crypt", "recover"]));
+    assert!(!fixture.root.join(".over/crypt.json").exists());
+    assert!(!fixture.root.join(".git/over-crypt/key").exists());
+    fixture.enroll("bob");
+}

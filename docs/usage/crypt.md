@@ -581,6 +581,10 @@ refusal before rollback. Existing unrelated files and nonempty new scaffolds
 are retained.
 If a mutation journal remains, use `over crypt recover`. After a completed older
 rotation with a stale local key and no journal, unlock through the new envelopes.
+Unlock refuses pending access/secret mutation journals before authentication or
+key installation. Rotation keeps the original sibling index/file observations
+through publication and rejects intervening edits rather than adopting them as
+a new baseline. Git-equivalent CRLF attribute checkouts are accepted as clean.
 
 ## Committed metadata and pre-checkout detection
 

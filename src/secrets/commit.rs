@@ -42,15 +42,21 @@ impl Mutation {
             }
         }
         let mut attributes = fs::read(access::root(repo)?.join(access_storage::ATTRIBUTES))?;
-        let rule = b"secrets/* filter=over diff=over -text\n";
+        let rule = b"secrets/* filter=over diff=over -text";
         if !attributes
-            .split_inclusive(|byte| *byte == b'\n')
-            .any(|line| line == rule)
+            .split(|byte| *byte == b'\n')
+            .any(|line| line.strip_suffix(b"\r").unwrap_or(line) == rule)
         {
+            let newline = if attributes.windows(2).any(|bytes| bytes == b"\r\n") {
+                b"\r\n".as_slice()
+            } else {
+                b"\n".as_slice()
+            };
             if !attributes.ends_with(b"\n") {
-                attributes.push(b'\n');
+                attributes.extend_from_slice(newline);
             }
             attributes.extend_from_slice(rule);
+            attributes.extend_from_slice(newline);
             updates.insert(PathBuf::from(access_storage::ATTRIBUTES), Some(attributes));
         }
         let entries = updates
