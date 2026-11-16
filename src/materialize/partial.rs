@@ -8,7 +8,6 @@
 //! read-only — actual writes stay in
 //! [`crate::actions::partial::EnsurePartialBlock`].
 
-use std::fs;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
@@ -33,6 +32,7 @@ fn permission_drift(
     path: &Path,
     desired: Option<FileMode>,
 ) -> Result<Option<(FileMode, FileMode)>> {
+    use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
     let Some(desired) = desired else {
@@ -283,6 +283,8 @@ pub(crate) fn reconcile_partials(entries: &[DesiredEntry], ctx: Ctx) -> Result<(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::desired::Provenance;
     use assert_fs::TempDir;

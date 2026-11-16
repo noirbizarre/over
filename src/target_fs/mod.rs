@@ -159,6 +159,7 @@ impl Drop for PreparedEffect {
 }
 
 impl Request {
+    #[cfg(unix)]
     fn accepts(&self, reply: &Reply) -> bool {
         match (self, reply) {
             (_, Reply::Error { .. }) => true,

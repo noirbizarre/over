@@ -535,24 +535,17 @@ impl TreeChanges {
     }
 }
 
+#[cfg(unix)]
 pub(crate) fn executable_permissions(permissions: fs::Permissions, mode: i32) -> fs::Permissions {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Git records executability, not private access bits such as 0600.
-        let existing = permissions.mode();
-        let bits = if mode & 0o111 != 0 {
-            existing | ((existing & 0o444) >> 2)
-        } else {
-            existing & !0o111
-        };
-        fs::Permissions::from_mode(bits)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = mode;
-        permissions
-    }
+    use std::os::unix::fs::PermissionsExt;
+    // Git records executability, not private access bits such as 0600.
+    let existing = permissions.mode();
+    let bits = if mode & 0o111 != 0 {
+        existing | ((existing & 0o444) >> 2)
+    } else {
+        existing & !0o111
+    };
+    fs::Permissions::from_mode(bits)
 }
 
 /// Git-blob hash of the file currently on disk at `path` — the same `Oid`
