@@ -23,6 +23,7 @@ pub(crate) mod generated_snapshot;
 pub(crate) mod git;
 pub(crate) mod initial;
 pub(crate) mod metadata;
+pub(crate) mod safety;
 pub(crate) mod snapshot;
 pub(crate) mod state;
 

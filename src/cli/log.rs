@@ -1006,8 +1006,7 @@ mod tests {
         fs::write(ov.join("a.txt"), "changed").unwrap();
         commit_all(&repo, "second commit");
 
-        let root = tmp.child("root");
-        root.create_dir_all().unwrap();
+        let root = TempDir::new().unwrap();
 
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(
@@ -1028,8 +1027,7 @@ mod tests {
         fs::write(tmp.path().join("unrelated.txt"), "unrelated").unwrap();
         commit_all(&git_repo, "unrelated change");
 
-        let root = tmp.child("root");
-        root.create_dir_all().unwrap();
+        let root = TempDir::new().unwrap();
         // Materialize the virtual checkout so a real target directory
         // exists to `cd` into.
         let repo = Repository::new(tmp.path().to_path_buf());

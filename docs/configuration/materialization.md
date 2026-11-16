@@ -29,6 +29,13 @@ Fresh checkouts own projected files, sharing destination directories with other
 overlays. Initial materialization reads committed source `HEAD`, so commit source
 content before applying it. A virtual checkout is distinct from a declared `git` clone.
 
+The source repository may live inside its target, for example `OVER_HOME=~/.dotfiles`
+with checkouts targeting `~`. The home directory is a shared container: deployed
+files must stay disjoint from the source worktree and its Git administrative
+storage. Checks use selected destination paths after exclusions and rendering,
+including physical paths resolved through symlinks. Replacements that would
+overwrite a source-containing directory are refused, even with `--force`.
+
 ### Compose flat application overlays
 
 The following root configuration supports applications targeting the same home:

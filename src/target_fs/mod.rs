@@ -592,18 +592,25 @@ impl TargetFs {
                 return self.location(target);
             }
         }
-        let physical = match self.request(Request::Physical {
-            path: WirePath::new(target),
-        })? {
-            Reply::Paths(mut paths) => paths.remove(0).path(),
-            _ => bail!("unexpected privileged physical-path response"),
-        };
+        let physical = self.physical(target)?;
         if metadata.is_some_and(|metadata| metadata.is_symlink())
             && physical == crate::overlays::mapping::physical(source)?
         {
             self.location(target)
         } else {
             Ok(physical)
+        }
+    }
+
+    pub(crate) fn physical(&self, path: &Path) -> Result<PathBuf> {
+        if !self.sudo {
+            return crate::overlays::mapping::physical(path);
+        }
+        match self.request(Request::Physical {
+            path: WirePath::new(path),
+        })? {
+            Reply::Paths(mut paths) if paths.len() == 1 => Ok(paths.remove(0).path()),
+            _ => bail!("unexpected privileged physical-path response"),
         }
     }
 

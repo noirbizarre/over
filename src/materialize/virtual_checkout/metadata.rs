@@ -12,6 +12,10 @@ fn assignments(entry: &DesiredEntry) -> Result<Vec<(PathBuf, Access)>> {
     if !entry.access.has_metadata_policy() {
         return Ok(Vec::new());
     }
+    // Metadata follows aliases too; validate before applying even a mode-only
+    // update to an otherwise unchanged deployed file. Container updates are
+    // nonrecursive, so an ancestor home remains a valid metadata target.
+    super::safety::validate_entry(entry)?;
     let Provenance::Overlay { source, .. } = &entry.provenance else {
         return Ok(Vec::new());
     };

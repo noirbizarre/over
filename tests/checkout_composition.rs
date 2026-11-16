@@ -13,9 +13,17 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_nested_source(false)
+    }
+
+    fn with_nested_source(nested: bool) -> Self {
         let temp = TempDir::new().unwrap();
-        let source = temp.path().join("source");
         let home = temp.path().join("home");
+        let source = if nested {
+            home.join(".dotfiles")
+        } else {
+            temp.path().join("source")
+        };
         fs::create_dir_all(source.join("hosts/laptop")).unwrap();
         fs::write(
             source.join("over.yaml"),
@@ -102,13 +110,313 @@ fn commit_all(repo: &git2::Repository) {
     .unwrap();
 }
 
+#[rstest::rstest]
+#[case(".dotfiles")]
+#[case(".dotfiles/untracked")]
+#[case(".dotfiles/apps/git/.gitrc")]
+fn nested_sources_are_protected_before_any_checkout_is_published(#[case] destination: &str) {
+    let fixture = Fixture::with_nested_source(true);
+    let malicious = fixture.source.join("apps/git").join(destination);
+    fs::create_dir_all(malicious.parent().unwrap()).unwrap();
+    // The final case deliberately matches an existing file: adoption must not
+    // grant ownership inside the source any more than overwriting would.
+    fs::write(malicious, "git\n").unwrap();
+    commit_all(&fixture.repo());
+    let repo = fixture.repo();
+    let head = repo.head().unwrap().target();
+    let index = fs::read(repo.path().join("index")).unwrap();
+    let config = fs::read(repo.path().join("config")).unwrap();
+    fixture
+        .command("apply")
+        .args(["hosts/laptop", "--force", "--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .failure()
+        .stderr(contains("protected source storage"));
+    assert!(!fixture.home.join(".env.d").exists());
+    assert!(
+        !fixture
+            .temp
+            .path()
+            .join("state/over/virtual_checkout.toml")
+            .exists()
+    );
+    assert_eq!(fixture.repo().head().unwrap().target(), head);
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+    assert_eq!(fs::read(repo.path().join("config")).unwrap(), config);
+    assert_eq!(
+        fs::read(fixture.source.join("apps/git/.gitrc")).unwrap(),
+        b"git\n"
+    );
+}
+
+#[cfg(unix)]
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn aliases_cannot_grant_deployment_authority_inside_the_source(#[case] leaf: bool) {
+    let fixture = Fixture::with_nested_source(true);
+    let alias = fixture.home.join(".env.d");
+    if leaf {
+        fs::create_dir_all(&alias).unwrap();
+        std::os::unix::fs::symlink(fixture.source.join("apps/git/.gitrc"), alias.join("git"))
+            .unwrap();
+    } else {
+        std::os::unix::fs::symlink(&fixture.source, &alias).unwrap();
+    }
+    fixture
+        .command("apply")
+        .args(["apps/git", "--force", "--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .failure()
+        .stderr(contains("protected source storage"));
+    assert!(!fixture.home.join(".alias.d").exists());
+    assert_eq!(
+        fs::read(fixture.source.join("apps/git/.gitrc")).unwrap(),
+        b"git\n"
+    );
+}
+
 #[test]
-fn flat_checkout_overlays_share_fragments_and_root_files_without_owning_foreign_content() {
-    let fixture = Fixture::new();
+fn excluded_source_paths_do_not_block_disjoint_home_checkouts() {
+    let fixture = Fixture::with_nested_source(true);
+    fs::create_dir_all(fixture.source.join("apps/git/.dotfiles")).unwrap();
+    fs::write(
+        fixture.source.join("apps/git/.dotfiles/private"),
+        "never deploy",
+    )
+    .unwrap();
+    fs::write(
+        fixture.source.join("apps/git/over.yaml"),
+        "exclude: [.dotfiles]\n",
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    fixture.apply();
+    assert!(!fixture.source.join("private").exists());
+    assert_eq!(fs::read(fixture.home.join(".gitrc")).unwrap(), b"git\n");
+}
+
+#[test]
+fn a_separate_git_directory_is_protected_from_checkout_outputs() {
+    let fixture = Fixture::with_nested_source(true);
+    let admin = fixture.home.join("admin");
+    fs::rename(fixture.source.join(".git"), &admin).unwrap();
+    fs::write(
+        fixture.source.join(".git"),
+        format!("gitdir: {}\n", admin.display()),
+    )
+    .unwrap();
+    fs::create_dir_all(fixture.source.join("apps/git/admin")).unwrap();
+    fs::write(
+        fixture.source.join("apps/git/admin/config"),
+        "overwrite config",
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    let config = fs::read(admin.join("config")).unwrap();
+    fixture
+        .command("apply")
+        .args(["apps/git", "--force", "--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .failure()
+        .stderr(contains("protected source storage"));
+    assert_eq!(fs::read(admin.join("config")).unwrap(), config);
+    assert!(!fixture.home.join(".env.d").exists());
+}
+
+#[cfg(unix)]
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn linked_worktrees_protect_both_private_and_common_git_storage(#[case] private: bool) {
+    let mut fixture = Fixture::with_nested_source(true);
+    let linked = fixture.home.join("linked");
+    fixture.repo().worktree("linked", &linked, None).unwrap();
+    fixture.source = linked;
+    let repo = fixture.repo();
+    let storage = if private {
+        repo.path()
+    } else {
+        repo.commondir()
+    };
+    std::os::unix::fs::symlink(storage, fixture.home.join("admin")).unwrap();
+    fs::create_dir_all(fixture.source.join("apps/git/admin")).unwrap();
+    fs::write(fixture.source.join("apps/git/admin/new"), "unsafe output").unwrap();
+    commit_all(&fixture.repo());
+    let repo = fixture.repo();
+    let config = fs::read(repo.commondir().join("config")).unwrap();
+    let index = fs::read(repo.path().join("index")).unwrap();
+    fixture
+        .command("apply")
+        .args(["apps/git", "--force", "--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .failure()
+        .stderr(contains("protected source storage"));
+    assert_eq!(fs::read(repo.commondir().join("config")).unwrap(), config);
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+    assert!(!fixture.home.join(".env.d").exists());
+}
+
+#[test]
+fn source_updates_cannot_acquire_the_source_repository_as_a_destination() {
+    let fixture = Fixture::with_nested_source(true);
+    fixture.apply();
+    fs::create_dir_all(fixture.source.join("apps/git/.dotfiles")).unwrap();
+    fs::write(fixture.source.join("apps/git/.dotfiles/new"), "unsafe").unwrap();
+    fs::write(
+        fixture.source.join("apps/git/.env.d/git"),
+        "safe sibling update",
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    let index = fs::read(fixture.repo().path().join("index")).unwrap();
+    let state_path = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let state = fs::read(&state_path).unwrap();
+    fixture
+        .command("sync")
+        .args(["apps/git", "--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .failure()
+        .stderr(contains("protected source storage"));
+    assert!(!fixture.source.join("new").exists());
+    assert_eq!(fs::read(fixture.home.join(".env.d/git")).unwrap(), b"git\n");
+    assert_eq!(
+        fs::read(fixture.repo().path().join("index")).unwrap(),
+        index
+    );
+    assert_eq!(fs::read(state_path).unwrap(), state);
+}
+
+#[test]
+fn explicit_acquisition_cannot_claim_files_inside_the_source() {
+    let fixture = Fixture::with_nested_source(true);
+    fixture.apply();
+    let private = fixture.source.join("private");
+    fs::write(&private, "keep source content").unwrap();
+    let index = fs::read(fixture.repo().path().join("index")).unwrap();
+    fixture
+        .command("add")
+        .args(["--overlay", "apps/git", "--target"])
+        .arg(&fixture.home)
+        .arg(&private)
+        .assert()
+        .failure()
+        .stderr(contains("protected source storage"));
+    assert_eq!(fs::read(private).unwrap(), b"keep source content");
+    assert_eq!(
+        fs::read(fixture.repo().path().join("index")).unwrap(),
+        index
+    );
+}
+
+#[test]
+fn an_explicit_checkout_target_can_be_a_source_containing_home() {
+    let fixture = Fixture::with_nested_source(true);
+    fs::write(
+        fixture.source.join("apps/git/over.yaml"),
+        format!("target: {:?}\n", fixture.home.to_string_lossy()),
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    fixture
+        .command("apply")
+        .args(["apps/git", "--no-prompt"])
+        .assert()
+        .success();
+    assert_eq!(fs::read(fixture.home.join(".env.d/git")).unwrap(), b"git\n");
+}
+
+#[test]
+fn ordinary_siblings_of_generated_files_cannot_write_inside_the_source() {
+    let fixture = Fixture::with_nested_source(true);
+    fs::write(
+        fixture.source.join("apps/git/over.yaml"),
+        "rules:\n  - {path: '*.jinja', template: true, strip_extension: true}\n",
+    )
+    .unwrap();
+    fs::write(fixture.source.join("apps/git/safe.jinja"), "safe output").unwrap();
+    fs::create_dir_all(fixture.source.join("apps/git/.dotfiles")).unwrap();
+    fs::write(
+        fixture.source.join("apps/git/.dotfiles/unsafe"),
+        "unsafe sibling",
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    fixture
+        .command("apply")
+        .args(["apps/git", "--force", "--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .failure()
+        .stderr(contains("protected source storage"));
+    assert!(!fixture.home.join("safe").exists());
+    assert!(!fixture.source.join("unsafe").exists());
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn generated_checkout_destinations_cannot_enter_the_source(#[case] unsafe_destination: bool) {
+    let fixture = Fixture::with_nested_source(true);
+    fs::write(fixture.source.join("apps/git/over.yaml"), "data: {directory: .dotfiles}\nrules:\n  - {path: '**/*.jinja', template: true, strip_extension: true}\n").unwrap();
+    let directory = if unsafe_destination {
+        "{{ data.directory }}"
+    } else {
+        "rendered"
+    };
+    let template = fixture
+        .source
+        .join("apps/git")
+        .join(directory)
+        .join("new.jinja");
+    fs::create_dir_all(template.parent().unwrap()).unwrap();
+    fs::write(template, "rendered content\n").unwrap();
+    commit_all(&fixture.repo());
+    if unsafe_destination {
+        fixture
+            .command("apply")
+            .args(["apps/git", "--force", "--no-prompt", "--target"])
+            .arg(&fixture.home)
+            .assert()
+            .failure()
+            .stderr(contains("protected source storage"));
+        assert!(!fixture.home.join(".env.d").exists());
+        assert!(!fixture.source.join("new").exists());
+    } else {
+        fixture.apply();
+        fixture.apply();
+        assert_eq!(
+            fs::read(fixture.home.join("rendered/new")).unwrap(),
+            b"rendered content"
+        );
+        assert_eq!(fs::read(fixture.home.join(".env.d/git")).unwrap(), b"git\n");
+    }
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn flat_checkout_overlays_share_fragments_and_root_files_without_owning_foreign_content(
+    #[case] nested: bool,
+) {
+    let fixture = Fixture::with_nested_source(nested);
     fs::create_dir_all(&fixture.home).unwrap();
     fs::write(fixture.home.join("foreign"), "keep").unwrap();
     fixture.apply();
     fixture.apply();
+    for command in ["status", "diff"] {
+        fixture
+            .command(command)
+            .args(["hosts/laptop", "--target"])
+            .arg(&fixture.home)
+            .assert()
+            .success();
+    }
     for app in ["git", "ssh"] {
         for directory in [
             ".env.d",
@@ -137,9 +445,11 @@ fn flat_checkout_overlays_share_fragments_and_root_files_without_owning_foreign_
     );
 }
 
-#[test]
-fn reverse_add_and_commit_isolate_siblings_sharing_a_target() {
-    let fixture = Fixture::new();
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn reverse_add_and_commit_isolate_siblings_sharing_a_target(#[case] nested: bool) {
+    let fixture = Fixture::with_nested_source(nested);
     fixture.apply();
     fs::write(fixture.home.join(".env.d/git"), "staged git").unwrap();
     fs::write(fixture.home.join(".env.d/ssh"), "staged ssh").unwrap();
@@ -238,9 +548,11 @@ fn composition_lint_works_without_git_or_deployment_state() {
     assert!(!fixture.temp.path().join("state").exists());
 }
 
-#[test]
-fn source_sync_and_unapply_preserve_sibling_fragments_and_associations() {
-    let fixture = Fixture::new();
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn source_sync_and_unapply_preserve_sibling_fragments_and_associations(#[case] nested: bool) {
+    let fixture = Fixture::with_nested_source(nested);
     fixture.apply();
     fs::write(fixture.home.join(".env.d/ssh"), "ssh target edit").unwrap();
     fs::write(

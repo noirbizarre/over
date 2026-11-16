@@ -276,6 +276,7 @@ pub(crate) fn apply_tree_diff(
 /// The complete removal/write order is computed before any mutation. In
 /// particular, a late directory obstruction cannot follow an earlier file write.
 pub(crate) struct TreeChanges {
+    protection: super::safety::SourceProtection,
     access: crate::target_fs::Access,
     removed: Vec<PathBuf>,
     directories: Vec<PathBuf>,
@@ -291,6 +292,8 @@ pub(crate) fn preflight_tree_changes(
     to: &BTreeMap<PathBuf, (Oid, i32)>,
     access: &crate::target_fs::Access,
 ) -> Result<TreeChanges> {
+    let protection = super::safety::SourceProtection::new(repo)?;
+    protection.validate_paths(target, from.keys().chain(to.keys()), access)?;
     let removed: Vec<_> = from
         .keys()
         .filter(|path| !to.contains_key(*path))
@@ -434,6 +437,7 @@ pub(crate) fn preflight_tree_changes(
     let mut directories: Vec<_> = directories.into_iter().collect();
     directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
     Ok(TreeChanges {
+        protection,
         access: access.clone(),
         removed,
         directories,
@@ -443,6 +447,16 @@ pub(crate) fn preflight_tree_changes(
 
 impl TreeChanges {
     pub(crate) fn apply(self, target: &Path) -> Result<()> {
+        // Recheck the complete prepared operation before the first removal,
+        // including aliases that may have changed since preflight.
+        self.protection.validate_paths(
+            target,
+            self.removed
+                .iter()
+                .chain(self.directories.iter())
+                .chain(self.writes.iter().map(|(path, _, _)| path)),
+            &self.access,
+        )?;
         for path in self.removed {
             let on_disk = target.join(&path);
             crate::materialize::disposal::validate_relative_ancestors_with(

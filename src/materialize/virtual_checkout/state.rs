@@ -81,6 +81,7 @@ pub(crate) fn verify(
         "checkout association at '{}' differs from its source or mapping scope; unapply with the old configuration before changing mappings",
         entry.target.display()
     );
+    super::safety::validate_entry_with_record(entry, Some(record))?;
     Ok(())
 }
 
@@ -322,6 +323,7 @@ pub(crate) fn validate_claims(
     state: &VirtualCheckoutState,
     entry: &crate::desired::DesiredEntry,
 ) -> Result<()> {
+    super::safety::validate_entry_with_record(entry, record_in_snapshot(state, entry)?.as_ref())?;
     let own_key = record_in_snapshot(state, entry)?
         .map(|record| association_key(&entry.target, &record))
         .transpose()?;
@@ -358,7 +360,9 @@ pub(crate) fn validate_claims(
             ),
             permissions: None,
         };
-        resolve_projection_with_record(&mut other, false, Some(record.clone()))?;
+        // Published claims already describe this owner's destination authority.
+        // Rescanning its source without runtime ignore policy would reclaim
+        // excluded leaves (or reject them as collisions with its projection).
         // Resolve aliases at the concrete deployment roots as well as lexical paths.
         let mut candidate = entry.clone();
         candidate.target = crate::overlays::mapping::location(&candidate.target)?;

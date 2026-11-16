@@ -275,11 +275,14 @@ impl ResolvedMappings {
                     .is_some_and(|repos| repos.contains_key(".")),
                 "target rule '{key}' is inside indivisible Git checkout '.'"
             );
+            // Checkout containers may contain their source; completed desired
+            // projections validate actual writes after routing and rendering.
             ensure!(
                 !target.starts_with(&root)
-                    && !root.starts_with(target)
                     && !physical_target.starts_with(&physical_root)
-                    && !physical_root.starts_with(&physical_target),
+                    && (overlay.materialization_for(source) == MaterializationKind::Checkout
+                        || (!root.starts_with(target)
+                            && !physical_root.starts_with(&physical_target))),
                 "mapping '{key}' target overlaps the overlay source"
             );
             let mut encrypted_source = root.join(source).into_os_string();
@@ -320,11 +323,14 @@ impl ResolvedMappings {
                     .target(properties.sudo, ctx.no_prompt, ctx.dry_run || ctx.read_only);
             let physical_target = access.physical_destination(&root_target, &root)?;
             let physical_root = physical(&root)?;
+            // Only projected checkouts can safely share an ancestor container.
             ensure!(
                 !root_target.starts_with(&root)
-                    && !root.starts_with(&root_target)
                     && !physical_target.starts_with(&physical_root)
-                    && !physical_root.starts_with(&physical_target),
+                    && (overlay.materialization_for(Path::new(""))
+                        == MaterializationKind::Checkout
+                        || (!root.starts_with(&root_target)
+                            && !physical_root.starts_with(&physical_target))),
                 "overlay target overlaps the overlay source"
             );
         }
