@@ -1,135 +1,120 @@
 # Dev Containers
 
-Copy Over from its published image into your development image, then use normal
-Over commands during container creation. Docker handles the binary download and
-architecture selection; no Over installer or lifecycle wrapper is needed.
-
-## Add Over to your image
-
-Create `.devcontainer/Dockerfile`:
-
-```dockerfile
-ARG OVER_VERSION=0.4.0
-FROM ghcr.io/noirbizarre/over:${OVER_VERSION} AS over
-
-FROM mcr.microsoft.com/devcontainers/base:bookworm
-COPY --from=over /usr/local/bin/over /usr/local/bin/over
-```
-
-The final image remains your chosen development environment. Only the Over
-executable is copied; its distroless filesystem and entrypoint are not inherited.
-The example development base supplies Git, a shell, certificates and compatible
-runtime libraries. Other bases must supply those prerequisites themselves.
-Published Linux binaries support amd64/arm64 with glibc, including Debian 12+
-and Ubuntu 24.04+; they do not support Alpine's musl runtime.
-
-Choose a published Over tag through `OVER_VERSION`, or pin the source image by
-digest for reproducibility. Use `latest` only when you intend to follow a floating
-image. Docker selects the source image for the target architecture, so do not
-force the Over stage to the build host's architecture when cross-building.
+Add the Over Feature to your existing development image. It installs a bundled
+binary and optionally initializes a repository and applies overlays as the
+container's lifecycle user. No custom Dockerfile is required.
 
 ## Clone a repository
 
-Create `.devcontainer/devcontainer.json`, replacing the repository and overlay
+Add this to `.devcontainer/devcontainer.json`, replacing the repository and overlay
 names with your own:
 
 ```json
 {
-    "build": {
-        "dockerfile": "Dockerfile"
-    },
+    "image": "mcr.microsoft.com/devcontainers/base:bookworm",
     "remoteUser": "vscode",
-    "postCreateCommand": "over init --no-config -- https://github.com/user/dotfiles.git && over apply --no-prompt -- container/base container/rust"
+    "features": {
+        "ghcr.io/noirbizarre/features/over:0": {
+            "repository": "https://github.com/user/dotfiles.git",
+            "overlay": "container/base,container/rust"
+        }
+    }
 }
 ```
 
-`postCreateCommand` runs as the lifecycle user after container creation, when
-mounts and that user's credentials are available. Over's default source home is
-therefore `/home/vscode/.dotfiles`, not `/root/.dotfiles`. Do not put repository
-credentials in the Dockerfile or committed configuration.
+The Feature contains both Linux amd64 and arm64 binaries and installs the matching
+one during image construction. Supported bases are Debian 12+ and Ubuntu 24.04+
+with Bash and glibc. Missing Git and CA certificates are installed when needed;
+there is no crane bootstrap, separate binary download or Docker-image extraction.
 
-`--no-config` explicitly declines creation of missing root configuration during
-unattended initialization; existing configuration remains authoritative. Use
-`--mode checkout` instead when you want to create missing checkout-mode
-configuration. See [`over init`](commands/init.md#noninteractive-setup) for these
-and other initialization choices.
+Initialization and application run during `postCreateCommand`, as `vscode` in
+this example. Over's normal home resolution therefore defaults to
+`/home/vscode/.dotfiles`. Repository credentials must be available to that user;
+do not put credentials in Feature options.
 
-The `&&` keeps initialization and application sequential and stops on the CLI's
-error. Do not split dependent operations into object-valued lifecycle commands,
-which can run concurrently. To initialize without applying, omit the second
-command; to install only the binary, omit `postCreateCommand`.
-
-Multiple overlay names are ordinary separate CLI arguments in **one** apply
-operation, not a comma-separated option. Quote names normally if they contain
-spaces. Over owns selection, dependency composition and conflict handling; see
-[`over apply`](commands/apply.md).
+The helper invokes `over init` and one
+`over apply --no-prompt -- container/base container/rust` command. Over owns
+repository reuse, overlay composition, conflict handling and diagnostics. Init
+uses the CLI's normal unattended policy: for example, a repository without root
+configuration requires an explicit configuration choice before using this setup.
+See [`over init`](commands/init.md#noninteractive-setup).
 
 ## Use a mounted repository
 
-Keep the same Dockerfile and mount an existing checkout into the lifecycle user's
-source home:
+Omit `repository` to use an existing checkout. For example:
 
 ```json
 {
-    "build": {
-        "dockerfile": "Dockerfile"
-    },
+    "image": "mcr.microsoft.com/devcontainers/base:bookworm",
     "remoteUser": "vscode",
     "mounts": [
         "source=${localEnv:HOME}/.dotfiles,target=/home/vscode/.dotfiles,type=bind"
     ],
-    "postCreateCommand": "over apply --no-prompt -- container/base container/rust"
+    "features": {
+        "ghcr.io/noirbizarre/features/over:0": {
+            "overlay": "hosts/container"
+        }
+    }
 }
 ```
 
-This source expression assumes a Unix-like host with `HOME` available. A sibling
-checkout can instead use `source=${localWorkspaceFolder}/../dotfiles`. The bind
-source is a host/Docker-daemon path; the target must match the container user's
-actual source home. Ensure that user can read the checkout and write its targets.
+The mount source assumes a Unix-like host with `HOME` available. Its container
+target must match Over's source home for the lifecycle user. Ensure that user can
+read the checkout and write the overlay targets.
 
-For a custom source location, set normal `OVER_HOME` through `containerEnv` to an
-absolute container path, or pass `--home` to the CLI commands. This selects the
-source repository, not the overlay deployment target.
+## Options and versions
 
-If the mounted checkout needs initialization or its init hooks, prepend
-`over init --no-config &&` to the apply command. Initialization may modify
-repository-local configuration and run hooks; it is not a read-only validation.
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `repository` | `""` | Git source passed to `over init`; empty skips initialization. |
+| `overlay` | `""` | Ordered comma-separated names; empty skips application. |
+| `overHome` | `""` | Explicit source-home override; empty uses normal CLI home resolution. |
 
-## Existing files, retries and updates
+Names in `overlay` are trimmed and passed literally as separate arguments to one
+apply operation. Blank list elements fail before initialization. Shared
+dependencies and repeated names are handled by Over; see [`over apply`](commands/apply.md).
 
-`over apply --no-prompt` fails on conflicts instead of prompting or forcing
-replacement. Inspect the CLI diagnostic, resolve the conflict, then rerun the
-same command in the container. For example:
+An explicit `overHome` supports leading `~` or `~/` relative to the lifecycle
+user's home. Otherwise the CLI uses `OVER_HOME`, if provided, or its normal
+`~/.dotfiles` default. This selects the source repository, not the deployment
+target. Both `repository` and `overlay` empty install only the binary.
+
+The **Feature reference selects the bundled Over version**. Pin a full published
+Feature version for reproducibility, or use a major/minor reference to follow its
+published updates. There is no independent
+binary `version` option, and no mutable image is fetched during installation.
+
+## Errors, retries and updates
+
+The lifecycle helper passes through the CLI's errors and exit status.
+`--no-prompt` refuses conflicts instead of authorizing replacement. Resolve the
+reported problem, then retry:
 
 ```sh
-over apply --no-prompt -- container/base container/rust
+/usr/local/share/over/setup.sh
 ```
 
-Repeating `over init` reuses an existing checkout without implicitly pulling,
-resetting local changes or approving origin changes. Init/apply retain their
-normal repository hook behavior. Use the ordinary CLI/Git commands for updates,
-encryption and deliberate origin changes; see [`over init`](commands/init.md) and
+Normal Over commands work too. Repeating initialization reuses an existing
+checkout without pulling or resetting local changes; repository hooks retain
+their normal behavior. Use Git/Over directly for deliberate updates and policy
+decisions. See [`over init`](commands/init.md) and
 [destructive operations and recovery](usage/safety.md).
 
-Post-create commands do not run on every start or attach. Rebuilding the
-container reruns the creation lifecycle; manual retries use the same CLI commands
-shown in your configuration.
+Setup runs after creation, not on every start or attach. Rebuilding the container
+installs the selected Feature and repeats that lifecycle.
 
-## Migrate from the former Feature
+## Migrate an existing configuration
 
-Remove the Over entry from `features`, including references to
-`ghcr.io/noirbizarre/features/over:0`,
-`ghcr.io/noirbizarre/over/features/dotfiles:1`, or
-`ghcr.io/noirbizarre/over/dotfiles:1`. Add the Dockerfile and lifecycle configuration
-above, then rebuild the container.
+The Feature remains at `ghcr.io/noirbizarre/features/over`. If an older
+configuration uses `version`, remove that option and select the desired release
+in the Feature reference instead. Floating Feature references track published
+Feature releases, not unreleased main-branch images.
 
-| Former Feature option | Direct configuration |
-| --- | --- |
-| `version` | Select the Over image tag or digest in the Dockerfile. |
-| `repository` | Pass the Git source to `over init`. |
-| `overlay` | Pass separate names to `over apply`, replacing the comma-separated list. |
-| `overHome` | Use the CLI's default, `OVER_HOME`, or `--home`. |
+An unspecified `overHome` now delegates to the CLI, including its normal
+`OVER_HOME` environment variable. Explicit home overrides and comma-separated
+overlay selections remain supported.
 
-Replace retries through `/usr/local/share/over/setup.sh` with your normal
-init/apply commands. The Feature is no longer maintained or published; existing
-registry packages are not deleted or redirected.
+Replace legacy `ghcr.io/noirbizarre/over/features/dotfiles:1` or
+`ghcr.io/noirbizarre/over/dotfiles:1` references with the current Feature namespace.
+See the [Feature contributor guide](https://github.com/noirbizarre/over/tree/main/devcontainer)
+for packaging and testing.

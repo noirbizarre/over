@@ -66,6 +66,7 @@ uv = "latest"
 
 # --- begin project-specific tools ---
 # Add project-wide tools here; tools needed by only one task belong on that task.
+devcontainer-cli = "latest"
 # --- end project-specific tools ---
 
 [hooks]
@@ -260,6 +261,13 @@ git tpl diff --exit-code --stat
 description = "Build the native binary and package the runtime image"
 depends = ["build"]
 run = "docker build --tag over:local ."
+
+[tasks."test:features"]
+description = "Test the staged bundled Feature (requires both binaries and Docker)"
+run = [
+  "python3 -m unittest discover -s tests/features -p 'test_*.py'",
+  "python3 tests/features/run.py",
+]
 
 [tasks."schemas:generate"]
 description = "Regenerate the published configuration schemas"

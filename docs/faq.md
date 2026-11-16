@@ -72,7 +72,7 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
 
     **Alternatives checked 12 November 2026.** Over's column describes the
     implementation in this documentation's source revision, including repository
-    encryption, native secrets, and documented Dev Container image/lifecycle setup.
+    encryption, native secrets, and the bundled-binary Dev Container Feature.
     Alternative columns describe the upstream implementations checked on that
     date; the sources below identify the relevant documentation.
 
@@ -87,7 +87,7 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
     | Scope and source model | 🟢 Git-backed workspace overlays | 🟢 Package trees, including dotfiles | 🟢 Dotfile source/target state | 🟢 One Git repository over live dotfiles | 🟢 Declarative user files, programs, services | 🟢 VCS-agnostic bootstrap tasks | 🟢 Dotfiles and host profiles |
     | Reuse across machines/roles | 🟢 `uses` graph and descriptor inheritance | 🟢 Select multiple packages | 🟢 Templates, data, external sources | 🟢 Host/class alternatives | 🟢 Nix module imports and options | 🟢 Task files and conditional links | 🟢 Profiles and shared dotfiles |
     | Workspace repositories | 🟢 Declared clones/worktrees | ❌ No repository operations | 🟢 `git-repo` externals | 🟢 Git submodules; bootstrap scripts | 🟢 External Git commands in activation scripts | 🟢 External Git commands in shell tasks | 🟢 External Git commands in actions |
-    | Dev Container configuration/setup | 🟢 Config files and documented image/lifecycle setup | 🟢 Config-file links | 🟢 Config files and documented container bootstrap | 🟢 Tracked config files; bootstrap scripts | 🟢 Generated config files; external container tooling | 🟢 Config links; shell setup | 🟢 Config files; actions |
+    | Dev Container configuration/setup | 🟢 Config files plus install/apply Feature | 🟢 Config-file links | 🟢 Config files and documented container bootstrap | 🟢 Tracked config files; bootstrap scripts | 🟢 Generated config files; external container tooling | 🟢 Config links; shell setup | 🟢 Config files; actions |
     | File deployment | 🟢 File/directory links, virtual checkouts, managed blocks | 🟢 Symlink farm | 🟢 Ordinary/generated files and symlinks | 🟢 Git working-tree files; alternative links | 🟢 Links to Nix-store files | 🟢 Symbolic/hard links | 🟢 Copies/generated files and links |
     | Permission handling | 🟢 Scoped modes and metadata preservation; see below | 🟢 Source permissions through links | 🟢 Private/executable file attributes | 🟢 Restrict private/decrypted files | 🟢 Executability; external secret modules for private files | 🟢 Directory creation modes | 🟢 `chmod`/preserve policy |
     | Encryption/secret handling | 🟢 Repository encryption, access keys, native secrets | ❌ No encryption facility | 🟢 Age/GPG and password-manager integrations | 🟢 Encrypted archive via external GPG/OpenSSL | 🟢 External module, e.g. sops-nix | 🟢 External plugins, e.g. dotbot-age | 🟢 External GPG via transformations |
@@ -107,9 +107,9 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
       That matters for locations rejecting symlinks and files needed before home
       is mounted. See the system-target answer below for the permission boundary.
     - **Containers:** Over can deploy `devcontainer.json` and related files as
-      ordinary content. Its [Dev Container guide](devcontainer.md) shows how to
-      copy the published binary into a compatible development image and run normal
-      init/apply commands at container post-create. It does not semantically merge
+      ordinary content. Its [Dev Container Feature](devcontainer.md) installs a
+      bundled binary and optionally initializes/applies overlays at post-create
+      in the user's development image. It does not semantically merge
       container JSON or build/start/attach containers; external Dev Container
       tooling handles that lifecycle. The
       table's configuration-file support for other tools does not imply native

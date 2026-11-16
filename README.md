@@ -68,17 +68,22 @@ release download rather than `cargo install over` or `cargo binstall over`.
 
 ### Dev Containers
 
-Copy Over into your development image with a multi-stage Dockerfile:
+Add the Over Feature to your existing development image:
 
-```dockerfile
-FROM ghcr.io/noirbizarre/over:0.4.0 AS over
-FROM mcr.microsoft.com/devcontainers/base:bookworm
-COPY --from=over /usr/local/bin/over /usr/local/bin/over
+```json
+{
+    "features": {
+        "ghcr.io/noirbizarre/features/over:0": {
+            "repository": "https://github.com/user/dotfiles.git",
+            "overlay": "container/base,container/rust"
+        }
+    }
+}
 ```
 
-Run ordinary `over init` and `over apply --no-prompt` commands through
-`postCreateCommand`. See the [Dev Containers guide](docs/devcontainer.md) for
-complete clone/mount examples, version pinning and migration from the former Feature.
+The Feature bundles its matching Over release; no custom Dockerfile is required.
+See the [Dev Containers guide](docs/devcontainer.md) for clone/mount examples,
+options and release pinning.
 
 ## Quickstart
 

@@ -1,0 +1,130 @@
+name: 📦 Dev Container
+
+on:
+  workflow_call:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: 📦 Package Feature
+    # Rolling releases do not create immutable Feature versions.
+    if: >-
+      github.event_name != 'release'
+      || (github.event.release.tag_name != 'development' && github.event.release.tag_name != vars.PRERELEASE_NAME)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: jdx/mise-action@v5
+        with:
+          # prek is used by mise's postinstall hook.
+          install_args: devcontainer-cli prek
+
+      - name: Download amd64 build
+        if: github.event_name != 'release'
+        uses: actions/download-artifact@v8
+        with:
+          name: asset-linux-amd64
+          path: devcontainer/bin/amd64
+      - name: Download arm64 build
+        if: github.event_name != 'release'
+        uses: actions/download-artifact@v8
+        with:
+          name: asset-linux-arm64
+          path: devcontainer/bin/arm64
+
+      - name: Download published builds
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          test "$TAG" = "$(jq -r .version devcontainer/devcontainer-feature.json)"
+          for arch in amd64 arm64; do
+            mkdir -p "devcontainer/bin/$arch"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "over_${TAG}_linux-${arch}.tar.gz" --dir "$RUNNER_TEMP/over-release"
+            tar -xzf "$RUNNER_TEMP/over-release/over_${TAG}_linux-${arch}.tar.gz" -C "devcontainer/bin/$arch"
+          done
+
+      - name: Package both architectures
+        run: |
+          # Fail before publication if either input is missing; artifact transport loses modes.
+          chmod +x devcontainer/install.sh devcontainer/setup.sh devcontainer/bin/amd64/over devcontainer/bin/arm64/over
+          devcontainer features package ./devcontainer --output-folder "$RUNNER_TEMP/over-feature-package"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: over-feature-package
+          path: ${{ runner.temp }}/over-feature-package/devcontainer-feature-over.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  test:
+    name: 🧪 Test Feature (${{ matrix.arch }})
+    needs: package
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: jdx/mise-action@v5
+        with:
+          install_args: devcontainer-cli prek
+      - uses: actions/download-artifact@v8
+        with:
+          name: over-feature-package
+          path: ${{ runner.temp }}/over-feature-package
+      - name: Test the packaged payload
+        run: |
+          tar -xf "$RUNNER_TEMP/over-feature-package/devcontainer-feature-over.tgz" -C devcontainer
+          mise run test:features
+
+  publish:
+    name: 🚀 Publish Feature
+    needs: test
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: jdx/mise-action@v5
+        with:
+          install_args: devcontainer-cli prek
+      - uses: actions/download-artifact@v8
+        with:
+          name: over-feature-package
+          path: ${{ runner.temp }}/over-feature-package
+      - name: Restore the tested payload
+        run: |
+          mkdir -p "$RUNNER_TEMP/over-feature"
+          tar -xf "$RUNNER_TEMP/over-feature-package/devcontainer-feature-over.tgz" -C "$RUNNER_TEMP/over-feature"
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish Feature
+        # Collection metadata stays separate from the Over binary image's latest tag.
+        run: devcontainer features publish --registry ghcr.io --namespace noirbizarre/features "$RUNNER_TEMP/over-feature"

@@ -1,0 +1,31 @@
+{
+    "id": "over",
+    "version": "0.4.0",
+    "name": "Over",
+    "description": "Install Over and optionally initialize a repository and apply overlays",
+    "documentationURL": "https://noirbizarre.github.io/over/devcontainer/",
+    "licenseURL": "https://github.com/noirbizarre/over/blob/main/LICENSE",
+    "keywords": ["dotfiles", "overlay", "over", "symlink", "configuration"],
+    "options": {
+        "overlay": {
+            "type": "string",
+            "description": "Comma-separated overlay names to compose (empty skips apply)",
+            "default": ""
+        },
+        "repository": {
+            "type": "string",
+            "description": "Git source passed to over init (empty uses an existing checkout)",
+            "default": ""
+        },
+        "overHome": {
+            "type": "string",
+            "description": "Override the source home; empty uses normal CLI resolution",
+            "default": ""
+        }
+    },
+    "postCreateCommand": "/usr/local/share/over/setup.sh",
+    "installsAfter": [
+        "ghcr.io/devcontainers/features/common-utils",
+        "ghcr.io/devcontainers/features/git"
+    ]
+}

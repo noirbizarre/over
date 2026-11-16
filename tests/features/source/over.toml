@@ -1,0 +1,2 @@
+# An empty Feature selection must not apply inferred defaults.
+host_overlay = 'smoke'

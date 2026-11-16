@@ -282,3 +282,12 @@ jobs:
     permissions:
       contents: read
       packages: write
+
+  feature:
+    name: 📦 Dev Container
+    needs: build
+    uses: ./.github/workflows/devcontainer.yaml
+    # Reusable workflow permission ceilings also cover skipped publication jobs.
+    permissions:
+      contents: read
+      packages: write
