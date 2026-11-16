@@ -494,6 +494,9 @@ fn collect_own_entries(
         prune_transformed_scaffolds(&mut entries);
         finalize_entries(ctx, overlay, &routing, &mut entries, reporting)?;
         attach_rendered_checkouts(ctx, overlay, &mut entries)?;
+        for entry in &entries {
+            crate::materialize::virtual_checkout::safety::validate_entry(entry)?;
+        }
         return Ok(entries);
     }
 
@@ -537,6 +540,9 @@ fn collect_own_entries(
     prune_transformed_scaffolds(&mut entries);
     finalize_entries(ctx, overlay, &routing, &mut entries, reporting)?;
     attach_rendered_checkouts(ctx, overlay, &mut entries)?;
+    for entry in &entries {
+        crate::materialize::virtual_checkout::safety::validate_entry(entry)?;
+    }
     Ok(entries)
 }
 

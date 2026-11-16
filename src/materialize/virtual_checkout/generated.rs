@@ -397,6 +397,11 @@ pub(crate) fn analyze(
         )
         .cloned()
         .collect();
+    super::safety::SourceProtection::new(&repo)?.validate_paths(
+        &entry.target,
+        &paths,
+        &entry.access,
+    )?;
     for path in paths {
         let current = local(entry, &path)?;
         if let Some(current) = &current {
@@ -644,6 +649,15 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<Reconcile
     }
     let (overlay, root) = source(entry)?;
     let (repo, managed) = git::discover_source(root)?;
+    super::safety::SourceProtection::new(&repo)?.validate_paths(
+        &entry.target,
+        analysis
+            .base
+            .keys()
+            .chain(analysis.desired.keys())
+            .chain(analysis.updates.keys()),
+        &entry.access,
+    )?;
     let (tree, manifest) = generated_snapshot::write(&repo, &analysis.desired)?;
     let mut record = previous.unwrap_or_else(|| state::VirtualCheckoutRecord {
         overlay: overlay.to_owned(),

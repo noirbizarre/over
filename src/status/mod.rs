@@ -871,7 +871,7 @@ mod tests {
                 .unwrap();
         }
 
-        let target = td.child("target");
+        let target = TempDir::new().unwrap();
         fs::create_dir_all(target.path()).unwrap();
         let head_tree = source_repo.head().unwrap().peel_to_tree().unwrap();
         vc_git::checkout_subtree(&source_repo, &head_tree, target.path()).unwrap();

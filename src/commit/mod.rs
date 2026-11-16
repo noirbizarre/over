@@ -690,7 +690,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(td.path());
-        let target = td.child("target");
+        let target = TempDir::new().unwrap();
         materialize_and_record(td.path(), target.path()).await;
 
         let e = entry(target.path().to_path_buf(), td.path().to_path_buf());
@@ -704,7 +704,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("original\n").unwrap();
         let repo = init_committed_repo(td.path());
-        let target = td.child("target");
+        let target = TempDir::new().unwrap();
         materialize_and_record(td.path(), target.path()).await;
 
         fs::write(target.path().join("a.txt"), "edited\n").unwrap();
@@ -760,7 +760,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("original").unwrap();
         let repo = init_committed_repo(td.path());
-        let target = td.child("target");
+        let target = TempDir::new().unwrap();
         materialize_and_record(td.path(), target.path()).await;
         fs::write(target.path().join("a.txt"), "edited").unwrap();
         let mut index = repo.index().unwrap();
@@ -865,7 +865,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         let repo = init_committed_repo(td.path());
-        let target = td.child("target");
+        let target = TempDir::new().unwrap();
         materialize_and_record(td.path(), target.path()).await;
 
         fs::write(target.path().join("a.txt"), "local edit").unwrap();

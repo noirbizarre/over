@@ -168,6 +168,9 @@ impl Initial {
             // object database just to decide whether a prompt is necessary.
             git::scoped_entries(&repo, &head, &managed, scope)?
         };
+        let protection = super::safety::SourceProtection::new(&repo)?;
+        protection.validate_container(target, &scope.access)?;
+        protection.validate_paths(target, entries.keys(), &scope.access)?;
         let mut groups: Vec<Group> = Vec::new();
         for (path, expected) in &entries {
             // Sorted tree paths keep descendants contiguous, so only the last
@@ -209,6 +212,7 @@ impl Initial {
                 }
             }
             if let Some(obstruction) = obstruction {
+                protection.validate_paths(target, [&obstruction], &scope.access)?;
                 let before = inventory_with(
                     &target.join(&obstruction),
                     &scope.access.child(&obstruction, false),
@@ -391,13 +395,7 @@ fn initialize_with(
             )
         })
         .collect::<Result<Vec<_>>>()?;
-    let source_location = crate::overlays::mapping::physical(source)?;
-    let target_location = scope.access.fs.location(target)?;
-    ensure!(
-        !source_location.starts_with(&target_location)
-            && !target_location.starts_with(&source_location),
-        "virtual checkout source and target overlap"
-    );
+    let protection = super::safety::SourceProtection::new(&initial.repo)?;
     let mut decisions = Vec::new();
     for group in &initial.groups {
         let mut protected = false;
@@ -576,6 +574,12 @@ fn initialize_with(
     let applied = (|| -> Result<()> {
         guard.verify()?;
         source_guard.verify()?;
+        protection.validate_paths(target, initial.entries.keys(), &scope.access)?;
+        protection.validate_paths(
+            target,
+            initial.groups.iter().map(|group| &group.path),
+            &scope.access,
+        )?;
         for path_guard in &target_guards {
             path_guard.verify()?;
         }

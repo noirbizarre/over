@@ -898,7 +898,8 @@ mod tests {
         let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         init_committed_repo(td.path());
-        let target = td.child("checkout");
+        let destination = TempDir::new().unwrap();
+        let target = destination.child("checkout");
         setup_virtual_checkout(td.path(), target.path()).await;
 
         let m = SymlinkMaterializer;
@@ -929,7 +930,8 @@ mod tests {
         let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         init_committed_repo(td.path());
-        let target = td.child("checkout");
+        let destination = TempDir::new().unwrap();
+        let target = destination.child("checkout");
         setup_virtual_checkout(td.path(), target.path()).await;
         fs::write(target.path().join("README.md"), "changed").unwrap();
 
@@ -1273,7 +1275,8 @@ mod tests {
         let _xdg = isolate_xdg_state();
         let td = TempDir::new().unwrap();
         init_committed_repo(td.path());
-        let checkout_dir = td.child("checkout");
+        let destination = TempDir::new().unwrap();
+        let checkout_dir = destination.child("checkout");
         setup_virtual_checkout(td.path(), checkout_dir.path()).await;
 
         let source = td.child("elsewhere");
@@ -1355,7 +1358,8 @@ mod tests {
         // discarded even if this were ever invoked directly.
         let td = TempDir::new().unwrap();
         init_committed_repo(td.path());
-        let checkout_dir = td.child("checkout");
+        let destination = TempDir::new().unwrap();
+        let checkout_dir = destination.child("checkout");
         setup_virtual_checkout(td.path(), checkout_dir.path()).await;
         fs::write(checkout_dir.path().join("README.md"), "changed").unwrap();
 

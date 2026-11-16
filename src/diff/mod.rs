@@ -1331,7 +1331,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("a").unwrap();
         init_committed_repo(td.path());
-        let target = td.child("target");
+        let target = TempDir::new().unwrap();
         materialize_and_record_virtual_checkout(td.path(), target.path()).await;
 
         let entry = virtual_checkout_entry(target.path().to_path_buf(), td.path().to_path_buf());
@@ -1373,7 +1373,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         td.child("a.txt").write_str("original\n").unwrap();
         init_committed_repo(td.path());
-        let target = td.child("target");
+        let target = TempDir::new().unwrap();
         materialize_and_record_virtual_checkout(td.path(), target.path()).await;
 
         fs::write(target.path().join("a.txt"), "edited locally\n").unwrap();
@@ -1400,7 +1400,7 @@ mod tests {
         td.child("a.txt").write_str("a").unwrap();
         td.child("b.txt").write_str("b").unwrap();
         init_committed_repo(td.path());
-        let target = td.child("target");
+        let target = TempDir::new().unwrap();
         materialize_and_record_virtual_checkout(td.path(), target.path()).await;
 
         fs::remove_file(target.path().join("b.txt")).unwrap();
@@ -1445,7 +1445,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         fs::write(td.path().join("bin.dat"), [0xff_u8, 0xfe, 0x00]).unwrap();
         init_committed_repo(td.path());
-        let target = td.child("target");
+        let target = TempDir::new().unwrap();
         materialize_and_record_virtual_checkout(td.path(), target.path()).await;
 
         fs::write(target.path().join("bin.dat"), [0x00_u8, 0xff, 0xfe]).unwrap();
