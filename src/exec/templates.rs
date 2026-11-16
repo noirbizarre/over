@@ -62,12 +62,24 @@ impl<'a> TemplateContext<'a> {
 /// This is the single extension point for custom template capabilities
 /// such as encryption (2.3) and secret manager integration (2.4).
 pub fn create_env<'a>() -> Environment<'a> {
-    // Register custom filters/functions here when needed
     let mut env = Environment::new();
     // Template locals and source snippets may contain resolved private values.
     env.set_debug(false);
     // An unavailable input must never become an unrelated empty destination.
     env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    env.add_filter(
+        "yesno",
+        |state: &minijinja::State,
+         value: minijinja::Value|
+         -> Result<&'static str, minijinja::Error> {
+            // State-aware truthiness preserves strict undefined errors instead of silently returning no.
+            Ok(if minijinja::filters::bool(state, &value)? {
+                "yes"
+            } else {
+                "no"
+            })
+        },
+    );
     env
 }
 
@@ -126,7 +138,65 @@ pub(crate) fn render_content(template: &str, ctx: &crate::exec::Context) -> Resu
 mod tests {
     use std::collections::HashMap;
 
+    use rstest::rstest;
+
     use super::*;
+
+    #[rstest]
+    #[case("true", "yes")]
+    #[case("false", "no")]
+    #[case("none", "no")]
+    #[case("0", "no")]
+    #[case("0.0", "no")]
+    #[case("1", "yes")]
+    #[case("-1", "yes")]
+    #[case("0.5", "yes")]
+    #[case("''", "no")]
+    #[case("'false'", "yes")]
+    #[case("'no'", "yes")]
+    #[case("'0'", "yes")]
+    #[case("' '", "yes")]
+    #[case("[]", "no")]
+    #[case("[false]", "yes")]
+    #[case("{}", "no")]
+    #[case("{'enabled': false}", "yes")]
+    fn yesno_maps_jinja_truthiness_to_literal_strings(#[case] input: &str, #[case] expected: &str) {
+        let template = format!("{{{{ {input} | yesno }}}}");
+        assert_eq!(create_env().render_str(&template, ()).unwrap(), expected);
+    }
+
+    #[test]
+    fn yesno_rejects_undefined_values_without_an_explicit_default() {
+        let env = create_env();
+        let error = env.render_str("{{ missing | yesno }}", ()).unwrap_err();
+        assert_eq!(error.kind(), minijinja::ErrorKind::UndefinedError);
+        assert_eq!(
+            env.render_str("{{ missing | default(false) | yesno }}", ())
+                .unwrap(),
+            "no"
+        );
+    }
+
+    #[rstest]
+    #[case(true, "yes")]
+    #[case(false, "no")]
+    fn yesno_renders_serialized_boolean_variables(#[case] value: bool, #[case] expected: &str) {
+        let ctx = HashMap::from([("my_boolean_variable", value)]);
+        assert_eq!(
+            render_string("{{ my_boolean_variable | yesno }}", &ctx).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn yesno_outputs_can_be_chained_with_string_filters() {
+        assert_eq!(
+            create_env()
+                .render_str("{{ true | yesno | upper }}", ())
+                .unwrap(),
+            "YES"
+        );
+    }
 
     #[test]
     fn content_rendering_uses_the_captured_environment_instead_of_rediscovering_it() {
