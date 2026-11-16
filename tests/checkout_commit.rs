@@ -217,6 +217,9 @@ fn unrelated_root_attributes_deletion_stays_staged_outside_selected_commits() {
     fixture.add();
     fs::remove_file(fixture.source.join(".gitattributes")).unwrap();
     let mut index = repo.index().unwrap();
+    // over add updated the index in another process; retain that staged file
+    // rather than overwriting it through this fixture's cached libgit2 handle.
+    index.read(true).unwrap();
     index.remove_path(Path::new(".gitattributes")).unwrap();
     index.write().unwrap();
     let head = repo.head().unwrap().target();
