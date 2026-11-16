@@ -36,11 +36,22 @@ The entire binary-safe map is one versionable ciphertext file:
 
 Repository-root `.over` is reserved administration: overlay discovery and
 materialization always exclude it, even if `.overignore` negations select it.
-Secret commands do not automatically stage or commit this file. Despite its
+Each mutation automatically commits this file and required initial encryption
+metadata, preserving unrelated staged work. Despite its
 filename, `secrets.yaml` contains a versioned binary encrypted payload, including
 in the working tree while unlocked. Secret operations and explicit Git textconv
 display decrypt its contents in memory. Aggregate updates are serialized across processes and atomically
 publish ciphertext, preventing lost updates or partial writes.
+
+Automatic commits honor Git identity, hooks, and signing configuration, using
+the same isolated commit behavior as [`over commit`](../commands/commit.md).
+The default messages include secret names in plaintext Git metadata; configure
+[message templates](../configuration/root.md#secret-commit-messages) to customize
+them or omit names. Secret values are never available to message templates.
+Commit pending changes to the tracked store or encryption metadata before
+mutating secrets. Reads do not stage or commit anything, and identical-value
+replacements create no empty commit. Git commit hooks may read secrets but
+cannot recursively mutate them.
 
 Names contain 1–128 ASCII letters, digits, underscores, or hyphens, and start
 with a letter or digit. Platform-reserved device names such as `CON` and `LPT1`

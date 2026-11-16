@@ -1300,13 +1300,14 @@ pub(crate) fn commit_staged_prepared(
                 fs::remove_file(file)?;
             }
         }
+        // Reference hooks may invoke filters; the journal excludes competing
+        // crypt writers without keeping a lifecycle lock across external code.
+        drop(crypt_guard.take());
         commit.publish(repo).context("failed to publish commit")
     })();
     match result {
         Ok(oid) => {
-            if crypt_guard.is_some()
-                && let Err(error) = crate::crypt::policy::finish(repo)
-            {
+            if protected_updates && let Err(error) = crate::crypt::policy::finish(repo) {
                 // HEAD is already authoritative; do not invite a duplicate commit on retry.
                 tracing::warn!(
                     "commit {oid} was published, but encrypted recovery cleanup failed: {error:#}; run over crypt recover"
@@ -1332,7 +1333,7 @@ pub(crate) fn commit_staged_prepared(
             transaction
                 .rollback()
                 .with_context(|| format!("{error:#}; source rollback also failed"))?;
-            if crypt_guard.is_some() {
+            if protected_updates {
                 // Release the exclusive guard before the recovery routine reacquires it.
                 drop(crypt_guard.take());
                 drop(index_lock.take());

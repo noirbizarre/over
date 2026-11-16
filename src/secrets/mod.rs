@@ -1,5 +1,6 @@
 //! Repository-scoped secrets and the shared Age passphrase lifecycle.
 
+mod commit;
 mod config;
 pub(crate) mod crypto;
 mod file;

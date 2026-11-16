@@ -17,7 +17,13 @@ target, JSON, or credential options.
 
 All operations require an existing [`over unlock`](unlock.md), including
 listing/removing names. The entire map, including names, is ciphertext in
-`.over/secrets.yaml` even while unlocked. Commands do not stage or commit it.
+`.over/secrets.yaml` even while unlocked. Each add, replacement, or removal
+automatically commits the encrypted update, preserving unrelated staged changes.
+Replacing a value with identical bytes creates no commit. Reads create no commit.
+Commits honor Git identity, hooks, and signing configuration; failures prevent
+publication. Recursive secret mutations from Git commit hooks are rejected.
+Customize the default `chore(secrets): added/replaced/removed NAME` messages in
+[root configuration](../configuration/root.md#secret-commit-messages).
 
 | Subcommand | Input and output |
 | --- | --- |

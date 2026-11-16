@@ -713,7 +713,7 @@ fn restore_snapshot(repo: &git2::Repository, mut snapshot: Snapshot, finalize: b
     Ok(())
 }
 
-fn stage_blob(
+pub(crate) fn stage_blob(
     index: &mut git2::Index,
     repo: &git2::Repository,
     path: &Path,
@@ -749,7 +749,7 @@ fn stage_blob(
     Ok(())
 }
 
-fn index_bytes(repo: &git2::Repository, index: &git2::Index) -> Result<Vec<u8>> {
+pub(crate) fn index_bytes(repo: &git2::Repository, index: &git2::Index) -> Result<Vec<u8>> {
     let temporary = tempfile::tempdir_in(repo.path())?;
     let path = temporary.path().join("index");
     let mut prepared = git2::Index::open(&path)?;

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail, ensure};
 
-use super::{CryptoService, SecretBytes};
+use super::{CryptoService, SecretBytes, SecretOperation};
 
 #[derive(Debug, Clone)]
 pub struct SecretName(String);
@@ -124,15 +124,30 @@ impl SecretStore {
         prompt: bool,
     ) -> Result<()> {
         if let Some(repo) = self.unified()? {
-            let _guard = crate::crypt::access::guard(&repo, true)?;
+            let _mutation = super::commit::mutation_guard(&repo)?;
+            let guard = crate::crypt::access::guard(&repo, true)?;
             let mut map = self.read_map(&repo)?;
             ensure!(
                 replace || !map.0.contains_key(name.as_str()),
                 "secret already exists; use --replace to replace it"
             );
+            let operation = if map.0.contains_key(name.as_str()) {
+                SecretOperation::Replace
+            } else {
+                SecretOperation::Add
+            };
+            if map
+                .0
+                .get(name.as_str())
+                .is_some_and(|current| current.as_slice() == value.expose())
+            {
+                return Ok(());
+            }
             map.0
                 .insert(name.as_str().to_owned(), value.expose().to_vec());
-            return self.write_map(&repo, &map);
+            let mutation = self.prepare_map(&repo, &map, name, operation)?;
+            drop(guard);
+            return mutation.commit(&repo);
         }
         self.check_add(name, replace)?;
         let ciphertext = self.crypto.encrypt(value.expose(), prompt)?;
@@ -242,14 +257,17 @@ impl SecretStore {
 
     pub fn remove(&self, name: &SecretName) -> Result<()> {
         if let Some(repo) = self.unified()? {
-            let _guard = crate::crypt::access::guard(&repo, true)?;
+            let _mutation = super::commit::mutation_guard(&repo)?;
+            let guard = crate::crypt::access::guard(&repo, true)?;
             let mut map = self.read_map(&repo)?;
             use zeroize::Zeroize;
             map.0
                 .remove(name.as_str())
                 .context("secret does not exist")?
                 .zeroize();
-            return self.write_map(&repo, &map);
+            let mutation = self.prepare_map(&repo, &map, name, SecretOperation::Remove)?;
+            drop(guard);
+            return mutation.commit(&repo);
         }
         let path = self.path(name)?;
         if !path.exists() {
@@ -304,12 +322,25 @@ impl SecretStore {
         Ok(map)
     }
 
-    fn write_map(&self, repo: &git2::Repository, map: &SecretMap) -> Result<()> {
+    fn prepare_map(
+        &self,
+        repo: &git2::Repository,
+        map: &SecretMap,
+        name: &SecretName,
+        operation: SecretOperation,
+    ) -> Result<super::commit::Mutation> {
+        let config = crate::overlays::Repository::new(self.repository.clone()).secrets_config()?;
+        let message = config.commit_messages.render(operation, name)?;
         let key = crate::crypt::access::local_key(repo)?;
         let plaintext = crate::crypt::buffer::to_json(map)?;
-        crate::crypt::atomic_write(
-            &self.repository.join(".over/secrets.yaml"),
-            &key.encrypt(&plaintext, 1)?,
+        super::commit::Mutation::prepare(
+            repo,
+            [(
+                PathBuf::from(".over/secrets.yaml"),
+                Some(key.encrypt(&plaintext, 1)?),
+            )]
+            .into(),
+            message,
         )
     }
 }

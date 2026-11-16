@@ -34,6 +34,124 @@ fn add_secret(root: &Path, name: &str, value: &[u8]) {
     assert!(child.wait().unwrap().success());
 }
 
+fn replace_secret(root: &Path, value: &[u8]) -> Output {
+    use std::io::Write;
+    let mut child = Command::new(cargo_bin("over"))
+        .current_dir(root)
+        .env_remove("OVER_HOME")
+        .args([
+            "--home",
+            root.to_str().unwrap(),
+            "secret",
+            "add",
+            "TOKEN",
+            "--replace",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(value).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn native_mutations_commit_only_the_store_and_preserve_unrelated_staging() {
+    let (root, _) = repository();
+    fs::write(root.path().join("unrelated"), b"staged work").unwrap();
+    git(root.path(), &["add", "unrelated"]);
+    add_secret(root.path(), "TOKEN", b"first\0\xff");
+    assert_eq!(
+        git(root.path(), &["log", "-1", "--format=%s"]).stdout,
+        b"chore(secrets): added TOKEN\n"
+    );
+    let paths = git(root.path(), &["ls-tree", "-r", "--name-only", "HEAD"]).stdout;
+    assert!(!String::from_utf8_lossy(&paths).contains("unrelated"));
+    assert_eq!(
+        git(root.path(), &["diff", "--cached", "--name-only"]).stdout,
+        b"unrelated\n"
+    );
+    let stored = git(root.path(), &["show", "HEAD:.over/secrets.yaml"]).stdout;
+    over::crypt::format::inspect(&stored).unwrap();
+    assert_eq!(
+        stored,
+        fs::read(root.path().join(".over/secrets.yaml")).unwrap()
+    );
+    let head = git(root.path(), &["rev-parse", "HEAD"]).stdout;
+    assert!(replace_secret(root.path(), b"first\0\xff").status.success());
+    assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).stdout, head);
+    assert!(replace_secret(root.path(), b"second").status.success());
+    assert_eq!(
+        git(root.path(), &["log", "-1", "--format=%s"]).stdout,
+        b"chore(secrets): replaced TOKEN\n"
+    );
+    over(
+        root.path(),
+        &[
+            "--home",
+            root.path().to_str().unwrap(),
+            "secret",
+            "remove",
+            "TOKEN",
+        ],
+    );
+    assert_eq!(
+        git(root.path(), &["log", "-1", "--format=%s"]).stdout,
+        b"chore(secrets): removed TOKEN\n"
+    );
+    assert_eq!(
+        git(root.path(), &["diff", "--cached", "--name-only"]).stdout,
+        b"unrelated\n"
+    );
+}
+
+#[test]
+fn custom_messages_are_used_without_committing_the_descriptor() {
+    let (root, _) = repository();
+    fs::write(root.path().join("over.toml"), "[secrets.commit_messages]\nadd = 'chore: stored a credential'\nreplace = '{{ missing }}'\n").unwrap();
+    add_secret(root.path(), "TOKEN", b"first");
+    assert_eq!(
+        git(root.path(), &["log", "-1", "--format=%s"]).stdout,
+        b"chore: stored a credential\n"
+    );
+    assert!(
+        !String::from_utf8_lossy(
+            &git(root.path(), &["ls-tree", "-r", "--name-only", "HEAD"]).stdout
+        )
+        .contains("over.toml")
+    );
+    let stored = fs::read(root.path().join(".over/secrets.yaml")).unwrap();
+    let head = git(root.path(), &["rev-parse", "HEAD"]).stdout;
+    assert!(!replace_secret(root.path(), b"second").status.success());
+    assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).stdout, head);
+    assert_eq!(
+        fs::read(root.path().join(".over/secrets.yaml")).unwrap(),
+        stored
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_rejected_secret_commit_leaves_the_store_index_and_head_unchanged() {
+    use std::os::unix::fs::PermissionsExt;
+    let (root, _) = repository();
+    add_secret(root.path(), "TOKEN", b"first");
+    let stored = fs::read(root.path().join(".over/secrets.yaml")).unwrap();
+    let index = fs::read(root.path().join(".git/index")).unwrap();
+    let head = git(root.path(), &["rev-parse", "HEAD"]).stdout;
+    let hook = root.path().join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!replace_secret(root.path(), b"second").status.success());
+    assert_eq!(
+        fs::read(root.path().join(".over/secrets.yaml")).unwrap(),
+        stored
+    );
+    assert_eq!(fs::read(root.path().join(".git/index")).unwrap(), index);
+    assert_eq!(git(root.path(), &["rev-parse", "HEAD"]).stdout, head);
+}
+
 #[test]
 fn revocation_rotates_current_files_and_secrets_for_remaining_users_only() {
     let (root, identities) = repository();
@@ -131,7 +249,8 @@ fn native_secrets_use_the_same_unlock_and_remain_ciphertext_in_the_worktree() {
     assert_eq!(over(root.path(), &args).stdout, b"secret sentinel\0\xff");
     over::crypt::format::inspect(&fs::read(root.path().join(".over/secrets.yaml")).unwrap())
         .unwrap();
-    git(root.path(), &["add", ".over"]);
+    over::crypt::format::inspect(&git(root.path(), &["show", "HEAD:.over/secrets.yaml"]).stdout)
+        .unwrap();
     over(root.path(), &["lock"]);
     let rejected = Command::new(cargo_bin("over"))
         .env_remove("OVER_HOME")

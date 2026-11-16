@@ -69,6 +69,8 @@ impl PreparedCommit {
                 .env("GIT_INDEX_FILE", temporary.path().join("index"))
                 .env("GIT_OBJECT_DIRECTORY", &objects)
                 .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", common.join("objects"))
+                // Recursive secret writes would wait on their parent's mutation lock.
+                .env("OVER_COMMIT_REPOSITORY", repo.path())
                 // Like git commit -m, no editor is involved in these hooks.
                 .env("GIT_EDITOR", ":");
             Ok(command)
@@ -164,14 +166,18 @@ impl PreparedCommit {
             .trim()
             .strip_prefix("ref: ")
             .unwrap_or("HEAD");
-        checked(command(repo)?.args([
-            "update-ref",
-            "-m",
-            "over commit",
-            reference,
-            &self.oid.to_string(),
-            &self.parent.unwrap_or(Oid::ZERO_SHA1).to_string(),
-        ]))?;
+        checked(
+            command(repo)?
+                .env("OVER_COMMIT_REPOSITORY", repo.path())
+                .args([
+                    "update-ref",
+                    "-m",
+                    "over commit",
+                    reference,
+                    &self.oid.to_string(),
+                    &self.parent.unwrap_or(Oid::ZERO_SHA1).to_string(),
+                ]),
+        )?;
         Ok(self.oid)
     }
 }
@@ -179,7 +185,12 @@ impl PreparedCommit {
 pub(crate) fn post_commit(repo: &Repository) {
     // HEAD is authoritative: failure here must never invite a duplicate commit.
     if let Err(error) = command(repo).and_then(|mut command| {
-        checked(command.args(["hook", "run", "--ignore-missing", "post-commit"]))
+        checked(command.env("OVER_COMMIT_REPOSITORY", repo.path()).args([
+            "hook",
+            "run",
+            "--ignore-missing",
+            "post-commit",
+        ]))
     }) {
         tracing::warn!("commit succeeded, but post-commit failed: {error:#}");
     }
