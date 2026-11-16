@@ -574,7 +574,8 @@ fn unsafe_bootstrap_policy_fails_before_policy_index_or_plaintext_publication(
         .output()
         .unwrap();
     assert!(!rejected.status.success());
-    let diagnostic = String::from_utf8_lossy(&rejected.stderr);
+    // Filesystem-discovered Windows paths use native separators in diagnostics.
+    let diagnostic = String::from_utf8_lossy(&rejected.stderr).replace('\\', "/");
     assert!(diagnostic.contains(offending), "{diagnostic}");
     assert!(diagnostic.contains("-filter override"), "{diagnostic}");
     assert_eq!(fs::read(root.path().join(".git/index")).unwrap(), before);
@@ -614,7 +615,8 @@ fn indexed_bootstrap_policy_is_checked_when_its_working_file_is_missing() {
         .output()
         .unwrap();
     assert!(!rejected.status.success());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("nested/.gitattributes"));
+    let diagnostic = String::from_utf8_lossy(&rejected.stderr).replace('\\', "/");
+    assert!(diagnostic.contains("nested/.gitattributes"), "{diagnostic}");
     assert_eq!(fs::read(root.path().join(".git/index")).unwrap(), before);
     assert_eq!(
         fs::read_to_string(root.path().join(".gitattributes")).unwrap(),
@@ -647,7 +649,7 @@ fn unstaged_bootstrap_exemptions_cannot_conceal_unsafe_indexed_policy(#[case] tr
         .output()
         .unwrap();
     assert!(!rejected.status.success());
-    let diagnostic = String::from_utf8_lossy(&rejected.stderr);
+    let diagnostic = String::from_utf8_lossy(&rejected.stderr).replace('\\', "/");
     assert!(diagnostic.contains("nested/.gitattributes"), "{diagnostic}");
     assert!(diagnostic.contains("-filter override"), "{diagnostic}");
     assert_eq!(fs::read(root.path().join(".git/index")).unwrap(), before);
