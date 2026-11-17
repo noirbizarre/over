@@ -42,8 +42,16 @@ pub struct Params {
     )]
     discard_checkout: bool,
 
-    #[clap(long, help = "Leave risky checkouts untouched instead of prompting")]
+    #[clap(
+        long,
+        help = "Disable prompts; require --yes and leave unapproved risky checkouts untouched"
+    )]
     no_prompt: bool,
+    #[clap(
+        long,
+        help = "Approve unapply without approving real-checkout disposal"
+    )]
+    yes: bool,
 }
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
@@ -116,6 +124,19 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
     ui::info("").ok();
 
+    if !ctx.dry_run {
+        let message = format!(
+            "Remove overlay {:?}'s materializations from {}?",
+            overlay.name,
+            target.display()
+        );
+        let yes = args.yes;
+        let no_prompt = args.no_prompt;
+        tokio::task::spawn_blocking(move || {
+            super::common::confirm_removal(&message, yes, no_prompt)
+        })
+        .await??;
+    }
     let report = report.execute(ctx.clone()).await?;
     if !ctx.dry_run {
         ui::info("Unapply results:").ok();
@@ -180,6 +201,7 @@ mod tests {
             dry_run,
             discard_checkout: false,
             no_prompt: true,
+            yes: true,
         }
     }
 

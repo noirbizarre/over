@@ -6,7 +6,7 @@ Manage named binary-safe secrets in the repository's encrypted native store.
 over secret add <NAME> [--replace]
 over secret list
 over secret get <NAME>
-over secret remove <NAME>
+over secret remove <NAME> [--yes]
 ```
 
 Accepts [global options](index.md#shared-options-and-selection). Unlike crypt/access
@@ -39,7 +39,12 @@ value; listing reads names while retaining the unlock requirement.
 | `add NAME --replace` | Explicitly authorize replacing an existing name without a second confirmation |
 | `list` | Print sorted names, one per line, on stdout |
 | `get NAME` | Write exact decrypted bytes on stdout, without adding a newline |
-| `remove NAME` | Remove an existing entry; prior Git history is retained |
+| `remove NAME` | Confirm removal of an existing entry; prior Git history is retained |
+
+Removal confirmation defaults to No and requires terminal stdin and stderr.
+Use `secret remove NAME --yes` for explicit approval in scripts. Refusal leaves
+the store unchanged, including pending legacy migrations; approval does not
+bypass unlock or authentication requirements.
 
 Empty/no supplied input falls back to hidden input and requires a terminal.
 Missing names, invalid input, lock state, and authentication/storage errors fail

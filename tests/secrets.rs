@@ -89,7 +89,7 @@ fn named_secrets_round_trip_replace_and_remove_without_disclosing_values() {
         .success()
         .stdout("replacement");
     command(home.path())
-        .args(["remove", "token"])
+        .args(["remove", "token", "--yes"])
         .env_remove("OVER_SECRET")
         .assert()
         .success();
@@ -209,11 +209,12 @@ fn symlinked_stores_and_secret_entries_cannot_escape_the_repository() {
     fs::write(&other, "untouched").unwrap();
     std::os::unix::fs::symlink(&other, home.path().join(".over/secrets/token.age")).unwrap();
     for operation in ["get", "remove"] {
-        command(home.path())
-            .args([operation, "token"])
-            .assert()
-            .failure()
-            .stdout("");
+        let mut removal = command(home.path());
+        removal.args([operation, "token"]);
+        if operation == "remove" {
+            removal.arg("--yes");
+        }
+        removal.assert().failure().stdout("");
     }
     assert_eq!(fs::read(other).unwrap(), b"untouched");
 }

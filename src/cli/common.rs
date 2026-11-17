@@ -1,11 +1,45 @@
 use std::env::current_dir;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use dirs::home_dir;
 
 use crate::exec;
 use crate::overlays::Overlay;
+
+/// Authorize one removal without granting permission to bypass its domain safeguards.
+pub(crate) fn confirm_removal(message: &str, yes: bool, no_prompt: bool) -> Result<()> {
+    confirm_removal_with(
+        yes,
+        !no_prompt && std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
+        || {
+            let _pause = crate::ui::progress::pause()?;
+            dialoguer::Confirm::new()
+                .with_prompt(message)
+                .default(false)
+                .interact()
+                .context("could not read removal confirmation")
+        },
+    )
+}
+
+fn confirm_removal_with(
+    yes: bool,
+    can_prompt: bool,
+    prompt: impl FnOnce() -> Result<bool>,
+) -> Result<()> {
+    // Piped input and --no-prompt must never accidentally authorize loss.
+    ensure!(
+        yes || can_prompt,
+        "confirmation required; use --yes deliberately"
+    );
+    ensure!(
+        yes || prompt()?,
+        "removal cancelled; use --yes to explicitly approve"
+    );
+    Ok(())
+}
 
 /// Check whether a string contains glob metacharacters.
 pub fn is_glob_pattern(s: &str) -> bool {
@@ -118,6 +152,34 @@ mod tests {
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use rstest::rstest;
+
+    #[rstest]
+    #[case(false, false, false, false, false)]
+    #[case(false, true, false, true, false)]
+    #[case(false, true, true, true, true)]
+    #[case(true, false, false, false, true)]
+    #[case(true, true, false, false, true)]
+    fn only_explicit_consent_authorizes_removal(
+        #[case] yes: bool,
+        #[case] can_prompt: bool,
+        #[case] answer: bool,
+        #[case] should_prompt: bool,
+        #[case] authorized: bool,
+    ) {
+        let mut prompted = false;
+        let result = confirm_removal_with(yes, can_prompt, || {
+            prompted = true;
+            Ok(answer)
+        });
+        assert_eq!(result.is_ok(), authorized);
+        assert_eq!(prompted, should_prompt);
+    }
+
+    #[test]
+    fn a_failed_confirmation_never_authorizes_removal() {
+        let error = confirm_removal_with(false, true, || bail!("terminal closed")).unwrap_err();
+        assert!(error.to_string().contains("terminal closed"));
+    }
 
     #[rstest]
     #[case(None, None, false)]

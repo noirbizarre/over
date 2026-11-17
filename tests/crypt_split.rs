@@ -148,9 +148,9 @@ fn access_and_secret_mutations_commit_only_their_independent_files() {
         fixture.git(&["diff", "--cached", "--name-only"]),
         b"unrelated\n"
     );
-    success(fixture.over(&["user", "key", "detach", "bob", "default"]));
+    success(fixture.over(&["user", "key", "detach", "bob", "default", "--yes"]));
     assert!(fixture.root.join(".over/users/bob/user.json").is_file());
-    success(fixture.over(&["user", "delete", "bob"]));
+    success(fixture.over(&["user", "delete", "bob", "--yes"]));
     assert_eq!(fixture.changed(), b".over/users/bob/user.json\n");
 }
 
@@ -693,7 +693,7 @@ fn nested_split_metadata_is_read_without_migration_then_moved_in_one_commit(
 ) {
     let fixture = Fixture::new();
     fixture.enroll("empty");
-    success(fixture.over(&["user", "key", "detach", "empty", "default"]));
+    success(fixture.over(&["user", "key", "detach", "empty", "default", "--yes"]));
     success(fixture.secret("TOKEN", b"preserve ciphertext", false));
     use_nested_layout(&fixture);
     let header = fs::read(fixture.root.join(".over/crypt/repository.json")).unwrap();
@@ -812,7 +812,7 @@ fn mixed_flat_and_nested_headers_cannot_hide_access_records() {
     .unwrap();
     let head = fixture.git(&["rev-parse", "HEAD"]);
     assert!(!fixture.over(&["user", "list"]).status.success());
-    let output = fixture.over(&["user", "delete", "alice"]);
+    let output = fixture.over(&["user", "delete", "alice", "--yes"]);
     assert!(!output.status.success());
     assert_eq!(fixture.git(&["rev-parse", "HEAD"]), head);
     fixture.git(&["add", ".over/crypt/repository.json"]);
@@ -1068,7 +1068,7 @@ fn access_mutations_preserve_unrelated_non_utf8_git_names_and_staging() {
     fs::write(fixture.root.join("pending"), b"leave staged").unwrap();
     fixture.git(&["add", "pending"]);
     fixture.enroll("bob");
-    success(fixture.over(&["user", "key", "detach", "bob", "default"]));
+    success(fixture.over(&["user", "key", "detach", "bob", "default", "--yes"]));
     success(fixture.secret("TOKEN", b"independent secret", false));
     let after = repo.head().unwrap().peel_to_tree().unwrap();
     for (path, blob) in names.iter().zip(blobs) {

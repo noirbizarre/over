@@ -314,7 +314,7 @@ fn the_getting_started_walkthrough_uses_the_selected_target(
         .assert()
         .success()
         .stdout(contains("applied"));
-    command("unapply")?.assert().success();
+    command("unapply")?.arg("--yes").assert().success();
     assert!(fs::symlink_metadata(target.join("greeting.txt")).is_err());
     assert!(greeting.is_file());
     if explicit_target {
@@ -1612,15 +1612,17 @@ fn diff_reports_an_existing_file_as_a_link_problem_without_a_content_patch() -> 
 fn overlay_root_subcommand_debug_output_logs_cli_args(#[case] subcommand: &str) -> TestResult {
     let repo = setup_overlay_repo();
     let root = TempDir::new()?;
-    Command::cargo_bin("over")?
+    let mut command = Command::cargo_bin("over")?;
+    command
         .arg("--home")
         .arg(repo.path())
         .arg("--debug")
         .args([subcommand, "dev", "--target"])
-        .arg(root.path())
-        .assert()
-        .success()
-        .stderr(contains("CLI args"));
+        .arg(root.path());
+    if subcommand == "unapply" {
+        command.arg("--yes");
+    }
+    command.assert().success().stderr(contains("CLI args"));
     Ok(())
 }
 
@@ -2158,7 +2160,7 @@ fn unapply_before_apply_reports_already_absent() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["unapply", "dev", "--target"])
+        .args(["unapply", "dev", "--yes", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -2185,7 +2187,7 @@ fn unapply_removes_applied_symlink_and_apply_restores_it() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["unapply", "dev", "--target"])
+        .args(["unapply", "dev", "--yes", "--target"])
         .arg(root.path())
         .assert()
         .success()
@@ -2217,7 +2219,7 @@ fn unapply_leaves_foreign_file_untouched_and_fails() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["unapply", "dev", "--target"])
+        .args(["unapply", "dev", "--yes", "--target"])
         .arg(root.path())
         .assert()
         .failure()
@@ -3900,7 +3902,7 @@ fn virtual_checkout_unapply_removes_only_when_clean() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["unapply", "dotfiles", "--target"])
+        .args(["unapply", "dotfiles", "--yes", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()
@@ -3912,7 +3914,7 @@ fn virtual_checkout_unapply_removes_only_when_clean() -> TestResult {
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(&canonical_tmp)
-        .args(["unapply", "dotfiles", "--target"])
+        .args(["unapply", "dotfiles", "--yes", "--target"])
         .arg(root.path())
         .env("XDG_STATE_HOME", xdg_state_home.path())
         .assert()

@@ -18,7 +18,8 @@ Options:
   -n, --dry-run           Report what would be removed without removing anything
       --discard-checkout  Discard owned real checkouts, including local files and Git history
   -v, --verbose           Toggle verbose output
-      --no-prompt         Leave risky checkouts untouched instead of prompting
+      --no-prompt         Disable prompts; require --yes and leave unapproved risky checkouts untouched
+      --yes               Approve unapply without approving real-checkout disposal
   -h, --help              Print help
 ```
 
@@ -29,6 +30,16 @@ Missing or ambiguous context requires an explicit name; the configured
 An explicit `NAME` retains the configured host's
 [data context](../configuration/overlay.md#consumer-metadata-data) for path rendering.
 Only the selected overlay's own entries are removed.
+
+After displaying the report, unapply asks for confirmation, defaulting to No.
+Interactive confirmation requires terminal stdin and stderr. Use `--yes` to
+approve in scripts, including with `--no-prompt`; `--no-prompt` alone refuses
+before removal. Dry runs need no approval. Non-preview invocations confirm even
+when the report ultimately has nothing to remove.
+
+This approval does not authorize real-checkout data/history loss: that still
+requires its separate confirmation or `--discard-checkout`. For unattended
+checkout disposal, supply both `--yes` and `--discard-checkout`.
 
 ## Example
 
@@ -70,7 +81,7 @@ materialize there right now:
 - A real Git checkout (root or nested `git` entry) requires explicit disposal
   confirmation, default No, or `--discard-checkout`. This can discard local
   edits, ignored files, branches, stashes and Git metadata/history. Even clean
-  status does not prove those are backed up. With `--no-prompt` alone it is
+  status does not prove those are backed up. With `--yes --no-prompt` it is
   retained and reported. Foreign identities, independent checkout units and
   shared/external Git layouts cannot be overridden.
 - A [virtual checkout](../adr/022-virtual-checkout-materialization.md) is

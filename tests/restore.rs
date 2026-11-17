@@ -90,6 +90,9 @@ impl Fixture {
             .arg(name)
             .arg("--target")
             .arg(&self.target);
+        if name == "restore" {
+            command.arg("--yes");
+        }
         command
     }
 

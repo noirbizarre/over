@@ -40,6 +40,9 @@ impl Fixture {
             .arg("ov")
             .arg("--target")
             .arg(&self.home);
+        if command == "unapply" {
+            cmd.arg("--yes");
+        }
         cmd
     }
 

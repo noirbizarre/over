@@ -55,6 +55,7 @@ For ingestion of destination files, use [`over add --crypt`](add.md) instead.
 working content and **stages plaintext** with the removal policy. Interactive
 confirmation defaults to no and requires terminal stdin and stderr; `--yes`
 authorizes this deliberately in scripts.
+The prompt identifies the selected repository and paths, before policy mutations.
 
 ```sh
 over crypt remove public/example.conf --yes

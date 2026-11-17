@@ -110,7 +110,10 @@ a newline. This is the explicit plaintext-output command; redirect or pipe it
 only where that value is intended. Authentication failure emits no partial
 plaintext. Other diagnostics and Debug output redact values and passphrases.
 
-`remove` deletes the selected entry. As with any versioned data, removing
+`remove` asks for confirmation, defaulting to No, before deleting the selected
+entry. Interactive approval requires terminal stdin and stderr; use
+`over secret remove NAME --yes` for explicit approval in scripts.
+As with any versioned data, removing
 a value does not erase prior Git history.
 
 ## Use secrets in hooks

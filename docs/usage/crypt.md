@@ -392,6 +392,11 @@ objects from the Git database, clones, remotes, backups, or filesystem snapshots
 
 ## Users and keys
 
+User revocation/deletion and key revocation/detachment ask for confirmation,
+defaulting to No, before acquiring credentials or mutating the repository.
+Interactive approval requires terminal stdin and stderr; use each command's
+`--yes` flag for explicit approval in scripts. Recovery-key safeguards still apply.
+
 ```text
 over user list
 over user show <user>
