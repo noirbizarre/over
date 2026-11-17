@@ -1,6 +1,7 @@
-target/
+# Keep selectable binaries without sending Cargo dependency/build caches.
+target/**
+!target/**/over
 .git/
-features/
 .github/
 *.md
 .gitignore

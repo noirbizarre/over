@@ -68,7 +68,7 @@ release download rather than `cargo install over` or `cargo binstall over`.
 
 ### Dev Containers
 
-Use the **Over** Feature to install Over and apply an overlay during container creation:
+Add the Over Feature to your existing development image:
 
 ```json
 {
@@ -81,8 +81,9 @@ Use the **Over** Feature to install Over and apply an overlay during container c
 }
 ```
 
+The Feature bundles its matching Over release; no custom Dockerfile is required.
 See the [Dev Containers guide](docs/devcontainer.md) for clone/mount examples,
-options and release pinning. The Feature installs its matching Over release by default.
+options and release pinning.
 
 ## Quickstart
 

@@ -2,36 +2,25 @@
     "id": "over",
     "version": "0.4.0",
     "name": "Over",
-    "description": "Apply dotfiles overlays using over, a git-based files overlay manager",
+    "description": "Install Over and optionally initialize a repository and apply overlays",
     "documentationURL": "https://noirbizarre.github.io/over/devcontainer/",
     "licenseURL": "https://github.com/noirbizarre/over/blob/main/LICENSE",
-    "keywords": [
-        "dotfiles",
-        "overlay",
-        "over",
-        "symlink",
-        "configuration"
-    ],
+    "keywords": ["dotfiles", "overlay", "over", "symlink", "configuration"],
     "options": {
         "overlay": {
             "type": "string",
-            "description": "Comma-separated overlay names to compose in order without prompting or forcing conflicts (empty skips apply)",
+            "description": "Comma-separated overlay names to compose (empty skips apply)",
             "default": ""
         },
         "repository": {
             "type": "string",
-            "description": "Git source to initialize; existing checkouts are reused without pulling (empty uses a mounted repository)",
+            "description": "Git source passed to over init (empty uses an existing checkout)",
             "default": ""
         },
         "overHome": {
             "type": "string",
-            "description": "Source repository path; ~ resolves to the lifecycle user's home",
-            "default": "~/.dotfiles"
-        },
-        "version": {
-            "type": "string",
-            "description": "Version (tag) of the over Docker image to install from",
-            "default": "0.4.0"
+            "description": "Override the source home; empty uses normal CLI resolution",
+            "default": ""
         }
     },
     "postCreateCommand": "/usr/local/share/over/setup.sh",

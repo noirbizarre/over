@@ -117,6 +117,41 @@ only the schemas, run `mise run schemas:generate`. Validation uses temporary
 files and does not require previously generated assets. The normal CLI build
 does not enable schema generation.
 
+## Docker images
+
+The root `Dockerfile` packages an existing Linux binary into the distroless
+Debian 12 runtime. Its `BINARY` build argument defaults to `target/debug/over`,
+the output of `mise run build`. The Docker task depends on that build task;
+mise skips compilation when its sources and output are up to date:
+
+```sh
+mise run docker:build
+docker run --rm over:local --version
+```
+
+The default task assumes a native Linux GNU build compatible with Debian 12's
+glibc. For newer distributions, macOS/Windows hosts, or another architecture,
+compile explicitly with an appropriate toolchain such as
+[`cross`](https://github.com/cross-rs/cross), then select the binary and platform:
+
+```sh
+cross build --release --locked --features vendored --target-dir target --target aarch64-unknown-linux-gnu
+docker build --platform linux/arm64 --tag over:arm64 \
+  --build-arg BINARY=target/aarch64-unknown-linux-gnu/release/over .
+```
+
+Running another architecture's image requires a matching host or configured
+emulation. For a binary downloaded into a separate directory, use
+`docker build --file Dockerfile --build-arg BINARY=over --tag over:local <binary-directory>`.
+
+CI uploads each target's executable directly as an Actions artifact. Docker
+jobs and the Dev Container Feature reuse the same run's Linux binaries. PRs produce debug
+candidates; main produces release-profile binaries for the `main`, `latest`
+and commit-SHA image tags. Release image jobs download the exact versioned
+archives from the public GitHub Release, so both distribution formats contain
+byte-identical binaries. No image job invokes Cargo or resolves a mutable
+`latest` release asset.
+
 ## Commits
 
 [Conventional Commits](https://www.conventionalcommits.org/), enforced by
@@ -137,8 +172,8 @@ Releases are run by [gh-ship](https://github.com/noirbizarre/gh-ship).
 
 1. A push to `main` triggers 🚢 Ship, which runs `gh ship run` and selects preparation.
 2. `prepare` dispatches 🚀 Prepare Release, which asks git-cliff for the next
-   version, writes `CHANGELOG.md`, updates Cargo and the Dev Container Feature's
-   version and default binary version together, commits, and uploads a
+   version, writes `CHANGELOG.md`, updates Cargo and the Feature metadata version,
+   commits, and uploads a
    `ship.release.json` artifact describing what would ship.
 3. gh-ship opens (or updates) the Release PR from `release/next`. Review it.
 4. Merging it triggers 🚢 Ship again, where `gh ship run` selects publication: it tags the
@@ -146,13 +181,17 @@ Releases are run by [gh-ship](https://github.com/noirbizarre/gh-ship).
    attach the binaries, then makes the
    release public.
 
-The Docker workflow publishes the release's multi-architecture binary image
-before calling the Dev Container Feature workflow. That workflow tests the
-matching binary on amd64 and arm64 before publishing
-`ghcr.io/noirbizarre/features/over`. PR/main Feature tests use an available image
-override so release-preparation metadata can be tested before its image exists.
-See [feature contributor instructions](devcontainer/README.md) for local testing
-and the new GHCR packages' visibility/access requirements.
+Once the GitHub Release is public, `release: published` triggers Docker to
+download its versioned binaries and publish the multi-architecture image.
+The Feature workflow independently bundles the same release binaries, tests its
+package on native amd64/arm64 runners, then publishes it. It does not depend on
+the Docker image or rebuild Rust. Image/Feature publication failures are separate
+from GitHub Release completion.
+Rolling development releases skip this path; main CI already publishes their
+images. The Feature's version selects its bundled binary version; there is no
+separate binary-version default. See the [Feature contributor guide](devcontainer/README.md)
+for staging, tests and publication, and the [user guide](docs/devcontainer.md)
+for the drop-in configuration.
 
 Nothing to release is the normal case for step 1, and costs one workflow run
 reporting `changed: false`.

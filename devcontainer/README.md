@@ -1,82 +1,60 @@
 # Over Dev Container Feature
 
-Install Over and optionally initialize a repository and apply overlays as the
-container's lifecycle user. See the [Dev Containers guide](https://noirbizarre.github.io/over/devcontainer/)
-for clone/mount examples, options, supported platforms and retry behavior.
+Install Over into the user's selected development image and optionally initialize
+a repository and apply overlays as the lifecycle user. See the
+[user guide](https://noirbizarre.github.io/over/devcontainer/) for configuration.
 
-Use `"overlay": "container/base"` for one overlay or
-`"overlay": "container/base,container/rust"` for an ordered composition.
+The Feature contains `bin/amd64/over` and `bin/arm64/over`, built by the existing
+binary jobs. The installer selects and copies one; it does not download binaries
+or extract a Docker image. The Feature reference selects the binary release.
 
-The Feature is published at `ghcr.io/noirbizarre/features/over`. Its version and
-default binary version match the Over release. Use `:0` for the current major,
-or an exact published release for reproducibility; `:1` applies once Over reaches
-1.x. The `version` option can explicitly select another binary image tag.
+`installsAfter` orders Over after common-utils or Git if they were selected. The
+installer checks for the Git command and CA bundle, and installs prerequisites
+only when missing. Prepared base images skip package management entirely.
 
-## Test locally
+`setup.sh` only adapts the repository, CSV overlay selection and explicit home
+options to CLI calls. Defaults, initialization policy, errors and conflicts stay
+with Over. Empty options install only the binary.
 
-From the repository root, with Docker, Git, Python 3.11+, Node.js and network
-access available:
+## Stage and test locally
+
+With Docker, Git, Python 3.11+, Node.js and the mise-locked Dev Container CLI
+available, stage both binaries for the checked-out version. For a published
+release, for example:
 
 ```sh
-mise install devcontainer-cli
-python3 -m unittest discover -s tests/features -p 'test_*.py'
+tag=0.4.0
+for arch in amd64 arm64; do
+    mkdir -p "devcontainer/bin/$arch"
+    gh release download "$tag" --repo noirbizarre/over \
+        --pattern "over_${tag}_linux-${arch}.tar.gz" --dir /tmp/over-feature-assets --clobber
+    tar -xzf "/tmp/over-feature-assets/over_${tag}_linux-${arch}.tar.gz" -C "devcontainer/bin/$arch"
+done
+chmod +x devcontainer/install.sh devcontainer/setup.sh
+devcontainer features package ./devcontainer --output-folder /tmp/over-feature-package
 mise run test:features
-devcontainer features package ./devcontainer --output-folder /tmp/over-feature
 ```
 
-Mise locks the CLI version in `mise.lock`. Set `DEVCONTAINER` to an absolute CLI
-path if necessary. If the checked-in release image predates the Feature's CLI
-behavior, or release preparation names an unpublished image, use
-`OVER_FEATURE_TEST_VERSION=latest mise run test:features`; explicit scenario
-options still take precedence. Without this override the suite checks that the
-default binary matches the Feature version.
+Unreleased testing uses the matching Linux build outputs at the same paths.
+Staged binaries are ignored by Git. Missing inputs fail installation rather than
+falling back to a download. The tests verify native installed-binary identity,
+option boundaries, non-root lifecycle behavior, clone/retry, mounted sources and
+conflict refusal. Containers and anonymous volumes are removed; Docker caches
+remain. Set `DEVCONTAINER` to an absolute CLI path if needed.
 
-For unreleased multi-name CLI behavior, build a Debian-compatible candidate and
-mount it into lifecycle tests (the image build still tests published installation):
+## CI and publication
 
-```sh
-docker build --tag over-feature-candidate .
-container=$(docker create over-feature-candidate)
-docker cp "$container:/usr/local/bin/over" /tmp/over-feature-candidate
-docker rm "$container"
-OVER_FEATURE_TEST_BINARY=/tmp/over-feature-candidate OVER_FEATURE_TEST_VERSION=latest mise run test:features
-```
+CI packages both same-run Linux artifacts once, then tests that payload on native
+amd64 and arm64 runners. No candidate binary is mounted over another installation.
+Public versioned releases instead stage the exact published release archives and
+verify that the tag, metadata and installed binary versions match. Both tests must
+succeed before the restored payload is published to `ghcr.io/noirbizarre/features/over`.
 
-The unittest suite can also exercise the real setup script with a locally built
-binary, without Docker or registry access:
+Docker image packaging is independent and consumes the same canonical builds.
+Rolling development releases do not publish immutable Feature versions. Release
+preparation updates the Feature metadata version with Cargo; there is no separate
+binary-version default to synchronize.
 
-```sh
-cargo build --features vendored
-OVER_FEATURE_TEST_BINARY="$PWD/target/debug/over" python3 -m unittest discover -s tests/features -p 'test_*.py'
-```
-
-PR/main CI uses this candidate override on both native architectures. Release
-publication tests use the matching published image without substitution.
-
-The suite stages this directory as a local `over` Feature and runs real
-`devcontainer up`/`exec` commands against minimal Debian images, using a non-root
-lifecycle user and deterministic Git fixtures. It exercises binary downloads,
-clone/mount behavior, retries, literal options, conflicts and expected failures.
-Containers, anonymous volumes and temporary workspaces are removed; Docker's
-image/build caches remain.
-
-## Release publication
-
-Release preparation updates Cargo, Feature metadata and the default binary
-version together. After the release's amd64/arm64 binary image manifest is
-published, CI tests the matching default on both architectures, then uses the
-same mise-locked CLI to publish this single Feature directory. Exact Feature
-versions are immutable; changes ship with the next Over release through gh-ship.
-
-Collection metadata lives at `ghcr.io/noirbizarre/features:latest`, separate from
-the binary image's `ghcr.io/noirbizarre/over:latest`. The new GHCR Feature and
-collection packages must be public, and the `noirbizarre/over` repository must
-have Actions write access to them. New GHCR packages may need owner configuration
-after their first publication.
-
-## Migration
-
-Replace `ghcr.io/noirbizarre/over/features/dotfiles:1` or
-`ghcr.io/noirbizarre/over/dotfiles:1` with `ghcr.io/noirbizarre/features/over:0` and
-rebuild. The old `:1` was independent of Over's release version; old references
-are not redirected. Lifecycle helpers now live in `/usr/local/share/over/`.
+Collection metadata remains at `ghcr.io/noirbizarre/features:latest`, separate from
+the Over runtime image. These GHCR packages must be public and allow this
+repository's Actions token to write them.

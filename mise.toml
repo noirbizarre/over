@@ -89,7 +89,16 @@ depends = ["format", "lint", "lint:actions", "lint:md", "build", "test"]
 
 [tasks.build]
 description = "Build the project"
-run = "cargo build"
+sources = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "rust-toolchain.toml",
+  "src/**/*",
+  ".cargo/**/*",
+]
+outputs = ["target/debug/over{% if os() == 'windows' %}.exe{% endif %}"]
+# Keep freshness checks and Docker's default input aligned even with CARGO_TARGET_DIR set.
+run = "cargo build --target-dir target"
 
 [tasks.test]
 description = "Run tests (accepts nextest selectors)"
@@ -248,9 +257,17 @@ git tpl diff --exit-code --stat
 # Artwork tasks belong here rather than in `default` or `check`: they rewrite
 # committed binaries, so a routine run would dirty the working tree every time.
 
+[tasks."docker:build"]
+description = "Build the native binary and package the runtime image"
+depends = ["build"]
+run = "docker build --tag over:local ."
+
 [tasks."test:features"]
-description = "Test Dev Container Feature installation and lifecycle (requires Docker)"
-run = "python3 tests/features/run.py"
+description = "Test the staged bundled Feature (requires both binaries and Docker)"
+run = [
+  "python3 -m unittest discover -s tests/features -p 'test_*.py'",
+  "python3 tests/features/run.py",
+]
 
 [tasks."schemas:generate"]
 description = "Regenerate the published configuration schemas"

@@ -72,7 +72,7 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
 
     **Alternatives checked 12 November 2026.** Over's column describes the
     implementation in this documentation's source revision, including repository
-    encryption, native secrets, and the Dev Container Feature available in 0.3.
+    encryption, native secrets, and the bundled-binary Dev Container Feature.
     Alternative columns describe the upstream implementations checked on that
     date; the sources below identify the relevant documentation.
 
@@ -107,11 +107,11 @@ New to Over? Start with what it manages, why it exists, and how it fits your wor
       That matters for locations rejecting symlinks and files needed before home
       is mounted. See the system-target answer below for the permission boundary.
     - **Containers:** Over can deploy `devcontainer.json` and related files as
-      ordinary content. Its [Dev Container Feature](devcontainer.md) installs Over
-      and optionally initializes/applies an overlay at container post-create.
-      This Feature supports specified Debian/Ubuntu Linux images on amd64/arm64.
-      It does not semantically merge container JSON or build/start/attach
-      containers; external Dev Container tooling handles that lifecycle. The
+      ordinary content. Its [Dev Container Feature](devcontainer.md) installs a
+      bundled binary and optionally initializes/applies overlays at post-create
+      in the user's development image. It does not semantically merge
+      container JSON or build/start/attach containers; external Dev Container
+      tooling handles that lifecycle. The
       table's configuration-file support for other tools does not imply native
       container orchestration either.
     - **Protection:** Over's [cryptography](usage/crypt.md) and
