@@ -200,7 +200,7 @@ fn all_targets_keep_host_data_without_leaking_other_targets_metadata() -> TestRe
         .args(["status", "--all", "--target"])
         .arg(target.path())
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("alpha-workstation"))
         .stdout(contains("beta-workstation-clean"));
     // Host context remains explicitly applicable without enabling automatic deployment.

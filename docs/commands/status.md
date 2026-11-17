@@ -1,6 +1,6 @@
 # `over status`
 
-Inspect reconciliation health and staged/unstaged Git changes, even before
+Inspect reconciliation health and overlay-managed staged/unstaged changes, even before
 the overlay has ever been applied. `over show` is a compatibility alias with
 the same options, output, and exit status.
 
@@ -88,10 +88,12 @@ Only positive hook-event counts are shown; scopes with no hooks are omitted.
 
 ## Exit status and read-only behavior
 
-- `0`: every selected overlay is fully applied, including Git prerequisites,
-  or the repository has no overlays.
-- `1`: any selected overlay needs attention or cannot be checked, including
-  unknown names and invalid configuration. An `Ahead` checkout also needs attention.
+- `0`: status was checked and displayed successfully, including when the report
+  contains warnings or errors, or the repository has no overlays.
+- `1`: status could not be fully checked or displayed, including unknown overlay
+  names, invalid configuration, source/index/association inspection failures and
+  output errors. Findings such as missing repositories, unapplied files, conflicts
+  and Git configuration drift do not cause failure.
 - Invalid command-line arguments use the argument parser's error exit status (`2`).
 
 Multiple selections receive individual reports and an overall summary, including
@@ -105,23 +107,26 @@ association metadata is read as a snapshot; older state schemas migrate only in
 memory. `NO_COLOR` and redirected stdout produce readable output without ANSI
 color escapes, even if color is otherwise forced.
 
-Ordinary staged or unstaged changes do not make an overlay unhealthy and do not
-change its exit status. Use [`over diff`](diff.md) for content diffs.
+Ordinary staged or unstaged changes in declared Git repositories are not reported.
+Changes to overlay-managed files remain visible. Use [`over diff`](diff.md) for
+content diffs.
 
 ## Changes
 
 One **Changes** section appears last, after all reconciliation reports, Git
-configuration findings and the overall summary. Files are grouped by source or
-native Git worktree, with a destination for virtual checkouts. Paths are relative
+configuration findings and the overall summary. Files are grouped by overlay
+source Git worktree, with a destination for virtual checkouts. Paths are relative
 to that worktree. Each change is labeled `(staged)` or `(unstaged)`; editing a file
 again after staging shows both states. A file successfully added with `over add`
 appears here as staged, without a reconciliation warning.
 
 Changes includes selected overlays' tracked/staged source files (including
 consumed descriptors and sidecars), operational dependencies, virtual checkout
-targets and declared root Git checkouts. Metadata-only host overlays, external
-link referent repositories and opaque non-root declared repositories do not add
-their own file changes. Untracked, unstaged files are omitted.
+targets. Declared Git repositories, including root declarations and their
+worktrees, do not add their own file changes. Overlay-managed files deployed
+inside those repositories remain in scope. Metadata-only host overlays and
+external link referent repositories do not add their own file changes.
+Untracked, unstaged files are omitted.
 
 ### Stable short format
 
@@ -147,9 +152,9 @@ XY<TAB>JSON(worktree)<TAB>JSON(path)<TAB>JSON(target-or-null)
 - Paths are JSON-quoted strings, so tabs, newlines, quotes and backslashes are
   escaped. Selected non-UTF-8 Git paths fail inspection rather than being rendered
   lossily. There are no ANSI codes, headings, summaries, or blank separator lines.
-- Empty changes produce empty stdout. Diagnostics go to stderr. Ordinary changes
-  succeed; structural/association/content reconciliation or inspection failures
-  still fail. Short mode skips Git prerequisite diagnostics and verbose
+- Empty changes produce empty stdout. Diagnostics go to stderr. Reconciliation
+  findings succeed; inspection and output failures still fail.
+  Short mode skips Git prerequisite diagnostics and verbose
   configuration preparation, so it does not certify those settings as healthy.
 
 For example, `MM` identifies a file modified in the index and edited again in the
@@ -178,10 +183,8 @@ desired-state selection but presents Git changes independently of health:
 | `Missing` | Target doesn't exist yet. |
 | `Modified` | A managed file's permissions need repair. Ordinary Git edits are listed under Changes. |
 | `Broken` | A dangling soft symlink, or a checkout path that isn't a valid git repo. |
-| `Conflict` | Target exists and doesn't match desired intent, or a git checkout has a merge/rebase/cherry-pick in progress. |
-| `Ahead` | A git checkout is ahead of its upstream. |
-| `Behind` | A git checkout is behind its upstream. |
-| `Diverged` | A git checkout has diverged from its upstream. |
+| `Conflict` | Target exists and doesn't match desired intent, or a declared repository's pinned revision differs. |
+| `Behind` | A virtual checkout has source updates to apply. |
 | `Locked` | Encrypted content requires unlocking before it can be verified. |
 
 Without `--verbose`, only entries other than `Applied` are printed; pass
@@ -189,18 +192,14 @@ Without `--verbose`, only entries other than `Applied` are printed; pass
 
 ## Declared `git` repositories
 
-A `git` entry declared at the overlay's own root (`git = "<url>"`, or a
-`"."` key) is a real checkout: its status reflects the checkout's own
-upstream/operation state (ahead, behind, diverged, merge in progress).
-Its tracked staged/unstaged files appear separately in Changes.
-
-Any other `git` entry (declared at a subpath, e.g. a plugin manager's
-clone) is a **declared, provisioned resource** instead: its status only
+Every `git` entry, whether declared at the overlay's own root (`git = "<url>"`,
+or a `"."` key) or a subpath, is a **declared, provisioned resource**: its status only
 reflects whether it's present and its declared configuration
 (`url`/`tag`/`rev`/`remotes`/`config`) is applied. Uncommitted changes,
 local commits, untracked files, or an in-progress merge inside it never
 make it `Modified`/`Ahead`/`Behind`/`Diverged`/`Conflict` — that content
-isn't something `over` manages. Configuration drift appears as individual warnings
+isn't something `over` manages. This also applies to all of its Git worktrees.
+Configuration drift appears as individual warnings
 in **Git configuration**, separately from content conflicts. Tag/revision drift
 retains its reconciliation conflict classification. Re-running `over apply` reconciles managed
 settings such as declared remotes and Git configuration, but does not rewrite an

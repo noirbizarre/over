@@ -90,7 +90,7 @@ fn human_reports_shorten_only_paths_inside_the_user_home(
     };
     command("status")?
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("~/source/selected"))
         .stdout(contains(&expected_target))
         .stdout(contains(format!("{}/", home.display())).not());
@@ -1409,7 +1409,7 @@ fn status_reports_missing_before_apply() -> TestResult {
         .args(["status", "dev", "--target"])
         .arg(root.path())
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("1 missing"))
         .stdout(contains("Configuration:"))
         .stdout(contains("source:"));
@@ -1455,7 +1455,7 @@ fn status_reports_conflict_for_existing_file() -> TestResult {
         .args(["status", "dev", "--target"])
         .arg(root.path())
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("conflict"));
     Ok(())
 }
@@ -2280,7 +2280,7 @@ fn show_overlay_with_target() -> TestResult {
         .arg(tmp.path())
         .args(["show", "myoverlay"])
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("myoverlay"))
         .stdout(contains(&target_str))
         .stdout(contains("My test overlay"))
@@ -2819,7 +2819,7 @@ url = "https://github.com/user/myapp.git"
         .arg(tmp.path())
         .args(["show", "gitoverlay", "--verbose"])
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("gitoverlay"))
         .stdout(contains("git:"))
         .stdout(contains("myapp"))
