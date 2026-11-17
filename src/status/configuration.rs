@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use git2::{Config, ErrorCode, Repository};
 
+use crate::actions::git::diagnostics::display_key;
 use crate::actions::git::{association, config::GitRepoConfig};
 use crate::desired::{DesiredTree, Provenance};
 use crate::git_exclude;
@@ -132,25 +133,6 @@ fn normalized_key(key: &str) -> String {
         )
     } else {
         key.to_ascii_lowercase()
-    }
-}
-
-fn display_key(key: &str) -> String {
-    let Some((section, rest)) = key.split_once('.') else {
-        return key.into();
-    };
-    let Some((subsection, variable)) = rest.rsplit_once('.') else {
-        return key.into();
-    };
-    // URL rewrite and credential subsections can themselves contain tokens,
-    // even though configuration values and remote URLs are never displayed.
-    if matches!(section, "url" | "http" | "credential")
-        || subsection.contains("://")
-        || subsection.contains('@')
-    {
-        format!("{section}.<redacted>.{variable}")
-    } else {
-        key.into()
     }
 }
 

@@ -1,6 +1,7 @@
 pub mod association;
 pub(crate) mod commit;
 pub mod config;
+pub(crate) mod diagnostics;
 pub(crate) mod diff;
 pub(crate) mod index;
 pub mod init;
@@ -30,6 +31,7 @@ use tokio::{
 
 use crate::actions::fs::remove_target;
 use crate::actions::git::config::{GitRepoConfig, ROOT_PATH};
+use crate::actions::git::diagnostics::{display_key, operation_error};
 use crate::exec::{Action, Ctx};
 use crate::overlays::Overlay;
 use crate::plan::actual::{self, ActualState};
@@ -90,19 +92,18 @@ impl EnsureGitRepository {
     }
 
     fn short_name(&self) -> String {
-        self.config
-            .url
-            .split("/")
-            .last()
-            .unwrap_or("repo")
-            .trim_end_matches(".git")
-            .to_string()
+        // Even the last URL segment can contain a query token or user information.
+        self.path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
 impl fmt::Display for EnsureGitRepository {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} -> {}", self.path.display(), self.config.url)
+        write!(f, "Git repository -> {}", self.path.display())
     }
 }
 
@@ -361,6 +362,20 @@ fn ensure_remotes(
     remotes: &HashMap<String, config::RemoteConfig>,
     verbose: bool,
 ) -> Result<()> {
+    ensure_remotes_inner(repo, remotes, verbose).map_err(|error| {
+        match error.downcast::<git2::Error>() {
+            Ok(error) => operation_error("failed to provision remote settings", error),
+            // Contexts and transport errors can quote arbitrary remote settings.
+            Err(_) => anyhow!("failed to provision remote settings"),
+        }
+    })
+}
+
+fn ensure_remotes_inner(
+    repo: &Repository,
+    remotes: &HashMap<String, config::RemoteConfig>,
+    verbose: bool,
+) -> Result<()> {
     let existing_remotes = repo.remotes()?;
     let existing_names: Vec<&str> = existing_remotes
         .iter()
@@ -372,25 +387,24 @@ fn ensure_remotes(
             // Remote exists — update URL if different
             let existing = repo.find_remote(name.as_str())?;
             if existing.url().ok() != Some(remote_config.url.as_str()) {
-                repo.remote_set_url(name, &remote_config.url)?;
+                repo.remote_set_url(name, &remote_config.url)
+                    .map_err(|error| operation_error("failed to update remote URL", error))?;
                 if verbose {
-                    ui::info(format!(
-                        "  Updated remote {name} URL to {}",
-                        remote_config.url
-                    ))
-                    .ok();
+                    ui::info("  Updated remote URL").ok();
                 }
             }
             drop(existing);
         } else {
             // Create new remote
             if let Some(fetch) = &remote_config.fetch {
-                repo.remote_with_fetch(name, &remote_config.url, fetch)?;
+                repo.remote_with_fetch(name, &remote_config.url, fetch)
+                    .map_err(|error| operation_error("failed to create remote", error))?;
             } else {
-                repo.remote(name, &remote_config.url)?;
+                repo.remote(name, &remote_config.url)
+                    .map_err(|error| operation_error("failed to create remote", error))?;
             }
             if verbose {
-                ui::info(format!("  Added remote {name} -> {}", remote_config.url)).ok();
+                ui::info("  Added remote").ok();
             }
         }
 
@@ -612,11 +626,12 @@ fn apply_git_config(
 ) -> Result<()> {
     let mut git_cfg = repo.config()?;
     for (key, value) in entries {
-        git_cfg
-            .set_str(key, value)
-            .with_context(|| format!("failed to set git config {key}"))?;
+        let safe_key = display_key(key);
+        git_cfg.set_str(key, value).map_err(|error| {
+            operation_error(&format!("failed to set git config {safe_key}"), error)
+        })?;
         if verbose {
-            ui::info(format!("  Set config {key} = {value}")).ok();
+            ui::info(format!("  Set config {safe_key}")).ok();
         }
     }
     Ok(())
@@ -636,10 +651,15 @@ fn apply_config_to_file(
     let mut cfg = git2::Config::open(path)
         .with_context(|| format!("failed to open config at {}", path.display()))?;
     for (key, value) in entries {
-        cfg.set_str(key, value)
-            .with_context(|| format!("failed to set {key} in {}", path.display()))?;
+        let safe_key = display_key(key);
+        cfg.set_str(key, value).map_err(|error| {
+            operation_error(
+                &format!("failed to set {safe_key} in {}", path.display()),
+                error,
+            )
+        })?;
         if verbose {
-            ui::info(format!("  Set {} {key} = {value}", path.display())).ok();
+            ui::info(format!("  Set {} {safe_key}", path.display())).ok();
         }
     }
     Ok(())
@@ -768,7 +788,9 @@ fn clone(
         builder.branch(branch);
     }
 
-    let repo = builder.clone(url, dst)?;
+    let repo = builder
+        .clone(url, dst)
+        .map_err(|error| operation_error("failed to clone repository", error))?;
 
     // Recurse submodules if requested (only for non-bare repos)
     if recurse_submodules && !bare {
@@ -1436,7 +1458,7 @@ mod tests {
     }
 
     #[test]
-    fn short_name_strips_git_suffix_from_url() {
+    fn progress_names_use_the_destination_instead_of_the_url() {
         let action = EnsureGitRepository::new(
             PathBuf::from("test"),
             GitRepoConfig {
@@ -1454,11 +1476,11 @@ mod tests {
             },
             "test-overlay".to_string(),
         );
-        assert_eq!(action.short_name(), "my-repo");
+        assert_eq!(action.short_name(), "test");
     }
 
     #[test]
-    fn short_name_returns_repo_name_when_url_has_no_git_suffix() {
+    fn progress_names_do_not_depend_on_transport_spelling() {
         let action = EnsureGitRepository::new(
             PathBuf::from("test"),
             GitRepoConfig {
@@ -1476,7 +1498,7 @@ mod tests {
             },
             "test-overlay".to_string(),
         );
-        assert_eq!(action.short_name(), "my-repo");
+        assert_eq!(action.short_name(), "test");
     }
 
     #[test]
@@ -1643,7 +1665,7 @@ mod tests {
     // ── Display for EnsureGitRepository ─────────────────────────────────
 
     #[test]
-    fn ensure_git_repository_display_shows_path_arrow_url() {
+    fn ensure_git_repository_display_omits_transport_credentials() {
         let config = GitRepoConfig {
             url: "https://github.com/user/repo.git".to_string(),
             branch: None,
@@ -1664,7 +1686,7 @@ mod tests {
         );
         let display = format!("{action}");
         assert!(display.contains("/home/user/repos/repo"));
-        assert!(display.contains("https://github.com/user/repo.git"));
+        assert!(!display.contains("https://github.com/user/repo.git"));
         assert!(display.contains(" -> "));
     }
 
