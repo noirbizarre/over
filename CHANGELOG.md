@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1](https://github.com/noirbizarre/over/compare/0.5.0..0.5.1) - 2026-11-17
+
+### 🐛 Bug Fixes
+
+- **cli** Require confirmation for removal and discard commands ([#331](https://github.com/noirbizarre/over/issues/331)) - ([838701b](https://github.com/noirbizarre/over/commit/838701b5f6b7e6d8f316690a314e94d5c6142a64))
+- **crypt** Accept filter control packets without trailing newlines ([#330](https://github.com/noirbizarre/over/issues/330)) - ([7d67f61](https://github.com/noirbizarre/over/commit/7d67f611be5e1d8eac5411f2599baee075952805))
+- **status** Limit reports to overlay-managed state ([#332](https://github.com/noirbizarre/over/issues/332)) - ([72ea23f](https://github.com/noirbizarre/over/commit/72ea23fb0f51c560df876443d3688177d7ab934c))
+
 ## [0.5.0](https://github.com/noirbizarre/over/compare/0.4.0..0.5.0) - 2026-11-17
 
 ### 💫 Features
