@@ -2484,6 +2484,59 @@ fn generated_checkout_unapply_removes_only_clean_owned_files_and_its_ref() {
     );
 }
 
+#[rstest::rstest]
+#[case(true, true)]
+#[case(true, false)]
+#[case(false, true)]
+#[case(false, false)]
+fn retained_virtual_checkouts_keep_host_exclusions(#[case] generated: bool, #[case] dirty: bool) {
+    let fixture = Fixture::new(true);
+    let host = git2::Repository::init(fixture.temp.path()).unwrap();
+    if !generated {
+        fs::write(fixture.source.join("app/over.yaml"), "mode: checkout\n").unwrap();
+        commit_all(&fixture.repo());
+    }
+    fixture.apply();
+    let name = if generated { "config" } else { "config.jinja" };
+    let leaf = fixture.target.join(name);
+    let relative = leaf.strip_prefix(fixture.temp.path()).unwrap();
+    assert!(host.status_should_ignore(relative).unwrap());
+    if dirty {
+        fs::write(&leaf, "private local edits\n").unwrap();
+    }
+    // An unrelated container leaf must survive successful projection removal.
+    fs::write(fixture.target.join("foreign"), "keep\n").unwrap();
+    let excludes = fs::read(host.path().join("info/exclude")).unwrap();
+    let preview = fixture
+        .command("unapply")
+        .args(["app", "--dry-run", "--target"])
+        .arg(&fixture.target)
+        .assert();
+    if dirty {
+        preview.failure();
+    } else {
+        preview.success();
+    }
+    assert_eq!(
+        fs::read(host.path().join("info/exclude")).unwrap(),
+        excludes
+    );
+    let mut command = fixture.command("unapply");
+    command
+        .args(["app", "--no-prompt", "--target"])
+        .arg(&fixture.target);
+    if dirty {
+        command.assert().failure();
+        assert_eq!(fs::read_to_string(&leaf).unwrap(), "private local edits\n");
+        assert!(host.status_should_ignore(relative).unwrap());
+    } else {
+        command.assert().success();
+        assert!(!leaf.exists());
+        assert!(!host.status_should_ignore(relative).unwrap());
+    }
+    assert!(fixture.target.join("foreign").exists());
+}
+
 #[test]
 fn binary_conflicts_preserve_the_local_file_and_template_source() {
     let fixture = Fixture::new(true);

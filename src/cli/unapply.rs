@@ -132,11 +132,18 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     // Dry-run must not alter either block.
     if !ctx.dry_run
         && !report.entries().iter().any(|outcome| {
-            matches!(
-                outcome.entry.intent,
-                crate::desired::MaterializationIntent::EncryptedFile(_)
-                    | crate::desired::MaterializationIntent::RenderedFile(_)
-            ) && !matches!(outcome.outcome, Outcome::Removed | Outcome::AlreadyAbsent)
+            (outcome.entry.intent.is_virtual_checkout()
+                || matches!(
+                    outcome.entry.intent,
+                    crate::desired::MaterializationIntent::EncryptedFile(_)
+                        | crate::desired::MaterializationIntent::RenderedFile(_)
+                ))
+                && !matches!(
+                    outcome.outcome,
+                    Outcome::Removed
+                        | Outcome::AlreadyAbsent
+                        | Outcome::RemovedProjectionRetainedDirectory
+                )
         })
     {
         git_exclude::unreconcile_desired(&desired).with_context(|| {
