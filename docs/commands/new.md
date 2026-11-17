@@ -28,6 +28,10 @@ administration directories (`.git` and `.over`) are rejected. Existing directory
 or descriptor symlinks must not redirect creation outside the repository, even
 with `--force`.
 
+Relative `TARGET` paths resolve from the new overlay's descriptor directory,
+just as they do during apply, rather than from the invocation's working
+directory. Destination inspection and absorption use that same resolved path.
+
 ## Example
 
 ```sh

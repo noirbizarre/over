@@ -4,11 +4,10 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
 use clap::Args;
-use config::{Config, File, FileFormat, FileSourceFile};
+use config::{Config, File, FileFormat};
 use dialoguer::{Input, MultiSelect};
 use dirs::home_dir;
 
-use crate::cli::common;
 use crate::exec::Context;
 use crate::overlays::{BASENAME, DEFAULT_TARGET, Format, Repository};
 use crate::ui;
@@ -74,10 +73,15 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         bail!("overlay already exists at {}", overlay_root.display());
     }
 
-    // Resolve the actual target path for filesystem operations. Shares
-    // `common::expand_tilde` rather than reimplementing `~` expansion, so
-    // there's a single source of truth for tilde-handling semantics.
-    let resolved_target = common::expand_tilde(&target_str);
+    let ctx = Context::builder()
+        .dry_run(args.dry_run)
+        .debug(cli.debug)
+        .verbose(cli.verbose)
+        .force(args.force)
+        .root(home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?)
+        .repository(repo.clone())
+        .build();
+    let (descriptor_target, resolved_target) = planned_target(&ctx, &overlay_root, &target_str)?;
 
     if cli.debug {
         tracing::debug!(
@@ -115,15 +119,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     ))
     .ok();
 
-    // Write the overlay descriptor
-    // Only include the target if it differs from the inherited value
-    let inherited_target = resolve_inherited_target(&home, &overlay_root);
-    let descriptor_target = if target_str == inherited_target {
-        None
-    } else {
-        Some(target_str.as_str())
-    };
-    let content = build_descriptor(descriptor_target, format, &git_entries);
+    let content = build_descriptor(descriptor_target.as_deref(), format, &git_entries);
     if args.dry_run {
         ui::info(format!(
             "{}",
@@ -137,22 +133,14 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     // Absorb selected files/directories
     if !files_to_absorb.is_empty() {
-        let overlay = if args.dry_run {
-            prospective_overlay(&repo, &overlay_root, descriptor_target, &git_entries)?
-        } else {
-            repo.get(&path)?
-        };
-        let ctx = Context::builder()
-            .dry_run(args.dry_run)
-            .debug(cli.debug)
-            .verbose(cli.verbose)
-            .force(args.force)
-            .root(home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?)
-            .repository(repo)
-            .overlay(overlay.clone())
-            .build();
-
-        let ctx = ctx.resolve_data()?;
+        // Preview and real ingestion must see identical prospective routing and origins.
+        let overlay = prospective_overlay(
+            &repo,
+            &overlay_root,
+            descriptor_target.as_deref(),
+            &git_entries,
+        )?;
+        let ctx = ctx.with_overlay(overlay.clone()).resolve_data()?;
         overlay.add_files(&ctx, &files_to_absorb).await?;
     }
 
@@ -179,6 +167,19 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     .ok();
 
     Ok(())
+}
+
+fn planned_target(ctx: &Context, root: &Path, target: &str) -> Result<(Option<String>, PathBuf)> {
+    let inherited = prospective_overlay(&ctx.repository, root, None, &HashMap::new())?;
+    let planned = prospective_overlay(&ctx.repository, root, Some(target), &HashMap::new())?;
+    let resolved =
+        planned.resolve_target(ctx.with_overlay(planned.clone()).resolve_data()?.as_ref())?;
+    // Equal relative strings are not equal assignments when declared in different directories.
+    let omitted = target == inherited.target
+        && resolved
+            == inherited
+                .resolve_target(ctx.with_overlay(inherited.clone()).resolve_data()?.as_ref())?;
+    Ok(((!omitted).then(|| target.to_owned()), resolved))
 }
 
 fn validate_overlay_path(home: &Path, path: &str, format: Format) -> Result<PathBuf> {
@@ -300,43 +301,6 @@ fn extract_git_remote(path: &Path) -> Option<(String, String)> {
     Some((name, url))
 }
 
-/// Resolve the target that would be inherited from ancestor overlay configs.
-///
-/// Walks from the overlay's parent directory up to the repository root,
-/// collecting any `over.{toml,yaml,yml}` configs that define a `target`.
-/// Returns the effective inherited target, falling back to [`DEFAULT_TARGET`].
-fn resolve_inherited_target(repo_root: &Path, overlay_root: &Path) -> String {
-    let mut sources: Vec<File<FileSourceFile, FileFormat>> = Vec::new();
-    let mut dir = overlay_root;
-
-    // Walk from overlay's parent up to repo root
-    while let Some(parent) = dir.parent() {
-        dir = parent;
-        let basename = dir.join(BASENAME);
-        if let Some(basename_str) = basename.to_str() {
-            sources.push(File::with_name(basename_str).required(false));
-        }
-        if dir == repo_root {
-            break;
-        }
-    }
-
-    if sources.is_empty() {
-        return DEFAULT_TARGET.to_string();
-    }
-
-    // Reverse so ancestor configs are lower priority (repo root first)
-    sources.reverse();
-
-    Config::builder()
-        .add_source(sources)
-        .set_default("target", DEFAULT_TARGET)
-        .ok()
-        .and_then(|b| b.build().ok())
-        .and_then(|c| c.get_string("target").ok())
-        .unwrap_or_else(|| DEFAULT_TARGET.to_string())
-}
-
 /// Build the overlay descriptor file content in the given format.
 fn build_descriptor(
     target: Option<&str>,
@@ -400,6 +364,65 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[rstest::rstest]
+    #[case("dest", "dest", true)]
+    #[case("~", "~", false)]
+    #[case("~/dest", "~/dest", false)]
+    #[case("dest", "other", true)]
+    fn prospective_targets_preserve_declaration_origins(
+        #[case] inherited: &str,
+        #[case] target: &str,
+        #[case] explicit: bool,
+    ) {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join("over.toml"),
+            format!("target = '{inherited}'"),
+        )
+        .unwrap();
+        let root = temp.path().join("apps/demo");
+        let repo = Repository::new(temp.path().to_path_buf());
+        let ctx = Context::builder()
+            .repository(repo.clone())
+            .root(temp.path().join("home"))
+            .build();
+        let (assignment, resolved) = planned_target(&ctx, &root, target).unwrap();
+        assert_eq!(assignment.is_some(), explicit);
+        let expected = if target == "~" {
+            temp.path().join("home")
+        } else if let Some(tail) = target.strip_prefix("~/") {
+            temp.path().join("home").join(tail)
+        } else {
+            root.join(target)
+        };
+        assert_eq!(resolved, expected);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("over.toml"),
+            build_descriptor(assignment.as_deref(), Format::Toml, &HashMap::new()),
+        )
+        .unwrap();
+        let actual = repo.get("apps/demo").unwrap();
+        assert_eq!(
+            actual
+                .resolve_target(&ctx.with_overlay(actual.clone()).resolve_data().unwrap())
+                .unwrap(),
+            resolved
+        );
+    }
+
+    #[test]
+    fn invalid_inherited_configuration_fails_before_new_overlay_creation() {
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join("over.toml"), "target = [invalid").unwrap();
+        let root = temp.path().join("demo");
+        let ctx = Context::builder()
+            .repository(Repository::new(temp.path().to_path_buf()))
+            .build();
+        assert!(planned_target(&ctx, &root, "dest").is_err());
+        assert!(!root.exists());
+    }
 
     #[rstest::rstest]
     #[case("")]
@@ -490,10 +513,6 @@ mod tests {
         assert!(!home.join("ov").exists());
         assert_eq!(fs::read_dir(&home).unwrap().count(), 1);
     }
-
-    // `~` expansion itself is exercised by `common::expand_tilde`'s own
-    // tests (`cli/common.rs`) — this module no longer reimplements it, so
-    // there's nothing overlay-specific left to test here.
 
     // ── build_toml_descriptor ───────────────────────────────────────────
 
@@ -696,73 +715,6 @@ mod tests {
     fn extract_git_remote_on_nonexistent_path_returns_none() {
         let result = extract_git_remote(Path::new("/nonexistent/path/xyz"));
         assert!(result.is_none());
-    }
-
-    // ── resolve_inherited_target ────────────────────────────────────────
-
-    #[test]
-    fn resolve_inherited_target_falls_back_to_default_without_ancestor_configs() {
-        let tmp = TempDir::new().unwrap();
-        let repo_root = tmp.path();
-        let overlay_root = repo_root.join("myoverlay");
-        fs::create_dir_all(&overlay_root).unwrap();
-
-        let result = resolve_inherited_target(repo_root, &overlay_root);
-        assert_eq!(result, DEFAULT_TARGET);
-    }
-
-    #[test]
-    fn resolve_inherited_target_uses_target_defined_by_ancestor_config() {
-        let tmp = TempDir::new().unwrap();
-        let repo_root = tmp.path();
-        fs::write(repo_root.join("over.toml"), "target = \"~/Documents\"").unwrap();
-        let overlay_root = repo_root.join("myoverlay");
-        fs::create_dir_all(&overlay_root).unwrap();
-
-        let result = resolve_inherited_target(repo_root, &overlay_root);
-        assert_eq!(result, "~/Documents");
-    }
-
-    #[test]
-    fn resolve_inherited_target_returns_default_when_ancestor_config_matches_it() {
-        let tmp = TempDir::new().unwrap();
-        let repo_root = tmp.path();
-        fs::write(repo_root.join("over.toml"), "target = \"~\"").unwrap();
-        let overlay_root = repo_root.join("myoverlay");
-        fs::create_dir_all(&overlay_root).unwrap();
-
-        let result = resolve_inherited_target(repo_root, &overlay_root);
-        assert_eq!(result, DEFAULT_TARGET);
-    }
-
-    #[test]
-    fn resolve_inherited_target_prefers_closest_ancestor_over_repo_root() {
-        let tmp = TempDir::new().unwrap();
-        let repo_root = tmp.path();
-        // Root defines one target
-        fs::write(repo_root.join("over.toml"), "target = \"~/Documents\"").unwrap();
-        // Intermediate dir defines a closer target
-        let parent = repo_root.join("apps");
-        fs::create_dir_all(&parent).unwrap();
-        fs::write(parent.join("over.toml"), "target = \"~/apps\"").unwrap();
-
-        let overlay_root = parent.join("myapp");
-        fs::create_dir_all(&overlay_root).unwrap();
-
-        let result = resolve_inherited_target(repo_root, &overlay_root);
-        assert_eq!(result, "~/apps");
-    }
-
-    #[test]
-    fn resolve_inherited_target_at_repo_root_ignores_repo_roots_own_config() {
-        // Overlay is directly at the repo root — no parents to check
-        let tmp = TempDir::new().unwrap();
-        let repo_root = tmp.path();
-        fs::write(repo_root.join("over.toml"), "target = \"~/custom\"").unwrap();
-
-        // overlay_root == repo_root: no ancestors to walk
-        let result = resolve_inherited_target(repo_root, repo_root);
-        assert_eq!(result, DEFAULT_TARGET);
     }
 
     // ── format resolution logic ─────────────────────────────────────────
