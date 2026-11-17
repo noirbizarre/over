@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
 use clap::Args;
@@ -54,6 +54,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             .interact_text()
             .map_err(|e| anyhow!("prompt cancelled: {}", e))?,
     };
+    let overlay_root = validate_overlay_path(&home, &path, format)?;
 
     // Resolve target (prompt with default if not provided)
     let target_str = match &args.target {
@@ -66,7 +67,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     };
 
     drop(pause);
-    let overlay_root = home.join(&path);
 
     // Check the overlay does not already exist
     let descriptor = overlay_root.join(format!("{}.{}", BASENAME, format.extension()));
@@ -179,6 +179,30 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     .ok();
 
     Ok(())
+}
+
+fn validate_overlay_path(home: &Path, path: &str, format: Format) -> Result<PathBuf> {
+    use crate::overlays::mapping::{absolute, physical};
+
+    anyhow::ensure!(
+        !path.is_empty() && !path.contains(['\\', '\0'])
+            && Path::new(path).components().all(|part| {
+                matches!(part, Component::Normal(name) if !name.eq_ignore_ascii_case(".git") && !name.eq_ignore_ascii_case(".over"))
+            }),
+        "overlay path must be a repository-relative path without traversal or administration directories"
+    );
+    let home = absolute(home)?;
+    let root = home.join(path);
+    let boundary = physical(&home)?;
+    let descriptor = root.join(format!("{BASENAME}.{}", format.extension()));
+    // Check the descriptor leaf too: --force must not follow an external file alias.
+    anyhow::ensure!(
+        root != home
+            && physical(&root)?.starts_with(&boundary)
+            && physical(&descriptor)?.starts_with(&boundary),
+        "overlay path escapes the repository"
+    );
+    Ok(root)
 }
 
 /// Retain inherited policy and origins without requiring the preview directory to exist.
@@ -376,6 +400,50 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[rstest::rstest]
+    #[case("")]
+    #[case(".")]
+    #[case("../escape")]
+    #[case("apps/../../escape")]
+    #[case("/absolute")]
+    #[case(".git/objects")]
+    #[case(".over/secrets")]
+    fn new_overlay_paths_reject_escapes_before_creating_directories(#[case] path: &str) {
+        let temp = TempDir::new().unwrap();
+        assert!(validate_overlay_path(temp.path(), path, Format::Toml).is_err());
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+        assert_eq!(
+            validate_overlay_path(temp.path(), "apps/demo", Format::Toml).unwrap(),
+            temp.path().join("apps/demo")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_overlay_paths_reject_external_directory_and_descriptor_aliases() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        symlink(external.path(), temp.path().join("alias")).unwrap();
+        assert!(validate_overlay_path(temp.path(), "alias/demo", Format::Toml).is_err());
+        fs::create_dir(temp.path().join("demo")).unwrap();
+        fs::write(external.path().join("over.toml"), "original").unwrap();
+        symlink(
+            external.path().join("over.toml"),
+            temp.path().join("demo/over.toml"),
+        )
+        .unwrap();
+        assert!(validate_overlay_path(temp.path(), "demo", Format::Toml).is_err());
+        assert_eq!(
+            fs::read_to_string(external.path().join("over.toml")).unwrap(),
+            "original"
+        );
+        let alias_root = temp.path().join("repository-alias");
+        symlink(external.path(), &alias_root).unwrap();
+        assert!(validate_overlay_path(&alias_root, "valid/nested", Format::Toml).is_ok());
+    }
 
     #[tokio::test]
     async fn preview_absorbs_selected_files_with_inherited_mappings_without_writing() {

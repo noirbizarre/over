@@ -23,6 +23,11 @@ Options:
 flag, the root config's `format` field decides, and absent that, `toml` —
 see [Format preference](../configuration/root.md#format-preference).
 
+`PATH` must stay within the overlay repository. Absolute paths, traversal, and
+administration directories (`.git` and `.over`) are rejected. Existing directory
+or descriptor symlinks must not redirect creation outside the repository, even
+with `--force`.
+
 ## Example
 
 ```sh
