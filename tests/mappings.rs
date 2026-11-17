@@ -435,7 +435,7 @@ fn status_and_show_do_not_write_filtered_git_objects_targets_or_state(#[case] ap
             .args(["workspace/client", "--verbose", "--target"])
             .arg(&fixture.home)
             .assert()
-            .code(1)
+            .success()
             .stdout(contains("Configuration:"))
             .stdout(contains("target rule: config"));
         assert_eq!(filesystem_snapshot(fixture.temp.path()), before);
@@ -461,7 +461,7 @@ fn a_source_executable_bit_change_remains_behind_in_read_only_checkout_status() 
         .args(["workspace/client", "--target"])
         .arg(&fixture.home)
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("1 behind"));
     assert_eq!(filesystem_snapshot(fixture.temp.path()), before);
 }
@@ -668,7 +668,7 @@ fn mapped_source_drift_syncs_only_its_own_checkout() {
         .args(["workspace/client", "--target"])
         .arg(&fixture.home)
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("2 applied"))
         .stdout(contains("1 behind"));
     fixture

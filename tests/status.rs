@@ -42,7 +42,7 @@ fn status_show_and_doctor_report_obstructed_scaffolds_without_panicking() {
             .arg("selected")
             .env("XDG_STATE_HOME", temp.path().join("state"))
             .assert()
-            .code(1)
+            .code(if verb == "doctor" { 1 } else { 0 })
             .stderr(contains("panicked").not());
     }
     assert_eq!(fs::read(root.join("blocked")).unwrap(), b"preserve");
@@ -91,7 +91,7 @@ fn globally_ignored_overlay_files_need_no_managed_exclusion_in_status_or_doctor(
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("XDG_STATE_HOME", &state)
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("Git configuration:"))
         .stdout(contains("exclude missing: mise.toml"));
     command(&source, &root, "doctor")
@@ -254,7 +254,7 @@ fn doctor_summarizes_mixed_deployment_and_static_health_while_status_keeps_detai
     command(&source, &root, "status")
         .arg("conflict")
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("conflict:"))
         .stdout(contains("collision"));
 }
@@ -278,7 +278,7 @@ fn unapplied_status_resolves_inheritance_composition_mappings_and_rule_provenanc
     let status = command(&source, &root, "status")
         .args(["selected", "--verbose"])
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("Configuration:"))
         .stdout(contains(root.join("resolved").to_string_lossy().as_ref()))
         .stdout(contains(root.join("mapped").to_string_lossy().as_ref()))
@@ -543,7 +543,7 @@ fn status_checks_overlay_files_and_mount_configuration_without_reading_mount_con
         .env("XDG_STATE_HOME", &state)
         .arg("selected")
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("config incorrect: remote.origin.url"))
         .stdout(contains("repository.txt").not());
     fs::rename(&mounted, temp.path().join("removed-mount")).unwrap();
@@ -551,7 +551,7 @@ fn status_checks_overlay_files_and_mount_configuration_without_reading_mount_con
         .env("XDG_STATE_HOME", &state)
         .arg("selected")
         .assert()
-        .code(1)
+        .success()
         .stdout(contains(format!("missing: {}", mounted.display())));
 }
 
@@ -635,6 +635,186 @@ struct CheckoutFixture {
     source: std::path::PathBuf,
     root: std::path::PathBuf,
     repo: git2::Repository,
+}
+
+#[rstest::rstest]
+#[case::checkout(false, false)]
+#[case::conflicted_checkout(false, true)]
+#[case::worktrees(true, false)]
+#[case::conflicted_worktrees(true, true)]
+fn root_declared_repositories_report_provisioning_without_repository_content(
+    #[case] worktrees: bool,
+    #[case] conflicted: bool,
+) {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("home");
+    let upstream = temp.path().join("upstream");
+    let target = root.join("project");
+    let upstream_repo = git2::Repository::init(&upstream).unwrap();
+    upstream_repo.set_head("refs/heads/main").unwrap();
+    fs::write(upstream.join("repository.txt"), "original\n").unwrap();
+    commit_all(&upstream_repo);
+    fs::create_dir_all(source.join("selected")).unwrap();
+    fs::write(
+        source.join("selected/over.yaml"),
+        format!(
+            "target: '~/project'\ngit:\n  url: '{}'\n  worktree: {worktrees}\n",
+            upstream.display()
+        ),
+    )
+    .unwrap();
+    let run = |verb: &str| {
+        let mut cmd = command(&source, &root, verb);
+        cmd.env("XDG_STATE_HOME", temp.path().join("state"));
+        cmd
+    };
+    run("apply")
+        .args(["selected", "--no-prompt"])
+        .assert()
+        .success();
+    let paths = if worktrees {
+        let repo = git2::Repository::open_bare(target.join(".git")).unwrap();
+        repo.worktree("extra", &target.join("extra"), None).unwrap();
+        vec![target.join("main"), target.join("extra")]
+    } else {
+        vec![target.clone()]
+    };
+    for path in &paths {
+        let repo = git2::Repository::open(path).unwrap();
+        fs::write(path.join("repository.txt"), "local commit\n").unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("repository.txt")).unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "local",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+        fs::write(path.join("repository.txt"), "staged\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("repository.txt")).unwrap();
+        index.write().unwrap();
+        fs::write(path.join("repository.txt"), "unstaged\n").unwrap();
+        fs::write(path.join("untracked.txt"), "untracked\n").unwrap();
+        if conflicted {
+            // Repository operations and unresolved indexes are not overlay-owned conflicts.
+            let head = repo.head().unwrap().target().unwrap();
+            fs::write(repo.path().join("MERGE_HEAD"), head.to_string()).unwrap();
+            let mut entry = index.get_path(Path::new("repository.txt"), 0).unwrap();
+            index.remove_path(Path::new("repository.txt")).unwrap();
+            for stage in 1..=3 {
+                entry.flags = (entry.flags & !0x3000) | (stage << 12);
+                index.add(&entry).unwrap();
+            }
+            index.write().unwrap();
+        }
+    }
+    for verb in ["status", "show"] {
+        run(verb)
+            .arg("selected")
+            .assert()
+            .success()
+            .stdout(contains("Fully applied"))
+            .stdout(contains("Changes:\n  none"))
+            .stdout(contains("repository.txt").not())
+            .stdout(contains("untracked.txt").not())
+            .stderr("");
+        run(verb)
+            .args(["selected", "--short"])
+            .assert()
+            .success()
+            .stdout("")
+            .stderr("");
+    }
+    let repo = if worktrees {
+        git2::Repository::open_bare(target.join(".git")).unwrap()
+    } else {
+        git2::Repository::open(&target).unwrap()
+    };
+    repo.remote_set_url("origin", "https://example.com/drift.git")
+        .unwrap();
+    run("status")
+        .arg("selected")
+        .assert()
+        .success()
+        .stdout(contains("config incorrect: remote.origin.url"))
+        .stdout(contains("repository.txt").not())
+        .stderr("");
+    // Keep registration metadata to distinguish a missing worktree from missing config.
+    fs::rename(&paths[0], temp.path().join("removed")).unwrap();
+    run("status")
+        .arg("selected")
+        .assert()
+        .success()
+        .stdout(contains("missing:"))
+        .stderr("");
+}
+
+#[rstest::rstest]
+#[case::full(false)]
+#[case::short(true)]
+fn failed_entry_inspections_fail_status_with_sanitized_diagnostics(#[case] short: bool) {
+    let fixture = CheckoutFixture::new();
+    let state = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let original = fs::read_to_string(&state).unwrap();
+    let head = fixture.repo.head().unwrap().target().unwrap().to_string();
+    // A valid association with an unavailable base reaches the per-entry inspector.
+    let missing_base = "0000000000000000000000000000000000000000";
+    let corrupted = original.replace(&head, missing_base);
+    assert_ne!(original, corrupted);
+    fs::write(state, corrupted).unwrap();
+    let mut cmd = fixture.command("status");
+    cmd.arg("selected");
+    if short {
+        cmd.arg("--short");
+    }
+    let output = cmd
+        .assert()
+        .code(1)
+        .stderr(contains("could not check status"))
+        .stderr(contains(missing_base).not())
+        .get_output()
+        .clone();
+    if short {
+        assert!(output.stdout.is_empty());
+    } else {
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Check failed:"));
+    }
+}
+
+#[test]
+fn findings_only_status_succeeds_for_all_selected_overlays_and_short_output() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("home");
+    fs::create_dir_all(&root).unwrap();
+    for name in ["missing", "conflicting"] {
+        fs::create_dir_all(source.join(name)).unwrap();
+        fs::write(source.join(name).join("over.yaml"), "target: '~'\n").unwrap();
+        fs::write(source.join(name).join(name), "overlay\n").unwrap();
+    }
+    fs::write(root.join("conflicting"), "user content\n").unwrap();
+    command(&source, &root, "status")
+        .arg("--all")
+        .assert()
+        .success()
+        .stdout(contains("missing:"))
+        .stdout(contains("conflict:"))
+        .stdout(contains("2 need attention, 0 could not be checked"))
+        .stderr("");
+    command(&source, &root, "status")
+        .args(["--all", "--short"])
+        .assert()
+        .success()
+        .stdout("")
+        .stderr("");
 }
 
 impl CheckoutFixture {
@@ -846,7 +1026,7 @@ fn source_updates_remain_actionable_independently_of_staging() {
         .command("status")
         .arg("selected")
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("behind:"))
         .stdout(contains("Changes:"));
     fs::write(fixture.root.join("file"), "independent\n").unwrap();
@@ -854,7 +1034,7 @@ fn source_updates_remain_actionable_independently_of_staging() {
         .command("status")
         .arg("selected")
         .assert()
-        .code(1)
+        .success()
         .stdout(contains("conflict:"));
     // Converged bytes need no content reconciliation even while the recorded base is older.
     fs::write(fixture.root.join("file"), "upstream\n").unwrap();
@@ -1051,12 +1231,12 @@ fn short_source_status_distinguishes_index_and_worktree_changes_without_unrelate
             "MM\t{}\t\"selected/file\"\tnull\n",
             serde_json::to_string(&worktree_identity(&repo)).unwrap()
         ));
-    // Structural drift still fails without putting prose on short stdout.
+    // Structural findings still succeed without putting prose on short stdout.
     fs::remove_file(root.join("file")).unwrap();
     command(&source, &root, "status")
         .args(["selected", "-s"])
         .assert()
-        .code(1)
+        .success()
         .stdout(format!(
             "MM\t{}\t\"selected/file\"\tnull\n",
             serde_json::to_string(&worktree_identity(&repo)).unwrap()

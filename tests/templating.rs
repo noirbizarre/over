@@ -2360,7 +2360,7 @@ fn overlapping_checkout_edits_remain_conflicted_after_the_desired_ref_advances(
         .args(["app", "--target"])
         .arg(&fixture.target)
         .assert()
-        .failure()
+        .success()
         .stdout(contains("conflict"));
     fixture
         .command("restore")
@@ -2403,7 +2403,7 @@ fn reporting_and_previews_do_not_write_generated_objects_or_state(#[case] protec
         .args(["app", "--target"])
         .arg(&fixture.target)
         .assert()
-        .failure();
+        .success();
     fixture
         .command("apply")
         .args(["app", "--dry-run", "--target"])
@@ -2439,7 +2439,7 @@ fn reporting_and_previews_do_not_write_generated_objects_or_state(#[case] protec
         .args(["app", "--target"])
         .arg(&fixture.target)
         .assert()
-        .failure();
+        .success();
     fixture
         .command("diff")
         .args(["app", "--target"])
@@ -2664,7 +2664,7 @@ fn a_source_template_deletion_preserves_local_edits_until_explicit_restore() {
             .args(["app", "--target"])
             .arg(&fixture.target)
             .assert()
-            .failure()
+            .success()
             .stdout(contains("conflict"));
         fixture
             .sync()

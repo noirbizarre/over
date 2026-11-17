@@ -31,6 +31,10 @@
 //! directory tree is exactly as irreversible as deleting the root
 //! checkout's, so that gate must never be relaxed just because `status`/
 //! `diff`'s *reporting* got more lenient for declared entries.
+//!
+//! Reconciliation reports use `inspect_reporting` for every declared repository,
+//! including root entries: only provisioning and declared revisions matter there.
+//! Content and operation state remain relevant to synchronization and removal safety.
 
 use std::path::Path;
 
@@ -99,41 +103,12 @@ pub(crate) fn inspect_runtime(entry: &DesiredEntry) -> Result<Status> {
     }
 }
 
-/// Reporting checks provisioning and operations, leaving ordinary dirt to Changes.
+/// Reporting treats every declared repository as a provisioned resource, not owned content.
 pub(crate) fn inspect_reporting(entry: &DesiredEntry) -> Result<Status> {
-    let Provenance::Git {
-        config, repo_key, ..
-    } = &entry.provenance
-    else {
+    let Provenance::Git { config, .. } = &entry.provenance else {
         unreachable!()
     };
-    let presence = inspect_declared(&entry.target, config)?;
-    if presence != Status::Applied || repo_key != ROOT_PATH {
-        return Ok(presence);
-    }
-    let inspect = |path: &Path| -> Result<Status> {
-        let repo = Repository::open(path)?;
-        if repo.state() != RepositoryState::Clean {
-            return Ok(Status::Conflict);
-        }
-        Ok(match ahead_behind(&repo)? {
-            None | Some((0, 0)) => Status::Applied,
-            Some((ahead, 0)) => Status::Ahead(ahead),
-            Some((0, behind)) => Status::Behind(behind),
-            Some((ahead, behind)) => Status::Diverged { ahead, behind },
-        })
-    };
-    if config.worktree || config.worktrees.is_some() {
-        let repo = Repository::open_bare(entry.target.join(".git"))?;
-        let mut status = Status::Applied;
-        for name in repo.worktrees()?.iter() {
-            let name = name?.ok_or_else(|| anyhow::anyhow!("worktree name is not UTF-8"))?;
-            status = merge(status, inspect(&entry.target.join(name))?);
-        }
-        Ok(status)
-    } else {
-        inspect(&entry.target)
-    }
+    inspect_declared(&entry.target, config)
 }
 
 /// Full git working-tree content status (dirty/ahead/behind/diverged/
@@ -195,7 +170,7 @@ pub(crate) fn inspect_content(entry: &DesiredEntry) -> Result<Status> {
     Ok(worst.unwrap_or(Status::Missing))
 }
 
-/// Provisioning status for a declared (non-root) repository (#140,
+/// Provisioning status for a declared repository (#140,
 /// ADR-021): presence + whether the declared configuration is applied —
 /// never dirty/ahead/behind/diverged/merge-in-progress, which is
 /// unrelated content a plugin manager (or the user) is free to mutate
@@ -497,6 +472,7 @@ mod tests {
         let target = td.path().join("does-not-exist");
         let e = entry(target, git_config(false, None));
         assert_eq!(inspect(&e).unwrap(), Status::Missing);
+        assert_eq!(inspect_reporting(&e).unwrap(), Status::Missing);
     }
 
     #[test]
@@ -506,6 +482,7 @@ mod tests {
         target.create_dir_all().unwrap();
         let e = entry(target.path().to_path_buf(), git_config(false, None));
         assert_eq!(inspect(&e).unwrap(), Status::Broken);
+        assert_eq!(inspect_reporting(&e).unwrap(), Status::Broken);
     }
 
     #[test]
@@ -523,6 +500,7 @@ mod tests {
         fs::write(td.path().join("README.md"), "changed").unwrap();
         let e = entry(td.path().to_path_buf(), git_config(false, None));
         assert_eq!(inspect(&e).unwrap(), Status::Modified);
+        assert_eq!(inspect_reporting(&e).unwrap(), Status::Applied);
     }
 
     #[test]
@@ -544,6 +522,7 @@ mod tests {
         fs::write(repo.path().join("MERGE_HEAD"), head_oid.to_string()).unwrap();
         let e = entry(td.path().to_path_buf(), git_config(false, None));
         assert_eq!(inspect(&e).unwrap(), Status::Conflict);
+        assert_eq!(inspect_reporting(&e).unwrap(), Status::Applied);
     }
 
     #[test]
@@ -585,6 +564,7 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(inspect(&e).unwrap(), Status::Ahead(1));
+        assert_eq!(inspect_reporting(&e).unwrap(), Status::Applied);
 
         // Behind: advance the remote, fetch it into `origin/main`, but
         // reset the local `main` back to the shared ancestor (undoing the
@@ -631,6 +611,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(inspect(&e).unwrap(), Status::Behind(1));
+        assert_eq!(inspect_reporting(&e).unwrap(), Status::Applied);
 
         // Diverged: local gets its own commit again on top of the shared
         // ancestor, while remote is already one commit ahead.
@@ -893,6 +874,7 @@ mod tests {
             git_config(true, Some(worktrees)),
         );
         assert_eq!(inspect_runtime(&entry).unwrap(), Status::Missing);
+        assert_eq!(inspect_reporting(&entry).unwrap(), Status::Missing);
         // Destructive consumers must still see dirt in every remaining worktree.
         assert_eq!(inspect_content(&entry).unwrap(), Status::Modified);
     }
@@ -998,8 +980,10 @@ mod tests {
 
         let mut config = git_config(false, None);
         config.tag = Some("v1.0.0".to_string());
-        let e = declared_entry(td.path().to_path_buf(), config);
+        let e = declared_entry(td.path().to_path_buf(), config.clone());
         assert_eq!(inspect(&e).unwrap(), Status::Conflict);
+        let root = entry(td.path().to_path_buf(), config);
+        assert_eq!(inspect_reporting(&root).unwrap(), Status::Conflict);
     }
 
     #[test]

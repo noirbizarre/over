@@ -1,6 +1,6 @@
 //! Overlay status (#12): derives per-entry reconciliation status from the
 //! same [`DesiredTree`]/[`Plan`] model [`crate::overlays::Overlay::apply`]
-//! uses (#107/#13), plus git working-tree state for
+//! uses (#107/#13), plus Git provisioning state for
 //! [`MaterializationIntent::Checkout`] entries (see [`git`]) and virtual
 //! checkout blob-hash comparison for
 //! [`MaterializationIntent::VirtualCheckout`] entries (#141, see
@@ -39,7 +39,7 @@ pub enum Status {
     /// Encrypted content has not been verified because the credential is unavailable.
     Locked,
     /// Target matches desired intent — nothing to do. For a declared
-    /// (non-root) `git` entry (#140, ADR-021), this means the repository
+    /// `git` entry, this means the repository
     /// is present and its declared revision is applied — regardless of uncommitted changes, local
     /// commits, or other content a plugin manager (or the user) put there.
     Applied,
@@ -48,14 +48,13 @@ pub enum Status {
     Missing,
     /// A filesystem entry's permission mode differs (`Operation::Repair`).
     /// Destructive/sync inspectors also use this for dirty content; reporting
-    /// keeps ordinary Git edits in Changes instead of reconciliation health.
+    /// keeps overlay-owned Git edits in Changes instead of reconciliation health.
     Modified,
     /// A dangling soft symlink (correctly pointed, but its source
     /// disappeared), or a checkout path that isn't a valid git repo.
     Broken,
-    /// Target exists and doesn't match desired intent, a git checkout has
-    /// a merge/rebase/cherry-pick in progress, or — for a declared
-    /// (non-root) `git` entry (#140) — its declared revision no longer matches.
+    /// Target exists and doesn't match desired intent, or a declared
+    /// `git` entry's revision no longer matches.
     /// Supporting Git configuration is reported separately as warning findings.
     Conflict,
     /// A git checkout is ahead of its upstream by this many commits.
@@ -205,12 +204,12 @@ pub struct Report {
 impl Report {
     /// Classify every entry in `desired` — [`Plan::build`] handles
     /// directories/symlinks (never touching the filesystem beyond
-    /// read-only inspection), while [`git::inspect`] and
+    /// read-only inspection), while `git::inspect_reporting` and
     /// [`virtual_checkout::inspect`] recompute their own, richer status
     /// directly rather than trusting `Plan`'s coarse `Noop`/`Create` for
     /// [`MaterializationIntent::Checkout`]/[`MaterializationIntent::VirtualCheckout`]
     /// entries (both backends deliberately collapse anything but `Missing`
-    /// to `Noop`, deferring dirty/ahead/behind/conflict reporting to this
+    /// to `Noop`, deferring provisioning and virtual-checkout content reporting to this
     /// module instead — see `CheckoutMaterializer`/`VirtualCheckoutMaterializer`'s
     /// own docs).
     pub fn build(desired: &DesiredTree) -> Result<Self> {
@@ -284,8 +283,8 @@ impl Report {
                     (_, Operation::Migrate { .. }) => Status::Conflict,
                     // A permission-only drift (#65): content/kind already
                     // matches, only the mode needs fixing — auto-fixable, not a
-                    // real conflict, so it's reported the same way a dirty git
-                    // checkout is.
+                    // real conflict, so report materialization drift rather than
+                    // suggesting an ownership collision.
                     (_, Operation::Repair { .. } | Operation::RepairMetadata { .. }) => {
                         Status::Modified
                     }

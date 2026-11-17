@@ -149,7 +149,18 @@ fn execute_blocking(home: PathBuf, verbose: bool, args: &Params) -> Result<()> {
                         counts.ahead += current.ahead;
                         counts.behind += current.behind;
                         counts.diverged += current.diverged;
-                        if report.needs_attention() {
+                        if report
+                            .entries()
+                            .iter()
+                            .any(|entry| report.inspection_failed(&entry.entry.target))
+                        {
+                            // Inspectors retain partial findings, but an incomplete check must fail.
+                            failures.push(format!(
+                                "cannot check overlay '{}': inspect source files, Git configuration/index and checkout association",
+                                snapshot.configuration.name
+                            ));
+                            failed += 1;
+                        } else if report.needs_attention() {
                             unhealthy += 1;
                         } else {
                             healthy += 1;
@@ -186,9 +197,9 @@ fn execute_blocking(home: PathBuf, verbose: bool, args: &Params) -> Result<()> {
     } else {
         write_output(&render_changes(&changes)?)?;
     }
-    if unhealthy + failed > 0 {
+    if failed > 0 {
         return Err(anyhow!(
-            "selected overlays are not fully applied ({unhealthy} need attention, {failed} could not be checked){}",
+            "could not check status for {failed} overlay(s){}",
             if failures.is_empty() {
                 String::new()
             } else {
@@ -517,7 +528,7 @@ mod tests {
 
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
-        assert!(result.is_err());
+        assert!(result.is_ok());
         assert!(!root.path().join("sub").exists());
     }
 
@@ -560,9 +571,9 @@ mod tests {
 
     /// End-to-end smoke test for #148: a managed target landing inside a
     /// git repository with no `.git/info/exclude` block yet must not
-    /// create the block as a side effect, even though it returns an unhealthy exit.
+    /// create the block as a side effect; a reported finding is a successful check.
     #[tokio::test]
-    async fn status_reports_a_missing_exclude_block_with_failure_without_writing() {
+    async fn status_reports_a_missing_exclude_block_successfully_without_writing() {
         if crate::cli::common::run_in_isolated_process() {
             return;
         }
@@ -577,7 +588,7 @@ mod tests {
 
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
-        assert!(result.is_err());
+        assert!(result.is_ok());
 
         // `git init` itself pre-populates `info/exclude` with a commented
         // template — assert our own marker never lands in it, rather than
@@ -606,7 +617,7 @@ mod tests {
 
         let cli = make_cli(tmp.path().to_path_buf());
         let result = execute(&cli, &params(None, root.path().to_path_buf())).await;
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[tokio::test]

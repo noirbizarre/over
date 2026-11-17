@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, ensure};
 
-use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent, Provenance};
+use crate::desired::{DesiredEntry, DesiredTree, Provenance};
 use crate::materialize::virtual_checkout::git::{self, FileChangeKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -157,7 +157,6 @@ pub(crate) fn virtual_changes(
 pub(crate) struct NativeCache {
     candidates: BTreeMap<PathBuf, Vec<Vec<u8>>>,
     changes: BTreeMap<PathBuf, BTreeMap<PathBuf, Option<Change>>>,
-    whole: std::collections::BTreeSet<PathBuf>,
 }
 
 pub(crate) fn native_changes(
@@ -165,7 +164,6 @@ pub(crate) fn native_changes(
     cache: &mut NativeCache,
 ) -> Result<Vec<Change>> {
     let mut queries = BTreeMap::<PathBuf, std::collections::BTreeSet<PathBuf>>::new();
-    let mut full_repositories = std::collections::BTreeSet::new();
     let virtual_sources = desired
         .entries()
         .iter()
@@ -269,54 +267,20 @@ pub(crate) fn native_changes(
             paths.insert(relative.to_path_buf());
         }
     }
-    for entry in desired.entries() {
-        if matches!(entry.intent, MaterializationIntent::Checkout)
-            && let Provenance::Git {
-                repo_key, config, ..
-            } = &entry.provenance
-            && repo_key == crate::actions::git::config::ROOT_PATH
-            && entry.target.exists()
-        {
-            if desired.blocking_scaffold(&entry.target)?.is_some()
-                || !entry.target.symlink_metadata()?.is_dir()
-            {
-                // A checkout behind a scaffold or foreign link is a structural finding,
-                // not permission to run Git or filters in that link's referent.
-                continue;
-            }
-            if config.worktree || config.worktrees.is_some() {
-                let repo = git2::Repository::open_bare(entry.target.join(".git"))?;
-                for name in repo.worktrees()?.iter() {
-                    let name =
-                        name?.ok_or_else(|| anyhow::anyhow!("worktree name is not UTF-8"))?;
-                    queries.entry(entry.target.join(name)).or_default();
-                    full_repositories.insert(entry.target.join(name));
-                }
-            } else {
-                queries.entry(entry.target.clone()).or_default();
-                full_repositories.insert(entry.target.clone());
-            }
-        }
-    }
     let mut changes = Vec::new();
     for (worktree, paths) in queries {
         // An empty source selection must not accidentally query the entire enclosing repository.
-        let whole = full_repositories.contains(&worktree);
-        if paths.is_empty() && !whole {
+        if paths.is_empty() {
             continue;
         }
         let repo = git2::Repository::open(&worktree)?;
         let known = cache.changes.entry(worktree.clone()).or_default();
-        if whole && cache.whole.contains(&worktree) {
-            changes.extend(known.values().flatten().cloned());
-            continue;
-        }
         let pending = paths
             .iter()
             .filter(|path| !known.contains_key(*path))
             .cloned()
             .collect::<Vec<_>>();
-        if !whole && pending.is_empty() {
+        if pending.is_empty() {
             changes.extend(
                 paths
                     .iter()
@@ -332,10 +296,8 @@ pub(crate) fn native_changes(
             .renames_index_to_workdir(false)
             .disable_pathspec_match(true)
             .update_index(false);
-        if !whole {
-            for path in &pending {
-                opts.pathspec(path);
-            }
+        for path in &pending {
+            opts.pathspec(path);
         }
         for path in &pending {
             known.insert(path.clone(), None);
@@ -391,16 +353,11 @@ pub(crate) fn native_changes(
             }
             known.insert(change.path.clone(), Some(change));
         }
-        if whole {
-            cache.whole.insert(worktree);
-            changes.extend(known.values().flatten().cloned());
-        } else {
-            changes.extend(
-                paths
-                    .iter()
-                    .filter_map(|path| known.get(path).and_then(Clone::clone)),
-            );
-        }
+        changes.extend(
+            paths
+                .iter()
+                .filter_map(|path| known.get(path).and_then(Clone::clone)),
+        );
     }
     Ok(changes)
 }
@@ -410,6 +367,24 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::desired::MaterializationIntent;
+
+    fn checkout(target: &Path) -> DesiredEntry {
+        DesiredEntry {
+            access: Default::default(),
+            target: target.to_path_buf(),
+            permissions: None,
+            intent: MaterializationIntent::Checkout,
+            provenance: Provenance::Git {
+                overlay: "selected".into(),
+                repo_key: ".".into(),
+                config: Box::new(
+                    serde_json::from_value(serde_json::json!("https://example.com/repo.git"))
+                        .unwrap(),
+                ),
+            },
+        }
+    }
 
     fn fixture() -> (tempfile::TempDir, git2::Repository, DesiredTree) {
         let temp = tempfile::tempdir().unwrap();
@@ -424,20 +399,13 @@ mod tests {
             repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
                 .unwrap();
         }
-        let desired = DesiredTree::from_entries(vec![DesiredEntry {
-            access: Default::default(),
-            target: temp.path().to_path_buf(),
-            permissions: None,
-            intent: MaterializationIntent::Checkout,
-            provenance: Provenance::Git {
-                overlay: "selected".into(),
-                repo_key: ".".into(),
-                config: Box::new(
-                    serde_json::from_value(serde_json::json!("https://example.com/repo.git"))
-                        .unwrap(),
-                ),
-            },
-        }]);
+        let repository = crate::overlays::Repository::new(temp.path().to_path_buf());
+        let overlay = crate::overlays::Overlay::new(&repository, temp.path()).unwrap();
+        let ctx = crate::exec::Context::builder()
+            .repository(repository)
+            .root(temp.path().join("target"))
+            .build();
+        let desired = DesiredTree::build_reporting(&ctx, &overlay).unwrap();
         (temp, repo, desired)
     }
 
@@ -462,12 +430,12 @@ mod tests {
             ]
         );
         assert_eq!(
-            super::super::git::inspect_reporting(&desired.entries()[0]).unwrap(),
+            super::super::git::inspect_reporting(&checkout(temp.path())).unwrap(),
             super::super::Status::Applied
         );
         // Reporting must not make a staged checkout safe for destructive removal.
         assert_eq!(
-            super::super::git::inspect_content(&desired.entries()[0]).unwrap(),
+            super::super::git::inspect_content(&checkout(temp.path())).unwrap(),
             super::super::Status::Modified
         );
     }
@@ -511,11 +479,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn native_changes_never_inspect_through_checkout_links_or_blocked_scaffolds() {
-        let (temp, _repo, desired) = fixture();
+        let (temp, _repo, _desired) = fixture();
         fs::write(temp.path().join("file"), "foreign dirty content\n").unwrap();
+        let declared = DesiredTree::from_entries(vec![checkout(temp.path())]);
+        assert!(
+            native_changes(&declared, &mut NativeCache::default())
+                .unwrap()
+                .is_empty()
+        );
         let alias = temp.path().join("alias");
         std::os::unix::fs::symlink(temp.path(), &alias).unwrap();
-        let mut checkout = desired.entries()[0].clone();
+        let mut checkout = checkout(temp.path());
         checkout.target = alias.clone();
         let linked = DesiredTree::from_entries(vec![checkout.clone()]);
         assert!(

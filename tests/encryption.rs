@@ -76,7 +76,7 @@ fn apply_status_and_unapply_share_the_ciphertext_recipe_without_modifying_the_so
         .arg("selected")
         .env_remove("OVER_SECRET")
         .assert()
-        .failure()
+        .success()
         .stdout(predicate::str::contains("locked"));
     command(&home, &root, "unapply")
         .args(["selected", "--no-prompt"])
