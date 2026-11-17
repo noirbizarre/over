@@ -48,6 +48,10 @@ impl Fixture {
     }
 
     fn command(&self, verb: &str) -> Command {
+        self.selected_command(verb, true)
+    }
+
+    fn selected_command(&self, verb: &str, named: bool) -> Command {
         let mut command = Command::new(assert_cmd::cargo::cargo_bin!("over"));
         let path = std::env::join_paths(std::iter::once(self.bin.clone()).chain(
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
@@ -63,10 +67,11 @@ impl Fixture {
             .env_remove("OVER_HOOK_ACTIVE")
             .arg("--home")
             .arg(&self.source)
-            .arg(verb)
-            .arg("overlay")
-            .arg("--target")
-            .arg(&self.target);
+            .arg(verb);
+        if named {
+            command.arg("overlay");
+        }
+        command.arg("--target").arg(&self.target);
         command
     }
 
@@ -274,6 +279,52 @@ fn dry_runs_authenticate_for_reads_without_deploying_files_or_running_hooks() {
             .contains("read-only")
     );
     assert!(!fixture.target.join("file").exists());
+}
+
+#[rstest::rstest]
+#[case(true, true)]
+#[case(false, true)]
+#[case(true, false)]
+#[case(false, false)]
+fn sync_preserves_prompt_and_preview_policy_from_selection_to_execution(
+    #[case] named: bool,
+    #[case] dry_run: bool,
+) {
+    let fixture = Fixture::new();
+    fixture.config(json!({"sudo": true, "mode": "checkout"}));
+    fs::write(fixture.source.join("overlay/file"), "initial").unwrap();
+    fixture.commit();
+    fixture
+        .command("apply")
+        .arg("--no-prompt")
+        .assert()
+        .success();
+    fs::write(fixture.source.join("overlay/file"), "updated").unwrap();
+    fixture.commit();
+    fs::write(&fixture.trace, "").unwrap();
+    let index = fs::read(fixture.source.join(".git/index")).unwrap();
+    let state = fs::read(fixture.temp.path().join("state/over/virtual_checkout.toml")).unwrap();
+    let mut command = fixture.selected_command("sync", named);
+    command.current_dir(&fixture.target).arg("--no-prompt");
+    if dry_run {
+        command.arg("--dry-run");
+    }
+    command.assert().success();
+    let trace = fs::read_to_string(&fixture.trace).unwrap();
+    assert_eq!(trace.lines().count(), 1, "{trace}");
+    assert!(trace.starts_with("-n "), "{trace}");
+    assert_eq!(trace.contains("read-only"), dry_run, "{trace}");
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("file")).unwrap(),
+        if dry_run { "initial" } else { "updated" }
+    );
+    if dry_run {
+        assert_eq!(fs::read(fixture.source.join(".git/index")).unwrap(), index);
+        assert_eq!(
+            fs::read(fixture.temp.path().join("state/over/virtual_checkout.toml")).unwrap(),
+            state
+        );
+    }
 }
 
 #[test]

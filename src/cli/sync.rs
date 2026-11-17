@@ -150,7 +150,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .or_else(home_dir)
         .ok_or_else(|| anyhow!("could not determine home directory"))?;
     // Reject absent/ambiguous intent before an optional pull mutates the source repository.
-    let selection = sync_selection(&repo, &root, args.name.as_deref(), args.all).await?;
+    let opts = args.options();
+    let selection = sync_selection(&repo, &root, args.name.as_deref(), args.all, &opts).await?;
     let upstream = if remote.pull || remote.push {
         Some(
             source
@@ -181,7 +182,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
     let overlays = if remote.pull && !args.dry_run {
         // A pull can change descriptors; never execute the preflight snapshot afterward.
-        let refreshed = sync_selection(&repo, &root, args.name.as_deref(), args.all).await?;
+        let refreshed = sync_selection(&repo, &root, args.name.as_deref(), args.all, &opts).await?;
         if args.name.is_none() && !args.all {
             anyhow::ensure!(
                 selection.first().map(|overlay| &overlay.name)
@@ -198,7 +199,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         ui::info("No overlays found.").ok();
     }
 
-    let opts = args.options();
     let mut needs_attention = false;
     for overlay in &overlays {
         needs_attention |= sync_overlay(cli, &repo, &root, overlay, args.no_uses, &opts).await?;
@@ -229,12 +229,15 @@ async fn sync_selection(
     root: &Path,
     name: Option<&str>,
     all: bool,
+    opts: &SyncOptions,
 ) -> Result<Vec<Overlay>> {
     match (name, all) {
         (Some(name), _) => Ok(vec![repo.get(name)?]),
         (None, true) => repo.inspect_overlays()?.into_iter().collect(),
         (None, false) => {
             let ctx = Context::builder()
+                .dry_run(opts.dry_run)
+                .no_prompt(opts.no_prompt)
                 .root(root.to_path_buf())
                 .repository(repo.clone())
                 .build();
@@ -268,6 +271,8 @@ async fn sync_overlay(
 ) -> Result<bool> {
     let _progress = ui::progress::current().phase(format!("Synchronizing {}", overlay.name));
     let ctx = Context::builder()
+        .dry_run(opts.dry_run)
+        .no_prompt(opts.no_prompt)
         .root(root.to_path_buf())
         .repository(repo.clone())
         .overlay(overlay.clone())
