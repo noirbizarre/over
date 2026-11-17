@@ -170,6 +170,36 @@ fn section(input: &mut impl Read, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
     }
 }
 
+fn control_section(
+    input: &mut impl Read,
+    mut first: Option<Zeroizing<Vec<u8>>>,
+    limit: usize,
+) -> Result<Vec<Zeroizing<Vec<u8>>>> {
+    let mut records = Vec::new();
+    let mut remaining = limit;
+    loop {
+        let next = match first.take() {
+            Some(bytes) => Packet::Data(bytes),
+            None => packet(input)?,
+        };
+        match next {
+            Packet::Data(mut bytes) => {
+                // Empty packets must consume budget too, or record allocations are unbounded.
+                remaining = remaining
+                    .checked_sub(bytes.len().max(1))
+                    .context("Git filter section exceeds size limit")?;
+                // Text packet boundaries delimit records; Git permits omitting the trailing LF.
+                if bytes.last() == Some(&b'\n') {
+                    bytes.pop();
+                }
+                records.push(bytes);
+            }
+            Packet::Flush => return Ok(records),
+            Packet::Eof => bail!("truncated Git filter section"),
+        }
+    }
+}
+
 fn write_packet(output: &mut impl Write, bytes: &[u8]) -> Result<()> {
     for chunk in bytes.chunks(65516) {
         write!(output, "{:04x}", chunk.len() + 4)?;
@@ -190,26 +220,27 @@ fn process_io(
     mut input: &mut impl Read,
     mut output: &mut impl Write,
 ) -> Result<()> {
-    let hello = section(&mut input, 4096)?;
+    let hello = control_section(&mut input, None, 4096)?;
     ensure!(
-        hello.starts_with(b"git-filter-client\n")
+        hello.first().map(|record| record.as_slice()) == Some(b"git-filter-client".as_slice())
             && hello
-                .split(|b| *b == b'\n')
-                .any(|line| line == b"version=2"),
+                .iter()
+                .skip(1)
+                .any(|record| record.as_slice() == b"version=2"),
         "unsupported Git filter handshake"
     );
     write_packet(&mut output, b"git-filter-server\n")?;
     write_packet(&mut output, b"version=2\n")?;
     output.write_all(b"0000")?;
     output.flush()?;
-    let capabilities = section(&mut input, 4096)?;
+    let capabilities = control_section(&mut input, None, 4096)?;
     for capability in [
         b"capability=clean\n".as_slice(),
         b"capability=smudge\n".as_slice(),
     ] {
         if capabilities
-            .windows(capability.len())
-            .any(|bytes| bytes == capability)
+            .iter()
+            .any(|record| record.as_slice() == &capability[..capability.len() - 1])
         {
             write_packet(&mut output, capability)?;
         }
@@ -222,12 +253,10 @@ fn process_io(
             Packet::Eof => return Ok(()),
             Packet::Flush => bail!("missing filter request"),
         };
-        let rest = section(&mut input, 64 * 1024)?;
-        let mut headers = first;
-        append_secret(&mut headers, &rest, 64 * 1024)?;
+        let headers = control_section(&mut input, Some(first), 64 * 1024)?;
         let bytes = section(&mut input, format::MAX_BYTES + format::HEADER_LEN + 16)?;
         let command = headers
-            .split(|b| *b == b'\n')
+            .iter()
             .find_map(|line| line.strip_prefix(b"command="))
             .context("missing filter command")?;
         let result = match command {
@@ -338,13 +367,114 @@ mod tests {
     fn handshake() -> Vec<u8> {
         let mut bytes = Vec::new();
         for section in [
-            b"git-filter-client\nversion=2\n".as_slice(),
-            b"capability=clean\ncapability=smudge\n",
+            [b"git-filter-client\n".as_slice(), b"version=2\n"],
+            [b"capability=clean\n".as_slice(), b"capability=smudge\n"],
         ] {
-            write_packet(&mut bytes, section).unwrap();
+            for record in section {
+                write_packet(&mut bytes, record).unwrap();
+            }
             bytes.extend_from_slice(b"0000");
         }
         bytes
+    }
+
+    #[rstest::rstest]
+    #[case(true, true)]
+    #[case(false, false)]
+    #[case(true, false)]
+    #[case(false, true)]
+    fn control_packets_accept_optional_newlines_without_changing_binary_content(
+        #[case] first_lf: bool,
+        #[case] second_lf: bool,
+    ) {
+        let (_directory, repo, key) = repository(true);
+        let plaintext = b"binary\0\xff\n\n";
+        let ciphertext = key.encrypt(plaintext, 0).unwrap();
+        let mut input = Vec::new();
+        for records in [
+            [b"git-filter-client".as_slice(), b"version=2"],
+            [b"capability=clean".as_slice(), b"capability=smudge"],
+            [b"command=smudge".as_slice(), b"pathname=token"],
+        ] {
+            for (record, lf) in records.into_iter().zip([first_lf, second_lf]) {
+                let mut record = record.to_vec();
+                if lf {
+                    record.push(b'\n');
+                }
+                write_packet(&mut input, &record).unwrap();
+            }
+            input.extend_from_slice(b"0000");
+        }
+        write_packet(&mut input, &ciphertext).unwrap();
+        input.extend_from_slice(b"0000");
+        // An embedded newline in a pathname must not manufacture a command header.
+        write_packet(&mut input, b"pathname=token\ncommand=invalid\n").unwrap();
+        write_packet(&mut input, b"command=clean").unwrap();
+        input.extend_from_slice(b"0000");
+        write_packet(&mut input, &ciphertext).unwrap();
+        input.extend_from_slice(b"0000");
+        let mut output = Vec::new();
+        process_io(&repo, &mut input.as_slice(), &mut output).unwrap();
+        let mut output = output.as_slice();
+        assert_eq!(
+            section(&mut output, 4096).unwrap().as_slice(),
+            b"git-filter-server\nversion=2\n"
+        );
+        assert_eq!(
+            section(&mut output, 4096).unwrap().as_slice(),
+            b"capability=clean\ncapability=smudge\n"
+        );
+        for expected in [plaintext.as_slice(), ciphertext.as_slice()] {
+            assert_eq!(
+                section(&mut output, 4096).unwrap().as_slice(),
+                b"status=success\n"
+            );
+            assert_eq!(section(&mut output, 4096).unwrap().as_slice(), expected);
+            assert!(section(&mut output, 4096).unwrap().is_empty());
+        }
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn control_records_are_bounded_and_only_exact_capabilities_are_negotiated() {
+        let mut input = Vec::new();
+        write_packet(&mut input, b"abcd").unwrap();
+        input.extend_from_slice(b"0000");
+        assert!(control_section(&mut input.as_slice(), None, 3).is_err());
+        assert!(control_section(&mut input.as_slice(), None, 4).is_ok());
+        assert!(control_section(&mut b"000400040000".as_slice(), None, 1).is_err());
+        let (_directory, repo, _) = repository(false);
+        for (greeting, version) in [
+            (
+                b"git-filter-client-invalid".as_slice(),
+                b"version=2".as_slice(),
+            ),
+            (b"git-filter-client", b"version=20"),
+        ] {
+            let mut input = Vec::new();
+            write_packet(&mut input, greeting).unwrap();
+            write_packet(&mut input, version).unwrap();
+            input.extend_from_slice(b"0000");
+            assert!(process_io(&repo, &mut input.as_slice(), &mut Vec::new()).is_err());
+        }
+        let mut input = Vec::new();
+        for records in [
+            [b"git-filter-client".as_slice(), b"version=2"],
+            [
+                b"prefix-capability=clean".as_slice(),
+                b"capability=smudge-extra",
+            ],
+        ] {
+            for record in records {
+                write_packet(&mut input, record).unwrap();
+            }
+            input.extend_from_slice(b"0000");
+        }
+        let mut output = Vec::new();
+        process_io(&repo, &mut input.as_slice(), &mut output).unwrap();
+        let mut output = output.as_slice();
+        section(&mut output, 4096).unwrap();
+        assert!(section(&mut output, 4096).unwrap().is_empty());
     }
 
     #[test]
