@@ -373,10 +373,15 @@ child `post-clone` and `post-init` declarations are accepted but ignored.
 
 | Attribute | Scope | Type | Default | Execution |
 | --- | --- | --- | --- | --- |
-| `hooks.post-clone` | Root | List of hooks | `[]` | After a fresh init clone, before child discovery. |
-| `hooks.post-init` | Root | List of hooks | `[]` | After every successful init, following any post-clone hooks. |
+| `hooks.post-clone` | Root | List of hooks | `[]` | After a fresh unlocked init clone, before child discovery. |
+| `hooks.post-init` | Root | List of hooks | `[]` | After successful unlocked init, following any post-clone hooks. |
 | `hooks.install` | Both | List of hooks | `[]` | After successful reconciliation, only with `over apply --install` or `-i`. |
 | `hooks.post-apply` | Both | List of hooks | `[]` | After successful apply and any opted-in install hooks. |
+
+An encrypted checkout can initialize successfully while locked, skipping both
+bootstrap events. Unlock and rerun init to execute post-init hooks; skipped
+post-clone hooks need explicit recovery on an existing checkout. See
+[`over init`](../commands/init.md).
 
 ### Hook attributes
 

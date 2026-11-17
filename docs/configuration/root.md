@@ -370,7 +370,7 @@ or cwd, resolve execution-only secrets, or spawn a process.
 1. **`post-clone`**: root only, after a fresh clone, root validation, and
    canonical-origin setup, before child discovery. Declared `git` clones do not
    trigger it.
-2. **`post-init`**: root only, on every successful init, including existing
+2. **`post-init`**: root only, on successful unlocked init, including existing
    checkouts, after any post-clone hooks. Neither init event applies overlays.
 3. **`install`**: only with `over apply --install` (or `-i`), after all
    materialization, Git provisioning, and Git-exclude reconciliation succeed.
@@ -380,6 +380,11 @@ or cwd, resolve execution-only secrets, or spawn a process.
    with the same root-first, dependency-first ordering. Ordinary apply skips
    install hooks entirely. A successful no-change apply still executes applicable
    hooks; repeated install runs have no package deduplication or persistent state.
+
+Initialization can succeed while an encrypted checkout remains locked; both
+bootstrap events are skipped in that case. Unlock and rerun init for post-init
+hooks. Skipped post-clone hooks are not replayed on an existing checkout; recover
+those steps explicitly. See [locked initialization](../commands/init.md).
 
 Install hooks are arbitrary executable commands: applying an untrusted repository
 with `--install` executes repository-provided code. Commands must provide their
