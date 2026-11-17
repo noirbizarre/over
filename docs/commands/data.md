@@ -52,6 +52,9 @@ Every successful invocation emits the same three-part envelope:
 See [data resolution](../configuration/overlay.md#resolution-and-precedence) for
 examples, namespace collisions, bracket indexing, and migration guidance. Dependency
 target attributes are resolved just as for templates; invalid target templates fail.
+`OVER_TARGET` overrides the execution root used for `~` in those targets and for
+contextual selection, matching deployment. Without it, the root is your home
+directory. This does not expand or rewrite strings stored in `data`.
 
 Stdout contains only JSON followed by a newline. Terminals receive pretty-printed
 JSON; pipes receive compact, uncolored JSON. Values retain their JSON types.
