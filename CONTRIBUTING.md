@@ -225,6 +225,39 @@ documentation deployment. The workflow uses the `github-pages` environment.
 
 Onboard `noirbizarre/over` to Codecov for coverage and test results.
 
+### Context7 documentation
+
+The [Context7 library](https://context7.com/noirbizarre/over) is sourced from
+this GitHub repository. Root `context7.json` selects the user documentation and
+excludes historical design records and redirect-only references.
+
+Maintainer setup:
+
+1. Confirm the library is claimed by your teamspace at the
+   [admin page](https://context7.com/noirbizarre/over/admin).
+2. In that teamspace's [API key settings](https://context7.com/dashboard?tab=settings),
+   create a CI key with **Write access** enabled. Store it directly in GitHub
+   Settings → Secrets and variables → Actions as the repository secret
+   `CONTEXT7_API_KEY`. Never put the API key in `context7.json`.
+3. Add the owning teamspace's ID as the repository Actions variable
+   `CONTEXT7_TEAMSPACE_ID` under Secrets and variables → Actions → Variables.
+   The authenticated `GET https://context7.com/api/v2/teamspaces` endpoint
+   returns the API key's teamspace ID in `teamspaces[0].id`.
+4. Once `context7.json` is on `main`, choose **Switch to context7.json** in the
+   Context7 admin configuration. Confirm the settings match the repository file;
+   they become read-only in the dashboard and are read again on refresh.
+
+The Context7 workflow follows the
+[official GitHub Actions integration](https://context7.com/docs/integrations/github-actions),
+triggering a refresh whenever a release is published, including prereleases.
+It refreshes the library's configured branch. Tag pushes also submit the exact
+tag through the [version API](https://context7.com/docs/api-reference/teamspace-libraries/add-a-version)
+to create version-specific documentation. Both requests report HTTP failures
+without waiting for indexing to complete.
+
+To verify or retry, open GitHub Actions → **📚 Context7** → **Run workflow**.
+Select `main` and run it without inputs. Check indexing progress on Context7.
+
 ## This repository is generated from a template
 
 The toolchain, hooks, CI and release workflows come from

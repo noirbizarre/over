@@ -1,0 +1,42 @@
+name: 📚 Context7
+
+on:
+  push:
+    tags: ['*']
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  refresh:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Context7 refresh
+        env:
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+        run: |
+          curl --fail-with-body --silent --show-error -X POST https://context7.com/api/v1/refresh \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${CONTEXT7_API_KEY}" \
+            -d "{\"libraryName\": \"/${GITHUB_REPOSITORY}\"}"
+
+  version:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      # Refreshing the configured branch does not create a tag-specific version.
+      - name: Create Context7 version
+        env:
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          CONTEXT7_TEAMSPACE_ID: ${{ vars.CONTEXT7_TEAMSPACE_ID }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          jq -n --arg tag "$TAG" '{version: $tag, isBranch: false}' |
+            curl --fail-with-body --silent --show-error -X POST \
+              "https://context7.com/api/v2/teamspaces/${CONTEXT7_TEAMSPACE_ID}/libraries/${GITHUB_REPOSITORY}/versions" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${CONTEXT7_API_KEY}" \
+              --data-binary @-
