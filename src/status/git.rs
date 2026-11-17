@@ -267,22 +267,23 @@ fn declared_ref_status(
     config: &GitRepoConfig,
     check_ref: bool,
 ) -> Result<Status> {
-    if check_ref {
-        let head_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-        if let Some(head_commit) = head_commit {
-            if let Some(tag) = &config.tag {
-                let expected = crate::actions::git::resolve_tag(repo, tag).ok();
-                if expected.is_none_or(|c| c.id() != head_commit.id()) {
-                    return Ok(Status::Conflict);
-                }
-            } else if let Some(rev) = &config.rev {
-                let expected = repo
-                    .revparse_single(rev)
-                    .ok()
-                    .and_then(|o| o.peel_to_commit().ok());
-                if expected.is_none_or(|c| c.id() != head_commit.id()) {
-                    return Ok(Status::Conflict);
-                }
+    if check_ref && (config.tag.is_some() || config.rev.is_some()) {
+        // An unreadable HEAD is not evidence that a declared revision is satisfied.
+        let Some(head_commit) = repo.head().ok().and_then(|h| h.peel_to_commit().ok()) else {
+            return Ok(Status::Broken);
+        };
+        if let Some(tag) = &config.tag {
+            let expected = crate::actions::git::resolve_tag(repo, tag).ok();
+            if expected.is_none_or(|c| c.id() != head_commit.id()) {
+                return Ok(Status::Conflict);
+            }
+        } else if let Some(rev) = &config.rev {
+            let expected = repo
+                .revparse_single(rev)
+                .ok()
+                .and_then(|o| o.peel_to_commit().ok());
+            if expected.is_none_or(|c| c.id() != head_commit.id()) {
+                return Ok(Status::Conflict);
             }
         }
     }
@@ -427,6 +428,42 @@ mod tests {
             intent: crate::desired::MaterializationIntent::Checkout,
             permissions: None,
         }
+    }
+
+    #[rstest::rstest]
+    #[case(false, false)]
+    #[case(true, false)]
+    #[case(false, true)]
+    #[case(true, true)]
+    fn declared_revisions_cannot_be_applied_with_an_unresolvable_head(
+        #[case] damaged: bool,
+        #[case] tag: bool,
+    ) {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        if damaged {
+            fs::write(repo.path().join("HEAD"), "invalid HEAD\n").unwrap();
+        }
+        let mut config = git_config(false, None);
+        if tag {
+            config.tag = Some("v1".into());
+        } else {
+            config.rev = Some("HEAD".into());
+        }
+        assert_eq!(
+            declared_ref_status(&repo, &config, true).unwrap(),
+            Status::Broken
+        );
+        assert_eq!(
+            declared_ref_status(&repo, &config, false).unwrap(),
+            Status::Applied
+        );
+        config.tag = None;
+        config.rev = None;
+        assert_eq!(
+            declared_ref_status(&repo, &config, true).unwrap(),
+            Status::Applied
+        );
     }
 
     /// Init a repo with a committer identity and one commit, so `head()`
