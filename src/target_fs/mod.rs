@@ -109,6 +109,7 @@ pub(crate) enum Request {
         mode: Option<u32>,
         owner: Option<u32>,
         group: Option<u32>,
+        expected: Option<MetadataIdentity>,
     },
     Hook {
         script: String,
@@ -116,6 +117,76 @@ pub(crate) enum Request {
         env: Vec<(WirePath, WirePath)>,
         remove_env: Vec<WirePath>,
     },
+}
+
+/// A no-follow identity, carried into the helper rather than recaptured at mutation time.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MetadataIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    links: u64,
+    #[cfg(not(unix))]
+    created: std::time::SystemTime,
+}
+
+impl MetadataIdentity {
+    pub(crate) fn capture(metadata: &std::fs::Metadata) -> Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            // Creating managed child directories legitimately changes a directory's link count.
+            Ok(Self {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                links: if metadata.is_dir() {
+                    0
+                } else {
+                    metadata.nlink()
+                },
+            })
+        }
+        #[cfg(not(unix))]
+        Ok(Self {
+            created: metadata.created()?,
+        })
+    }
+
+    pub(crate) fn verify(&self, metadata: &std::fs::Metadata) -> Result<()> {
+        anyhow::ensure!(
+            *self == Self::capture(metadata)?,
+            "target changed since metadata inspection; rerun to re-evaluate"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MetadataGuard {
+    fs: TargetFs,
+    path: PathBuf,
+    identity: MetadataIdentity,
+}
+
+impl MetadataGuard {
+    pub(crate) fn capture(fs: &TargetFs, path: &Path) -> Result<Self> {
+        Ok(Self {
+            fs: fs.clone(),
+            path: path.into(),
+            identity: MetadataIdentity::capture(&fs.metadata(path, false)?)?,
+        })
+    }
+
+    pub(crate) fn verify(&self) -> Result<()> {
+        self.identity.verify(&self.fs.metadata(&self.path, false)?)
+    }
+
+    pub(crate) fn apply(&self, permissions: &crate::overlays::Permissions) -> Result<()> {
+        self.fs
+            .set_metadata_with_identity(&self.path, permissions, Some(self.identity.clone()))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -804,6 +875,15 @@ impl TargetFs {
         path: &Path,
         permissions: &crate::overlays::Permissions,
     ) -> Result<()> {
+        self.set_metadata_with_identity(path, permissions, None)
+    }
+
+    fn set_metadata_with_identity(
+        &self,
+        path: &Path,
+        permissions: &crate::overlays::Permissions,
+        expected: Option<MetadataIdentity>,
+    ) -> Result<()> {
         anyhow::ensure!(
             !self.read_only,
             "read-only target access cannot repair metadata"
@@ -820,13 +900,14 @@ impl TargetFs {
             .transpose()?;
         let mode = permissions.mode.map(|mode| mode.bits());
         if !self.sudo {
-            return repair_metadata(path, mode, owner, group);
+            return repair_metadata(path, mode, owner, group, expected.as_ref());
         }
         self.effect(Request::Metadata {
             path: WirePath::new(path),
             mode,
             owner,
             group,
+            expected,
         })
     }
 
@@ -939,12 +1020,16 @@ fn repair_metadata(
     mode: Option<u32>,
     owner: Option<u32>,
     group: Option<u32>,
+    expected: Option<&MetadataIdentity>,
 ) -> Result<()> {
     #[cfg(unix)]
-    return unix::repair_metadata(path, mode, owner, group);
+    return unix::repair_metadata_checked(path, mode, owner, group, expected);
     #[cfg(not(unix))]
     {
         let _ = (path, mode);
+        if let Some(expected) = expected {
+            expected.verify(&std::fs::symlink_metadata(path)?)?;
+        }
         anyhow::ensure!(
             owner.is_none() && group.is_none(),
             "ownership policy is only supported on Unix"

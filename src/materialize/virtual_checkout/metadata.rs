@@ -8,7 +8,7 @@ use crate::desired::{DesiredEntry, Provenance};
 use crate::overlays::Permissions;
 use crate::target_fs::Access;
 
-fn assignments(entry: &DesiredEntry) -> Result<Vec<(PathBuf, Access)>> {
+pub(crate) fn assignments(entry: &DesiredEntry) -> Result<Vec<(PathBuf, Access)>> {
     if !entry.access.has_metadata_policy() {
         return Ok(Vec::new());
     }
