@@ -52,10 +52,10 @@ pub enum Outcome {
     /// there (a foreign file, a symlink pointing elsewhere, a type
     /// mismatch...). Never touched.
     NotOwned { current: ActualState },
-    /// A git checkout that isn't fully in sync with its upstream
-    /// (uncommitted changes, unpushed commits, ahead/behind/diverged, a
-    /// merge in progress, or not a valid repo). Never touched — resolve
-    /// with `over sync` or plain git first.
+    /// A virtual checkout whose owned projection is dirty or cannot be verified.
+    /// Retained until local changes are reconciled with `over sync` or recovered
+    /// manually. Real declared checkouts instead use explicit disposal consent;
+    /// their repository lifecycle and recovery belong to ordinary Git.
     CheckoutNotClean { status: Status },
     /// Real checkout removal requires its own explicit authorization.
     CheckoutDisposal { reason: String },
