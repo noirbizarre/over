@@ -121,6 +121,25 @@ fn verbose_git_provisioning_never_echoes_secret_settings(#[case] invalid: bool) 
     }
 }
 
+#[test]
+fn invalid_partial_sidecars_fail_before_publishing_sibling_files() {
+    let fixture = Fixture::new("");
+    fs::write(fixture.source.join("ov/sibling"), "source").unwrap();
+    fs::write(
+        fixture.source.join("ov/settings.partial.yaml"),
+        "target: '~/settings'\nmarker: 'settings'\ncontent: '# <<< over: settings <<<'\n",
+    )
+    .unwrap();
+    fixture
+        .command("apply")
+        .arg("--no-prompt")
+        .assert()
+        .failure()
+        .stderr(contains("settings.partial.yaml"));
+    assert!(!fixture.target().exists());
+    assert!(!fixture.home.join("settings").exists());
+}
+
 fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn visit(root: &Path, dir: &Path, result: &mut BTreeMap<PathBuf, Vec<u8>>) {
         if !dir.exists() {

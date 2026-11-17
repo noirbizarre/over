@@ -155,7 +155,25 @@ pub fn discover_partials_selected(
     }
 
     results.sort_by(|a, b| a.0.cmp(&b.0));
+    for (stem, config) in &results {
+        validate_block(config.marker.as_deref().unwrap_or(stem), &config.content)
+            .with_context(|| format!("invalid partial config: {}", seen_names[stem].display()))?;
+    }
     Ok(results)
+}
+
+/// Reject declarations whose emitted block cannot be recognized on the next apply.
+pub fn validate_block(marker: &str, content: &str) -> Result<()> {
+    anyhow::ensure!(
+        !marker.contains(['\r', '\n', '\0']),
+        "partial markers must not contain CR, LF, or NUL"
+    );
+    // Begin lines inside content round-trip; only our own end line terminates parsing early.
+    anyhow::ensure!(
+        find_line(content, &end_line(marker), 0).is_none(),
+        "partial content must not contain its own end-delimiter line"
+    );
+    Ok(())
 }
 
 // ── marker lines & pure block operations ────────────────────────────────
@@ -548,6 +566,7 @@ fn write_target(
 #[async_trait]
 impl Action for EnsurePartialBlock {
     async fn execute(&self, ctx: Ctx) -> Result<()> {
+        validate_block(&self.marker, &self.content)?;
         if ctx.dry_run {
             return Ok(());
         }
@@ -627,6 +646,50 @@ mod tests {
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use rstest::rstest;
+
+    #[rstest]
+    #[case("m", "text")]
+    #[case("m", "text\n")]
+    #[case("m", "text\n\n")]
+    #[case("m", "# >>> over: m >>>\ntext")]
+    #[case("m", "# <<< over: other <<<")]
+    #[case("", "unicode: é")]
+    fn accepted_partial_blocks_round_trip_without_disturbing_surrounding_text(
+        #[case] marker: &str,
+        #[case] content: &str,
+    ) {
+        validate_block(marker, content).unwrap();
+        let text = append_block("before\n", marker, content) + "after\n";
+        assert_eq!(
+            find_block(&text, marker),
+            BlockState::Found(canonical_content(content))
+        );
+        assert_eq!(replace_block(&text, marker, content), text);
+        assert_eq!(remove_block(&text, marker), "before\nafter\n");
+    }
+
+    #[rstest]
+    #[case("m\nnext", "text")]
+    #[case("m\rnext", "text")]
+    #[case("m\0next", "text")]
+    #[case("m", "# <<< over: m <<<")]
+    #[case("m", "text\n# <<< over: m <<<\nmore")]
+    #[tokio::test]
+    async fn invalid_partial_actions_fail_before_creating_the_destination(
+        #[case] marker: &str,
+        #[case] content: &str,
+    ) {
+        let temp = TempDir::new().unwrap();
+        let target = temp.path().join("missing/target");
+        let action = EnsurePartialBlock::new(target, marker.into(), content.into());
+        assert!(
+            action
+                .execute(crate::exec::Context::builder().force(true).build())
+                .await
+                .is_err()
+        );
+        assert!(!temp.path().join("missing").exists());
+    }
 
     fn init_test_tracing() {
         let _ = tracing_subscriber::fmt()

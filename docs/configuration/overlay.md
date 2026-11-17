@@ -488,7 +488,12 @@ content = "alias ll='ls -la'\n"
 ```
 
 `target` is a templated destination path; relative paths use the owning overlay
-root. `content` is literal. `marker` distinguishes blocks in the same file:
+root. `content` is literal. Markers cannot contain CR, LF, or NUL, and content
+cannot contain its own exact end-delimiter line; these declarations are rejected
+before deployment because they cannot round-trip. Begin-delimiter lines and
+other markers' delimiters are allowed inside content.
+
+`marker` distinguishes blocks in the same file:
 
 ```text
 # >>> over: aliases >>>
