@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0](https://github.com/noirbizarre/over/compare/0.4.0..0.5.0) - 2026-11-17
+
+### 💫 Features
+
+- **crypt** Commit split secrets and access metadata ([#323](https://github.com/noirbizarre/over/issues/323)) - ([dbb1962](https://github.com/noirbizarre/over/commit/dbb1962860dad4abd154f4fd065b89715157e48d))
+- **sudo** Add elevated overlays, hooks, and ownership ([#325](https://github.com/noirbizarre/over/issues/325)) - ([aacb182](https://github.com/noirbizarre/over/commit/aacb182a233b45b0da353b54075ffe13e1aa2e5d))
+- **templates** Add yesno filter ([#324](https://github.com/noirbizarre/over/issues/324)) - ([d51ced3](https://github.com/noirbizarre/over/commit/d51ced30d6204be3e35d64b18a1be35e27f4d2f0))
+
+### 🐛 Bug Fixes
+
+- **checkout** Allow sources inside shared target directories ([#326](https://github.com/noirbizarre/over/issues/326)) - ([856ce04](https://github.com/noirbizarre/over/commit/856ce044efd0353a7fa59ce8a3b7867b4d2fff22))
+- **crypt** Confirm new user key passphrases ([#319](https://github.com/noirbizarre/over/issues/319)) - ([4ae4083](https://github.com/noirbizarre/over/commit/4ae408345089ce627aa2b8d767f9c57bed250513))
+- **crypt** Avoid redundant bootstrap attribute guards ([#318](https://github.com/noirbizarre/over/issues/318)) - ([2c406ba](https://github.com/noirbizarre/over/commit/2c406baddedbcf091f30680d4d43b3f4245524f3))
+- **data** Honor OVER_TARGET when resolving exported context - ([a3542f5](https://github.com/noirbizarre/over/commit/a3542f5d5544619ca905e29fac18f6e0bd7aaa8f))
+- **git** Redact secret-bearing provisioning diagnostics - ([12e7d6f](https://github.com/noirbizarre/over/commit/12e7d6fcd5a7dca38be8ec8f83e835e4d55afbe7))
+- **git** Validate worktree destinations before provisioning - ([37eee8a](https://github.com/noirbizarre/over/commit/37eee8a839516f88cb3a37bfffc7206c35193713))
+- **new** Resolve absorption targets through prospective overlays - ([cf825be](https://github.com/noirbizarre/over/commit/cf825be45c3200896410b284b1b1679a8d493448))
+- **new** Confine descriptor creation to the overlay repository - ([c902d52](https://github.com/noirbizarre/over/commit/c902d52f746f5ca3761e24f8f3902ac753eb1413))
+- **partial** Reject inputs that break block round trips - ([10f3451](https://github.com/noirbizarre/over/commit/10f3451551d72a964c77a4037fa962b2d38d65bb))
+- **plan** Guard metadata repairs against stale destinations - ([f73eda1](https://github.com/noirbizarre/over/commit/f73eda1a922961c601898d718c53ec6bc67f06ee))
+- **status** Reject unresolved HEAD for declared revisions - ([4d548f4](https://github.com/noirbizarre/over/commit/4d548f4bb6ecea930e1ef29418cb48e6949f33d4))
+- **sudo** Avoid macOS helper shutdown race ([#327](https://github.com/noirbizarre/over/issues/327)) - ([a4a97ad](https://github.com/noirbizarre/over/commit/a4a97ad7c138b3bc8157fcd411bf94d7ee20f173))
+- **sync** Propagate preview and prompt policy to target access - ([653095d](https://github.com/noirbizarre/over/commit/653095dc44661c49ab8d24de0e74292950384f28))
+- **unapply** Preserve exclusions for retained virtual checkouts - ([78be9c8](https://github.com/noirbizarre/over/commit/78be9c8a5f2744b02b9d70eeb15e585e85c0aef5))
+- Reconcile overlay safety and documentation contracts ([#329](https://github.com/noirbizarre/over/issues/329)) - ([7d450ac](https://github.com/noirbizarre/over/commit/7d450accd6f202c73f600e39ca258d03715220b5))
+
+### 📚 Documentation
+
+- **crypt** Reconcile administrative policy with current layout - ([6990cd3](https://github.com/noirbizarre/over/commit/6990cd32a6acf8c99e2429af6df5c3b96e3b16af))
+- **init** Qualify bootstrap hooks for locked checkouts - ([b867c4d](https://github.com/noirbizarre/over/commit/b867c4df4e49a95d11e7d669ce3b9297bca66d37))
+- **rules** Include sudo-only assignments in validation guidance - ([4016e2b](https://github.com/noirbizarre/over/commit/4016e2b043aedb56ab037e89b011359d3a689e5d))
+- **safety** Explain sudo authentication during previews - ([b61b3bf](https://github.com/noirbizarre/over/commit/b61b3bfe7118bf6486b63c7c7bf77b6cff4bafc9))
+- **sync** Correct legacy abort recovery guidance - ([c683cc4](https://github.com/noirbizarre/over/commit/c683cc475720fce12acb68eb1eda7d12390a7cce))
+- **unapply** Align removal comments with checkout disposal - ([ae045ff](https://github.com/noirbizarre/over/commit/ae045ff6de6dbd190561e2810671e8c027e41c82))
+
+### 🏗️ Build
+
+- **docker**  🚨 **breaking** Reuse binaries and simplify Feature packaging ([#316](https://github.com/noirbizarre/over/issues/316)) - ([b1e3195](https://github.com/noirbizarre/over/commit/b1e3195e698c3091de63665e60155bd2654b3482))
+
+### 🔧 CI
+
+- **context7** Refresh documentation and index tagged versions ([#328](https://github.com/noirbizarre/over/issues/328)) - ([5bf8530](https://github.com/noirbizarre/over/commit/5bf853080d155366597d2f2544ddeefbb99c3f7b))
+
 ## [0.4.0](https://github.com/noirbizarre/over/compare/0.3.0..0.4.0) - 2026-11-15
 
 ### 💫 Features

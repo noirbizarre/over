@@ -1,11 +1,17 @@
 {
     "id": "over",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "name": "Over",
     "description": "Install Over and optionally initialize a repository and apply overlays",
     "documentationURL": "https://noirbizarre.github.io/over/devcontainer/",
     "licenseURL": "https://github.com/noirbizarre/over/blob/main/LICENSE",
-    "keywords": ["dotfiles", "overlay", "over", "symlink", "configuration"],
+    "keywords": [
+        "dotfiles",
+        "overlay",
+        "over",
+        "symlink",
+        "configuration"
+    ],
     "options": {
         "overlay": {
             "type": "string",
