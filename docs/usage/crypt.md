@@ -97,7 +97,8 @@ noninteractive approval. It stages plaintext with the removal policy, preserves
 working content, and requires unlock. Future commits may expose that content.
 Removing protection does not remove historical ciphertext or plaintext.
 
-Bootstrap `.gitattributes` and `.over/crypt/` access metadata must remain readable
+Bootstrap `.gitattributes`, `.over/crypt.json`, and `.over/users/` access metadata
+must remain readable
 without the filter. Narrow selections need no automatic root exemptions, so
 policy updates append only the requested selection rules. Existing rules and
 comments, including legacy exemptions, are retained. Broad rules that would
@@ -107,10 +108,14 @@ repository policy safe for a fresh clone. Stage nested policy exemptions before
 changing encryption policy; unstaged exemptions cannot protect the committed tree.
 
 The separate generated `.over/.gitattributes` provides administrative policy:
-`crypt/** -filter !diff -text` keeps public access metadata unfiltered, restores
-normal diffs, and preserves its bytes without text normalization.
+`crypt.json -filter !diff -text` and `users/** -filter !diff -text` keep current
+public access metadata unfiltered, restore normal diffs, and preserve its bytes
+without text normalization. `crypt/** -filter !diff -text` retains the same
+exemption for the historical nested access layout.
 `.gitattributes -filter !diff` keeps that policy itself readable, while
-`secrets.yaml filter=over diff=over -text` protects native secrets. These nearer
+`secrets/* filter=over diff=over -text` protects current per-entry native secrets.
+New administrative policy also includes `secrets` and `secrets.yaml` protection
+rules for legacy single-file stores. These nearer
 rules override root assignments; deeper rules or `.git/info/attributes` can
 override them and must also keep bootstrap metadata unfiltered.
 
@@ -344,8 +349,10 @@ working file; its presentation is the serialized map, including numeric byte arr
 For an existing repository, run `over unlock` to repair/install local driver
 settings, then add `diff=over` to older protection rules and review/commit the
 attribute change. Alternatively, reapply selected policy through `over crypt add`.
-Review `.over/.gitattributes` too: older `secrets.yaml filter=over -text` rules
-need `diff=over` added explicitly. Unlock never rewrites or stages these rules.
+Review `.over/.gitattributes` too: current per-entry protection uses `secrets/*`,
+while older single-file stores use `secrets` or `secrets.yaml`. Protection rules
+missing `diff=over` need it added explicitly. Unlock never rewrites or stages
+these secret-protection rules.
 Check effective selections with `git check-attr filter diff -- PATH`.
 
 Conversion never prompts. Locked ciphertext passes through unchanged. With an

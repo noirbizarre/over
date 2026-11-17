@@ -9,6 +9,32 @@ use crate::ui::style;
 
 use super::step::{Operation, PlanStep};
 
+type MetadataRepair = (
+    crate::target_fs::MetadataGuard,
+    crate::overlays::Permissions,
+);
+
+fn snapshot_metadata(entry: &DesiredEntry) -> Result<Vec<MetadataRepair>> {
+    let assignments = if entry.intent.is_virtual_checkout() {
+        crate::materialize::virtual_checkout::metadata::assignments(entry)?
+    } else {
+        vec![(entry.target.clone(), entry.access.clone())]
+    };
+    let mut repairs = Vec::new();
+    for (path, access) in assignments {
+        if access.has_metadata() {
+            match crate::target_fs::MetadataGuard::capture(&access.fs, &path) {
+                Ok(guard) => repairs.push((guard, access.permissions)),
+                Err(error)
+                    if entry.intent.is_virtual_checkout()
+                        && crate::target_fs::is_not_found(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(repairs)
+}
+
 /// Whether a step needs [`Materializer::materialize`](crate::materialize::Materializer::materialize)
 /// called for it: `Create`/`Conflict` always did; an unblocked `Migrate`
 /// does too (#129) — a blocked one doesn't, exactly like `Noop`/`Deferred`.
@@ -127,6 +153,7 @@ fn metadata_drift(
 pub struct Plan {
     steps: Vec<PlanStep>,
     guards: Vec<Option<crate::materialize::disposal::PathGuard>>,
+    metadata_repairs: Vec<Vec<MetadataRepair>>,
     // Children behind a replaceable scaffold have no inspectable actual state yet.
     blocked_by: Vec<Option<std::path::PathBuf>>,
     desired: DesiredTree,
@@ -191,9 +218,20 @@ impl Plan {
                 }
             })
             .collect::<Result<_>>()?;
+        let metadata_repairs = steps
+            .iter()
+            .map(|step| {
+                if !reporting && matches!(step.operation, Operation::RepairMetadata { .. }) {
+                    snapshot_metadata(&step.entry)
+                } else {
+                    Ok(Vec::new())
+                }
+            })
+            .collect::<Result<_>>()?;
         Ok(Self {
             steps,
             guards,
+            metadata_repairs,
             blocked_by,
             desired: desired.clone(),
         })
@@ -249,6 +287,9 @@ impl Plan {
                 // only the parent authorization must happen before provisioning.
                 scaffolds.steps.push(step.clone());
                 scaffolds.guards.push(self.guards[index].clone());
+                scaffolds
+                    .metadata_repairs
+                    .push(self.metadata_repairs[index].clone());
                 scaffolds.blocked_by.push(self.blocked_by[index].clone());
             }
         }
@@ -348,8 +389,27 @@ impl Plan {
             }
             progress.set_message(format!("{step}"));
 
-            if let Operation::RepairMetadata { desired, .. } = &step.operation {
+            if let Operation::RepairMetadata { .. } = &step.operation {
                 if !ctx.dry_run {
+                    let mut repairs = if self.blocked_by[index].is_some()
+                        || matches!(self.steps[index].operation, Operation::NeedsUnlock)
+                    {
+                        snapshot_metadata(&step.entry)?
+                    } else {
+                        self.metadata_repairs[index].clone()
+                    };
+                    for (guard, _) in &repairs {
+                        guard.verify()?;
+                    }
+                    let materializer = registry
+                        .find(&step.entry.intent)
+                        .context("missing metadata materializer")?;
+                    anyhow::ensure!(
+                        matches!(materializer.classify(&step.entry)?, Operation::Noop),
+                        "target ownership changed since metadata planning; rerun to re-evaluate"
+                    );
+                    // Recheck encrypted link restrictions as well as materializer ownership.
+                    metadata_drift(&step.entry)?;
                     if matches!(
                         step.entry.intent,
                         MaterializationIntent::SymlinkFile {
@@ -367,25 +427,29 @@ impl Plan {
                             ),
                             "hard-link target changed during ownership repair"
                         );
+                        repairs = snapshot_metadata(&step.entry)?;
                     }
                     if step.entry.intent.is_virtual_checkout() {
-                        let entry = step.entry.clone();
-                        tokio::task::spawn_blocking(move || {
-                            crate::materialize::virtual_checkout::metadata::apply(&entry)
+                        tokio::task::spawn_blocking(move || -> Result<()> {
+                            for (guard, permissions) in repairs.into_iter().rev() {
+                                guard.apply(&permissions)?;
+                            }
+                            Ok(())
                         })
                         .await??;
                         continue;
                     }
                     if matches!(step.entry.intent, MaterializationIntent::Directory) {
-                        directory_metadata
-                            .push((step.entry.access.clone(), step.entry.target.clone()));
+                        directory_metadata.extend(repairs);
                         continue;
                     }
-                    let fs = step.entry.access.fs.clone();
-                    let target = step.entry.target.clone();
-                    let desired = desired.clone();
-                    tokio::task::spawn_blocking(move || fs.set_metadata(&target, &desired))
-                        .await??;
+                    tokio::task::spawn_blocking(move || -> Result<()> {
+                        for (guard, permissions) in repairs {
+                            guard.apply(&permissions)?;
+                        }
+                        Ok(())
+                    })
+                    .await??;
                 }
                 continue;
             }
@@ -412,7 +476,10 @@ impl Plan {
                 let access = step.entry.access.clone();
                 let target = step.entry.target.clone();
                 if matches!(step.entry.intent, MaterializationIntent::Directory) {
-                    directory_metadata.push((access, target));
+                    directory_metadata.push((
+                        crate::target_fs::MetadataGuard::capture(&access.fs, &target)?,
+                        access.permissions,
+                    ));
                 } else {
                     tokio::task::spawn_blocking(move || {
                         access.fs.set_metadata(&target, &access.permissions)
@@ -446,11 +513,8 @@ impl Plan {
         }
 
         // Restrictive ownership/modes belong after child publication, deepest first.
-        for (access, target) in directory_metadata.into_iter().rev() {
-            tokio::task::spawn_blocking(move || {
-                access.fs.set_metadata(&target, &access.permissions)
-            })
-            .await??;
+        for (guard, permissions) in directory_metadata.into_iter().rev() {
+            tokio::task::spawn_blocking(move || guard.apply(&permissions)).await??;
         }
         Ok(())
     }
@@ -646,6 +710,88 @@ mod tests {
         let td = TempDir::new().unwrap();
         let repo = Repository::new(td.path().to_path_buf());
         (td, repo)
+    }
+
+    #[cfg(unix)]
+    #[rstest]
+    #[case("partial", false)]
+    #[case("partial", true)]
+    #[case("symlink", false)]
+    #[case("directory", false)]
+    #[tokio::test]
+    async fn stale_metadata_plans_never_repair_replacement_or_foreign_content(
+        #[case] kind: &str,
+        #[case] edit_in_place: bool,
+    ) {
+        use std::os::unix::fs::MetadataExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let source = temp.path().join("source");
+        fs::write(&source, "source").unwrap();
+        let intent = match kind {
+            "partial" => {
+                fs::write(
+                    &target,
+                    crate::actions::partial::append_block("", "managed", "owned"),
+                )
+                .unwrap();
+                MaterializationIntent::PartialFile {
+                    content: "owned".into(),
+                    marker: "managed".into(),
+                }
+            }
+            "symlink" => {
+                std::os::unix::fs::symlink(&source, &target).unwrap();
+                MaterializationIntent::SymlinkFile {
+                    source: source.clone(),
+                    link_type: LinkType::Soft,
+                }
+            }
+            _ => {
+                fs::create_dir(&target).unwrap();
+                MaterializationIntent::Directory
+            }
+        };
+        let uid = fs::symlink_metadata(&target).unwrap().uid();
+        let mut access = crate::target_fs::Access::default();
+        access.permissions.owner =
+            Some(crate::overlays::Identity::Id(if uid == 0 { 1 } else { 0 }));
+        let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            access,
+            target: target.clone(),
+            provenance: Provenance::Overlay {
+                overlay: "ov".into(),
+                source,
+            },
+            intent,
+            permissions: None,
+        }]);
+        let plan = Plan::build(&desired).unwrap();
+        assert!(matches!(
+            plan.steps()[0].operation,
+            Operation::RepairMetadata { .. }
+        ));
+        if !edit_in_place {
+            // Keep the original inode alive so inode reuse cannot mask replacement.
+            fs::rename(&target, temp.path().join("old")).unwrap();
+        }
+        if kind == "directory" {
+            fs::create_dir(&target).unwrap();
+        } else {
+            fs::write(&target, "unrelated replacement").unwrap();
+        }
+        let before = fs::symlink_metadata(&target).unwrap();
+        assert!(
+            plan.execute(Context::builder().force(true).build())
+                .await
+                .is_err()
+        );
+        let after = fs::symlink_metadata(&target).unwrap();
+        assert_eq!(
+            (after.uid(), after.gid(), after.mode()),
+            (before.uid(), before.gid(), before.mode())
+        );
     }
 
     #[rstest]
@@ -1184,6 +1330,7 @@ mod tests {
         };
         let plan = Plan {
             guards: Vec::new(),
+            metadata_repairs: vec![Vec::new()],
             blocked_by: vec![None],
             desired: DesiredTree::default(),
             steps: vec![PlanStep {

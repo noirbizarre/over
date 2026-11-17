@@ -639,10 +639,11 @@ fn execute(
             mode,
             owner,
             group,
+            expected,
         } => {
             let anchored = Anchored::new(&path.path(), false, bindings)?;
             let _cwd = anchored.enter()?;
-            repair_metadata(&anchored.path, mode, owner, group)?;
+            repair_metadata_checked(&anchored.path, mode, owner, group, expected.as_ref())?;
         }
         Request::Hook {
             script,
@@ -1254,13 +1255,27 @@ pub(super) fn resolve_name(name: &str, group: bool) -> Result<u32> {
     }
 }
 
-pub(super) fn repair_metadata(
+#[cfg(test)]
+fn repair_metadata(
     path: &Path,
     mode: Option<u32>,
     owner: Option<u32>,
     group: Option<u32>,
 ) -> Result<()> {
-    let metadata = std::fs::symlink_metadata(path)?;
+    repair_metadata_checked(path, mode, owner, group, None)
+}
+
+pub(super) fn repair_metadata_checked(
+    path: &Path,
+    mode: Option<u32>,
+    owner: Option<u32>,
+    group: Option<u32>,
+    expected: Option<&super::MetadataIdentity>,
+) -> Result<()> {
+    let mut metadata = std::fs::symlink_metadata(path)?;
+    if let Some(expected) = expected {
+        expected.verify(&metadata)?;
+    }
     let owner = owner.filter(|id| *id != metadata.uid());
     let group = group.filter(|id| *id != metadata.gid());
     let mode = mode.filter(|mode| !metadata.is_symlink() && *mode != metadata.mode() & 0o7777);
@@ -1274,6 +1289,8 @@ pub(super) fn repair_metadata(
     if metadata.is_file() && metadata.nlink() > 1 {
         // Reuse the existing hardlink-safe repair path, including native metadata checks.
         crate::actions::fs::detach_for_metadata(path)?;
+        // Detachment is authorized, but later races must still match the new owned inode.
+        metadata = std::fs::symlink_metadata(path)?;
     }
     let file = if metadata.is_symlink() {
         None
@@ -1284,6 +1301,7 @@ pub(super) fn repair_metadata(
             .open(path)?;
         let current = std::fs::symlink_metadata(path)?;
         let opened = file.metadata()?;
+        super::MetadataIdentity::capture(&metadata)?.verify(&opened)?;
         ensure!(
             current.dev() == opened.dev() && current.ino() == opened.ino(),
             "target changed during metadata repair"
@@ -1321,6 +1339,8 @@ pub(super) fn repair_metadata(
                 return Err(std::io::Error::last_os_error().into());
             }
         } else {
+            super::MetadataIdentity::capture(&metadata)?
+                .verify(&std::fs::symlink_metadata(path)?)?;
             std::os::unix::fs::lchown(path, owner, group)?;
         }
     }
@@ -1337,6 +1357,24 @@ pub(super) fn repair_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_metadata_mutation_rejects_a_replaced_file_without_chmod() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        std::fs::write(&target, "owned").unwrap();
+        let identity =
+            super::super::MetadataIdentity::capture(&std::fs::symlink_metadata(&target).unwrap())
+                .unwrap();
+        std::fs::rename(&target, temp.path().join("old")).unwrap();
+        std::fs::write(&target, "foreign").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // Exercise the exact identity check used by privileged Metadata requests.
+        assert!(
+            repair_metadata_checked(&target, Some(0o600), None, None, Some(&identity)).is_err()
+        );
+        assert_eq!(std::fs::metadata(&target).unwrap().mode() & 0o777, 0o644);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

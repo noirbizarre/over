@@ -21,12 +21,55 @@ fn command(repo: &Path) -> Result<Command, Box<dyn Error>> {
     let mut command = Command::cargo_bin("over")?;
     // Contextual selection must not inherit the developer checkout's Git association.
     command.current_dir(repo.parent().unwrap());
+    command.env_remove("OVER_TARGET");
     command.arg("--home").arg(repo).arg("data");
     Ok(command)
 }
 
 fn scope(data: Value) -> Value {
     json!({"data": data, "overlays": {}, "host": {}})
+}
+
+#[rstest]
+#[case(true)]
+#[case(false)]
+fn exported_targets_and_contextual_selection_honor_the_environment_root(
+    #[case] named: bool,
+) -> TestResult {
+    let temp = TempDir::new()?;
+    let repo = temp.path().join("source");
+    let target = temp.path().join("deployment");
+    fs::create_dir_all(target.join("workspace"))?;
+    descriptor(&repo, "", "host_overlay: fallback")?;
+    descriptor(
+        &repo,
+        "fallback",
+        "target: ~/fallback\ndata: {selected: wrong}",
+    )?;
+    descriptor(
+        &repo,
+        "selected",
+        "target: ~/workspace\nuses: [dependency]\ndata: {literal: '~/unchanged'}",
+    )?;
+    descriptor(
+        &repo,
+        "dependency",
+        "target: ~/agent\ndata: {value: dependency}",
+    )?;
+    let mut dependency = node(&repo, "dependency", json!({"value": "dependency"}));
+    dependency["target"] = json!(target.join("agent"));
+    let mut cmd = command(&repo)?;
+    cmd.env("OVER_TARGET", &target)
+        .current_dir(target.join("workspace"));
+    if named {
+        cmd.arg("selected");
+    }
+    assert_json(
+        &mut cmd,
+        json!({"data": {"literal": "~/unchanged"}, "host": {}, "overlays": {"dependency": dependency}}),
+    )?;
+    assert!(!target.join("agent").exists());
+    Ok(())
 }
 
 fn node(repo: &Path, name: &str, data: Value) -> Value {

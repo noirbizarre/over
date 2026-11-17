@@ -97,14 +97,16 @@ pub enum SyncOutcome {
     /// own variant since "pushed to origin" would be a misleading label
     /// for "committed locally in the overlay's own source repository".
     Committed { path: PathBuf, files: usize },
-    /// A merge produced real conflict markers; resolve manually (`git add`
-    /// + `git commit`) and re-run `over sync`, or run `over sync --abort`.
+    /// A merge produced real conflict markers. For the legacy repository-sync
+    /// API, resolve with ordinary Git or retry that API with `SyncOptions::abort`.
+    /// Current CLI source-rebase recovery uses `git rebase --continue` or
+    /// `git rebase --abort`; `over sync --abort` does not perform recovery.
     Conflict { path: PathBuf },
     /// Refused to act — dirty working tree, no sync in progress for
-    /// `--abort`, or an unresolved non-conflicted merge state.
+    /// `SyncOptions::abort`, or an unresolved non-conflicted merge state.
     Blocked { path: PathBuf, reason: String },
-    /// `--abort` cleared an in-progress merge, restoring the pre-merge
-    /// working tree.
+    /// The legacy library operation's `SyncOptions::abort` cleared an
+    /// in-progress merge, restoring the pre-merge working tree.
     Aborted { path: PathBuf },
 }
 

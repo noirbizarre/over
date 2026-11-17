@@ -16,6 +16,32 @@ pub(crate) fn validate_logical_key(key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Worktree identifiers name both directories and Git administration entries.
+pub(crate) fn validate_worktree_name(name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !name.is_empty()
+            && !matches!(name, "." | "..")
+            && !name.eq_ignore_ascii_case(".git")
+            && !name.contains(['/', '\\', '\0', ':'])
+            && Path::new(name).components().count() == 1
+            && matches!(
+                Path::new(name).components().next(),
+                Some(Component::Normal(_))
+            ),
+        "invalid worktree name '{name}': declare a single directory name separately from its branch"
+    );
+    Ok(())
+}
+
+impl GitRepoConfig {
+    pub(crate) fn validate_worktrees(&self) -> anyhow::Result<()> {
+        for name in self.worktrees.iter().flat_map(|entries| entries.keys()) {
+            validate_worktree_name(name)?;
+        }
+        Ok(())
+    }
+}
+
 /// Configuration for a single git repository entry in an overlay.
 ///
 /// Supports two forms:
@@ -75,7 +101,9 @@ impl<'de> Deserialize<'de> for GitRepoConfig {
         D: Deserializer<'de>,
     {
         let form = AllGitRepoForms::deserialize(deserializer)?;
-        Ok(Self::from(form))
+        let config = Self::from(form);
+        config.validate_worktrees().map_err(de::Error::custom)?;
+        Ok(config)
     }
 }
 

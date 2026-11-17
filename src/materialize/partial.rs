@@ -76,6 +76,7 @@ impl Materializer for PartialFileMaterializer {
         let MaterializationIntent::PartialFile { content, marker } = &entry.intent else {
             unreachable!("MaterializerRegistry only calls classify() after handles() passed")
         };
+        crate::actions::partial::validate_block(marker, content)?;
         match actual::inspect_with(&entry.target, &entry.access.fs)? {
             ActualState::Missing => Ok(Operation::Create),
             ActualState::File => {
@@ -115,6 +116,7 @@ impl Materializer for PartialFileMaterializer {
         let MaterializationIntent::PartialFile { content, marker } = &step.entry.intent else {
             unreachable!("MaterializerRegistry only calls materialize() after handles() passed")
         };
+        crate::actions::partial::validate_block(marker, content)?;
         if step.entry.access.fs.is_privileged() {
             if ctx.dry_run {
                 return Ok(());
@@ -214,6 +216,10 @@ pub(crate) fn reconcile_partials(entries: &[DesiredEntry], ctx: Ctx) -> Result<(
         .iter()
         .filter(|entry| matches!(entry.intent, MaterializationIntent::PartialFile { .. }))
     {
+        if let MaterializationIntent::PartialFile { marker, content } = &entry.intent {
+            // Validate every group before the first target can be changed.
+            crate::actions::partial::validate_block(marker, content)?;
+        }
         groups
             .entry(entry.access.fs.location(&entry.target)?)
             .or_default()
