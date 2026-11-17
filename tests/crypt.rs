@@ -1222,8 +1222,10 @@ fn concurrent_native_updates_preserve_every_secret() {
     );
 }
 
-#[test]
-fn a_long_lived_filter_does_not_retain_key_access_after_explicit_lock() {
+#[rstest::rstest]
+#[case(true)]
+#[case(false)]
+fn a_long_lived_filter_does_not_retain_key_access_after_explicit_lock(#[case] trailing_lf: bool) {
     use std::io::{Read, Write};
     fn send(output: &mut impl Write, bytes: &[u8]) {
         write!(output, "{:04x}", bytes.len() + 4).unwrap();
@@ -1260,13 +1262,23 @@ fn a_long_lived_filter_does_not_retain_key_access_after_explicit_lock() {
         .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut output = child.stdout.take().unwrap();
-    send(&mut input, b"git-filter-client\n");
-    send(&mut input, b"version=2\n");
+    let send_control = |output: &mut std::process::ChildStdin, bytes: &[u8]| {
+        send(
+            output,
+            if trailing_lf {
+                bytes
+            } else {
+                bytes.strip_suffix(b"\n").unwrap_or(bytes)
+            },
+        );
+    };
+    send_control(&mut input, b"git-filter-client\n");
+    send_control(&mut input, b"version=2\n");
     input.write_all(b"0000").unwrap();
     input.flush().unwrap();
     assert_eq!(section(&mut output), b"git-filter-server\nversion=2\n");
-    send(&mut input, b"capability=clean\n");
-    send(&mut input, b"capability=smudge\n");
+    send_control(&mut input, b"capability=clean\n");
+    send_control(&mut input, b"capability=smudge\n");
     input.write_all(b"0000").unwrap();
     input.flush().unwrap();
     assert_eq!(
@@ -1286,8 +1298,8 @@ fn a_long_lived_filter_does_not_retain_key_access_after_explicit_lock() {
                 ],
             );
         }
-        send(&mut input, b"command=clean\n");
-        send(&mut input, b"pathname=token\n");
+        send_control(&mut input, b"command=clean\n");
+        send_control(&mut input, b"pathname=token\n");
         input.write_all(b"0000").unwrap();
         send(&mut input, b"process sentinel");
         input.write_all(b"0000").unwrap();
@@ -1301,8 +1313,8 @@ fn a_long_lived_filter_does_not_retain_key_access_after_explicit_lock() {
         }
         // Failed clean requests must not desynchronize subsequent ciphertext requests.
         for command in [b"command=smudge\n".as_slice(), b"command=clean\n"] {
-            send(&mut input, command);
-            send(&mut input, b"pathname=other-token\n");
+            send_control(&mut input, command);
+            send_control(&mut input, b"pathname=other-token\n");
             input.write_all(b"0000").unwrap();
             send(&mut input, &ciphertext);
             input.write_all(b"0000").unwrap();
