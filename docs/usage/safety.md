@@ -10,6 +10,13 @@ prompting. A preview is a snapshot, not a reservation of those paths.
 
 ## Authorization contract
 
+- **Removal and discard commands** (`user revoke`, `user delete`, `user key
+  revoke`, `user key detach`, `secret remove`, `crypt remove`, `restore`, and
+  `unapply`) require confirmation defaulting to No. Terminal stdin and stderr
+  are required unless the command's `--yes` flag explicitly grants approval.
+  Restore/unapply previews need no approval; ordinary invocations confirm even
+  when no changes ultimately result. `unapply --no-prompt` requires `--yes`.
+  Approval never bypasses domain safeguards or separate checkout-disposal consent.
 - **Ordinary apply conflicts**, including `.link.*` sidecars, require a choice:
   skip, overwrite, absorb, or inspect a diff where applicable. Scaffold
   replacement uses a yes/no confirmation. Declining a scaffold replacement
@@ -61,7 +68,9 @@ Blocked migrations fail apply and suppress install and post-apply hooks.
 | Real checkout migration/unapply | Entire repository directory, including ignored files and Git metadata/history | Separate consent/discard flag; exact repository and ownership checks; nested independent units and shared/external Git layouts refuse. |
 | Virtual checkout initialization/refresh | Owned projected files and executable bits; explicit mode configuration or sync | Checks association/scope, selected paths and source/index/target compatibility; preserves unrelated mapped files, staging and existing private access permissions. Sync preview lists changed physical paths. |
 | Virtual checkout unapply | Only unchanged owned files and empty directories | Dirty content/executable-mode edits are retained; independent mappings and ignored files survive; association removed after successful teardown. |
-| Ordinary unapply | Matching links (including verified hard links), unchanged blocks, empty scaffolds; explicit `unapply` | Rechecks before removal, never recursively clears ordinary directories; reports retained directories and changed entries. No dependency recursion. |
+| Ordinary unapply | Matching links (including verified hard links), unchanged blocks, empty scaffolds; confirmation or `--yes` | Rechecks before removal, never recursively clears ordinary directories; reports retained directories and changed entries. No dependency recursion. |
+| Restore | Selected index/worktree changes, including file deletions; confirmation or `--yes` | Explicit literal paths, ownership and concurrent-change checks; `--dry-run` previews without approval. |
+| Access/secret removal | User records, access envelopes, or encrypted secret entries; confirmation or `--yes` | Unlock and last-recovery-key safeguards remain; revocation rotates current state, while historical access/data remain. |
 | Declared Git provisioning | Clone destination, configured revisions, remotes, worktrees and repository config; explicit apply/configuration | Legacy deletion requires expected source-link ownership; existing revisions use safe Git checkout. Preview identifies the destination. Git configuration is not an index reset. |
 | Source sync pull/rebase | Source worktree/index and current branch; root `sync.pull` or `--pull` | Dirty source refuses before fetch; no auto-stash. Conflicts retain native rebase state and block target reconciliation. Resolve with Git, then rerun. Dry-run performs no network or Git writes. |
 | Source sync push | Configured source upstream branch; root `sync.push` or `--push` | Non-force push only after successful local reconciliation; never stages or commits. Failure does not roll back completed local work. Dry-run performs no network I/O. |

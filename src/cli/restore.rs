@@ -48,6 +48,8 @@ pub struct Params {
         help = "Show destructive effects without applying changes"
     )]
     dry_run: bool,
+    #[clap(long, help = "Approve discarding selected changes without prompting")]
+    yes: bool,
 }
 
 pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
@@ -78,6 +80,25 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let (ctx, overlay) =
         tokio::task::spawn_blocking(move || select(ctx, explicit.as_deref(), &selection_paths))
             .await??;
+    if !args.dry_run {
+        let message = format!(
+            "Restore {paths:?} for overlay {:?} from {} to {} (selected changes may be lost and files deleted)?",
+            overlay.name,
+            args.source.as_deref().unwrap_or(if args.staged {
+                "HEAD"
+            } else {
+                "index (recorded snapshot for generated files)"
+            }),
+            match (args.staged, args.worktree) {
+                (true, true) => "index and worktree",
+                (true, false) => "index",
+                _ => "worktree",
+            },
+        );
+        let yes = args.yes;
+        tokio::task::spawn_blocking(move || super::common::confirm_removal(&message, yes, false))
+            .await??;
+    }
     restore::restore(
         &ctx,
         &overlay,

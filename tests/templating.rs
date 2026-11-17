@@ -517,6 +517,9 @@ impl Fixture {
             .arg("--home")
             .arg(source)
             .arg(verb);
+        if matches!(verb, "restore" | "unapply") {
+            command.arg("--yes");
+        }
         command
     }
 

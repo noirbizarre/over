@@ -6,12 +6,12 @@ Manage logical users and their independent Age envelopes for the repository key.
 over user list
 over user show <USER>
 over user add <USER> [KEY-OPTIONS]
-over user revoke <USER>
-over user delete <USER>
+over user revoke <USER> [--yes]
+over user delete <USER> [--yes]
 over user key list <USER>
 over user key add <USER> [KEY-OPTIONS]
-over user key detach <USER> <KEY>
-over user key revoke <USER> <KEY>
+over user key detach <USER> <KEY> [--yes]
+over user key revoke <USER> <KEY> [--yes]
 ```
 
 Accepts [global options](index.md#shared-options-and-selection). Repository
@@ -76,6 +76,11 @@ Existing aggregate and nested split access metadata migrate automatically in the
 next user/key mutation's commit. List/show/unlock remain compatible without migration.
 
 ## Inspect and remove access
+
+Revocation, deletion, and detachment require confirmation, defaulting to No.
+Interactive confirmation requires terminal stdin and stderr; pass `--yes` to
+approve the selected operation in scripts. Approval precedes credential prompts
+and mutations, and does not bypass unlock or recovery-key safeguards.
 
 `user list` prints usernames only, one per line, on stdout. `user show` and
 `user key list` print the username followed by indented `KEY: RECIPIENT` lines;

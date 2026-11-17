@@ -84,6 +84,9 @@ impl Fixture {
             .arg("--target")
             .arg(&self.target)
             .args(args);
+        if subcommand == "unapply" {
+            command.arg("--yes");
+        }
         command
     }
 

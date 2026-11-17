@@ -68,6 +68,9 @@ impl Fixture {
             .arg("--home")
             .arg(&self.source)
             .arg(verb);
+        if verb == "unapply" {
+            command.arg("--yes");
+        }
         if named {
             command.arg("overlay");
         }

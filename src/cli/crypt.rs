@@ -83,9 +83,13 @@ pub enum UserCommands {
     Add(NewKey),
     Revoke {
         user: String,
+        #[arg(long, help = "Approve revocation without prompting")]
+        yes: bool,
     },
     Delete {
         user: String,
+        #[arg(long, help = "Approve deletion without prompting")]
+        yes: bool,
     },
     #[command(subcommand)]
     Key(UserKeyCommands),
@@ -93,10 +97,22 @@ pub enum UserCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum UserKeyCommands {
-    List { user: String },
+    List {
+        user: String,
+    },
     Add(NewKey),
-    Detach { user: String, key: String },
-    Revoke { user: String, key: String },
+    Detach {
+        user: String,
+        key: String,
+        #[arg(long, help = "Approve detachment without prompting")]
+        yes: bool,
+    },
+    Revoke {
+        user: String,
+        key: String,
+        #[arg(long, help = "Approve revocation without prompting")]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -494,26 +510,61 @@ pub fn user(cli: &super::CLI, command: &UserCommands) -> Result<()> {
     let repo = repository(cli)?;
     match command {
         UserCommands::Add(opt) => add_key(&repo, opt, true),
-        UserCommands::Delete { user } => access::delete_user_committed(&repo, user),
-        UserCommands::Revoke { user } => policy::rotate_committed_with(
-            &repo,
-            Some((user, None)),
-            passphrase,
-            crate::ui::age::Callbacks,
-        ),
+        UserCommands::Delete { user, yes } => {
+            super::common::confirm_removal(
+                &format!("Delete empty user {user:?} from {}?", repo.path().display()),
+                *yes,
+                false,
+            )?;
+            access::delete_user_committed(&repo, user)
+        }
+        UserCommands::Revoke { user, yes } => {
+            super::common::confirm_removal(
+                &format!(
+                    "Revoke user {user:?} in {} and rotate/re-encrypt current state (history remains accessible)?",
+                    repo.path().display()
+                ),
+                *yes,
+                false,
+            )?;
+            policy::rotate_committed_with(
+                &repo,
+                Some((user, None)),
+                passphrase,
+                crate::ui::age::Callbacks,
+            )
+        }
         UserCommands::Key(UserKeyCommands::Add(opt)) => add_key(&repo, opt, false),
-        UserCommands::Key(UserKeyCommands::Detach { user, key }) => {
+        UserCommands::Key(UserKeyCommands::Detach { user, key, yes }) => {
             eprintln!(
                 "Detaching only removes the current envelope; it does not revoke a learned key or historical access."
             );
+            super::common::confirm_removal(
+                &format!(
+                    "Detach key {key:?} for user {user:?} in {}?",
+                    repo.path().display()
+                ),
+                *yes,
+                false,
+            )?;
             access::detach_committed(&repo, user, key)
         }
-        UserCommands::Key(UserKeyCommands::Revoke { user, key }) => policy::rotate_committed_with(
-            &repo,
-            Some((user, Some(key))),
-            passphrase,
-            crate::ui::age::Callbacks,
-        ),
+        UserCommands::Key(UserKeyCommands::Revoke { user, key, yes }) => {
+            super::common::confirm_removal(
+                &format!(
+                    "Revoke key {key:?} for user {user:?} in {} and rotate/re-encrypt current state (history remains accessible)?",
+                    repo.path().display()
+                ),
+                *yes,
+                false,
+            )?;
+            policy::rotate_committed_with(
+                &repo,
+                Some((user, Some(key))),
+                passphrase,
+                crate::ui::age::Callbacks,
+            )
+        }
         command => {
             let registry = access::load(&repo)?;
             if let UserCommands::Show { user } | UserCommands::Key(UserKeyCommands::List { user }) =
@@ -682,14 +733,14 @@ pub fn execute(cli: &super::CLI, command: &Commands) -> Result<()> {
             eprintln!(
                 "Removing crypt protection stages plaintext for future commits. Historical ciphertext/plaintext is unchanged."
             );
-            ensure!(
-                *yes || (can_prompt()
-                    && dialoguer::Confirm::new()
-                        .with_prompt("Stage plaintext and remove protection?")
-                        .default(false)
-                        .interact()?),
-                "confirmation required; use --yes deliberately"
-            );
+            super::common::confirm_removal(
+                &format!(
+                    "Stage plaintext and remove protection for {paths:?} in {}?",
+                    repo.path().display()
+                ),
+                *yes,
+                false,
+            )?;
             let (patterns, inputs) = policy_inputs(&repo, &cli.resolve_home()?, paths)?;
             policy::update_inputs(&repo, &patterns, false, &inputs)
         }

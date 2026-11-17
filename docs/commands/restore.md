@@ -2,8 +2,13 @@
 
 Discard selected virtual-checkout changes, unstage files, or recover content from
 an earlier Git revision. **Restoring overwrites or removes selected content
-without a confirmation prompt.** Inspect changes with [`over diff`](diff.md) or
+after confirmation, defaulting to No.** Inspect changes with [`over diff`](diff.md) or
 preview the destinations with `--dry-run` first.
+
+Confirmation requires terminal stdin and stderr; use `--yes` for explicit
+approval in scripts. `--dry-run` never asks for this approval. Non-preview
+invocations confirm the selected operation even if validation later finds no
+changes to make. Approval does not bypass ownership or concurrent-change checks.
 
 ```text
 Usage: over restore [OPTIONS] <FILES>...
@@ -21,6 +26,7 @@ Options:
       --staged             Restore the source repository index (default source: HEAD)
       --worktree           Restore materialized working-tree files
   -n, --dry-run            Show destructive effects without applying changes
+      --yes                Approve discarding selected changes without prompting
   -h, --help               Print help
 
 Discard selected changes permanently. By default, restore the worktree from the index.

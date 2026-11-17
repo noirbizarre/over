@@ -248,6 +248,9 @@ impl Fixture {
             .args(["--home"])
             .arg(&self.source)
             .arg(command);
+        if matches!(command, "restore" | "unapply") {
+            cmd.arg("--yes");
+        }
         cmd
     }
 

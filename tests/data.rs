@@ -162,7 +162,7 @@ fn explicit_apply_renders_all_path_surfaces_with_host_data_without_applying_host
     Command::cargo_bin("over")?
         .arg("--home")
         .arg(repo.path())
-        .args(["unapply", "selected", "--target"])
+        .args(["unapply", "--yes", "selected", "--target"])
         .arg(target.path())
         .assert()
         .success();

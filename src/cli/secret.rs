@@ -19,11 +19,16 @@ pub enum Commands {
     /// Write a decrypted secret to stdout
     Get { name: String },
     /// Remove an encrypted secret
-    Remove { name: String },
+    Remove {
+        name: String,
+        #[arg(long, help = "Approve removal without prompting")]
+        yes: bool,
+    },
 }
 
 pub async fn execute(cli: &super::CLI, command: &Commands) -> Result<()> {
-    let store = SecretStore::new(&cli.resolve_home()?, Arc::new(CryptoService::default()))?;
+    let home = cli.resolve_home()?;
+    let store = SecretStore::new(&home, Arc::new(CryptoService::default()))?;
     let command = command.clone();
     // Crypto and terminal input are blocking; keep them off the async executor.
     tokio::task::spawn_blocking(move || -> Result<()> {
@@ -63,7 +68,18 @@ pub async fn execute(cli: &super::CLI, command: &Commands) -> Result<()> {
                     .context("could not write secret to stdout")?;
                 stdout.flush().context("could not flush stdout")?;
             }
-            Commands::Remove { name } => store.remove(&SecretName::parse(&name)?)?,
+            Commands::Remove { name, yes } => {
+                let parsed = SecretName::parse(&name)?;
+                super::common::confirm_removal(
+                    &format!(
+                        "Remove secret {name:?} from {} (history is retained)?",
+                        home.display()
+                    ),
+                    yes,
+                    false,
+                )?;
+                store.remove(&parsed)?;
+            }
         }
         Ok(())
     })

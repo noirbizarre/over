@@ -94,6 +94,7 @@ fn native_mutations_commit_only_the_store_and_preserve_unrelated_staging() {
             "secret",
             "remove",
             "TOKEN",
+            "--yes",
         ],
     );
     assert_eq!(
@@ -171,7 +172,7 @@ fn revocation_rotates_current_files_and_secrets_for_remaining_users_only() {
     git(root.path(), &["add", "."]);
     git(root.path(), &["commit", "-qm", "protected"]);
     let old = git(root.path(), &["show", ":protected"]).stdout;
-    over(root.path(), &["user", "revoke", "alice"]);
+    over(root.path(), &["user", "revoke", "alice", "--yes"]);
     let new = git(root.path(), &["show", ":protected"]).stdout;
     assert_ne!(old, new);
     over::crypt::format::inspect(&new).unwrap();
@@ -1409,7 +1410,10 @@ fn detaching_one_key_keeps_the_other_independently_usable_without_rotation() {
     fs::write(root.path().join("token"), b"detached sentinel").unwrap();
     over(root.path(), &["crypt", "add", "token"]);
     let before = git(root.path(), &["show", ":token"]).stdout;
-    over(root.path(), &["user", "key", "detach", "alice", "default"]);
+    over(
+        root.path(),
+        &["user", "key", "detach", "alice", "default", "--yes"],
+    );
     assert_eq!(before, git(root.path(), &["show", ":token"]).stdout);
     over(root.path(), &["lock"]);
     over(
@@ -1427,7 +1431,7 @@ fn detaching_one_key_keeps_the_other_independently_usable_without_rotation() {
     let rejected = Command::new(cargo_bin("over"))
         .current_dir(root.path())
         .env_remove("OVER_HOME")
-        .args(["user", "key", "detach", "alice", "backup"])
+        .args(["user", "key", "detach", "alice", "backup", "--yes"])
         .output()
         .unwrap();
     assert!(!rejected.status.success());

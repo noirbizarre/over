@@ -38,6 +38,9 @@ impl Fixture {
             .arg("--home")
             .arg(&self.source)
             .arg(command);
+        if command == "unapply" {
+            cmd.arg("--yes");
+        }
         cmd
     }
 

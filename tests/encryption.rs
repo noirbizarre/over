@@ -19,6 +19,9 @@ fn command(home: &Path, root: &Path, verb: &str) -> Command {
         .arg(root)
         .env("OVER_SECRET", PASSPHRASE)
         .env("NO_COLOR", "1");
+    if verb == "unapply" {
+        command.arg("--yes");
+    }
     if let Some(parent) = root.parent() {
         command
             .env("XDG_STATE_HOME", parent.join("state"))
@@ -83,6 +86,35 @@ fn apply_status_and_unapply_share_the_ciphertext_recipe_without_modifying_the_so
         .assert()
         .success();
     assert!(!target.exists());
+    assert_eq!(
+        fs::read(home.join("selected/config/token.age")).unwrap(),
+        ciphertext
+    );
+}
+
+#[test]
+fn unapproved_unapply_does_not_unlock_or_remove_encrypted_and_ordinary_siblings() {
+    let (temp, home, root, ciphertext) = fixture();
+    fs::write(home.join("selected/ordinary"), "ordinary").unwrap();
+    command(&home, &root, "apply")
+        .args(["selected", "--no-prompt"])
+        .assert()
+        .success();
+    // Omit both approval and credentials so consent must fail before any unlock attempt.
+    Command::cargo_bin("over")
+        .unwrap()
+        .arg("--home")
+        .arg(&home)
+        .args(["unapply", "selected", "--no-prompt", "--target"])
+        .arg(&root)
+        .env("XDG_STATE_HOME", temp.path().join("state"))
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
+        .env_remove("OVER_SECRET")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("confirmation required"));
+    assert_eq!(fs::read(root.join("config/token")).unwrap(), VALUE);
+    assert!(root.join("ordinary").is_symlink());
     assert_eq!(
         fs::read(home.join("selected/config/token.age")).unwrap(),
         ciphertext

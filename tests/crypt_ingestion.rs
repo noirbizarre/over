@@ -245,7 +245,7 @@ fn a_late_removal_override_does_not_publish_earlier_plaintext_objects() {
     let repo = git2::Repository::open(root.path()).unwrap();
     assert!(!repo.odb().unwrap().exists(oid));
     let before = fs::read(root.path().join(".git/index")).unwrap();
-    let output = over(root.path(), &["crypt", "remove", "a", "nested/z"]);
+    let output = over(root.path(), &["crypt", "remove", "a", "nested/z", "--yes"]);
     assert!(!output.status.success());
     assert_eq!(fs::read(root.path().join(".git/index")).unwrap(), before);
     assert!(!repo.odb().unwrap().exists(oid));
