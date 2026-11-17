@@ -236,6 +236,7 @@ fn declared_worktrees_present(
     target: &Path,
     config: &GitRepoConfig,
 ) -> Result<bool> {
+    config.validate_worktrees()?;
     // Structural presence only: every explicitly named worktree directory
     // must exist, and — when `worktree: true` auto-creates an unnamed
     // default-branch worktree — that one too. Never inspects *content* of
@@ -250,6 +251,7 @@ fn declared_worktrees_present(
     if config.worktree {
         // Provisioning creates the automatic worktree even when named ones are declared.
         let default_branch = detect_default_branch(repo)?;
+        crate::actions::git::config::validate_worktree_name(&default_branch)?;
         if !target.join(&default_branch).exists() {
             return Ok(false);
         }

@@ -305,6 +305,13 @@ See [Git declarations](overlay.md#git-declarations) for worktree layout.
 
 ### Named worktrees
 
+Worktree names must be single directory names, without separators, traversal,
+or reserved `.git` names. Branch names are independent and may contain `/`.
+Automatic worktrees use the default branch as their directory name; for a
+default branch containing `/`, disable automatic creation with `worktree: false`
+and declare a named worktree instead. Existing aliases must stay inside the
+repository's managed directories.
+
 Each repository's `worktrees` maps a worktree name to a branch string or an
 object with these attributes:
 

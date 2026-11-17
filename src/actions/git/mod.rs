@@ -173,6 +173,9 @@ pub(crate) fn remove_legacy_materialization(path: &Path, source: Option<&Path>) 
 #[async_trait]
 impl Action for EnsureGitRepository {
     async fn execute(&self, ctx: Ctx) -> Result<()> {
+        // Public callers can construct configurations without deserializing them.
+        self.config.validate_worktrees()?;
+        validate_worktree_paths(&self.path, &self.path.join(".git"), &self.config)?;
         let progress = ctx.ui_progress.bar(100);
         progress.update(|pb| {
             pb.set_style(CLONE_PROGRESS_STYLE.clone());
@@ -267,6 +270,16 @@ impl Action for EnsureGitRepository {
                     Repository::open(&repo_path)
                 }
                 .with_context(|| format!("failed to open repository at {}", repo_path.display()))?;
+
+                // Reject every destination before remote/config changes or branch creation.
+                validate_worktree_paths(&base_path, repo.path(), &config)?;
+                if config.worktree {
+                    validate_worktree_destination(
+                        &base_path,
+                        repo.path(),
+                        &detect_default_branch(&repo)?,
+                    )?;
+                }
 
                 // Checkout specific tag or rev if requested (only for non-bare repos)
                 if !(config.worktree || config.worktrees.is_some()) {
@@ -438,6 +451,28 @@ fn ensure_remotes(
     Ok(())
 }
 
+fn validate_worktree_destination(base: &Path, admin: &Path, name: &str) -> Result<()> {
+    use crate::overlays::mapping::physical;
+
+    config::validate_worktree_name(name)?;
+    // Existing aliases must not redirect otherwise-valid identifiers outside ownership.
+    anyhow::ensure!(
+        physical(&base.join(name))?.starts_with(physical(base)?)
+            && physical(&admin.join("worktrees").join(name).join("config.worktree"))?
+                .starts_with(physical(admin)?),
+        "worktree '{name}' escapes its managed repository"
+    );
+    Ok(())
+}
+
+fn validate_worktree_paths(base: &Path, admin: &Path, config: &GitRepoConfig) -> Result<()> {
+    config.validate_worktrees()?;
+    for name in config.worktrees.iter().flat_map(|entries| entries.keys()) {
+        validate_worktree_destination(base, admin, name)?;
+    }
+    Ok(())
+}
+
 /// Ensure worktrees exist for a bare repository.
 fn ensure_worktrees(
     repo: &Repository,
@@ -445,6 +480,10 @@ fn ensure_worktrees(
     config: &GitRepoConfig,
     verbose: bool,
 ) -> Result<()> {
+    validate_worktree_paths(base_path, repo.path(), config)?;
+    if config.worktree {
+        validate_worktree_destination(base_path, repo.path(), &detect_default_branch(repo)?)?;
+    }
     let existing_worktrees = repo.worktrees()?;
     let existing_names: Vec<&str> = existing_worktrees
         .iter()
@@ -882,6 +921,53 @@ mod tests {
         }
 
         (td, repo)
+    }
+
+    #[rstest::rstest]
+    #[case("")]
+    #[case("..")]
+    #[case("../external")]
+    #[case("/external")]
+    #[case("nested/name")]
+    #[case("nested\\name")]
+    #[case(".git")]
+    fn invalid_worktree_names_fail_before_creating_any_worktrees(#[case] name: &str) {
+        let td = TempDir::new().unwrap();
+        let repo = Repository::init_bare(td.path().join(".git")).unwrap();
+        let mut config = git_config("unused");
+        config.worktrees = Some(HashMap::from([(
+            name.into(),
+            config::WorktreeEntry {
+                branch: "main".into(),
+                config: None,
+            },
+        )]));
+        let error = ensure_worktrees(&repo, td.path(), &config, false).unwrap_err();
+        assert!(error.to_string().contains("invalid worktree name"));
+        assert!(repo.worktrees().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worktree_config_aliases_cannot_write_outside_git_administration() {
+        let td = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        let repo = Repository::init_bare(td.path().join(".git")).unwrap();
+        fs::create_dir_all(repo.path().join("worktrees")).unwrap();
+        std::os::unix::fs::symlink(external.path(), repo.path().join("worktrees/development"))
+            .unwrap();
+        let mut config = git_config("unused");
+        config.worktrees = Some(HashMap::from([(
+            "development".into(),
+            config::WorktreeEntry {
+                branch: "main".into(),
+                config: Some(config::GitConfig {
+                    entries: HashMap::from([("user.name".into(), "changed".into())]),
+                }),
+            },
+        )]));
+        assert!(ensure_worktrees(&repo, td.path(), &config, false).is_err());
+        assert!(!external.path().join("config.worktree").exists());
     }
 
     #[test]
