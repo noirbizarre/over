@@ -3,7 +3,7 @@
 mod commit;
 mod config;
 pub(crate) mod crypto;
-mod entry;
+pub(crate) mod entry;
 mod file;
 pub(crate) mod layout;
 mod provider;

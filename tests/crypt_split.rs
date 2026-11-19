@@ -107,6 +107,236 @@ fn success(output: Output) -> Output {
 }
 
 #[test]
+fn legacy_native_entries_migrate_only_when_rewritten_and_diff_as_values() {
+    let fixture = Fixture::new();
+    success(fixture.secret("token", b"initial\n", false));
+    let repo = git2::Repository::open(&fixture.root).unwrap();
+    let key = over::crypt::access::local_key(&repo).unwrap();
+    let json = br#"{"version":1,"name":"token","value":[111,108,100,10]}"#;
+    let legacy = key.encrypt(json, 1).unwrap();
+    fs::write(fixture.root.join(".over/secrets/token"), &legacy).unwrap();
+    fixture.git(&["add", ".over/secrets/token"]);
+    fixture.git(&["commit", "-qm", "legacy entry"]);
+    let head = fixture.git(&["rev-parse", "HEAD"]);
+    assert_eq!(fixture.value("token"), b"old\n");
+    success(fixture.secret("token", b"old\n", true));
+    assert_eq!(fixture.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        fs::read(fixture.root.join(".over/secrets/token")).unwrap(),
+        legacy
+    );
+    success(fixture.secret("other", b"independent", false));
+    assert_eq!(fixture.value("token"), b"old\n");
+    assert_eq!(
+        fs::read(fixture.root.join(".over/secrets/token")).unwrap(),
+        legacy
+    );
+    success(fixture.secret("token", b"new\n", true));
+    let patch = fixture.git(&[
+        "diff",
+        "--ext-diff",
+        "--no-relative",
+        "HEAD^",
+        "HEAD",
+        "--",
+        ".over/secrets/token",
+    ]);
+    assert!(String::from_utf8_lossy(&patch).contains("-old\n+new\n"));
+    assert_eq!(
+        fs::read(fixture.root.join(".over/secrets/token")).unwrap()[9],
+        2
+    );
+    fs::write(fixture.root.join(".over/secrets/token"), legacy).unwrap();
+    let attributes = fixture.root.join(".over/.gitattributes");
+    let old_attributes = fs::read_to_string(&attributes)
+        .unwrap()
+        .replace("diff=over-secret", "diff=over");
+    fs::write(attributes, old_attributes).unwrap();
+    fixture.git(&["add", ".over/secrets/token", ".over/.gitattributes"]);
+    fixture.git(&["commit", "-qm", "legacy format and driver"]);
+    success(fixture.over(&["key", "rotate"]));
+    assert_eq!(fixture.value("token"), b"old\n");
+    assert_eq!(
+        fs::read(fixture.root.join(".over/secrets/token")).unwrap()[9],
+        2
+    );
+    assert!(
+        String::from_utf8_lossy(&fixture.git(&["check-attr", "diff", "--", ".over/secrets/token"]))
+            .contains("over-secret")
+    );
+}
+
+#[test]
+fn binary_native_entries_round_trip_without_wrappers_and_reject_swapped_names() {
+    let fixture = Fixture::new();
+    fixture.git(&["config", "--unset", "diff.over-secret.command"]);
+    let value: Vec<u8> = (0..=255).collect();
+    success(fixture.secret("token", &value, false));
+    assert!(
+        !fixture
+            .git(&["config", "--get", "diff.over-secret.command"])
+            .is_empty()
+    );
+    let bytes = fs::read(fixture.root.join(".over/secrets/token")).unwrap();
+    assert_eq!(bytes[9], 2);
+    assert_eq!(bytes.len(), value.len() + 42);
+    assert_eq!(fixture.value("token"), value);
+    fixture.git(&["add", ".over/secrets/token"]);
+    assert!(fixture.git(&["status", "--porcelain"]).is_empty());
+    fixture.git(&["config", "--unset", "filter.over.process"]);
+    fixture.git(&["add", ".over/secrets/token"]);
+    fixture.git(&["checkout-index", "--force", "--", ".over/secrets/token"]);
+    assert_eq!(
+        fs::read(fixture.root.join(".over/secrets/token")).unwrap(),
+        bytes
+    );
+    success(fixture.over(&["lock"]));
+    success(fixture.over(&["unlock"]));
+    assert_eq!(fixture.value("token"), value);
+    fs::write(fixture.root.join(".over/secrets/other"), bytes).unwrap();
+    let failed = fixture.over(&["secret", "get", "other"]);
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+}
+
+#[test]
+fn native_secret_diff_renames_authenticate_each_side_under_its_own_name() {
+    let fixture = Fixture::new();
+    success(fixture.secret("old", b"same-value\n", false));
+    success(fixture.secret("new", b"same-value\n", false));
+    let invoke = |new_file| {
+        fixture.over(&[
+            "crypt",
+            "diff",
+            "--",
+            ".over/secrets/old",
+            ".over/secrets/old",
+            "unused",
+            "100644",
+            new_file,
+            "unused",
+            "100644",
+            ".over/secrets/new",
+            "rename",
+        ])
+    };
+    let valid = success(invoke(".over/secrets/new"));
+    assert!(String::from_utf8_lossy(&valid.stdout).contains("rename to .over/secrets/new"));
+    let swapped = invoke(".over/secrets/old");
+    assert!(!swapped.status.success());
+    assert!(swapped.stdout.is_empty());
+    let relative = fixture.over(&[
+        "crypt",
+        "diff",
+        "--",
+        "secrets/old",
+        ".over/secrets/old",
+        "unused",
+        "100644",
+        ".over/secrets/new",
+        "unused",
+        "100644",
+    ]);
+    assert!(!relative.status.success());
+    assert!(relative.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&relative.stderr).contains("--no-relative"));
+}
+
+#[test]
+fn native_secret_git_diffs_authenticate_both_sides_before_displaying_values() {
+    let fixture = Fixture::new();
+    success(fixture.secret("token", b"first-value\n", false));
+    success(fixture.secret("token", b"second-value\n", true));
+    let patch = fixture.git(&[
+        "diff",
+        "--ext-diff",
+        "--no-relative",
+        "HEAD^",
+        "HEAD",
+        "--",
+        ".over/secrets/token",
+    ]);
+    let patch = String::from_utf8(patch).unwrap();
+    assert!(patch.contains("-first-value\n"), "{patch}");
+    assert!(patch.contains("+second-value\n"), "{patch}");
+    let staged = fixture.git(&[
+        "diff",
+        "--cached",
+        "--ext-diff",
+        "--no-relative",
+        "HEAD^",
+        "--",
+        ".over/secrets/token",
+    ]);
+    assert!(String::from_utf8_lossy(&staged).contains("+second-value\n"));
+    fixture.git(&["read-tree", "HEAD^"]);
+    let working = fixture.git(&[
+        "diff",
+        "--ext-diff",
+        "--no-relative",
+        "--",
+        ".over/secrets/token",
+    ]);
+    assert!(String::from_utf8_lossy(&working).contains("+second-value\n"));
+    fixture.git(&["read-tree", "HEAD"]);
+    assert!(
+        !patch.contains("index "),
+        "plaintext-derived object IDs must not be displayed"
+    );
+    let from_subdirectory = success(
+        fixture
+            .command(Path::new("git"))
+            .current_dir(fixture.root.join(".over"))
+            .args([
+                "diff",
+                "--ext-diff",
+                "--no-relative",
+                "HEAD^",
+                "HEAD",
+                "--",
+                "secrets/token",
+            ])
+            .output()
+            .unwrap(),
+    );
+    assert!(String::from_utf8_lossy(&from_subdirectory.stdout).contains("+second-value\n"));
+    success(fixture.over(&["lock"]));
+    let locked = fixture.git(&[
+        "diff",
+        "--ext-diff",
+        "--no-relative",
+        "HEAD^",
+        "HEAD",
+        "--",
+        ".over/secrets/token",
+    ]);
+    assert!(String::from_utf8_lossy(&locked).contains("Binary files"));
+    assert!(!String::from_utf8_lossy(&locked).contains("second-value"));
+    success(fixture.over(&["unlock"]));
+    let mut corrupt = fs::read(fixture.root.join(".over/secrets/token")).unwrap();
+    *corrupt.last_mut().unwrap() ^= 1;
+    fs::write(fixture.root.join(".over/secrets/token"), corrupt).unwrap();
+    // Use the plumbing helper directly: Git may reject the worktree through clean first.
+    let old = fixture.temp.path().join("old");
+    fs::write(&old, fixture.git(&["show", "HEAD:.over/secrets/token"])).unwrap();
+    let failed = fixture.over(&[
+        "crypt",
+        "diff",
+        "--",
+        ".over/secrets/token",
+        old.to_str().unwrap(),
+        "unused",
+        "100644",
+        ".over/secrets/token",
+        "unused",
+        "100644",
+    ]);
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&failed.stderr).contains("second-value"));
+}
+
+#[test]
 fn access_and_secret_mutations_commit_only_their_independent_files() {
     let fixture = Fixture::new();
     assert!(!fixture.root.join(".over/crypt/access.json").exists());

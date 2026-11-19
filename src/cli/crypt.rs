@@ -33,12 +33,14 @@ pub enum Commands {
     FilterProcess,
     /// Convert an encrypted Git file for diff display
     Textconv { file: PathBuf },
+    /// Render an authenticated native-secret patch for Git
+    Diff { args: Vec<std::ffi::OsString> },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum FilterCommand {
-    Clean,
-    Smudge,
+    Clean { path: Option<PathBuf> },
+    Smudge { path: Option<PathBuf> },
 }
 
 #[derive(Args, Debug)]
@@ -719,10 +721,15 @@ pub fn lock(cli: &super::CLI) -> Result<()> {
 pub fn execute(cli: &super::CLI, command: &Commands) -> Result<()> {
     match command {
         // Git invokes helpers in its own repository context, independently of Over home.
-        Commands::Filter(FilterCommand::Clean) => crate::crypt::filter::once(true),
-        Commands::Filter(FilterCommand::Smudge) => crate::crypt::filter::once(false),
+        Commands::Filter(FilterCommand::Clean { path }) => {
+            crate::crypt::filter::once_path(true, path.as_deref())
+        }
+        Commands::Filter(FilterCommand::Smudge { path }) => {
+            crate::crypt::filter::once_path(false, path.as_deref())
+        }
         Commands::FilterProcess => crate::crypt::filter::process(),
         Commands::Textconv { file } => crate::crypt::textconv::run(file),
+        Commands::Diff { args } => crate::crypt::diff::run(args),
         Commands::Add { paths } => {
             let repo = policy_repository(cli, paths)?;
             let (patterns, inputs) = policy_inputs(&repo, &cli.resolve_home()?, paths)?;

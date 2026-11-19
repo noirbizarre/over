@@ -445,10 +445,7 @@ impl Mutation {
                         && bytes.is_some_and(|bytes| {
                             access::local_key(repo)
                                 .and_then(|key| {
-                                    key.decrypt(
-                                        stored.content(),
-                                        super::format::file_domain(stored.content())?,
-                                    )
+                                    super::context::decrypt(&key, stored.content(), relative)
                                 })
                                 .is_ok_and(|plain| plain.as_slice() == bytes.as_slice())
                         }));
@@ -537,16 +534,21 @@ impl Mutation {
         index.read_tree(&repo.find_tree(self.tree)?)?;
         index.write()?;
         for entry in paths {
-            let output = policy::git_command(repo)?
-                .args(["check-attr", "--cached", "-z", "filter", "--"])
-                .arg(entry)
-                .env("GIT_INDEX_FILE", &path)
-                .output()?;
-            ensure!(
-                output.status.success()
-                    && output.stdout.split(|byte| *byte == 0).nth(2) == Some(b"over"),
-                "native secret entries must retain filter=over"
-            );
+            for (attribute, expected) in [
+                ("filter", b"over".as_slice()),
+                ("diff", b"over-secret".as_slice()),
+            ] {
+                let output = policy::git_command(repo)?
+                    .args(["check-attr", "--cached", "-z", attribute, "--"])
+                    .arg(entry)
+                    .env("GIT_INDEX_FILE", &path)
+                    .output()?;
+                ensure!(
+                    output.status.success()
+                        && output.stdout.split(|byte| *byte == 0).nth(2) == Some(expected),
+                    "native secret entries must retain filter=over and diff=over-secret"
+                );
+            }
         }
         Ok(())
     }

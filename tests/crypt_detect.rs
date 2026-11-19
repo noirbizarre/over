@@ -761,7 +761,7 @@ fn invalid_committed_ciphertext_is_reported_without_authentication(
     match fault {
         "truncated" => ciphertext.truncate(format::MAGIC.len()),
         "version" => ciphertext[8] = 2,
-        "domain" => ciphertext[9] = 2,
+        "domain" => ciphertext[9] = 3,
         "generation" => ciphertext[10] ^= 1,
         _ => unreachable!(),
     }

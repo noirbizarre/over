@@ -343,15 +343,20 @@ New encryption policies include `diff=over`. While unlocked, ordinary `git diff`
 `git diff --cached`, `git show`, and Git-backed Over comparisons use the local
 textconv driver to authenticate and display protected plaintext. Clean/smudge
 storage behavior is unchanged: index and committed protected blobs stay encrypted.
-The native store also supports explicit diff conversion without decrypting its
-working file; its presentation is the serialized map, including numeric byte arrays.
+Native entries use a separate path-aware external driver, `diff=over-secret`,
+which authenticates each logical filename and displays decoded value differences
+without decrypting working files. Use `git diff --ext-diff --no-relative` or
+`git show --ext-diff --no-relative HEAD`; binary values use opaque summaries.
+The secret renderer produces uncolored unified review patches and does not
+inherit every parent Git rendering option.
 
 For an existing repository, run `over unlock` to repair/install local driver
 settings, then add `diff=over` to older protection rules and review/commit the
 attribute change. Alternatively, reapply selected policy through `over crypt add`.
 Review `.over/.gitattributes` too: current per-entry protection uses `secrets/*`,
 while older single-file stores use `secrets` or `secrets.yaml`. Protection rules
-missing `diff=over` need it added explicitly. Unlock never rewrites or stages
+for native entries require `diff=over-secret`; other protected paths require
+`diff=over`. Secret mutations upgrade their entry rule. Unlock never rewrites or stages
 these secret-protection rules.
 Check effective selections with `git check-attr filter diff -- PATH`.
 
@@ -361,7 +366,7 @@ producing a misleading plaintext patch. Unsafe or corrupt installed keys and
 interrupted transactions also remain errors.
 Only the current repository key is retained: older generations, including the
 old `HEAD` side of a staged rotation, cannot be converted. Use
-`git diff --cached --no-textconv --stat` when reviewing a rotation.
+`git diff --cached --no-ext-diff --no-textconv --stat` when reviewing a rotation.
 
 Over sets `diff.over.cachetextconv=false`, preventing persistent Git conversion
 caches with its installed configuration. Diffs can still disclose plaintext to

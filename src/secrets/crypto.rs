@@ -13,6 +13,9 @@ impl SecretBytes {
     pub fn new(bytes: Vec<u8>) -> Self {
         Self(Zeroizing::new(bytes))
     }
+    pub(crate) fn from_zeroizing(bytes: Zeroizing<Vec<u8>>) -> Self {
+        Self(bytes)
+    }
     pub fn expose(&self) -> &[u8] {
         &self.0
     }

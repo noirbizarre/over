@@ -59,6 +59,14 @@ impl RepositoryKey {
 
     pub fn encrypt(&self, plaintext: &[u8], domain: u8) -> Result<Vec<u8>> {
         ensure!(domain <= 1, "unsupported Over ciphertext domain");
+        self.encrypt_context(plaintext, domain, None)
+    }
+
+    pub(crate) fn encrypt_secret(&self, plaintext: &[u8], name: &str) -> Result<Vec<u8>> {
+        self.encrypt_context(plaintext, 2, Some(name))
+    }
+
+    fn encrypt_context(&self, plaintext: &[u8], domain: u8, name: Option<&str>) -> Result<Vec<u8>> {
         ensure!(
             plaintext.len() <= MAX_BYTES,
             "protected content exceeds 256 MiB limit"
@@ -66,15 +74,43 @@ impl RepositoryKey {
         let mut header = MAGIC.to_vec();
         header.extend_from_slice(&[1, domain]);
         header.extend_from_slice(&self.generation);
-        let payload = Aes256Siv::new_from_slice(self.bytes.as_ref())
-            .map_err(|_| anyhow::anyhow!("invalid repository key"))?
-            .encrypt([header.as_slice()], plaintext)
-            .map_err(|_| anyhow::anyhow!("could not encrypt protected content"))?;
+        let mut cipher = Aes256Siv::new_from_slice(self.bytes.as_ref())
+            .map_err(|_| anyhow::anyhow!("invalid repository key"))?;
+        // Separate SIV components prevent collisions between header, purpose and name.
+        let payload = match name {
+            Some(name) => cipher.encrypt(
+                [header.as_slice(), b"over.native-secret", name.as_bytes()],
+                plaintext,
+            ),
+            None => cipher.encrypt([header.as_slice()], plaintext),
+        }
+        .map_err(|_| anyhow::anyhow!("could not encrypt protected content"))?;
         header.extend_from_slice(&payload);
         Ok(header)
     }
 
     pub fn decrypt(&self, ciphertext: &[u8], domain: u8) -> Result<Zeroizing<Vec<u8>>> {
+        ensure!(
+            domain <= 1,
+            "native secret decryption requires filename context"
+        );
+        self.decrypt_context(ciphertext, domain, None)
+    }
+
+    pub(crate) fn decrypt_secret(
+        &self,
+        ciphertext: &[u8],
+        name: &str,
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        self.decrypt_context(ciphertext, 2, Some(name))
+    }
+
+    fn decrypt_context(
+        &self,
+        ciphertext: &[u8],
+        domain: u8,
+        name: Option<&str>,
+    ) -> Result<Zeroizing<Vec<u8>>> {
         inspect(ciphertext)?;
         ensure!(
             ciphertext[9] == domain,
@@ -85,11 +121,21 @@ impl RepositoryKey {
             "protected content uses a different key generation"
         );
         // SIV verifies the whole message before returning any plaintext to callers.
-        Aes256Siv::new_from_slice(self.bytes.as_ref())
-            .map_err(|_| anyhow::anyhow!("invalid repository key"))?
-            .decrypt([&ciphertext[..HEADER_LEN]], &ciphertext[HEADER_LEN..])
-            .map(Zeroizing::new)
-            .map_err(|_| anyhow::anyhow!("protected content authentication failed"))
+        let mut cipher = Aes256Siv::new_from_slice(self.bytes.as_ref())
+            .map_err(|_| anyhow::anyhow!("invalid repository key"))?;
+        match name {
+            Some(name) => cipher.decrypt(
+                [
+                    &ciphertext[..HEADER_LEN],
+                    b"over.native-secret",
+                    name.as_bytes(),
+                ],
+                &ciphertext[HEADER_LEN..],
+            ),
+            None => cipher.decrypt([&ciphertext[..HEADER_LEN]], &ciphertext[HEADER_LEN..]),
+        }
+        .map(Zeroizing::new)
+        .map_err(|_| anyhow::anyhow!("protected content authentication failed"))
     }
 }
 
@@ -110,7 +156,7 @@ pub(crate) fn inspect_header(bytes: &[u8], length: usize) -> Result<()> {
         "truncated Over ciphertext header"
     );
     ensure!(bytes[8] == 1, "unsupported Over ciphertext version");
-    ensure!(bytes[9] <= 1, "unsupported Over ciphertext domain");
+    ensure!(bytes[9] <= 2, "unsupported Over ciphertext domain");
     Ok(())
 }
 
@@ -131,7 +177,7 @@ pub fn recognized(bytes: &[u8]) -> bool {
 pub fn file_domain(bytes: &[u8]) -> Result<u8> {
     inspect(bytes)?;
     match bytes[9] {
-        domain @ (0 | 1) => Ok(domain),
+        domain @ (0..=2) => Ok(domain),
         _ => bail!("unsupported protected content domain"),
     }
 }
@@ -251,6 +297,23 @@ mod tests {
     }
 
     #[test]
+    fn native_secret_wire_bytes_match_an_independent_multi_component_answer() {
+        let mut encoded = [0; 96];
+        encoded[16..32].copy_from_slice(&std::array::from_fn::<_, 16, _>(|i| i as u8 + 16));
+        encoded[32..].copy_from_slice(&std::array::from_fn::<_, 64, _>(|i| i as u8));
+        let key = RepositoryKey::decode(&encoded).unwrap();
+        // Independently generated with Python cryptography's AESSIV and three AD components.
+        let expected = "004f5645524352590102101112131415161718191a1b1c1d1e1f6a16f69fad7084f812240f7c806afa7979c83f48c06c93b9cb";
+        let bytes = key.encrypt_secret(b"secret\0\xff\n", "token").unwrap();
+        let actual: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            key.decrypt_secret(&bytes, "token").unwrap().as_slice(),
+            b"secret\0\xff\n"
+        );
+    }
+
+    #[test]
     fn inspection_rejects_all_truncations_unsupported_versions_and_domains() {
         let key = RepositoryKey::decode(&[42; 96]).unwrap();
         let encrypted = key.encrypt(b"", 0).unwrap();
@@ -262,7 +325,7 @@ mod tests {
             invalid[8] = version;
             assert!(inspect(&invalid).is_err(), "version {version}");
         }
-        for domain in 2..=u8::MAX {
+        for domain in 3..=u8::MAX {
             let mut invalid = encrypted.clone();
             invalid[9] = domain;
             assert!(inspect(&invalid).is_err(), "domain {domain}");

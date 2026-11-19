@@ -41,22 +41,9 @@ impl Mutation {
                 updates.insert(path, Some(bytes));
             }
         }
-        let mut attributes = fs::read(access::root(repo)?.join(access_storage::ATTRIBUTES))?;
-        let rule = b"secrets/* filter=over diff=over -text";
-        if !attributes
-            .split(|byte| *byte == b'\n')
-            .any(|line| line.strip_suffix(b"\r").unwrap_or(line) == rule)
-        {
-            let newline = if attributes.windows(2).any(|bytes| bytes == b"\r\n") {
-                b"\r\n".as_slice()
-            } else {
-                b"\n".as_slice()
-            };
-            if !attributes.ends_with(b"\n") {
-                attributes.extend_from_slice(newline);
-            }
-            attributes.extend_from_slice(rule);
-            attributes.extend_from_slice(newline);
+        let before = fs::read(access::root(repo)?.join(access_storage::ATTRIBUTES))?;
+        let attributes = access_storage::native_attributes(&before);
+        if attributes != before {
             updates.insert(PathBuf::from(access_storage::ATTRIBUTES), Some(attributes));
         }
         let entries = updates
@@ -66,6 +53,8 @@ impl Mutation {
             .collect::<Vec<_>>();
         let inner = mutation::Mutation::prepare(repo, updates, message, transitions)?;
         inner.require_protected(repo, &entries)?;
+        // A persisted unlock from an older binary may predate the path-aware driver.
+        access::configure_filters(repo)?;
         Ok(Self {
             inner,
             key: access::local_key(repo)?,
