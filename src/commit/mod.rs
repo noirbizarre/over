@@ -21,6 +21,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 
+use crate::actions::git::index::IndexSnapshot;
 use crate::desired::{DesiredEntry, Provenance};
 use crate::materialize::virtual_checkout::git;
 use crate::materialize::virtual_checkout::state::{self, VirtualCheckoutRecord};
@@ -79,7 +80,7 @@ pub(crate) fn pending(
 /// Capture publication inputs before prompting; never publish a silently changed index.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Snapshot {
-    repositories: std::collections::BTreeMap<PathBuf, (git2::Oid, Vec<u8>)>,
+    repositories: std::collections::BTreeMap<PathBuf, (git2::Oid, IndexSnapshot)>,
 }
 
 pub(crate) fn snapshot(entries: &[DesiredEntry]) -> Result<Snapshot> {
@@ -94,7 +95,7 @@ pub(crate) fn snapshot(entries: &[DesiredEntry]) -> Result<Snapshot> {
             index_path.clone(),
             (
                 repo.head()?.peel_to_commit()?.id(),
-                std::fs::read(index_path)?,
+                IndexSnapshot::read(&index_path)?,
             ),
         );
     }
