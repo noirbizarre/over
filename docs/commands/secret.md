@@ -33,6 +33,13 @@ reconciliation. Directory migrations retain an encrypted backup under Git's
 private `over-crypt/legacy-state-backup-*` path. Getting an entry reads only that
 value; listing reads names while retaining the unlock requirement.
 
+New native entries encrypt raw value bytes and authenticate the exact filename.
+Existing JSON-backed native entries remain readable and convert only on actual
+rewrite, including key rotation. Reads and identical-value replacements do not
+convert them. New writes require an Over version supporting the binary-entry
+ciphertext domain. Secret mutations install the path-aware `diff=over-secret`
+attribute for [readable Git value diffs](../usage/secrets.md#named-secrets).
+
 | Subcommand | Input and output |
 | --- | --- |
 | `add NAME` | Read nonterminal stdin to EOF, preserving exact bytes/newlines; otherwise use hidden input |

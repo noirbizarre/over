@@ -981,9 +981,12 @@ pub fn delete_user(repo: &git2::Repository, user: &str) -> Result<()> {
 pub fn configure_filters(repo: &git2::Repository) -> Result<()> {
     let mut commands = filter_commands()?.to_vec();
     commands.push(("diff.over.textconv", textconv_command()?));
+    commands.push(("diff.over-secret.command", secret_diff_command()?));
     let booleans = [
         ("filter.over.required", true),
         ("diff.over.cachetextconv", false),
+        ("diff.over-secret.cachetextconv", false),
+        ("diff.over-secret.trustExitCode", false),
     ];
     let path = repo.commondir().join("config");
     check_real(&path, false)?;
@@ -1071,16 +1074,20 @@ pub fn textconv_command() -> Result<String> {
     Ok(format!("{} crypt textconv --", quoted_executable()?))
 }
 
+pub(crate) fn secret_diff_command() -> Result<String> {
+    Ok(format!("{} crypt diff --", quoted_executable()?))
+}
+
 pub fn filter_commands() -> Result<[(&'static str, String); 3]> {
     let executable = quoted_executable()?;
     Ok([
         (
             "filter.over.clean",
-            format!("{executable} crypt filter clean"),
+            format!("{executable} crypt filter clean -- %f"),
         ),
         (
             "filter.over.smudge",
-            format!("{executable} crypt filter smudge"),
+            format!("{executable} crypt filter smudge -- %f"),
         ),
         (
             "filter.over.process",

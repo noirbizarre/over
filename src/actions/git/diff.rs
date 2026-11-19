@@ -171,7 +171,7 @@ impl Comparison {
             .arg(if difftool { "difftool" } else { "diff" });
         if !difftool {
             // Porcelain diff normally enables external drivers; be explicit for tree inputs too.
-            command.arg("--ext-diff");
+            command.args(["--ext-diff", "--no-relative"]);
         }
         if let Some((left, right)) = self.trees {
             command.arg(left.to_string()).arg(right.to_string());

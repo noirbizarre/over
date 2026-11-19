@@ -40,8 +40,11 @@ Repository-root `.over` is reserved administration: overlay discovery and
 materialization always exclude it, even if `.overignore` negations select it.
 Each mutation automatically commits only its entry and required initial encryption
 metadata, preserving unrelated staged work. Entries remain encrypted in unlocked
-working trees; their versioned records authenticate both name and binary value.
-Secret commands and explicit Git textconv decrypt in memory. Independent secret
+working trees. New entries encrypt the value bytes directly, without a JSON or
+Base64 wrapper. The ciphertext header carries the format version; separate
+authenticated context binds the exact secret name to the value. Renaming or
+swapping ciphertext between names fails authentication. Secret commands and the
+path-aware Git diff driver decrypt in memory. Independent secret
 changes touch independent Git paths and can merge without an aggregate-file conflict.
 Writers serialize locally and publish through a recoverable isolated commit.
 
@@ -68,6 +71,28 @@ Secret mutations validate all migration destination names before publication.
 Aggregates with case-colliding names (or mutations introducing a case variant)
 are rejected; the failed secret mutation leaves the original store, index, and
 HEAD unchanged.
+
+Existing JSON-backed native entries remain readable alongside binary entries.
+They convert to the binary representation only when actually rewritten, including
+key rotation. Reads and identical-value replacements leave their bytes unchanged;
+rewriting one entry does not migrate unrelated entries. Older Over versions that
+do not recognize the new ciphertext domain cannot read newly written entries.
+
+For readable value diffs, secret mutations register `diff=over-secret`:
+
+```sh
+git diff --ext-diff --no-relative
+git diff --cached --ext-diff --no-relative
+git show --ext-diff --no-relative HEAD
+```
+
+Both sides authenticate under their own logical names before any value patch is
+printed. Legacy entries display their decoded values too. Text values use unified
+patches; binary values and locked ciphertext use opaque summaries. The helper
+keeps plaintext out of temporary files, Git objects, and persistent caches.
+Use `--no-ext-diff --no-textconv` for ciphertext-only review, including history
+whose key generation is unavailable. See the [helper reference](../commands/crypt-filters.md#native-secret-diffs)
+for presentation limitations.
 
 Names contain 1–128 ASCII letters, digits, underscores, or hyphens, and start
 with a letter or digit. Platform-reserved device names such as `CON` and `LPT1`

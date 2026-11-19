@@ -94,8 +94,11 @@ pub(crate) fn canonical_entry(
         let _guard = crate::crypt::access::guard(repo, false)?;
         // A successful configured filter is not proof that its output is ciphertext.
         let blob = scratch.repo.find_blob(oid)?;
-        let domain = crate::crypt::format::file_domain(blob.content())?;
-        crate::crypt::access::local_key(repo)?.decrypt(blob.content(), domain)?;
+        crate::crypt::context::decrypt(
+            &crate::crypt::access::local_key(repo)?,
+            blob.content(),
+            logical,
+        )?;
     }
     if !honors_filemode(repo)? {
         mode = expected

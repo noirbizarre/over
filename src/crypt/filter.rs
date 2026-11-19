@@ -11,13 +11,23 @@ use super::buffer::reserve_secret;
 use super::{access, format};
 
 pub fn transform(repo: &git2::Repository, clean: bool, input: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
-    transform_with_registry(repo, clean, input, None)
+    transform_path(repo, clean, input, None)
+}
+
+pub fn transform_path(
+    repo: &git2::Repository,
+    clean: bool,
+    input: &[u8],
+    path: Option<&std::path::Path>,
+) -> Result<Zeroizing<Vec<u8>>> {
+    transform_with_registry(repo, clean, input, None, path)
 }
 
 fn transform_for_git(
     repo: &git2::Repository,
     clean: bool,
     input: &[u8],
+    path: Option<&std::path::Path>,
 ) -> Result<Zeroizing<Vec<u8>>> {
     // Clean must never acquire the bootstrap exception to worktree metadata validation.
     let registry = if clean {
@@ -28,7 +38,7 @@ fn transform_for_git(
             None => super::bootstrap::initial_checkout_registry(repo)?,
         }
     };
-    transform_with_registry(repo, clean, input, registry.as_ref())
+    transform_with_registry(repo, clean, input, registry.as_ref(), path)
 }
 
 fn transform_with_registry(
@@ -36,6 +46,7 @@ fn transform_with_registry(
     clean: bool,
     input: &[u8],
     registry: Option<&access::Registry>,
+    path: Option<&std::path::Path>,
 ) -> Result<Zeroizing<Vec<u8>>> {
     let _guard = access::guard(repo, false)?;
     if format::recognized(input) {
@@ -59,9 +70,12 @@ fn transform_with_registry(
         match access::local_key_for_registry(repo, registry) {
             Ok(key) => {
                 let domain = format::file_domain(input)?;
-                let plaintext = key.decrypt(input, domain)?;
+                let plaintext = match path {
+                    Some(path) => super::context::decrypt(&key, input, path)?,
+                    None => key.decrypt(input, domain)?,
+                };
                 // The native store remains ciphertext on disk even while unlocked.
-                if clean || domain == 1 {
+                if clean || domain != 0 {
                     Ok(Zeroizing::new(input.to_vec()))
                 } else {
                     Ok(plaintext)
@@ -89,12 +103,16 @@ fn transform_with_registry(
 }
 
 pub fn once(clean: bool) -> Result<()> {
+    once_path(clean, None)
+}
+
+pub fn once_path(clean: bool, path: Option<&std::path::Path>) -> Result<()> {
     let repo = git2::Repository::open_from_env().or_else(|_| git2::Repository::discover("."))?;
     let input = read_input(
         &mut std::io::stdin().lock(),
         format::MAX_BYTES + format::HEADER_LEN + 16,
     )?;
-    let output = transform_for_git(&repo, clean, &input)?;
+    let output = transform_for_git(&repo, clean, &input, path)?;
     std::io::stdout().write_all(&output)?;
     Ok(())
 }
@@ -259,9 +277,15 @@ fn process_io(
             .iter()
             .find_map(|line| line.strip_prefix(b"command="))
             .context("missing filter command")?;
+        let path = headers
+            .iter()
+            .find_map(|line| line.strip_prefix(b"pathname="))
+            .map(std::str::from_utf8)
+            .transpose()?
+            .map(std::path::Path::new);
         let result = match command {
-            b"clean" => transform_for_git(repo, true, &bytes),
-            b"smudge" => transform_for_git(repo, false, &bytes),
+            b"clean" => transform_for_git(repo, true, &bytes, path),
+            b"smudge" => transform_for_git(repo, false, &bytes, path),
             _ => bail!("unsupported Git filter command"),
         };
         match result {
@@ -493,7 +517,7 @@ mod tests {
         let registry = context.registry(&repo).unwrap();
         let encrypted = key.encrypt(b"secret", 0).unwrap();
         assert_eq!(
-            transform_with_registry(&repo, false, &encrypted, Some(&registry))
+            transform_with_registry(&repo, false, &encrypted, Some(&registry), None)
                 .unwrap()
                 .as_slice(),
             b"secret"
@@ -502,7 +526,7 @@ mod tests {
         assert!(transform(&repo, true, b"plaintext").is_err());
         let native = key.encrypt(b"native secret", 1).unwrap();
         assert_eq!(
-            transform_with_registry(&repo, false, &native, Some(&registry))
+            transform_with_registry(&repo, false, &native, Some(&registry), None)
                 .unwrap()
                 .as_slice(),
             native
@@ -521,11 +545,11 @@ mod tests {
             b"pending",
         )
         .unwrap();
-        assert!(transform_with_registry(&repo, false, &encrypted, Some(&registry)).is_err());
+        assert!(transform_with_registry(&repo, false, &encrypted, Some(&registry), None).is_err());
         std::fs::remove_file(access::private_dir(&repo).join("transaction.json")).unwrap();
         let stale = format::RepositoryKey::decode(&[43; 96]).unwrap();
         access::install(&repo, &stale).unwrap();
-        assert!(transform_with_registry(&repo, false, &encrypted, Some(&registry)).is_err());
+        assert!(transform_with_registry(&repo, false, &encrypted, Some(&registry), None).is_err());
     }
 
     fn request(bytes: &mut Vec<u8>, command: &[u8], content: &[u8]) {

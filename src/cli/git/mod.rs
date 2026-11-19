@@ -37,8 +37,12 @@ pub enum Commands {
 /// Dispatch a `over git <subcommand>` invocation.
 pub async fn execute(cli: &CLI, cmd: &Commands) -> Result<()> {
     match cmd {
-        Commands::Filter(FilterCommand::Clean) => crate::crypt::filter::once(true),
-        Commands::Filter(FilterCommand::Smudge) => crate::crypt::filter::once(false),
+        Commands::Filter(FilterCommand::Clean { path }) => {
+            crate::crypt::filter::once_path(true, path.as_deref())
+        }
+        Commands::Filter(FilterCommand::Smudge { path }) => {
+            crate::crypt::filter::once_path(false, path.as_deref())
+        }
         Commands::FilterProcess => crate::crypt::filter::process(),
         Commands::Textconv { file } => crate::crypt::textconv::run(file),
         Commands::Mount(opt) => mount::execute(cli, opt).await,

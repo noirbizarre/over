@@ -143,6 +143,27 @@ pub(crate) fn bootstrap_attributes(before: &[u8]) -> Vec<u8> {
     bytes
 }
 
+pub(crate) fn native_attributes(before: &[u8]) -> Vec<u8> {
+    let rule = b"secrets/* filter=over diff=over-secret -text";
+    let mut bytes = before.to_vec();
+    if !before
+        .split(|byte| *byte == b'\n')
+        .any(|line| line.strip_suffix(b"\r").unwrap_or(line) == rule)
+    {
+        let newline = if before.windows(2).any(|bytes| bytes == b"\r\n") {
+            b"\r\n".as_slice()
+        } else {
+            b"\n".as_slice()
+        };
+        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+            bytes.extend_from_slice(newline);
+        }
+        bytes.extend_from_slice(rule);
+        bytes.extend_from_slice(newline);
+    }
+    bytes
+}
+
 pub(crate) fn portable_name(name: &str) -> Result<()> {
     access::validate_name(name)?;
     let upper = name.to_ascii_uppercase();

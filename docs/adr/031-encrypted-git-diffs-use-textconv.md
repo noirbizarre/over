@@ -60,3 +60,28 @@ printed earlier files before a later conversion fails.
 Long-lived filters reload keys for every request. Lock coordinates active
 transformations, but already transformed output may remain buffered outside that
 boundary; it cannot be recalled or securely erased by removing the local key.
+
+## Amendment: filename-bound binary native entries (#334)
+
+Native entries now encrypt raw value bytes in ciphertext domain 2, authenticating
+the exact name as a separate AES-SIV associated-data component alongside the
+header and a fixed purpose label. Domains 0/1 and ciphertext version 1 retain
+their original wire contract. Legacy JSON entries remain readable and migrate
+only on rewrite; no read performs migration.
+
+Textconv receives temporary blob filenames without reliable logical paths.
+Native entries therefore select a dedicated `diff=over-secret` external driver,
+exposed as `over crypt diff --`. Git supplies old/new logical paths; the helper
+authenticates both sides before rendering a unified value patch in memory with
+libgit2. Legacy entry display normalizes to value bytes. Ordinary protected
+files retain textconv and Git's builtin renderer.
+
+This is a scoped exception to delegating all patch rendering to Git. It preserves
+readable secret diffs without weakening filename authentication or storing a
+redundant name in ciphertext. Binary/locked inputs use opaque summaries. No
+plaintext files, objects, or persistent caches are introduced; owned buffers are
+zeroizing, while libgit2's internal transient allocations remain library-owned.
+The external protocol does not forward all parent rendering flags; the helper
+uses uncolored unified output, and callers use `--no-relative` for stable paths.
+Raw bypass requires `--no-ext-diff --no-textconv`. See the
+[helper contract](../commands/crypt-filters.md#native-secret-diffs).

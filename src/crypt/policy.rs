@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context as _, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
-use super::{access, atomic_write, format};
+use super::{access, atomic_write, context, format};
 
 pub fn git(repo: &git2::Repository, arguments: &[&str]) -> Result<Vec<u8>> {
     let output = git_command(repo)?.args(arguments).output()?;
@@ -193,7 +193,12 @@ fn read_attribute_map(
         );
         result.insert(
             PathBuf::from(std::str::from_utf8(triple[0])?),
-            triple[2] == b"over",
+            triple[2]
+                == if attribute == "diff" && context::secret_name(path).is_ok() {
+                    b"over-secret".as_slice()
+                } else {
+                    b"over".as_slice()
+                },
         );
     }
     Ok(result)
@@ -1269,7 +1274,7 @@ fn update_with_ingestion(
             }
         });
         if add {
-            key.decrypt(&output, format::file_domain(&output)?)?;
+            context::decrypt(&key, &output, path)?;
         }
         outputs.insert(path.clone(), output);
     }
@@ -1490,7 +1495,7 @@ impl Refresh {
                 }
                 format::inspect(blob.content())?;
                 let domain = format::file_domain(blob.content())?;
-                let plaintext = key.decrypt(blob.content(), domain)?;
+                let plaintext = context::decrypt(key, blob.content(), path)?;
                 let physical = root.join(path);
                 crate::materialize::disposal::validate_relative_ancestors(root, &physical)?;
                 let metadata = fs::symlink_metadata(&physical)?;
@@ -1521,7 +1526,7 @@ impl Refresh {
                         path.display()
                     );
                 }
-                if domain == 1 {
+                if domain != 0 {
                     continue;
                 }
                 let after = if locking {
@@ -1572,7 +1577,7 @@ impl Refresh {
                     "untracked protected plaintext at {}; stage or save it before lock/unlock",
                     path.display()
                 );
-                key.decrypt(&bytes, format::file_domain(&bytes)?)?;
+                context::decrypt(key, &bytes, &path)?;
             }
         }
         result.verify()?;
@@ -1852,6 +1857,15 @@ pub fn inspect(repo: &git2::Repository) -> Result<Vec<Diagnostic>> {
     {
         findings.push(Diagnostic::Warning("Over diff driver missing/incorrect; run over unlock to configure readable encrypted diffs".into()));
     }
+    if native_setting(repo, "diff.over-secret.command", false)?.as_deref()
+        != Some(access::secret_diff_command()?.as_str())
+        || native_setting(repo, "diff.over-secret.trustExitCode", true)
+            .map_or(true, |value| value.as_deref() != Some("false"))
+        || native_setting(repo, "diff.over-secret.cachetextconv", true)
+            .map_or(true, |value| value.as_deref() != Some("false"))
+    {
+        findings.push(Diagnostic::Warning("Over native-secret diff driver missing/incorrect; run over unlock to configure authenticated readable secret diffs".into()));
+    }
     // Invalid booleans are also unsafe; report them without aborting the remaining inspection.
     if native_setting(repo, "diff.over.cachetextconv", true)
         .map_or(true, |value| value.as_deref() != Some("false"))
@@ -1939,7 +1953,7 @@ pub fn inspect(repo: &git2::Repository) -> Result<Vec<Diagnostic>> {
         if diff_selected && bootstrap {
             findings.push(Diagnostic::Warning(format!("WARNING {}: bootstrap metadata selects the encrypted diff driver; clear its diff attribute", path.display())));
         } else if actual && !diff_selected {
-            findings.push(Diagnostic::Warning(format!("WARNING {}: protected path does not select diff=over; review attribute overrides or add diff=over for readable diffs", path.display())));
+            findings.push(Diagnostic::Warning(format!("WARNING {}: protected path does not select its Over diff driver; review attribute overrides (native entries require diff=over-secret, other protected files diff=over)", path.display())));
         }
         let declared = intended.get(&path).copied().unwrap_or(false)
             || path == Path::new(crate::secrets::layout::OLD_PATH)
@@ -1988,8 +2002,7 @@ pub fn inspect(repo: &git2::Repository) -> Result<Vec<Diagnostic>> {
             }
             let result = format::inspect(blob.content()).and_then(|()| {
                 if let Some(key) = &key {
-                    key.decrypt(blob.content(), format::file_domain(blob.content())?)
-                        .map(|_| ())
+                    context::decrypt(key, blob.content(), &path).map(|_| ())
                 } else {
                     Ok(())
                 }
@@ -2096,9 +2109,27 @@ pub fn materialized_blob(
 ) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     let blob = repo.find_blob(oid)?;
     if protected(repo, path)? {
-        super::filter::transform(repo, false, blob.content())
+        super::filter::transform_path(repo, false, blob.content(), Some(path))
     } else {
         Ok(zeroize::Zeroizing::new(blob.content().to_vec()))
+    }
+}
+
+fn rotate_blob(
+    old: &format::RepositoryKey,
+    new: &format::RepositoryKey,
+    bytes: &[u8],
+    path: &Path,
+) -> Result<Vec<u8>> {
+    if let Ok(name) = context::secret_name(path) {
+        // A rewrite upgrades the entry representation, not just its encryption key.
+        let value = crate::secrets::entry::decode(old, &name, bytes)?;
+        crate::secrets::entry::encode(new, &name, value.expose())
+    } else {
+        new.encrypt(
+            &context::decrypt(old, bytes, path)?,
+            format::file_domain(bytes)?,
+        )
     }
 }
 
@@ -2131,6 +2162,7 @@ pub fn rotate_with<C: age::Callbacks>(
     let _guard = access::guard(repo, true)?;
     crate::materialize::virtual_checkout::generated_migration::rotation_preflight(repo)?;
     let old = access::local_key(repo)?;
+    access::configure_filters(repo)?;
     let mut new = format::RepositoryKey::generate()?;
     new.repository = old.repository;
     let mut registry = access::load(repo)?;
@@ -2213,6 +2245,27 @@ pub fn rotate_with<C: age::Callbacks>(
             "resolve index conflicts before rotation"
         );
         let mut protected_paths = tracked(repo)?;
+        if !crate::secrets::layout::native_paths(root)?.is_empty() {
+            let relative = Path::new(super::access_storage::ATTRIBUTES);
+            let path = root.join(relative);
+            let before = super::buffer::read_file(&path)?;
+            let after = super::access_storage::native_attributes(&before);
+            if before.as_slice() != after {
+                let staged = index
+                    .get_path(relative, 0)
+                    .context("commit native secret attributes before rotation")?;
+                let head = repo.head()?.peel_to_tree()?;
+                ensure!(
+                    head.get_path(relative)?.id() == staged.id
+                        && bootstrap_equal(relative, repo.find_blob(staged.id)?.content(), &before),
+                    "commit native secret attribute edits before rotation"
+                );
+                // A legacy access layout can still contain per-entry secrets needing this upgrade.
+                stage_blob(&mut index, repo, relative, &after)?;
+                observations.insert(path.clone(), before);
+                updates.push((path, after));
+            }
+        }
         for path in [
             crate::secrets::layout::PATH,
             crate::secrets::layout::OLD_PATH,
@@ -2248,15 +2301,15 @@ pub fn rotate_with<C: age::Callbacks>(
                 fs::read(root.join(&path))?
             };
             let domain = format::file_domain(&stored)?;
-            let plaintext = old.decrypt(&stored, domain)?;
+            let plaintext = context::decrypt(&old, &stored, &path)?;
             let current = zeroize::Zeroizing::new(fs::read(&physical)?);
             ensure!(
                 current.as_slice() == stored || current.as_slice() == plaintext.as_slice(),
                 "stage protected edits before rotation"
             );
-            let ciphertext = new.encrypt(&plaintext, domain)?;
+            let ciphertext = rotate_blob(&old, &new, &stored, &path)?;
             stage_blob(&mut index, repo, &path, &ciphertext)?;
-            if domain == 1 || current.as_slice() == stored {
+            if domain != 0 || current.as_slice() == stored {
                 observations.insert(physical.clone(), current);
                 updates.push((physical, ciphertext));
             }
@@ -2475,12 +2528,15 @@ pub fn rotate_committed_with<C: age::Callbacks>(
         let mut working = BTreeMap::new();
         let old_attributes =
             super::buffer::read_optional(&root.join(super::access_storage::ATTRIBUTES))?;
-        let attributes = super::access_storage::bootstrap_attributes(
+        let mut attributes = super::access_storage::bootstrap_attributes(
             old_attributes
                 .as_deref()
                 .map(|bytes| bytes.as_slice())
                 .unwrap_or_default(),
         );
+        if !crate::secrets::layout::native_paths(root)?.is_empty() {
+            attributes = super::access_storage::native_attributes(&attributes);
+        }
         if old_attributes.as_deref().map(|bytes| bytes.as_slice()) != Some(attributes.as_slice()) {
             delta.insert(
                 PathBuf::from(super::access_storage::ATTRIBUTES),
@@ -2520,7 +2576,7 @@ pub fn rotate_committed_with<C: age::Callbacks>(
             );
             let stored = worktree.find_blob(committed.id())?;
             let domain = format::file_domain(stored.content())?;
-            let plaintext = old.decrypt(stored.content(), domain)?;
+            let plaintext = context::decrypt(&old, stored.content(), &path)?;
             let physical = root.join(&path);
             observation.observe_file(physical.clone())?;
             crate::materialize::disposal::validate_relative_ancestors(root, &physical)?;
@@ -2545,7 +2601,7 @@ pub fn rotate_committed_with<C: age::Callbacks>(
                     || (domain == 0 && current.as_slice() == plaintext.as_slice()),
                 "commit or restore protected working edits before rotation"
             );
-            let ciphertext = new.encrypt(&plaintext, domain)?;
+            let ciphertext = rotate_blob(&old, &new, stored.content(), &path)?;
             if domain == 0 && current.as_slice() == plaintext.as_slice() {
                 preserved.push(physical.clone());
             } else {
@@ -2557,9 +2613,10 @@ pub fn rotate_committed_with<C: age::Callbacks>(
             if index.get_path(&path, 0).is_none() {
                 observation.observe_file(root.join(&path))?;
                 let bytes = fs::read(root.join(&path))?;
-                let domain = format::file_domain(&bytes)?;
-                let plaintext = old.decrypt(&bytes, domain)?;
-                working.insert(root.join(path), Some(new.encrypt(&plaintext, domain)?));
+                working.insert(
+                    root.join(&path),
+                    Some(rotate_blob(&old, &new, &bytes, &path)?),
+                );
             }
         }
         for (path, bytes) in &delta {
@@ -2602,6 +2659,7 @@ pub fn rotate_committed_with<C: age::Callbacks>(
             }
         }
     }
+    access::configure_filters(repo)?;
     drop(guard);
     mutation.commit(repo, &old, Some(&new))?;
     if worktrees.len() > 1 {
