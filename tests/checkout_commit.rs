@@ -172,6 +172,32 @@ fn a_git_failure_after_publication_does_not_restore_old_checkout_sources() {
 }
 
 #[test]
+fn selected_commits_tolerate_real_index_cache_refreshes() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.target.join("file"), b"selected change").unwrap();
+    fixture.add();
+    let index = fixture.source.join(".git/index");
+    let before = fs::read(&index).unwrap();
+    // Changing the encoding forces a real-index rewrite without touching the
+    // source files, including the fixture's deliberately unpopulated gitlink.
+    install_hook(
+        &fixture,
+        "pre-commit",
+        "GIT_INDEX_FILE=\"$(git rev-parse --absolute-git-dir)/index\" git update-index --index-version 4",
+    );
+    fixture.commit_command().assert().success();
+    assert_ne!(fs::read(index).unwrap(), before);
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let tree = repo.head().unwrap().peel_to_tree().unwrap();
+    let entry = tree.get_path(Path::new("ov/file")).unwrap();
+    assert_eq!(
+        repo.find_blob(entry.id()).unwrap().content(),
+        b"selected change"
+    );
+}
+
+#[test]
 fn a_hooks_executable_bit_edit_is_preserved_and_blocks_checkout_publication() {
     let fixture = Fixture::new();
     fixture.apply();

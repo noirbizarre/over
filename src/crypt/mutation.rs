@@ -133,7 +133,7 @@ pub(crate) struct Mutation {
     updates: access_storage::Delta,
     observed: SensitiveFiles,
     metadata: access_storage::Files,
-    index: Option<Vec<u8>>,
+    index: index::IndexSnapshot,
     head: Vec<u8>,
     parent: Option<Oid>,
     tree: Oid,
@@ -145,6 +145,7 @@ pub(crate) struct Mutation {
     inventories: BTreeMap<PathBuf, access_storage::Files>,
     ancestry: Vec<crate::materialize::disposal::PathGuard>,
     preserved: BTreeSet<PathBuf>,
+    observed_indexes: BTreeMap<PathBuf, index::IndexSnapshot>,
 }
 
 /// Original inputs travel with a computed sibling update. Re-reading them when
@@ -158,6 +159,8 @@ pub(crate) struct LocalObservation {
     observed: SensitiveFiles,
     ancestry: Vec<crate::materialize::disposal::PathGuard>,
     index: Option<git2::Index>,
+    index_snapshot: index::IndexSnapshot,
+    index_path: PathBuf,
 }
 
 impl LocalObservation {
@@ -175,6 +178,8 @@ impl LocalObservation {
             observed: SensitiveFiles::default(),
             ancestry: Vec::new(),
             index: None,
+            index_snapshot: index::IndexSnapshot::read(&index_path)?,
+            index_path: index_path.clone(),
         };
         observation.observe_file(repo.path().join("index"))?;
         observation.observe_file(observation.root.join(access_storage::ATTRIBUTES))?;
@@ -245,6 +250,13 @@ impl LocalObservation {
         }
         for (path, expected) in self.observed.iter() {
             let current = zeroize::Zeroizing::new(optional(path)?);
+            if path == &self.index_path {
+                ensure!(
+                    index::IndexSnapshot::from_bytes(current.as_deref())? == self.index_snapshot,
+                    "participating worktree index changed during rotation preparation"
+                );
+                continue;
+            }
             ensure!(
                 *current == *expected,
                 "participating worktree input changed during rotation preparation"
@@ -316,8 +328,16 @@ impl Mutation {
             Some(oid) => repo.find_commit(oid)?.tree()?,
             None => repo.find_tree(repo.treebuilder(None)?.write()?)?,
         };
-        let original_index = index::read_index(&repo.path().join("index"))?;
-        let mut staged = repo.index()?;
+        // Keep the replacement input and validation baseline consistent, without
+        // holding Git's lock across hooks or interactive signing.
+        let (original_index, mut staged) = {
+            let path = repo.path().join("index");
+            let _reservation = index::IndexLock::acquire(&path)?;
+            let original = index::IndexSnapshot::read(&path)?;
+            let mut staged = repo.index()?;
+            staged.read(true)?;
+            (original, staged)
+        };
         ensure!(
             !staged.has_conflicts(),
             "resolve index conflicts before changing encrypted state"
@@ -505,6 +525,7 @@ impl Mutation {
             inventories: BTreeMap::new(),
             ancestry,
             preserved: BTreeSet::new(),
+            observed_indexes: BTreeMap::new(),
         })
     }
 
@@ -549,12 +570,21 @@ impl Mutation {
         self.ancestry.extend(observation.ancestry);
         for (path, before) in observation.observed.iter() {
             if let Some(existing) = self.observed.get(path) {
+                if let Some(snapshot) = self.observed_indexes.get(path) {
+                    ensure!(
+                        index::IndexSnapshot::from_bytes(before.as_deref())? == *snapshot,
+                        "mutation index changed before local-update registration"
+                    );
+                    continue;
+                }
                 ensure!(
                     existing == before,
                     "mutation input changed before local-update registration"
                 );
             }
         }
+        self.observed_indexes
+            .insert(observation.index_path, observation.index_snapshot);
         for (path, before) in &mut observation.observed.0 {
             if !self.observed.contains_key(path) {
                 self.observed.insert(path.clone(), std::mem::take(before));
@@ -585,7 +615,7 @@ impl Mutation {
             "HEAD changed while preparing mutation; retry"
         );
         ensure!(
-            index::read_index(&repo.path().join("index"))? == self.index,
+            index::IndexSnapshot::read(&repo.path().join("index"))? == self.index,
             "index changed while preparing mutation; retry"
         );
         ensure!(
@@ -594,6 +624,13 @@ impl Mutation {
         );
         for (path, bytes) in self.observed.iter() {
             let current = zeroize::Zeroizing::new(optional(path)?);
+            if let Some(snapshot) = self.observed_indexes.get(path) {
+                ensure!(
+                    index::IndexSnapshot::from_bytes(current.as_deref())? == *snapshot,
+                    "mutation index changed; preserve concurrent staging and retry"
+                );
+                continue;
+            }
             ensure!(
                 *current == *bytes,
                 "mutation input changed; preserve hook/concurrent edits and retry"
@@ -1137,6 +1174,40 @@ fn parent_guard(path: &Path) -> Result<crate::materialize::disposal::PathGuard> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sibling_index_refreshes_are_accepted_before_and_after_registration() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = Repository::init(directory.path()).unwrap();
+        fs::write(directory.path().join("unrelated"), b"staged work").unwrap();
+        let mut staged = repo.index().unwrap();
+        staged.add_path(Path::new("unrelated")).unwrap();
+        staged.write().unwrap();
+        let observation = LocalObservation::capture(&repo).unwrap();
+        let mut entry = staged.get(0).unwrap();
+        entry.mtime = git2::IndexTime::new(1, 0);
+        staged.add(&entry).unwrap();
+        staged.write().unwrap();
+        observation.validate().unwrap();
+        let mut mutation = Mutation::prepare(
+            &repo,
+            [(PathBuf::from("managed"), Some(b"planned".to_vec()))].into(),
+            "chore: planned".into(),
+            &[],
+        )
+        .unwrap();
+        mutation.add_local(observation, BTreeMap::new()).unwrap();
+        // Model an independent Git writer, not libgit2's shared in-memory index
+        // that Mutation::prepare has already changed for its future publication.
+        let mut staged = git2::Index::open(&repo.path().join("index")).unwrap();
+        staged.set_version(4).unwrap();
+        staged.write().unwrap();
+        mutation.validate(&repo).unwrap();
+        // Registration must compare against the original logical baseline too.
+        mutation
+            .add_local(LocalObservation::capture(&repo).unwrap(), BTreeMap::new())
+            .unwrap();
+    }
 
     #[test]
     fn stale_sibling_index_replacements_cannot_adopt_new_unrelated_staging() {

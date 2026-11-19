@@ -6,13 +6,13 @@ use std::process::{Command, Output, Stdio};
 use anyhow::{Context as _, Result, ensure};
 use git2::{Oid, Repository};
 
-use super::index::read_index;
+use super::index::IndexSnapshot;
 
 pub(crate) struct PreparedCommit {
     pub oid: Oid,
     head: Vec<u8>,
     parent: Option<Oid>,
-    index: Option<Vec<u8>>,
+    index: IndexSnapshot,
 }
 
 /// Keep the canonical Git context for conditional config and branch-sensitive
@@ -75,7 +75,7 @@ impl PreparedCommit {
             parent == expected_parent,
             "branch changed before commit preparation"
         );
-        let index = read_index(&repo.path().join("index"))?;
+        let index = IndexSnapshot::read(&repo.path().join("index"))?;
         let temporary = tempfile::tempdir_in(repo.path())?;
         let objects = temporary.path().join("objects");
         fs::create_dir(&objects)?;
@@ -200,7 +200,7 @@ impl PreparedCommit {
             "branch changed while preparing commit"
         );
         ensure!(
-            read_index(&repo.path().join("index"))? == self.index,
+            IndexSnapshot::read(&repo.path().join("index"))? == self.index,
             "index changed while preparing commit"
         );
         Ok(())
@@ -367,6 +367,55 @@ mod tests {
         let prepared = PreparedCommit::prepare(&repo, tree, "chore: signed", None).unwrap();
         prepared.publish(&repo).unwrap();
         checked(command(&repo).unwrap().args(["verify-commit", "HEAD"])).unwrap();
+    }
+
+    #[test]
+    fn real_index_refreshes_during_hooks_and_after_preparation_are_accepted() {
+        let (directory, repo, tree) = fixture();
+        fs::write(directory.path().join("unrelated"), b"staged").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("unrelated")).unwrap();
+        index.write().unwrap();
+        let before = fs::read(repo.path().join("index")).unwrap();
+        hook(
+            &repo,
+            "pre-commit",
+            "touch -m -t 200001010000 unrelated\nGIT_INDEX_FILE=\"$(git rev-parse --absolute-git-dir)/index\" git update-index --refresh",
+        );
+        let prepared = PreparedCommit::prepare(&repo, tree, "message", None).unwrap();
+        assert_ne!(fs::read(repo.path().join("index")).unwrap(), before);
+        index.read(true).unwrap();
+        index.set_version(4).unwrap();
+        index.write().unwrap();
+        prepared.validate(&repo).unwrap();
+        // A same-tree flag change must still be caught by the final validation.
+        let mut entry = index.get(0).unwrap();
+        entry.flags |= 0x8000;
+        index.add(&entry).unwrap();
+        index.write().unwrap();
+        assert!(prepared.validate(&repo).is_err());
+    }
+
+    #[test]
+    fn concurrent_real_index_staging_is_rejected_and_preserved() {
+        let (_directory, repo, tree) = fixture();
+        hook(
+            &repo,
+            "pre-commit",
+            "printf concurrent > unrelated\nunset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES\nGIT_INDEX_FILE=\"$(git rev-parse --absolute-git-dir)/index\" git add unrelated",
+        );
+        let error = PreparedCommit::prepare(&repo, tree, "message", None)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("index changed"));
+        assert!(repo.head().is_err());
+        assert!(
+            repo.index()
+                .unwrap()
+                .get_path(std::path::Path::new("unrelated"), 0)
+                .is_some()
+        );
+        assert!(!repo.path().join("index.lock").exists());
     }
 
     #[test]

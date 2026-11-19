@@ -625,6 +625,14 @@ fn rotating_an_unlocked_ordinary_file_keeps_plaintext_out_of_git_objects() {
 #[test]
 fn initial_enrollment_honors_real_ssh_commit_signing() {
     let fixture = Fixture::empty();
+    enable_ssh_signing(&fixture);
+    fixture.enroll("alice");
+    fixture.git(&["verify-commit", "HEAD"]);
+    over::crypt::access::local_key(&git2::Repository::open(&fixture.root).unwrap()).unwrap();
+}
+
+#[cfg(unix)]
+fn enable_ssh_signing(fixture: &Fixture) {
     let key = fixture.temp.path().join("signing-key");
     success(
         Command::new("ssh-keygen")
@@ -650,9 +658,60 @@ fn initial_enrollment_honors_real_ssh_commit_signing() {
         "gpg.ssh.allowedSignersFile",
         allowed.to_str().unwrap(),
     ]);
-    fixture.enroll("alice");
+}
+
+#[cfg(unix)]
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn secret_add_tolerates_refreshes_but_preserves_concurrent_staging(#[case] stage_change: bool) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = Fixture::new();
+    enable_ssh_signing(&fixture);
+    fs::write(fixture.root.join("unrelated"), b"staged work").unwrap();
+    fixture.git(&["add", "unrelated"]);
+    let head = fixture.git(&["rev-parse", "HEAD"]);
+    let before = fs::read(fixture.root.join(".git/index")).unwrap();
+    let hook = fixture.root.join(".git/hooks/pre-commit");
+    let body = if stage_change {
+        "printf concurrent > unrelated\nunset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES\nGIT_INDEX_FILE=\"$real/index\" git add unrelated"
+    } else {
+        // An old mtime guarantees Git rewrites the stat cache on its next refresh.
+        "touch -m -t 200001010000 unrelated\nGIT_INDEX_FILE=\"$real/index\" git update-index --refresh"
+    };
+    fs::write(
+        &hook,
+        format!("#!/bin/sh\nset -eu\nreal=$(git rev-parse --absolute-git-dir)\nprintf 'run\\n' >> \"$real/hook-runs\"\n{body}\n"),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = fixture.secret("install-password", b"dummy password", false);
+    assert_eq!(
+        fs::read(fixture.root.join(".git/hook-runs")).unwrap(),
+        b"run\n"
+    );
+    assert_ne!(fs::read(fixture.root.join(".git/index")).unwrap(), before);
+    if stage_change {
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("index changed"));
+        assert_eq!(fixture.git(&["rev-parse", "HEAD"]), head);
+        assert!(!fixture.root.join(".over/secrets/install-password").exists());
+        assert_eq!(fixture.git(&["show", ":unrelated"]), b"concurrent");
+        assert!(!fixture.root.join(".git/index.lock").exists());
+        fs::remove_file(hook).unwrap();
+        success(fixture.secret("install-password", b"dummy password", false));
+    } else {
+        success(output);
+        assert_eq!(fixture.git(&["show", ":unrelated"]), b"staged work");
+    }
+    assert_eq!(fixture.git(&["rev-parse", "HEAD^"]), head);
+    assert_eq!(fixture.value("install-password"), b"dummy password");
     fixture.git(&["verify-commit", "HEAD"]);
-    over::crypt::access::local_key(&git2::Repository::open(&fixture.root).unwrap()).unwrap();
+    assert_eq!(
+        fixture.git(&["diff", "--cached", "--name-only"]),
+        b"unrelated\n"
+    );
 }
 
 fn use_nested_layout(fixture: &Fixture) {

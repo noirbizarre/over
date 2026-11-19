@@ -1208,10 +1208,18 @@ pub(crate) fn commit_staged_prepared(
 ) -> Result<Oid> {
     let index_path = repo.path().join("index");
     let original_head = fs::read(repo.path().join("HEAD"))?;
-    let original_index = crate::actions::git::index::read_index(&index_path)?;
+    // Pair the validation baseline with the actual replacement input; a cached
+    // repository index could otherwise overwrite staging captured by neither.
+    let (original_index, index_snapshot, mut index) = {
+        let _reservation = crate::actions::git::index::IndexLock::acquire(&index_path)?;
+        let bytes = crate::actions::git::index::read_index(&index_path)?;
+        let snapshot = crate::actions::git::index::IndexSnapshot::from_bytes(bytes.as_deref())?;
+        let mut index = repo.index()?;
+        index.read(true)?;
+        (bytes, snapshot, index)
+    };
     let parent = repo.head()?.peel_to_commit()?;
     let head = parent.tree()?;
-    let mut index = repo.index()?;
     for (path, update) in prepared {
         let mut entry = index
             .get_path(path, 0)
@@ -1321,7 +1329,7 @@ pub(crate) fn commit_staged_prepared(
         "source branch changed while preparing selected snapshots"
     );
     anyhow::ensure!(
-        crate::actions::git::index::read_index(&index_path)? == original_index,
+        crate::actions::git::index::IndexSnapshot::read(&index_path)? == index_snapshot,
         "source index changed while preparing selected snapshots"
     );
     for (file, expected) in source_snapshots {
