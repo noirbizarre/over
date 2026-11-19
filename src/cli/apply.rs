@@ -6,6 +6,7 @@ use dirs::home_dir;
 
 use crate::cli::CLI;
 use crate::exec::Context;
+use crate::overlays::exclusions::Exclusions;
 use crate::overlays::{Overlay, Repository};
 use crate::ui;
 use crate::ui::{emojis, style};
@@ -15,6 +16,13 @@ pub struct Params {
         help = "Names of overlays to compose (infer active context; host_overlay requires apply.default_to_host)"
     )]
     names: Vec<String>,
+
+    #[clap(
+        long,
+        value_name = "NAME_OR_GLOB",
+        help = "Skip overlay deployment by canonical name or glob (repeatable; quote 'workspace/*')"
+    )]
+    skip: Vec<String>,
 
     #[clap(
         short = 'r',
@@ -83,6 +91,48 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let selection_ctx = ctx.clone();
     let names = args.names.clone();
+    let exclusions = (!args.skip.is_empty())
+        .then(|| Exclusions::new(&args.skip))
+        .transpose()?;
+    if let Some(mut exclusions) = exclusions {
+        let prepared = tokio::task::spawn_blocking(move || {
+            let result = (|| -> Result<_> {
+                let overlays = if names.is_empty() {
+                    crate::selection::select_apply_with_exclusions(&selection_ctx, &mut exclusions)?
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                } else {
+                    let mut overlays = Vec::new();
+                    for name in names {
+                        let canonical = selection_ctx.repository.canonical_name(&name)?;
+                        if !exclusions.excludes(&canonical) {
+                            overlays.push(
+                                selection_ctx.repository.get(&name).with_context(|| {
+                                    format!("could not select overlay '{name}'")
+                                })?,
+                            );
+                        }
+                    }
+                    overlays
+                };
+                // Empty roots otherwise activate metadata's host fallback and repository hooks.
+                if overlays.is_empty() {
+                    return Ok(None);
+                }
+                let ctx = selection_ctx.resolve_data_many(&overlays)?;
+                exclusions.validate(&ctx, &overlays)?;
+                Ok(Some((overlays, ctx)))
+            })();
+            exclusions.report()?;
+            result
+        })
+        .await??;
+        if let Some((overlays, ctx)) = prepared {
+            return Overlay::apply_many(&overlays, &ctx).await;
+        }
+        ui::info("No overlays to apply after exclusions")?;
+        return Ok(());
+    }
     let overlays = tokio::task::spawn_blocking(move || -> Result<Vec<Overlay>> {
         if names.is_empty() {
             return Ok(vec![crate::selection::select_apply(&selection_ctx, None)?]);
