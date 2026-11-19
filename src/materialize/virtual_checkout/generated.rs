@@ -131,6 +131,41 @@ fn ref_target(repo: &Repository, reference: &str) -> Result<Option<Oid>> {
     }
 }
 
+const SNAPSHOT_REF_LOCK_RETRIES: usize = 20;
+
+fn publish_snapshot_ref(
+    repo: &Repository,
+    reference: &str,
+    commit: Oid,
+    expected: Option<Oid>,
+    mut wait: impl FnMut(),
+) -> Result<()> {
+    for attempt in 0..=SNAPSHOT_REF_LOCK_RETRIES {
+        // Retain the original expectation across retries so contention cannot hide another writer.
+        let result = if let Some(expected) = expected {
+            repo.reference_matching(reference, commit, true, expected, "over generated snapshot")
+        } else {
+            repo.reference(reference, commit, false, "over generated snapshot")
+        };
+        match result {
+            Ok(_) => return Ok(()),
+            Err(error)
+                if error.code() == git2::ErrorCode::Locked
+                    && attempt < SNAPSHOT_REF_LOCK_RETRIES =>
+            {
+                // Only ref publication is safe to retry; target writes and their journal stay intact.
+                wait();
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to publish generated snapshot ref '{reference}'")
+                });
+            }
+        }
+    }
+    unreachable!("the last publication attempt returns without retrying")
+}
+
 fn same(left: Option<&RenderedFile>, right: Option<&RenderedFile>) -> bool {
     match (left, right) {
         (None, None) => true,
@@ -900,17 +935,9 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<Reconcile
         expected == before_ref || expected == Some(commit),
         "generated snapshot ref changed concurrently"
     );
-    if let Some(expected) = expected {
-        repo.reference_matching(
-            &reference,
-            commit,
-            true,
-            expected,
-            "over generated snapshot",
-        )?;
-    } else {
-        repo.reference(&reference, commit, false, "over generated snapshot")?;
-    }
+    publish_snapshot_ref(&repo, &reference, commit, expected, || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    })?;
     generated.base = commit.to_string();
     generated.pending = None;
     generated.pending_sources = None;
@@ -1120,4 +1147,118 @@ pub(crate) fn remove(entry: &DesiredEntry) -> Result<()> {
     reference.delete()?;
     super::generated_migration::release(&repo, &record)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use git2::{ErrorCode, Repository};
+    use rstest::rstest;
+    use tempfile::TempDir;
+
+    use super::{SNAPSHOT_REF_LOCK_RETRIES, publish_snapshot_ref, ref_target};
+
+    const REFERENCE: &str = "refs/over/generated/test";
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    fn snapshot_publication_succeeds_when_a_temporary_lock_is_released(#[case] existing: bool) {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        let before = repo.blob(b"before").unwrap();
+        let after = repo.blob(b"after").unwrap();
+        let expected = existing.then_some(before);
+        if existing {
+            repo.reference(REFERENCE, before, false, "test").unwrap();
+        }
+        let lock = repo.path().join(format!("{REFERENCE}.lock"));
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        fs::write(&lock, b"test-owned lock").unwrap();
+        let mut waits = 0;
+        publish_snapshot_ref(&repo, REFERENCE, after, expected, || {
+            waits += 1;
+            // Release only after publication has actually encountered the lock, without a timing race.
+            fs::remove_file(&lock).unwrap();
+        })
+        .unwrap();
+        assert_eq!(waits, 1);
+        assert_eq!(ref_target(&repo, REFERENCE).unwrap(), Some(after));
+    }
+
+    #[test]
+    fn snapshot_publication_leaves_a_persistent_lock_and_reference_untouched() {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        let before = repo.blob(b"before").unwrap();
+        let after = repo.blob(b"after").unwrap();
+        repo.reference(REFERENCE, before, false, "test").unwrap();
+        let lock = repo.path().join(format!("{REFERENCE}.lock"));
+        fs::write(&lock, b"test-owned lock").unwrap();
+        let mut waits = 0;
+        let error =
+            publish_snapshot_ref(&repo, REFERENCE, after, Some(before), || waits += 1).unwrap_err();
+        assert_eq!(waits, SNAPSHOT_REF_LOCK_RETRIES);
+        assert_eq!(
+            error.downcast_ref::<git2::Error>().unwrap().code(),
+            ErrorCode::Locked
+        );
+        assert!(error.to_string().contains(REFERENCE));
+        assert_eq!(fs::read(lock).unwrap(), b"test-owned lock");
+        assert_eq!(ref_target(&repo, REFERENCE).unwrap(), Some(before));
+    }
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    fn snapshot_publication_does_not_overwrite_a_concurrent_writer_after_waiting(
+        #[case] existing: bool,
+    ) {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        let before = repo.blob(b"before").unwrap();
+        let after = repo.blob(b"after").unwrap();
+        let concurrent = repo.blob(b"concurrent").unwrap();
+        let expected = existing.then_some(before);
+        if existing {
+            repo.reference(REFERENCE, before, false, "test").unwrap();
+        }
+        let lock = repo.path().join(format!("{REFERENCE}.lock"));
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        fs::write(&lock, b"test-owned lock").unwrap();
+        let mut waits = 0;
+        let error = publish_snapshot_ref(&repo, REFERENCE, after, expected, || {
+            waits += 1;
+            fs::remove_file(&lock).unwrap();
+            repo.reference(REFERENCE, concurrent, true, "concurrent writer")
+                .unwrap();
+        })
+        .unwrap_err();
+        assert_eq!(waits, 1);
+        assert_eq!(
+            error.downcast_ref::<git2::Error>().unwrap().code(),
+            if existing {
+                ErrorCode::Modified
+            } else {
+                ErrorCode::Exists
+            }
+        );
+        assert_eq!(ref_target(&repo, REFERENCE).unwrap(), Some(concurrent));
+    }
+
+    #[test]
+    fn snapshot_publication_returns_non_lock_errors_without_waiting() {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        let commit = repo.blob(b"snapshot").unwrap();
+        let error = publish_snapshot_ref(&repo, "invalid ref", commit, None, || {
+            panic!("non-lock errors must not be retried");
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<git2::Error>().unwrap().code(),
+            ErrorCode::InvalidSpec
+        );
+    }
 }
