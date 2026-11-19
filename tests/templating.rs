@@ -2697,6 +2697,76 @@ fn a_source_template_deletion_preserves_local_edits_until_explicit_restore() {
 }
 
 #[test]
+fn a_locked_generated_ref_preserves_the_sync_journal_until_publication_can_recover() {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    let before = fixture.snapshot();
+    let repo = fixture.repo();
+    let reference = repo
+        .references_glob("refs/over/generated/*")
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .name()
+        .unwrap()
+        .to_owned();
+    let lock = repo.path().join(format!("{reference}.lock"));
+    fs::write(&lock, b"test-owned lock").unwrap();
+    let destination = fixture.target.join("config");
+    fs::write(
+        &destination,
+        fs::read_to_string(&destination)
+            .unwrap()
+            .replace("first=base", "first=local"),
+    )
+    .unwrap();
+    let source = fixture.source.join("app/config.jinja");
+    fs::write(
+        &source,
+        fs::read_to_string(&source)
+            .unwrap()
+            .replace("last=base", "last=upstream"),
+    )
+    .unwrap();
+    commit_all(&repo);
+    fixture
+        .sync()
+        .assert()
+        .failure()
+        .stdout(contains("failed to publish generated snapshot ref"));
+    assert_eq!(fs::read(&lock).unwrap(), b"test-owned lock");
+    assert_eq!(fixture.snapshot(), before);
+    let state = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let metadata: toml::Value = toml::from_str(&fs::read_to_string(&state).unwrap()).unwrap();
+    let generated = &metadata["state"]["checkouts"]
+        .as_table()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()["generated"];
+    let pending = generated["pending"].as_str().unwrap().to_owned();
+    assert_ne!(pending, before.to_string());
+    let merged = fs::read_to_string(&destination).unwrap();
+    assert!(merged.contains("first=local"));
+    assert!(merged.contains("last=upstream"));
+
+    fs::remove_file(lock).unwrap();
+    fixture.sync().assert().success();
+    assert_eq!(fixture.snapshot().to_string(), pending);
+    assert_eq!(fs::read_to_string(destination).unwrap(), merged);
+    let metadata: toml::Value = toml::from_str(&fs::read_to_string(state).unwrap()).unwrap();
+    let generated = &metadata["state"]["checkouts"]
+        .as_table()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()["generated"];
+    assert!(generated.get("pending").is_none());
+    assert_eq!(generated["base"].as_str(), Some(pending.as_str()));
+}
+
+#[test]
 fn an_interrupted_ref_publication_does_not_apply_a_local_merge_twice() {
     let fixture = Fixture::new(true);
     fixture.apply();
