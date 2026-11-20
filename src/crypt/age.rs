@@ -137,7 +137,16 @@ impl Identity {
         !matches!(self, Self::NativePq(_)) || is_native_pq(recipient)
     }
 
-    pub(crate) fn decrypt(&mut self, envelope: &[u8]) -> Result<Option<Zeroizing<Vec<u8>>>> {
+    #[cfg(test)]
+    fn decrypt(&mut self, envelope: &[u8]) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        self.decrypt_with_policy(envelope, true)
+    }
+
+    pub(crate) fn decrypt_with_policy(
+        &mut self,
+        envelope: &[u8],
+        allow_temporary_files: bool,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>> {
         match self {
             Self::Library(identity) => {
                 let decryptor = age::Decryptor::new(envelope)?;
@@ -154,6 +163,10 @@ impl Identity {
                 bounded_read(reader, 96).map(Some)
             }
             Self::NativePq(identity) => {
+                ensure!(
+                    allow_temporary_files,
+                    "native PQ identity requires temporary files and cannot be used for one-shot reads; use another identity or run over unlock"
+                );
                 // Only public ciphertext touches disk; private identity material travels on stdin.
                 let mut ciphertext = tempfile::NamedTempFile::new()?;
                 ciphertext.write_all(envelope)?;
@@ -178,7 +191,8 @@ impl Identity {
                 };
                 let mut failure = None;
                 for identity in &mut loaded.entries {
-                    match identity.decrypt(envelope) {
+                    // Deferred encrypted files must retain the caller's no-artifact policy.
+                    match identity.decrypt_with_policy(envelope, allow_temporary_files) {
                         Ok(Some(plaintext)) => return Ok(Some(plaintext)),
                         Ok(None) => (),
                         Err(error) => failure = Some(error),
@@ -399,7 +413,7 @@ mod tests {
     use rstest::rstest;
     use zeroize::Zeroizing;
 
-    use super::{Identity, bounded_read, parse_identities, wrap};
+    use super::{Identities, Identity, bounded_read, parse_identities, wrap};
 
     #[derive(Clone)]
     struct Password;
@@ -555,5 +569,34 @@ mod tests {
                 .join("\n")
                 .contains("private-input-sentinel")
         );
+    }
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    fn one_shot_policy_rejects_native_pq_before_creating_temporary_files(#[case] deferred: bool) {
+        let native = Identity::NativePq(Zeroizing::new("private-pq-sentinel\n".into()));
+        let mut identity = if deferred {
+            Identity::Deferred {
+                initialize: Some(Box::new(move || {
+                    Ok(Identities {
+                        entries: vec![native],
+                        failures: Vec::new(),
+                    })
+                })),
+                loaded: None,
+            }
+        } else {
+            native
+        };
+        let error = identity
+            .decrypt_with_policy(b"not even an envelope", false)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot be used for one-shot reads")
+        );
+        assert!(!error.to_string().contains("private-pq-sentinel"));
     }
 }

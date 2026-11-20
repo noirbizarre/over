@@ -5,7 +5,7 @@ Manage named binary-safe secrets in the repository's encrypted native store.
 ```text
 over secret add <NAME> [--replace]
 over secret list
-over secret get <NAME>
+over secret get <NAME> [--identity <PATH>]... [--user <USER>] [--key <KEY>]
 over secret remove <NAME> [--yes]
 ```
 
@@ -13,10 +13,11 @@ Accepts [global options](index.md#shared-options-and-selection). Unlike crypt/ac
 commands, these always select the existing Over home through `--home`, then
 `OVER_HOME`, then `~/.dotfiles`, independently of the current Git repository.
 Storage requires the source Git repository root. There are no overlay,
-target, JSON, or credential options.
+target or JSON options. Credential options apply only to `get`.
 
-All operations require an existing [`over unlock`](unlock.md), including
-listing/removing names. Each value is ciphertext in `.over/secrets/<name>` even
+Adding, listing, and removing require an existing [`over unlock`](unlock.md).
+Getting a native secret uses a matching local key when available; otherwise it
+acquires a key for this invocation only. Each value is ciphertext in `.over/secrets/<name>` even
 while unlocked. Names are public filenames in Git history. Each add, replacement, or removal
 automatically commits the encrypted update, preserving unrelated staged changes.
 Replacing a value with identical bytes creates no commit. Reads create no commit.
@@ -32,6 +33,39 @@ require their original passphrase. Conflicting stores are rejected for explicit
 reconciliation. Directory migrations retain an encrypted backup under Git's
 private `over-crypt/legacy-state-backup-*` path. Getting an entry reads only that
 value; listing reads names while retaining the unlock requirement.
+
+## One-shot reads
+
+Native `get` reads the **HEAD commit captured at invocation**, whether locked or
+unlocked. Staged and unstaged changes are ignored. Access metadata, credential
+envelopes, and ciphertext come from that same snapshot, even if HEAD changes
+during a prompt. Commit changes before reading them. Historical standalone Age
+stores retain their filesystem-based behavior.
+
+On a locked repository, provide a repeatable `--identity` (`-i`) file, reuse an
+existing identity hint, or answer the identity/passphrase prompts. `--user` and
+`--key` restrict the credentials tried. A matching local repository key takes
+precedence over these options and avoids all credential prompts.
+
+Prompts require terminal stdin and stderr and never appear on stdout, so piping
+the value remains supported. Without a terminal, a usable identity must already
+be available, for example an explicit unencrypted software identity:
+
+```sh
+over secret get github-token --identity /run/credentials/identity | consuming-program
+```
+
+Missing identities, cancelled prompts, or invalid credentials fail without
+printing plaintext. `OVER_SECRET` is not a repository-key passphrase source.
+Encrypted identities and hardware plugins may require terminal interaction.
+
+Over creates no lock files, temporary files, keys, identity hints, or other
+filesystem artifacts during native reads, and does not configure Git filters.
+External identity plugins may manage their own state. The native-PQ adapter
+requires a temporary ciphertext file and is unavailable for one-shot acquisition;
+use another credential or normal `over unlock` for that identity. Temporary
+repository keys and plaintext use zeroizing buffers. A successful one-shot read
+does not unlock mutations, hooks, or Git filters.
 
 New native entries encrypt raw value bytes and authenticate the exact filename.
 Existing JSON-backed native entries remain readable and convert only on actual

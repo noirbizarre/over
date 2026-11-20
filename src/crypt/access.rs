@@ -303,6 +303,19 @@ pub(crate) fn raw_guard(repo: &git2::Repository, exclusive: bool) -> Result<File
 pub fn load(repo: &git2::Repository) -> Result<Registry> {
     let registry = super::access_storage::parse(&super::access_storage::worktree(repo)?)?
         .context("repository access metadata is missing")?;
+    validate_registry(registry)
+}
+
+pub(crate) fn registry_from_tree(
+    repo: &git2::Repository,
+    tree: &git2::Tree<'_>,
+) -> Result<Option<Registry>> {
+    super::access_storage::parse(&super::access_storage::tree(repo, tree)?)?
+        .map(validate_registry)
+        .transpose()
+}
+
+fn validate_registry(registry: Registry) -> Result<Registry> {
     ensure!(
         !registry.users.is_empty(),
         "repository has no recovery user"
@@ -399,6 +412,33 @@ pub(crate) fn recovery_key(repo: &git2::Repository) -> Result<RepositoryKey> {
 
 pub fn local_key_missing(repo: &git2::Repository) -> Result<bool> {
     Ok(!private_dir(repo).join("key").try_exists()?)
+}
+
+pub(crate) fn snapshot_key(
+    repo: &git2::Repository,
+    registry: &Registry,
+) -> Result<Option<RepositoryKey>> {
+    let directory = private_dir(repo);
+    match fs::symlink_metadata(&directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+        Ok(_) => check_private(repo, &directory, true)?,
+    }
+    ensure!(
+        !directory.join("transaction.json").try_exists()? && !super::mutation::pending(repo)?,
+        "interrupted crypt transaction; run over crypt recover"
+    );
+    match fs::symlink_metadata(directory.join("key")) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+        Ok(_) => (),
+    }
+    let key = checked_local_key(repo)?;
+    // Another branch's generation is not a reason to overwrite a valid installed key.
+    Ok(
+        (key.repository == registry.repository && key.generation == registry.generation)
+            .then_some(key),
+    )
 }
 
 pub fn remember_identity(repo: &git2::Repository, recipient: &str, path: &Path) -> Result<()> {
@@ -840,9 +880,43 @@ pub(crate) fn unwrap_registry_with<C: age::Callbacks>(
     user: Option<&str>,
     name: Option<&str>,
     callbacks: C,
+    password: impl FnMut(&str) -> Result<SecretString>,
+    used_identity: impl FnMut(&str, &Path),
+) -> Result<RepositoryKey> {
+    unwrap_registry_policy(
+        registry,
+        UnwrapOptions {
+            sources,
+            user,
+            name,
+            allow_temporary_files: true,
+        },
+        callbacks,
+        password,
+        used_identity,
+    )
+}
+
+pub(crate) struct UnwrapOptions<'a> {
+    pub sources: &'a [PathBuf],
+    pub user: Option<&'a str>,
+    pub name: Option<&'a str>,
+    pub allow_temporary_files: bool,
+}
+
+pub(crate) fn unwrap_registry_policy<C: age::Callbacks>(
+    registry: &Registry,
+    options: UnwrapOptions<'_>,
+    callbacks: C,
     mut password: impl FnMut(&str) -> Result<SecretString>,
     mut used_identity: impl FnMut(&str, &Path),
 ) -> Result<RepositoryKey> {
+    let UnwrapOptions {
+        sources,
+        user,
+        name,
+        allow_temporary_files,
+    } = options;
     let mut identities = Vec::new();
     let mut failures = FailureSummary::default();
     let mut unmatched = Vec::new();
@@ -893,7 +967,7 @@ pub(crate) fn unwrap_registry_with<C: age::Callbacks>(
                 })
                 .map(|(index, identity)| (Some(*index), identity)),
         ) {
-            let key = match identity.decrypt(&access.envelope) {
+            let key = match identity.decrypt_with_policy(&access.envelope, allow_temporary_files) {
                 Ok(Some(plaintext)) => RepositoryKey::decode(plaintext.as_ref()),
                 // Unused identities are normal in shared Age files, not credential failures.
                 Ok(None) => continue,

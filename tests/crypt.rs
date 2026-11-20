@@ -217,7 +217,7 @@ fn revocation_rotates_current_files_and_secrets_for_remaining_users_only() {
 }
 
 #[test]
-fn native_secrets_use_the_same_unlock_and_remain_ciphertext_in_the_worktree() {
+fn native_secret_reads_preserve_ciphertext_without_persisting_a_one_shot_unlock() {
     use std::io::Write;
     let (root, identities) = repository();
     let mut child = Command::new(cargo_bin("over"))
@@ -253,12 +253,14 @@ fn native_secrets_use_the_same_unlock_and_remain_ciphertext_in_the_worktree() {
     over::crypt::format::inspect(&git(root.path(), &["show", "HEAD:.over/secrets/TOKEN"]).stdout)
         .unwrap();
     over(root.path(), &["lock"]);
-    let rejected = Command::new(cargo_bin("over"))
+    let one_shot = Command::new(cargo_bin("over"))
         .env_remove("OVER_HOME")
         .args(args)
         .output()
         .unwrap();
-    assert!(!rejected.status.success());
+    assert!(one_shot.status.success());
+    assert_eq!(one_shot.stdout, b"secret sentinel\0\xff");
+    assert!(!root.path().join(".git/over-crypt/key").exists());
     over(
         root.path(),
         &[

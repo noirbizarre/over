@@ -9,6 +9,7 @@ pub(crate) mod layout;
 mod provider;
 mod reference;
 mod resolver;
+mod snapshot;
 mod store;
 
 pub use config::{CommitMessages, SecretOperation, SecretsConfig};
