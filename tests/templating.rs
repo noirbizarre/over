@@ -2926,6 +2926,86 @@ fn rendering_directory_components_does_not_materialize_literal_jinja_scaffolds()
     assert!(!fixture.target.join("{{ data.hostname }}").exists());
 }
 
+#[cfg(unix)]
+#[rstest]
+fn rendered_destinations_preserve_git_storage_but_allow_siblings(
+    #[values(false, true)] linked: bool,
+    #[values("index", "config", "gitfile", "alias", "sibling", "untracked")] destination: &str,
+) {
+    let fixture = Fixture::new(false);
+    let source = if linked {
+        let path = fixture.temp.path().join("linked");
+        fixture.git(&["worktree", "add", "-qb", "linked", path.to_str().unwrap()]);
+        path
+    } else {
+        fixture.source.clone()
+    };
+    let repo = git2::Repository::open(&source).unwrap();
+    let target = match destination {
+        "index" => repo.path().join("index"),
+        "config" => repo.commondir().join("config"),
+        "gitfile" => source.join(".git"),
+        "alias" => {
+            let alias = fixture.temp.path().join("git-alias");
+            std::os::unix::fs::symlink(repo.commondir(), &alias).unwrap();
+            alias.join("config")
+        }
+        "sibling" => source.join(".git-sibling"),
+        "untracked" => source.join("untracked-output"),
+        _ => unreachable!(),
+    };
+    fs::write(source.join("app/over.yaml"), format!(
+        "mode: symlink\ndata: {{hostname: first}}\nrules:\n  - {{path: config.jinja, template: true, target: '{}'}}\n",
+        target.display()
+    )).unwrap();
+    // A staged edit must survive refusal, not just HEAD's committed tree.
+    fs::write(source.join("app/plain"), "staged sentinel\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("app/plain")).unwrap();
+    index.write().unwrap();
+    let index_before = fs::read(repo.path().join("index")).unwrap();
+    let config_before = fs::read(repo.commondir().join("config")).unwrap();
+    let head_before = repo.head().unwrap().target();
+    let refs_before = repo
+        .references()
+        .unwrap()
+        .map(|r| {
+            let r = r.unwrap();
+            (r.name().unwrap().to_owned(), r.target())
+        })
+        .collect::<Vec<_>>();
+    let mut command = fixture.command_at(&source, "apply");
+    command
+        .args(["app", "--force", "--no-prompt", "--target"])
+        .arg(&fixture.target);
+    if matches!(destination, "sibling" | "untracked") {
+        command.assert().success();
+        assert!(target.is_symlink());
+        assert!(fs::read_to_string(target).unwrap().contains("host=first"));
+    } else {
+        let assertion = command.assert().failure();
+        if destination != "gitfile" || linked {
+            assertion.stderr(contains("protected source Git storage"));
+        }
+    }
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index_before);
+    assert_eq!(
+        fs::read(repo.commondir().join("config")).unwrap(),
+        config_before
+    );
+    assert_eq!(repo.head().unwrap().target(), head_before);
+    assert_eq!(
+        repo.references()
+            .unwrap()
+            .map(|r| {
+                let r = r.unwrap();
+                (r.name().unwrap().to_owned(), r.target())
+            })
+            .collect::<Vec<_>>(),
+        refs_before
+    );
+}
+
 #[test]
 fn changing_only_context_rerenders_checkout_and_metadata_does_not_duplicate_values() {
     let fixture = Fixture::new(true);
