@@ -40,6 +40,21 @@ impl Protection {
             .context("cannot read protected generated content; unlock the matching repository generation")
     }
 
+    pub(crate) fn decode_read_only(
+        self,
+        repo: &git2::Repository,
+        stored: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        if self == Self::Plain {
+            return Ok(Zeroizing::new(stored.to_vec()));
+        }
+        // A shared crypt guard also creates a lock file; immutable consumers must only snapshot.
+        let key = access::local_key(repo)
+            .context("read-only apply requires an already-unlocked checkout; unlock/repair it on the host and remount its complete Git metadata")?;
+        self.decode_with_key(stored, &key)
+            .context("cannot authenticate protected content in the mounted checkout")
+    }
+
     pub(crate) fn encode_with_key(self, plaintext: &[u8], key: &RepositoryKey) -> Result<Vec<u8>> {
         match self {
             Self::Plain => Ok(plaintext.to_vec()),

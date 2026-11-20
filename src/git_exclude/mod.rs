@@ -214,6 +214,7 @@ pub fn managed_targets(desired: &DesiredTree) -> Result<Vec<ManagedTarget>> {
                 entry.intent,
                 MaterializationIntent::SymlinkFile { .. }
                     | MaterializationIntent::RenderedFile(_)
+                    | MaterializationIntent::EphemeralFile(_)
                     | MaterializationIntent::EncryptedFile(_)
                     | MaterializationIntent::SymlinkDirectory { .. }
                     | MaterializationIntent::Checkout
@@ -476,6 +477,32 @@ fn to_gitignore_pattern(relative: &Path) -> Result<String> {
         .collect::<Result<Vec<_>>>()?
         .join("/");
     Ok(format!("/{joined}"))
+}
+
+/// Target-side exclusions must not reach source administration through another worktree.
+pub(crate) fn validate_read_only_target_repository(
+    entry: &crate::desired::DesiredEntry,
+    source: &git2::Repository,
+) -> Result<()> {
+    if let Some(target) = discover_enclosing_repo_with(&entry.target, &entry.access.fs)? {
+        let administration = crate::overlays::mapping::physical(target.commondir())?;
+        for root in [
+            Some(source.path()),
+            Some(source.commondir()),
+            source.workdir(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            // A nested target repository may keep its gitdir anywhere inside the source tree.
+            anyhow::ensure!(
+                !administration.starts_with(crate::overlays::mapping::physical(root)?),
+                "read-only destination '{}' shares source Git administration; use a separate deployment target",
+                entry.target.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Protect plaintext before publication, retaining prior exclusions if later work fails.

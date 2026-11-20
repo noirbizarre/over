@@ -340,6 +340,20 @@ impl SecretStore {
             .map_err(|_| ProviderError::DecryptionFailed)
     }
 
+    pub(crate) fn read_for_resolution_read_only(
+        &self,
+        name: &SecretName,
+        prompt: bool,
+    ) -> Result<SecretBytes, super::ProviderError> {
+        if let Some(value) = super::snapshot::read_existing(&self.repository, name, &self.crypto)? {
+            return Ok(value);
+        }
+        // Only historical Age stores may use filesystem/credential reads without a native key.
+        self.validate_legacy_fallback()
+            .map_err(|_| super::ProviderError::StoreFailure)?;
+        self.read_for_resolution(name, prompt)
+    }
+
     pub fn list(&self) -> Result<Vec<String>> {
         if let Some(repo) = self.unified()? {
             let _guard = crate::crypt::access::guard(&repo, false)?;

@@ -133,14 +133,15 @@ does not enable schema generation.
 
 ## Docker images
 
-The root `Dockerfile` packages an existing Linux binary into the distroless
-Debian 12 runtime. Its `BINARY` build argument defaults to `target/debug/over`,
+The root `Dockerfile` packages an existing Linux binary into a slim Debian 12
+runtime with Git and CA certificates. Its `BINARY` build argument defaults to `target/debug/over`,
 the output of `mise run build`. The Docker task depends on that build task;
 mise skips compilation when its sources and output are up to date:
 
 ```sh
 mise run docker:build
 docker run --rm over:local --version
+python3 tests/docker/run.py over:local
 ```
 
 The default task assumes a native Linux GNU build compatible with Debian 12's

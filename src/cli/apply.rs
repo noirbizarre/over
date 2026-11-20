@@ -38,6 +38,12 @@ pub struct Params {
 
     #[clap(
         long,
+        help = "Apply without source writes or persistent Over state (hooks and Git dependencies still run)"
+    )]
+    read_only: bool,
+
+    #[clap(
+        long,
         short,
         help = "Overwrite ordinary filesystem conflicts without prompting"
     )]
@@ -66,6 +72,9 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let home = cli.resolve_home()?;
     let repo = Repository::new(home);
+    if args.read_only {
+        crate::materialize::ephemeral::validate_source(&repo.root)?;
+    }
     if cli.debug {
         tracing::debug!(?repo, "repository");
     }
@@ -78,6 +87,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let ctx = Context::builder()
         .dry_run(args.dry_run)
+        .source_read_only(args.read_only)
         .debug(cli.debug)
         .verbose(cli.verbose)
         .force(args.force)

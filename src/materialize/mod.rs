@@ -41,6 +41,7 @@
 
 mod checkout;
 pub(crate) mod encrypted;
+pub(crate) mod ephemeral;
 pub(crate) mod partial;
 pub(crate) mod rendered;
 pub(crate) mod symlink;
@@ -94,6 +95,7 @@ impl Default for MaterializerRegistry {
     fn default() -> Self {
         Self {
             backends: vec![
+                Box::new(ephemeral::EphemeralMaterializer),
                 Box::new(rendered::RenderedMaterializer),
                 Box::new(encrypted::EncryptedFileMaterializer),
                 // Must come before `SymlinkMaterializer`: `PartialFile` is

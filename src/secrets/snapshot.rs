@@ -59,7 +59,10 @@ impl Snapshot {
             current.is_none() || old.is_none(),
             "conflicting secret stores in HEAD"
         );
-        let selected = current.or(old).context("secret does not exist in HEAD")?;
+        let selected = current
+            .or(old)
+            .ok_or(super::ProviderError::Missing)
+            .context("secret does not exist in HEAD")?;
         let aggregate = selected.kind() != Some(git2::ObjectType::Tree);
         let mut encoding = Encoding::Aggregate;
         let selected = if aggregate {
@@ -100,6 +103,7 @@ impl Snapshot {
             };
             entries
                 .get_name(&filename)
+                .ok_or(super::ProviderError::Missing)
                 .context("secret does not exist in HEAD")?
                 .to_owned()
         };
@@ -138,6 +142,7 @@ impl Snapshot {
         Ok(SecretBytes::new(
             map.0
                 .remove(name.as_str())
+                .ok_or(super::ProviderError::Missing)
                 .context("secret does not exist in HEAD")?,
         ))
     }
@@ -201,6 +206,47 @@ pub(super) fn read(
         None => acquire(&repo, &snapshot.registry)?,
     };
     Ok(Some(snapshot.decrypt(&key, name, crypto)?))
+}
+
+pub(super) fn read_existing(
+    root: &Path,
+    name: &SecretName,
+    crypto: &CryptoService,
+) -> Result<Option<SecretBytes>, super::ProviderError> {
+    use super::ProviderError;
+    let repo = git2::Repository::discover(root).map_err(|_| ProviderError::StoreFailure)?;
+    let Some(snapshot) = Snapshot::capture(&repo, name).map_err(|error| {
+        error
+            .downcast_ref::<ProviderError>()
+            .copied()
+            .unwrap_or(ProviderError::StoreFailure)
+    })?
+    else {
+        return Ok(None);
+    };
+    let source = access::root(&repo).map_err(|_| ProviderError::StoreFailure)?;
+    if root
+        .canonicalize()
+        .map_err(|_| ProviderError::StoreFailure)?
+        != source
+            .canonicalize()
+            .map_err(|_| ProviderError::StoreFailure)?
+    {
+        return Err(ProviderError::StoreFailure);
+    }
+    // Missing/stale installed state is recoverable by a declared fallback, never by unlocking.
+    let key = access::snapshot_key(&repo, &snapshot.registry)
+        .map_err(|_| ProviderError::StoreFailure)?
+        .ok_or(ProviderError::SessionUnavailable)?;
+    snapshot
+        .decrypt(&key, name, crypto)
+        .map(Some)
+        .map_err(|error| {
+            error
+                .downcast_ref::<ProviderError>()
+                .copied()
+                .unwrap_or(ProviderError::DecryptionFailed)
+        })
 }
 
 #[cfg(test)]
@@ -360,6 +406,80 @@ mod tests {
         } else {
             git2::Repository::init(path).unwrap()
         }
+    }
+
+    #[rstest::rstest]
+    #[case("missing-secret", crate::secrets::ProviderError::Missing)]
+    #[case("missing-key", crate::secrets::ProviderError::SessionUnavailable)]
+    #[case("stale-key", crate::secrets::ProviderError::SessionUnavailable)]
+    #[case("wrong-key", crate::secrets::ProviderError::DecryptionFailed)]
+    #[case("corrupt-key", crate::secrets::ProviderError::StoreFailure)]
+    #[case("pending-transaction", crate::secrets::ProviderError::StoreFailure)]
+    #[case("subdirectory", crate::secrets::ProviderError::StoreFailure)]
+    fn immutable_secret_reads_preserve_failure_categories_without_creating_locks(
+        #[case] failure: &str,
+        #[case] expected: crate::secrets::ProviderError,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = initialize(temp.path(), false);
+        let key = RepositoryKey::generate().unwrap();
+        publish(&repo, &key, b"private");
+        let private = repo.commondir().join("over-crypt");
+        let mut root = temp.path().to_path_buf();
+        let name = SecretName::parse(if failure == "missing-secret" {
+            "missing"
+        } else {
+            "token"
+        })
+        .unwrap();
+        match failure {
+            "stale-key" => access::install(&repo, &RepositoryKey::generate().unwrap()).unwrap(),
+            "wrong-key" => {
+                let mut impostor = RepositoryKey::generate().unwrap();
+                // Public generation labels alone must never authenticate different secret bytes.
+                impostor.repository = key.repository;
+                impostor.generation = key.generation;
+                access::install(&repo, &impostor).unwrap();
+            }
+            "corrupt-key" => {
+                access::install(&repo, &key).unwrap();
+                std::fs::write(private.join("key"), b"invalid").unwrap();
+            }
+            "pending-transaction" => {
+                access::install(&repo, &key).unwrap();
+                std::fs::write(private.join("transaction.json"), b"{}").unwrap();
+            }
+            "subdirectory" => {
+                root.push("nested");
+                std::fs::create_dir(&root).unwrap();
+            }
+            _ => (),
+        }
+        let before = std::fs::read(private.join("key")).ok();
+        assert_eq!(
+            super::read_existing(&root, &name, &CryptoService::default()).unwrap_err(),
+            expected
+        );
+        assert_eq!(std::fs::read(private.join("key")).ok(), before);
+        assert!(!private.join("operation.lock").exists());
+    }
+
+    #[test]
+    fn immutable_secret_reads_distinguish_legacy_stores_from_invalid_git_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let name = SecretName::parse("token").unwrap();
+        let crypto = CryptoService::default();
+        assert_eq!(
+            super::read_existing(temp.path(), &name, &crypto).unwrap_err(),
+            crate::secrets::ProviderError::StoreFailure
+        );
+        let repo = initialize(temp.path(), false);
+        assert!(
+            super::read_existing(temp.path(), &name, &crypto)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!repo.commondir().join("over-crypt").exists());
     }
 
     #[rstest::rstest]

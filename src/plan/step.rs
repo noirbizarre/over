@@ -67,6 +67,7 @@ pub enum Operation {
 /// that changed.
 fn intent_label(intent: &MaterializationIntent) -> &'static str {
     match intent {
+        MaterializationIntent::EphemeralFile(_) => "ephemeral file",
         MaterializationIntent::RenderedFile(_) => "rendered file",
         MaterializationIntent::EncryptedFile(_) => "encrypted file",
         MaterializationIntent::Directory => "directory",
@@ -92,6 +93,11 @@ impl fmt::Display for PlanStep {
         let target = short_path(&self.entry.target.to_string_lossy());
 
         match (&self.entry.intent, &self.operation) {
+            (MaterializationIntent::EphemeralFile(file), operation) => write!(
+                f,
+                "ephemeral file: {target} from {} ({operation:?})",
+                file.source.display()
+            ),
             (_, Operation::RepairMetadata { current, desired }) => {
                 write!(f, "metadata: {target} ({current} -> {desired})")
             }

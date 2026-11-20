@@ -25,7 +25,15 @@ def command(*args, success=True):
     return result.stdout
 
 
-def scenario(name, options, assertion, prepare="", mounts=None, error=None):
+def inventory(root):
+    # Include administrative files/objects: git status alone misses persistent traces.
+    return {str(path.relative_to(root)): (path.stat().st_mode,
+            path.read_bytes() if path.is_file() else None)
+            for path in [root, *root.rglob("*")]}
+
+
+def scenario(name, options, assertion, prepare="", mounts=None, error=None,
+             bind_source=False, recreated_assertion=None):
     print(f"Checking {name}...", flush=True)
     with tempfile.TemporaryDirectory(prefix="over-feature-") as directory:
         workspace = Path(directory)
@@ -37,36 +45,55 @@ def scenario(name, options, assertion, prepare="", mounts=None, error=None):
         source = config_dir / "source"
         shutil.copytree(Path(__file__).parent / "source", source)
         command("git", "-C", str(source), "init", "--quiet")
+        # Background Git housekeeping would race administrative byte-for-byte snapshots.
+        command("git", "-C", str(source), "config", "maintenance.auto", "false")
+        command("git", "-C", str(source), "config", "gc.auto", "0")
         command("git", "-C", str(source), "add", ".")
         command("git", "-C", str(source), "-c", "user.name=Feature test", "-c",
                 "user.email=feature@example.invalid", "-c", "core.hooksPath=/dev/null",
                 "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Fixture")
         (config_dir / "Dockerfile").write_text(
-            "FROM debian:bookworm-slim\nRUN useradd -m -s /bin/bash vscode\n"
+            "FROM debian:bookworm-slim\nRUN useradd -m -s /bin/bash vscode "
+            "&& install -d -o vscode -g vscode /home/vscode/.local/state\n"
             # libgit2 must see a clone source owned by the lifecycle user.
             "COPY --chown=vscode:vscode source /opt/dotfiles\n"
         )
         # CLI 0.88 interpolates options into shell assignments before install.sh.
         # Escape that upstream boundary to test the literal received option values.
-        options = {key: value.replace("\\", "\\\\").replace('"', '\\"')
-                   .replace("$", "\\$").replace("`", "\\`") for key, value in options.items()}
+        options = {key: (value.replace("\\", "\\\\").replace('"', '\\"')
+                   .replace("$", "\\$").replace("`", "\\`") if isinstance(value, str) else value)
+                   for key, value in options.items()}
         config = {"build": {"dockerfile": "Dockerfile"}, "remoteUser": "vscode",
-                  "updateRemoteUserUID": False, "features": {"./over": options}}
+                  "updateRemoteUserUID": bind_source, "features": {"./over": options},
+                  "containerEnv": {"XDG_STATE_HOME": "/home/vscode/.local/state"}}
         if prepare:
             config["onCreateCommand"] = ["bash", "-euc", prepare]
         if mounts:
-            config["mounts"] = mounts
+            config["mounts"] = [mount.replace("SOURCE_PATH", str(source)).replace("VOLUME_ID", workspace.name)
+                                for mount in mounts]
         (config_dir / "devcontainer.json").write_text(json.dumps(config))
+        before = inventory(source)
         try:
             output = command(CLI, "up", "--workspace-folder", directory, success=error is None)
             if error:
                 assert error in output, output
             command(CLI, "exec", "--workspace-folder", directory, "bash", "-euc", assertion)
+            if bind_source and options.get("readOnly"):
+                assert inventory(source) == before, "Read-only setup changed the host source"
+            if recreated_assertion:
+                containers = command("docker", "ps", "-aq", "--filter",
+                                     f"label=devcontainer.local_folder={directory}").split()
+                command("docker", "rm", "-fv", *containers)
+                command(CLI, "up", "--workspace-folder", directory)
+                command(CLI, "exec", "--workspace-folder", directory, "bash", "-euc", recreated_assertion)
         finally:
             containers = command("docker", "ps", "-aq", "--filter",
                                  f"label=devcontainer.local_folder={directory}").split()
             if containers:
                 command("docker", "rm", "-fv", *containers)
+            volumes = command("docker", "volume", "ls", "-q", "--filter", f"name={workspace.name}").split()
+            if volumes:
+                command("docker", "volume", "rm", *volumes)
     print(f"PASS: {name}", flush=True)
 
 
@@ -124,6 +151,39 @@ def main():
         mkdir -p "$HOME/feature-target"
         printf 'user content' > "$HOME/feature-target/file"
     """, error="feature-target/file")
+    scenario("read-only host bind with ephemeral targets",
+             {"overHome": "/mounted/dotfiles", "readOnly": True, "overlay": "smoke"}, f"""
+        test "$(id -un)" = vscode
+        test "$(cat "$HOME/feature-target/file")" = 'feature content'
+        test ! -e "$XDG_STATE_HOME/over"
+        ! touch /mounted/dotfiles/forbidden
+        {SETUP}
+        test ! -e "$XDG_STATE_HOME/over"
+    """, bind_source=True,
+             mounts=["type=bind,source=SOURCE_PATH,target=/mounted/dotfiles,readonly"])
+    scenario("writable source with persistent home and state",
+             {"overHome": "/home/vscode/.dotfiles", "overlay": "smoke"}, """
+        over --home "$HOME/.dotfiles" apply persistent --no-prompt
+        test -f "$XDG_STATE_HOME/over/virtual_checkout.toml"
+        sha256sum "$XDG_STATE_HOME/over/virtual_checkout.toml" > "$HOME/state-before"
+        printf 'container edit\\n' > "$HOME/.dotfiles/from-container"
+        git -C "$HOME/.dotfiles" add from-container
+        git -C "$HOME/.dotfiles" -c user.name=Container -c user.email=container@example.invalid commit -qm 'container edit'
+        git -C "$HOME/.dotfiles" rev-parse HEAD > "$HOME/commit-before"
+    """, bind_source=True, prepare="""
+        mkdir -p "$XDG_STATE_HOME"
+        test -w "$XDG_STATE_HOME"
+    """, mounts=[
+        "type=volume,source=over-home-VOLUME_ID,target=/home/vscode",
+        "type=bind,source=SOURCE_PATH,target=/home/vscode/.dotfiles",
+        "type=volume,source=over-state-VOLUME_ID,target=/home/vscode/.local/state",
+    ], recreated_assertion="""
+        test "$(cat "$HOME/.dotfiles/from-container")" = 'container edit'
+        test "$(git -C "$HOME/.dotfiles" rev-parse HEAD)" = "$(cat "$HOME/commit-before")"
+        sha256sum -c "$HOME/state-before"
+        test "$(cat "$HOME/persistent-target/file")" = 'persistent content'
+        over --home "$HOME/.dotfiles" apply persistent --no-prompt
+    """)
 
 
 if __name__ == "__main__":

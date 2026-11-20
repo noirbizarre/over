@@ -21,7 +21,7 @@ over --version
 
 mkdir -p /usr/local/share/over
 # Build-time options must remain literal data when read by the lifecycle user.
-printf 'OVERLAY=%q\nREPOSITORY=%q\nOVERHOME=%q\n' \
-    "${OVERLAY:-}" "${REPOSITORY:-}" "${OVERHOME:-}" > /usr/local/share/over/options.sh
+printf 'OVERLAY=%q\nREPOSITORY=%q\nOVERHOME=%q\nREADONLY=%q\n' \
+    "${OVERLAY:-}" "${REPOSITORY:-}" "${OVERHOME:-}" "${READONLY:-false}" > /usr/local/share/over/options.sh
 chmod 0644 /usr/local/share/over/options.sh
 install -m 0755 setup.sh /usr/local/share/over/setup.sh

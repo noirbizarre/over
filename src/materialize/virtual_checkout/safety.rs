@@ -17,6 +17,31 @@ pub(crate) struct SourceProtection {
 }
 
 impl SourceProtection {
+    pub(crate) fn validate_read_only_target(&self, entry: &DesiredEntry, link: bool) -> Result<()> {
+        // Existing source links are valid deployments; replacing the link never writes its referent.
+        let mut resolved = vec![
+            mapping::absolute(&entry.target)?,
+            resolve(&entry.target, &entry.access, false)?,
+        ];
+        if !link {
+            resolved.push(resolve(&entry.target, &entry.access, true)?);
+        }
+        for path in resolved {
+            for root in &self.roots {
+                ensure!(
+                    !path.starts_with(root)
+                        && (matches!(
+                            entry.intent,
+                            crate::desired::MaterializationIntent::Directory
+                        ) || !root.starts_with(&path)),
+                    "read-only destination '{}' overlaps protected source storage '{}'",
+                    entry.target.display(),
+                    root.display()
+                );
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn new(repo: &Repository) -> Result<Self> {
         let mut roots = BTreeSet::new();
         for path in [Some(repo.path()), Some(repo.commondir()), repo.workdir()]

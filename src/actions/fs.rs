@@ -53,19 +53,32 @@ impl fmt::Display for ConflictChoice {
 
 /// Prompt the user to resolve a conflict between `source` (overlay) and `target` (existing).
 pub(crate) fn prompt_conflict(source: &Path, target: &Path) -> Result<ConflictChoice> {
+    prompt_conflict_policy(source, target, false)
+}
+
+pub(crate) fn prompt_conflict_policy(
+    source: &Path,
+    target: &Path,
+    source_read_only: bool,
+) -> Result<ConflictChoice> {
     let _pause = ui::progress::pause()?;
     let prompt = format!(
         "Conflict: {} already exists (overlay source: {})",
         style::path(short_path(&target.to_string_lossy())),
         style::path(short_path(&source.to_string_lossy())),
     );
+    let choices: Vec<_> = ConflictChoice::ALL
+        .iter()
+        .copied()
+        .filter(|choice| !source_read_only || !matches!(choice, ConflictChoice::Absorb))
+        .collect();
     let selection = Select::with_theme(&DialogTheme::default())
         .with_prompt(prompt)
         .default(0)
-        .items(ConflictChoice::ALL)
+        .items(&choices)
         .interact()
         .map_err(|e| anyhow::anyhow!("prompt failed: {}", e))?;
-    Ok(ConflictChoice::ALL[selection])
+    Ok(choices[selection])
 }
 
 /// Show a diff between the overlay source and the existing target using `git diff --no-index`.
@@ -475,7 +488,9 @@ pub(crate) fn remove_target(target: &Path) -> Result<()> {
 /// Returns `Ok(true)` if the caller should proceed with creating the link,
 /// or `Ok(false)` if the file was skipped.
 pub(crate) fn resolve_file_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool> {
-    resolve_conflict_with(ctx, source, target, false, prompt_conflict)
+    resolve_conflict_with(ctx, source, target, false, |source, target| {
+        prompt_conflict_policy(source, target, ctx.source_read_only)
+    })
 }
 
 fn resolve_conflict_with(
@@ -517,6 +532,10 @@ fn resolve_conflict_with(
                 return Ok(true);
             }
             ConflictChoice::Absorb => {
+                anyhow::ensure!(
+                    !ctx.source_read_only,
+                    "read-only apply cannot absorb target changes into source"
+                );
                 if is_dir {
                     absorb_dir(source, target)?;
                 } else {
@@ -538,7 +557,9 @@ fn resolve_conflict_with(
 /// Returns `Ok(true)` if the caller should proceed with creating the link,
 /// or `Ok(false)` if the directory was skipped.
 pub(crate) fn resolve_dir_conflict(ctx: &Ctx, source: &Path, target: &Path) -> Result<bool> {
-    resolve_conflict_with(ctx, source, target, true, prompt_conflict)
+    resolve_conflict_with(ctx, source, target, true, |source, target| {
+        prompt_conflict_policy(source, target, ctx.source_read_only)
+    })
 }
 
 pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()> {
@@ -1409,6 +1430,33 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(source).unwrap(), "overlay");
         assert_eq!(fs::read_to_string(target).unwrap(), "private");
+    }
+
+    #[rstest::rstest]
+    fn read_only_conflict_resolution_rejects_absorption_even_if_a_caller_selects_it(
+        #[values(false, true)] directory: bool,
+    ) {
+        let td = TempDir::new().unwrap();
+        let source = td.path().join("source");
+        let target = td.path().join("target");
+        let (source_content, target_content) = if directory {
+            fs::create_dir_all(&source).unwrap();
+            fs::create_dir_all(&target).unwrap();
+            (source.join("file"), target.join("file"))
+        } else {
+            (source.clone(), target.clone())
+        };
+        fs::write(&source_content, "overlay").unwrap();
+        fs::write(&target_content, "private").unwrap();
+        let ctx = Context::builder().source_read_only(true).build();
+        assert!(
+            resolve_conflict_with(&ctx, &source, &target, directory, |_, _| Ok(
+                ConflictChoice::Absorb
+            ))
+            .is_err()
+        );
+        assert_eq!(fs::read(source_content).unwrap(), b"overlay");
+        assert_eq!(fs::read(target_content).unwrap(), b"private");
     }
 
     #[cfg(unix)]

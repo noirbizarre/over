@@ -4,6 +4,10 @@ set -euo pipefail
 # Lifecycle commands run from the workspace, not beside the installed options.
 # shellcheck source=/dev/null
 source "$(dirname "${BASH_SOURCE[0]}")/options.sh"
+if [ "${READONLY:-false}" = true ] && [ -n "$REPOSITORY" ]; then
+    echo "The 'readOnly' option requires an existing checkout: omit 'repository' and mount the complete checkout at 'overHome'." >&2
+    exit 1
+fi
 if [ -n "$OVERHOME" ]; then
     # Only explicit overrides need expansion; otherwise the CLI owns home selection.
     case "$OVERHOME" in
@@ -37,6 +41,10 @@ if [ -n "$REPOSITORY" ]; then
     over init -- "$REPOSITORY"
 fi
 if [ "${#overlays[@]}" -gt 0 ]; then
+    apply_options=()
+    if [ "${READONLY:-false}" = true ]; then
+        apply_options+=(--read-only)
+    fi
     # An unattended lifecycle must refuse conflicts instead of prompting.
-    over apply --no-prompt -- "${overlays[@]}"
+    over apply "${apply_options[@]}" --no-prompt -- "${overlays[@]}"
 fi

@@ -49,6 +49,7 @@ pub struct NativeProvider {
     repository: PathBuf,
     crypto: Arc<CryptoService>,
     prompt: bool,
+    read_only: bool,
 }
 
 impl NativeProvider {
@@ -57,7 +58,13 @@ impl NativeProvider {
             repository,
             crypto,
             prompt,
+            read_only: false,
         }
+    }
+
+    pub fn read_only(mut self, enabled: bool) -> Self {
+        self.read_only = enabled;
+        self
     }
 }
 
@@ -69,6 +76,10 @@ impl SecretProvider for NativeProvider {
         // Delay all filesystem and credential work until this candidate is reached.
         let store = SecretStore::new(&self.repository, self.crypto.clone())
             .map_err(|_| ProviderError::StoreFailure)?;
-        store.read_for_resolution(name, self.prompt)
+        if self.read_only {
+            store.read_for_resolution_read_only(name, self.prompt)
+        } else {
+            store.read_for_resolution(name, self.prompt)
+        }
     }
 }

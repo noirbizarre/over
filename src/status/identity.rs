@@ -14,6 +14,7 @@ enum Source {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Intent {
+    Ephemeral(String),
     Directory,
     Checkout,
     VirtualCheckout {
@@ -60,6 +61,7 @@ impl ClaimIdentity {
             }
         };
         let intent = match &entry.intent {
+            MaterializationIntent::EphemeralFile(file) => Intent::Ephemeral(file.identity.clone()),
             MaterializationIntent::RenderedFile(file) => Intent::Symlink {
                 source: file.source.clone(),
                 hard: false,

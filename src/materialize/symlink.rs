@@ -35,6 +35,7 @@ impl Materializer for SymlinkMaterializer {
         !matches!(
             intent,
             MaterializationIntent::Checkout
+                | MaterializationIntent::EphemeralFile(_)
                 | MaterializationIntent::RenderedFile(_)
                 | MaterializationIntent::EncryptedFile(_)
                 | MaterializationIntent::VirtualCheckout
@@ -145,6 +146,7 @@ impl Materializer for SymlinkMaterializer {
             }
             MaterializationIntent::Checkout
             | MaterializationIntent::RenderedFile(_)
+            | MaterializationIntent::EphemeralFile(_)
             | MaterializationIntent::EncryptedFile(_)
             | MaterializationIntent::VirtualCheckout
             | MaterializationIntent::ScopedVirtualCheckout(_)
@@ -257,7 +259,7 @@ pub(crate) fn hard_link_matches_with(
 }
 
 fn materialize_privileged(ctx: Ctx, step: &PlanStep) -> Result<()> {
-    use crate::actions::fs::{ConflictChoice, prompt_conflict};
+    use crate::actions::fs::{ConflictChoice, prompt_conflict_policy};
     let entry = &step.entry;
     let target_fs = &entry.access.fs;
     if matches!(step.operation, Operation::Migrate { .. }) {
@@ -307,7 +309,7 @@ fn materialize_privileged(ctx: Ctx, step: &PlanStep) -> Result<()> {
                     entry.target.display()
                 );
             } else {
-                prompt_conflict(source, &entry.target)?
+                prompt_conflict_policy(source, &entry.target, ctx.source_read_only)?
             };
             match choice {
                 ConflictChoice::Skip => return Ok(()),
@@ -324,6 +326,10 @@ fn materialize_privileged(ctx: Ctx, step: &PlanStep) -> Result<()> {
                     ))?;
                 }
                 ConflictChoice::Absorb => {
+                    anyhow::ensure!(
+                        !ctx.source_read_only,
+                        "read-only apply cannot absorb target changes into source"
+                    );
                     anyhow::ensure!(
                         matches!(current, ActualState::File),
                         "directory absorb from a protected target is unsupported"
@@ -601,6 +607,7 @@ fn build_action(ctx: Ctx, entry: &DesiredEntry) -> Box<dyn Action> {
             }
         }
         MaterializationIntent::Checkout
+        | MaterializationIntent::EphemeralFile(_)
         | MaterializationIntent::RenderedFile(_)
         | MaterializationIntent::EncryptedFile(_)
         | MaterializationIntent::VirtualCheckout

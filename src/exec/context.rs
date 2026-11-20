@@ -95,6 +95,9 @@ pub struct Context {
     pub target_fs: Arc<crate::target_fs::Session>,
     #[serde(skip)]
     pub read_only: bool,
+    /// Consume source inputs without repository writes or persistent deployment state.
+    #[serde(skip)]
+    pub source_read_only: bool,
     #[serde(skip)]
     pub(crate) defer_partials: bool,
     #[serde(skip)]
@@ -202,6 +205,7 @@ impl Progress {
 /// to get an `Arc<Context>`.
 #[derive(Default)]
 pub struct ContextBuilder {
+    source_read_only: bool,
     read_only: bool,
     target_fs: Option<Arc<crate::target_fs::Session>>,
     acquire_checkout_paths: bool,
@@ -225,6 +229,10 @@ pub struct ContextBuilder {
 }
 
 impl ContextBuilder {
+    pub fn source_read_only(mut self, enabled: bool) -> Self {
+        self.source_read_only = enabled;
+        self
+    }
     pub fn read_only(mut self, enabled: bool) -> Self {
         self.read_only = enabled;
         self
@@ -329,6 +337,7 @@ impl ContextBuilder {
                 .target_fs
                 .unwrap_or_else(crate::target_fs::Session::shared),
             read_only: self.read_only,
+            source_read_only: self.source_read_only,
             defer_partials: false,
             path_inputs: self.path_inputs,
             current_target: None,
