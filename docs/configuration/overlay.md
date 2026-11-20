@@ -492,7 +492,11 @@ content = "alias ll='ls -la'\n"
 root. `content` is literal. Markers cannot contain CR, LF, or NUL, and content
 cannot contain its own exact end-delimiter line; these declarations are rejected
 before deployment because they cannot round-trip. Begin-delimiter lines and
-other markers' delimiters are allowed inside content.
+other markers' delimiters are allowed inside content unless they overlap another
+partial claim in the selected composition. Independently claimed blocks must not
+nest or cross, including in an existing destination. This check covers selected
+claims only: Over does not persist partial ownership across separate selections,
+so unselected markers remain indistinguishable from literal content.
 
 `marker` distinguishes blocks in the same file:
 

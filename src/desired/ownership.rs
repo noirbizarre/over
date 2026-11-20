@@ -311,8 +311,14 @@ pub(crate) fn conflict(
     }
     let reason = match (&a.intent, &b.intent) {
         (
-            MaterializationIntent::PartialFile { marker: am, .. },
-            MaterializationIntent::PartialFile { marker: bm, .. },
+            MaterializationIntent::PartialFile {
+                marker: am,
+                content: ac,
+            },
+            MaterializationIntent::PartialFile {
+                marker: bm,
+                content: bc,
+            },
         ) if a.target == b.target => {
             if am == bm {
                 format!("duplicate partial marker '{am}'")
@@ -326,6 +332,15 @@ pub(crate) fn conflict(
             {
                 "incompatible file-wide permissions on partial blocks".to_owned()
             } else {
+                // Validate both prospective blocks before apply order can hide a nested claim.
+                for (marker, content) in [(am, ac), (bm, bc)] {
+                    let rendered = crate::actions::partial::append_block("", marker, content);
+                    if let Err(error) =
+                        crate::actions::partial::validate_independent_blocks(&rendered, &[am, bm])
+                    {
+                        return Ok(Some((a.target.clone(), error.to_string())));
+                    }
+                }
                 return Ok(None);
             }
         }

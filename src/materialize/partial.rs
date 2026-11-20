@@ -206,6 +206,31 @@ fn permission_drift_with(entry: &DesiredEntry) -> Result<Option<(FileMode, FileM
     Ok(None)
 }
 
+/// Validate deployed claims before mutation can erase evidence of another selected owner.
+pub(crate) fn validate_partial_targets(entries: &[DesiredEntry]) -> Result<()> {
+    let mut groups = std::collections::BTreeMap::new();
+    for entry in entries {
+        if let MaterializationIntent::PartialFile { marker, .. } = &entry.intent {
+            groups
+                .entry(entry.access.fs.location(&entry.target)?)
+                .or_insert_with(Vec::new)
+                .push((entry, marker.as_str()));
+        }
+    }
+    for group in groups.values() {
+        let entry = group[0].0;
+        if matches!(
+            actual::inspect_with(&entry.target, &entry.access.fs)?,
+            ActualState::File
+        ) {
+            let text = entry.access.fs.read_to_string(&entry.target)?;
+            let markers: Vec<_> = group.iter().map(|(_, marker)| *marker).collect();
+            crate::actions::partial::validate_independent_blocks(&text, &markers)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn reconcile_partials(entries: &[DesiredEntry], ctx: Ctx) -> Result<()> {
     use crate::actions::partial::{
         append_block, authorize_structural_conflict, replace_block, resolve_block_conflict,
@@ -225,6 +250,7 @@ pub(crate) fn reconcile_partials(entries: &[DesiredEntry], ctx: Ctx) -> Result<(
             .or_default()
             .push(entry);
     }
+    validate_partial_targets(entries)?;
     for group in groups.values() {
         let entry = group[0];
         let fs = &entry.access.fs;
@@ -246,6 +272,17 @@ pub(crate) fn reconcile_partials(entries: &[DesiredEntry], ctx: Ctx) -> Result<(
             }
         }
         let mut updated = original.clone();
+        let markers: Vec<_> = group
+            .iter()
+            .filter_map(|entry| {
+                if let MaterializationIntent::PartialFile { marker, .. } = &entry.intent {
+                    Some(marker.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        crate::actions::partial::validate_independent_blocks(&original, &markers)?;
         let mut permissions = crate::overlays::Permissions::default();
         for entry in group {
             let MaterializationIntent::PartialFile { content, marker } = &entry.intent else {
@@ -266,6 +303,7 @@ pub(crate) fn reconcile_partials(entries: &[DesiredEntry], ctx: Ctx) -> Result<(
             }
             permissions.merge(&entry.access.permissions);
         }
+        crate::actions::partial::validate_independent_blocks(&updated, &markers)?;
         guard.verify()?;
         if matches!(current, ActualState::File) {
             anyhow::ensure!(
@@ -334,6 +372,41 @@ mod tests {
         }));
         assert!(!m.handles(&MaterializationIntent::Directory));
         assert!(!m.handles(&MaterializationIntent::Checkout));
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn nested_selected_claims_are_rejected_before_apply_or_unapply(#[case] reverse: bool) {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("shellrc");
+        let inner = crate::actions::partial::append_block("", "inner", "owned");
+        let original = crate::actions::partial::append_block("unmanaged\n", "outer", &inner);
+        fs::write(&target, &original).unwrap();
+        let mut entries = vec![
+            entry(target.clone(), &inner, "outer"),
+            entry(target.clone(), "owned", "inner"),
+        ];
+        if reverse {
+            entries.reverse();
+        }
+        let desired = crate::desired::DesiredTree::from_entries(entries.clone());
+        assert!(desired.validate_ownership().is_err());
+        assert!(crate::unapply::Report::build(&desired).is_err());
+        let ctx = crate::exec::Context::builder()
+            .force(true)
+            .no_prompt(true)
+            .build();
+        assert!(reconcile_partials(&entries, ctx).is_err());
+        assert_eq!(fs::read_to_string(target).unwrap(), original);
+    }
+
+    #[test]
+    fn crossing_claims_are_rejected_but_unclaimed_literal_markers_are_allowed() {
+        let text = "# >>> over: a >>>\n# >>> over: b >>>\n# <<< over: a <<<\n# <<< over: b <<<\n";
+        assert!(crate::actions::partial::validate_independent_blocks(text, &["a", "b"]).is_err());
+        assert!(crate::actions::partial::validate_independent_blocks(text, &["a"]).is_ok());
     }
 
     #[rstest::rstest]

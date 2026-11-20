@@ -200,6 +200,7 @@ impl Report {
     /// Real checkout reporting status is deliberately not deletion authority:
     /// the disposal assessment verifies identity and discloses local loss.
     pub fn build(desired: &DesiredTree) -> Result<Self> {
+        crate::materialize::partial::validate_partial_targets(desired.entries())?;
         let plan = Plan::build(desired)?;
         let mut entries = Vec::with_capacity(plan.len());
         for step in plan.steps() {
@@ -329,6 +330,13 @@ impl Report {
     /// directory a chance to become empty before its own removal is
     /// attempted).
     pub async fn execute(&self, ctx: Ctx) -> Result<Self> {
+        // Recheck the whole composition before the first removal can hide nested ownership.
+        let claims: Vec<_> = self
+            .entries
+            .iter()
+            .map(|entry| entry.entry.clone())
+            .collect();
+        crate::materialize::partial::validate_partial_targets(&claims)?;
         if ctx.dry_run {
             let mut preview = self.clone();
             if ctx.discard_checkout {
@@ -410,6 +418,12 @@ impl Report {
                 continue;
             }
             if matches!(entry_outcome.outcome, Outcome::Removed) {
+                if matches!(
+                    entry_outcome.entry.intent,
+                    MaterializationIntent::PartialFile { .. }
+                ) {
+                    crate::materialize::partial::validate_partial_targets(&claims)?;
+                }
                 dematerialize(&entry_outcome.entry).await?;
                 let target = &entry_outcome.entry.target;
                 let fs_access = &entry_outcome.entry.access.fs;
