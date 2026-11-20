@@ -231,7 +231,7 @@ rules:
     target: ~/.config/editor
   - path: config/private
     permissions: "0600"
-  - path: 'scripts/*.sh'
+  - path: scripts
     mode: checkout
 ```
 
