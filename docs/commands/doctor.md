@@ -87,7 +87,8 @@ failed inspection, malformed exclusion markers, lint errors or global errors.
 Missing/permission-modified/locked entries, ahead/behind/diverged checkouts, missing or
 incorrect Git settings, missing effective exclusions, tracked conflicts and stale
 bookkeeping are warnings. Warning-only reports exit successfully, as lint does.
-Status uses the same runtime severity but exits nonzero for any attention condition.
+Status reports the same runtime findings, but successfully inspected attention
+conditions do not cause a nonzero exit status. Inspection and output failures do.
 
 ## Diagnostic writes
 

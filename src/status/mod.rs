@@ -376,8 +376,8 @@ impl Report {
     }
 
     /// Whether anything in this report needs attention (everything except
-    /// `Applied`, plus any Git prerequisite problem). The canonical status CLI
-    /// uses this to choose its exit status.
+    /// `Applied`, plus any Git prerequisite problem). This describes report
+    /// health; the status CLI fails only for inspection or output errors.
     pub fn needs_attention(&self) -> bool {
         self.entries.iter().any(|e| e.status.needs_attention())
             || !self.git_configuration.is_empty()
