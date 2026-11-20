@@ -95,6 +95,32 @@ impl Fixture {
     fn changed(&self) -> Vec<u8> {
         self.git(&["diff", "--no-renames", "HEAD^", "HEAD", "--name-only"])
     }
+
+    fn commit_raw_blob(&self, path: &str, bytes: &[u8]) {
+        let repo = git2::Repository::open(&self.root).unwrap();
+        let mut index = repo.index().unwrap();
+        // Corrupt/name-swapped fixtures must bypass filters that correctly reject these bytes.
+        let mut entry = index.iter().next().unwrap();
+        entry.path = path.as_bytes().to_vec();
+        entry.id = repo.blob(bytes).unwrap();
+        entry.mode = 0o100644;
+        entry.flags = 0;
+        entry.flags_extended = 0;
+        index.add(&entry).unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        index.write().unwrap();
+        let signature = repo.signature().unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "raw fixture",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+    }
 }
 
 fn success(output: Output) -> Output {
@@ -104,6 +130,244 @@ fn success(output: Output) -> Output {
         String::from_utf8_lossy(&output.stderr)
     );
     output
+}
+
+fn inventory(root: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
+    let mut files = std::collections::BTreeMap::new();
+    for item in fs::read_dir(root).unwrap() {
+        let path = item.unwrap().path();
+        if path.is_dir() {
+            files.insert(path.clone(), None);
+            files.extend(inventory(&path));
+        } else {
+            files.insert(path.clone(), Some(fs::read(path).unwrap()));
+        }
+    }
+    files
+}
+
+fn assert_inventory_unchanged(
+    root: &Path,
+    before: &std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>,
+) {
+    let after = inventory(root);
+    // Report only paths: dumping inventories would expose fixture key and plaintext buffers.
+    let changed: std::collections::BTreeSet<_> = before
+        .keys()
+        .chain(after.keys())
+        .filter(|path| before.get(*path) != after.get(*path))
+        .collect();
+    assert!(changed.is_empty(), "changed filesystem paths: {changed:?}");
+}
+
+#[test]
+fn a_fresh_locked_clone_reads_binary_secrets_without_creating_any_artifacts() {
+    let fixture = Fixture::new();
+    let value: Vec<u8> = (0..=255).collect();
+    success(fixture.secret("token", &value, false));
+    let clone = fixture.temp.path().join("clone");
+    fixture.git(&[
+        "clone",
+        "-q",
+        "--no-local",
+        fixture.root.to_str().unwrap(),
+        clone.to_str().unwrap(),
+    ]);
+    let identity = fixture.temp.path().join("alice.age");
+    let before = inventory(fixture.temp.path());
+    for _ in 0..2 {
+        let output = success(
+            fixture
+                .command(&cargo_bin("over"))
+                .args([
+                    "--home",
+                    clone.to_str().unwrap(),
+                    "secret",
+                    "get",
+                    "token",
+                    "--identity",
+                    identity.to_str().unwrap(),
+                    "--user",
+                    "alice",
+                ])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(output.stdout, value);
+    }
+    assert_inventory_unchanged(fixture.temp.path(), &before);
+    assert!(!clone.join(".git/over-crypt").exists());
+}
+
+#[test]
+fn a_locked_noninteractive_read_fails_closed_without_an_available_identity() {
+    let fixture = Fixture::new();
+    success(fixture.secret("token", b"never-print-this", false));
+    success(fixture.over(&["lock"]));
+    fs::remove_dir_all(fixture.root.join(".git/over-crypt")).unwrap();
+    let before = inventory(fixture.temp.path());
+    let failed = fixture.over(&["secret", "get", "token"]);
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("identity"));
+    let failed = fixture.over(&["secret", "get", "token", "--identity", "/missing/identity"]);
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&failed.stderr).contains("never-print-this"));
+    assert_inventory_unchanged(fixture.temp.path(), &before);
+}
+
+#[test]
+fn native_reads_ignore_staged_and_unstaged_changes_and_use_the_local_key_first() {
+    let fixture = Fixture::new();
+    success(fixture.secret("token", b"committed", false));
+    fs::write(
+        fixture.root.join(".over/secrets/token"),
+        b"staged corruption",
+    )
+    .unwrap();
+    fixture.git(&["add", ".over/secrets/token"]);
+    fs::write(
+        fixture.root.join(".over/secrets/token"),
+        b"unstaged corruption",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join(".over/crypt.json"),
+        b"broken working-tree metadata",
+    )
+    .unwrap();
+    let before = inventory(fixture.temp.path());
+    let output =
+        success(fixture.over(&["secret", "get", "token", "--identity", "/missing/identity"]));
+    assert_eq!(output.stdout, b"committed");
+    assert_inventory_unchanged(fixture.temp.path(), &before);
+}
+
+#[test]
+fn invalid_committed_access_metadata_is_rejected_without_artifacts_or_plaintext() {
+    let fixture = Fixture::new();
+    success(fixture.secret("token", b"never-print-this", false));
+    success(fixture.over(&["lock"]));
+    fs::write(fixture.root.join(".over/crypt.json"), b"invalid").unwrap();
+    fixture.commit_raw_blob(".over/crypt.json", b"invalid");
+    let before = inventory(fixture.temp.path());
+    let output = fixture.over(&["--debug", "secret", "get", "token"]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("never-print-this"));
+    assert_inventory_unchanged(fixture.temp.path(), &before);
+}
+
+#[cfg(unix)]
+#[test]
+fn unsafe_local_keys_are_not_hidden_by_one_shot_acquisition() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    success(fixture.secret("token", b"private", false));
+    fs::set_permissions(
+        fixture.root.join(".git/over-crypt/key"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let output = fixture.over(&[
+        "secret",
+        "get",
+        "token",
+        "--identity",
+        fixture.temp.path().join("alice.age").to_str().unwrap(),
+    ]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn interactive_identity_selection_keeps_prompts_off_binary_stdout() {
+    let fixture = Fixture::new();
+    success(fixture.secret("token", b"binary\0\xff\n\n", false));
+    success(fixture.over(&["lock"]));
+    fs::remove_dir_all(fixture.root.join(".git/over-crypt")).unwrap();
+    // Tool-manager shims may initialize Python state; measure the command, not harness setup.
+    success(
+        fixture
+            .command(Path::new("python3"))
+            .args(["-c", "pass"])
+            .output()
+            .unwrap(),
+    );
+    let before = inventory(fixture.temp.path());
+    let steps = serde_json::json!([[
+        "Age identity file",
+        format!("{}\n", fixture.temp.path().join("alice.age").display())
+    ]]);
+    let output = success(
+        fixture
+            .command(Path::new("python3"))
+            .env("OVER_TEST_PTY_SPLIT_STDOUT", "1")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/age-pty.py"
+            ))
+            .arg(steps.to_string())
+            .arg(cargo_bin("over"))
+            .args([
+                "--home",
+                fixture.root.to_str().unwrap(),
+                "secret",
+                "get",
+                "token",
+            ])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(output.stdout, b"binary\0\xff\n\n");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Age identity file"));
+    assert_inventory_unchanged(fixture.temp.path(), &before);
+}
+
+#[cfg(unix)]
+#[test]
+fn one_shot_reads_work_with_nonwritable_repository_identity_and_temporary_storage() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let fixture = Fixture::new();
+    if fs::metadata(fixture.temp.path()).unwrap().uid() == 0 {
+        eprintln!("permission enforcement requires an unprivileged runner");
+        return;
+    }
+    success(fixture.secret("token", b"read-only\0\xff", false));
+    success(fixture.over(&["lock"]));
+    fs::remove_dir_all(fixture.root.join(".git/over-crypt")).unwrap();
+    let before = inventory(fixture.temp.path());
+    let permissions: Vec<_> = std::iter::once(fixture.temp.path().to_path_buf())
+        .chain(before.keys().cloned())
+        .map(|path| {
+            let mode = fs::metadata(&path).unwrap().permissions();
+            (path, mode)
+        })
+        .collect();
+    for (path, mode) in &permissions {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode.mode() & !0o222)).unwrap();
+    }
+    let output = fixture
+        .command(&cargo_bin("over"))
+        .env("TMPDIR", fixture.temp.path())
+        .args([
+            "--home",
+            fixture.root.to_str().unwrap(),
+            "secret",
+            "get",
+            "token",
+            "--identity",
+            fixture.temp.path().join("alice.age").to_str().unwrap(),
+        ])
+        .output();
+    // Restore permissions before asserting so failures do not prevent fixture cleanup.
+    for (path, mode) in permissions {
+        fs::set_permissions(path, mode).unwrap();
+    }
+    assert_eq!(success(output.unwrap()).stdout, b"read-only\0\xff");
+    assert_inventory_unchanged(fixture.temp.path(), &before);
 }
 
 #[test]
@@ -193,7 +457,7 @@ fn binary_native_entries_round_trip_without_wrappers_and_reject_swapped_names() 
     success(fixture.over(&["lock"]));
     success(fixture.over(&["unlock"]));
     assert_eq!(fixture.value("token"), value);
-    fs::write(fixture.root.join(".over/secrets/other"), bytes).unwrap();
+    fixture.commit_raw_blob(".over/secrets/other", &bytes);
     let failed = fixture.over(&["secret", "get", "other"]);
     assert!(!failed.status.success());
     assert!(failed.stdout.is_empty());
@@ -434,7 +698,8 @@ fn rotation_commits_ciphertext_and_preserves_unrelated_staging() {
         b"unrelated\n"
     );
     success(fixture.over(&["lock"]));
-    assert!(!fixture.over(&["secret", "get", "TOKEN"]).status.success());
+    assert_eq!(fixture.value("TOKEN"), b"value\0\xff");
+    assert!(!fixture.over(&["secret", "list"]).status.success());
     success(fixture.over(&[
         "unlock",
         "--identity",
@@ -453,6 +718,8 @@ fn corrupting_another_entry_does_not_prevent_reading_a_valid_secret() {
     success(fixture.secret("A", b"valid", false));
     success(fixture.secret("B", b"other", false));
     fs::write(fixture.root.join(".over/secrets/B"), b"corrupt").unwrap();
+    assert_eq!(fixture.value("B"), b"other");
+    fixture.commit_raw_blob(".over/secrets/B", b"corrupt");
     assert_eq!(fixture.value("A"), b"valid");
     assert!(!fixture.over(&["secret", "get", "B"]).status.success());
 }

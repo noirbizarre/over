@@ -43,7 +43,7 @@ pub enum FilterCommand {
     Smudge { path: Option<PathBuf> },
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Clone, Debug)]
 pub struct Unlock {
     /// Read a standard Age identity file
     #[arg(short = 'i', long)]
@@ -662,6 +662,15 @@ pub(crate) fn acquire_repository_key(
     registry: &access::Registry,
     opt: &Unlock,
 ) -> Result<AcquiredKey> {
+    acquire_repository_key_policy(repo, registry, opt, true)
+}
+
+pub(crate) fn acquire_repository_key_policy(
+    repo: &git2::Repository,
+    registry: &access::Registry,
+    opt: &Unlock,
+    allow_temporary_files: bool,
+) -> Result<AcquiredKey> {
     let candidates: Vec<_> = registry
         .users
         .iter()
@@ -699,11 +708,14 @@ pub(crate) fn acquire_repository_key(
         }
     }
     let mut used_identity = None;
-    let key = access::unwrap_registry_with(
+    let key = access::unwrap_registry_policy(
         registry,
-        &sources,
-        opt.user.as_deref(),
-        opt.key.as_deref(),
+        access::UnwrapOptions {
+            sources: &sources,
+            user: opt.user.as_deref(),
+            name: opt.key.as_deref(),
+            allow_temporary_files,
+        },
         crate::ui::age::Callbacks,
         passphrase,
         |recipient, path| used_identity = Some((recipient.to_owned(), path.to_path_buf())),

@@ -16,8 +16,12 @@ pub enum Commands {
     },
     /// List secret names using the repository unlock state
     List,
-    /// Write a decrypted secret to stdout
-    Get { name: String },
+    /// Read a committed secret to stdout, acquiring an invocation-only key if locked
+    Get {
+        name: String,
+        #[command(flatten)]
+        credentials: super::crypt::Unlock,
+    },
     /// Remove an encrypted secret
     Remove {
         name: String,
@@ -60,8 +64,17 @@ pub async fn execute(cli: &super::CLI, command: &Commands) -> Result<()> {
                     println!("{name}");
                 }
             }
-            Commands::Get { name } => {
-                let value = store.get(&SecretName::parse(&name)?, true)?;
+            Commands::Get { name, credentials } => {
+                let value = store.get_one_shot(&SecretName::parse(&name)?, |repo, registry| {
+                    // Acquisition returns a key without installing it or remembering its identity.
+                    Ok(super::crypt::acquire_repository_key_policy(
+                        repo,
+                        registry,
+                        &credentials,
+                        false,
+                    )?
+                    .key)
+                })?;
                 let mut stdout = std::io::stdout().lock();
                 stdout
                     .write_all(value.expose())

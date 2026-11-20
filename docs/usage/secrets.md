@@ -13,7 +13,9 @@ Git's common administrative directory; it survives terminal closure and reboot.
 the local key, refusing unsafe local edits. Filters and secret commands do not
 prompt for a second credential. See [key management](crypt.md#users-and-keys).
 
-Without that local key, native operations fail with unlock guidance. Provider
+Without that local key, mutations and listing fail with unlock guidance. Native
+`secret get` can instead acquire an invocation-only key without persisting an
+unlock; see [one-shot reads](../commands/secret.md#one-shot-reads). Provider
 resolution treats a locked native store as a session-unavailable candidate;
 corrupt ciphertext remains a fatal error. Plaintext values are never cached.
 
@@ -112,10 +114,12 @@ For example, pipe the output of an existing credential provider:
 credential-provider | over secret add github-token
 ```
 
-Unlock before using noninteractive secret commands. Avoid typing literal secret
+Unlock before using noninteractive mutations or listing. Avoid typing literal secret
 values in shell commands; unencrypted software Age identity files support
 noninteractive unlock. Encrypted identity files and hardware plugins may require
-terminal interaction during unlock, never for each subsequent native-secret read.
+terminal interaction during unlock. One-shot reads can use
+`secret get NAME --identity PATH` without installing a repository key; identities that require
+interaction still need terminal stdin and stderr.
 
 An existing secret requires explicit `--replace`; the flag is the replacement
 authorization and does not cause another confirmation prompt. Failed encryption
@@ -124,11 +128,20 @@ publication files.
 
 ### List, retrieve, or remove
 
-`list` prints sorted names only. All operations require the shared unlock state,
-including `list` and `remove`. Listing validates filenames without reading every
+`list` prints sorted names only. Adding, listing, and removing require the shared
+unlock state. Listing validates filenames without reading every
 value. Getting one native entry does not authenticate unrelated entries, so a
 corrupt value does not prevent retrieving another secret. Reading a missing
 store does not create one.
+
+Native `get` always captures HEAD once and reads the committed access metadata,
+credential envelopes, and ciphertext from that snapshot. This applies while
+unlocked too: staged and unstaged edits are ignored. A matching installed key is
+used without prompting; otherwise Over unwraps an ephemeral key using identities
+or interactive recovery credentials. It creates no filesystem artifacts and
+does not enable other operations. External plugins may maintain their own state;
+the temporary-file native-PQ adapter requires normal unlock instead. Standalone
+historical Age stores keep their existing filesystem-based reads.
 
 `get` intentionally writes the fully decrypted value to stdout, without adding
 a newline. This is the explicit plaintext-output command; redirect or pipe it

@@ -11,16 +11,29 @@ import termios
 import time
 
 steps = json.loads(sys.argv[1])
+split_stdout = os.environ.get("OVER_TEST_PTY_SPLIT_STDOUT") == "1"
+if split_stdout:
+    stdout_read, stdout_write = os.pipe()
 pid, fd = pty.fork()
 if pid == 0:
+    if split_stdout:
+        os.close(stdout_read)
+        os.dup2(stdout_write, 1)
+        os.close(stdout_write)
     os.execv(sys.argv[2], sys.argv[2:])
+if split_stdout:
+    os.close(stdout_write)
 
 deadline = time.monotonic() + 20
 output = b""
+stdout = b""
 pending = b""
 sent = 0
 while time.monotonic() < deadline:
-    if not select.select([fd], [], [], 0.1)[0]:
+    ready = select.select([fd, stdout_read] if split_stdout else [fd], [], [], 0.1)[0]
+    if split_stdout and stdout_read in ready:
+        stdout += os.read(stdout_read, 65536)
+    if fd not in ready:
         continue
     try:
         block = os.read(fd, 65536)
@@ -49,9 +62,19 @@ while time.monotonic() < deadline:
 else:
     os.killpg(pid, signal.SIGKILL)
     os.waitpid(pid, 0)
-    sys.stdout.buffer.write(output)
+    sys.stderr.buffer.write(output) if split_stdout else sys.stdout.buffer.write(output)
+    if split_stdout:
+        sys.stdout.buffer.write(stdout)
     sys.exit(124)
 
 _, status = os.waitpid(pid, 0)
-sys.stdout.buffer.write(output)
+if split_stdout:
+    # Drain bytes sent just before terminal closure, preserving a separate binary stdout.
+    while block := os.read(stdout_read, 65536):
+        stdout += block
+    os.close(stdout_read)
+    sys.stdout.buffer.write(stdout)
+    sys.stderr.buffer.write(output)
+else:
+    sys.stdout.buffer.write(output)
 sys.exit(os.waitstatus_to_exitcode(status) if sent == len(steps) else 125)

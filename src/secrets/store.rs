@@ -276,6 +276,25 @@ impl SecretStore {
         )
     }
 
+    pub(crate) fn get_one_shot(
+        &self,
+        name: &SecretName,
+        acquire: impl FnOnce(
+            &git2::Repository,
+            &crate::crypt::access::Registry,
+        ) -> Result<crate::crypt::format::RepositoryKey>,
+    ) -> Result<SecretBytes> {
+        if let Some(value) = super::snapshot::read(&self.repository, name, &self.crypto, acquire)? {
+            return Ok(value);
+        }
+        // Only historical Age stores retain filesystem reads; native data must never fall back.
+        self.validate_legacy_fallback()?;
+        self.crypto.decrypt(
+            &fs::read(self.path(name)?).context("could not read encrypted secret")?,
+            true,
+        )
+    }
+
     pub(crate) fn read_for_resolution(
         &self,
         name: &SecretName,
@@ -576,9 +595,10 @@ pub(crate) fn migrate_native(repo: &git2::Repository) -> Result<bool> {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct SecretMap(
-    #[serde(deserialize_with = "unique_values")] std::collections::BTreeMap<String, Vec<u8>>,
-    u32,
+pub(super) struct SecretMap(
+    #[serde(deserialize_with = "unique_values")]
+    pub(super)  std::collections::BTreeMap<String, Vec<u8>>,
+    pub(super) u32,
 );
 
 fn unique_values<'de, D: serde::Deserializer<'de>>(

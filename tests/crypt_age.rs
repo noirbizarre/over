@@ -121,11 +121,25 @@ impl Fixture {
     }
 
     fn terminal(&self, args: &[&str], steps: &[(&str, &str)], mode: &str) -> Output {
+        self.terminal_output(args, steps, mode, false)
+    }
+
+    fn terminal_output(
+        &self,
+        args: &[&str],
+        steps: &[(&str, &str)],
+        mode: &str,
+        split_stdout: bool,
+    ) -> Output {
         let mut command = Command::new("python3");
         self.environment(&mut command);
         let output = command
             .current_dir(&self.repo)
             .env("OVER_TEST_PLUGIN_MODE", mode)
+            .env(
+                "OVER_TEST_PTY_SPLIT_STDOUT",
+                if split_stdout { "1" } else { "0" },
+            )
             .args(["-c", include_str!("fixtures/age-pty.py")])
             .arg(serde_json::to_string(steps).unwrap())
             .arg(assert_cmd::cargo::cargo_bin!("over"))
@@ -135,6 +149,15 @@ impl Fixture {
         let text = String::from_utf8_lossy(&output.stdout);
         assert!(!text.contains("pin-sentinel"), "PIN was echoed");
         assert!(!text.contains("recovery-sentinel"), "passphrase was echoed");
+        let diagnostics = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !diagnostics.contains("recovery-sentinel"),
+            "passphrase was echoed to stderr"
+        );
+        assert!(
+            !diagnostics.contains("pin-sentinel"),
+            "PIN was echoed to stderr"
+        );
         assert_ne!(output.status.code(), Some(124), "PTY timed out: {text}");
         assert_ne!(
             output.status.code(),
@@ -152,6 +175,100 @@ fn success(output: Output) -> Output {
         String::from_utf8_lossy(&output.stderr)
     );
     output
+}
+
+#[test]
+fn one_shot_plugin_and_passphrase_reads_leave_the_repository_locked() {
+    let fixture = Fixture::new();
+    fixture.enroll();
+    success(fixture.terminal(
+        &[
+            "user",
+            "key",
+            "add",
+            "alice",
+            "--name",
+            "recovery",
+            "--passphrase",
+        ],
+        &[
+            ("New Age key passphrase", "recovery-sentinel\n"),
+            ("Confirm new Age key passphrase", "recovery-sentinel\n"),
+        ],
+        "success",
+    ));
+    let mut child = fixture
+        .command(&[
+            "--home",
+            fixture.repo.to_str().unwrap(),
+            "secret",
+            "add",
+            "token",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"value\0\xff\n")
+        .unwrap();
+    success(child.wait_with_output().unwrap());
+    fixture.run(&["lock"]);
+    fs::remove_dir_all(fixture.repo.join(".git/over-crypt")).unwrap();
+    let config = fs::read(fixture.repo.join(".git/config")).unwrap();
+    let index = fs::read(fixture.repo.join(".git/index")).unwrap();
+    let plugin = fixture.run(&[
+        "--home",
+        fixture.repo.to_str().unwrap(),
+        "secret",
+        "get",
+        "token",
+        "--identity",
+        fixture.identity.to_str().unwrap(),
+    ]);
+    assert_eq!(plugin.stdout, b"value\0\xff\n");
+    assert!(!fixture.repo.join(".git/over-crypt").exists());
+    let recovery = success(fixture.terminal_output(
+        &[
+            "--home",
+            fixture.repo.to_str().unwrap(),
+            "secret",
+            "get",
+            "token",
+            "--key",
+            "recovery",
+        ],
+        &[("Age key passphrase: ", "recovery-sentinel\n")],
+        "success",
+        true,
+    ));
+    assert_eq!(recovery.stdout, b"value\0\xff\n");
+    assert!(String::from_utf8_lossy(&recovery.stderr).contains("Age key passphrase"));
+    for answer in ["wrong-recovery-sentinel\n", "\x03"] {
+        let failed = fixture.terminal_output(
+            &[
+                "--home",
+                fixture.repo.to_str().unwrap(),
+                "secret",
+                "get",
+                "token",
+                "--key",
+                "recovery",
+            ],
+            &[("Age key passphrase: ", answer)],
+            "success",
+            true,
+        );
+        assert!(!failed.status.success());
+        assert!(failed.stdout.is_empty());
+    }
+    assert!(!fixture.repo.join(".git/over-crypt").exists());
+    assert_eq!(fs::read(fixture.repo.join(".git/config")).unwrap(), config);
+    assert_eq!(fs::read(fixture.repo.join(".git/index")).unwrap(), index);
 }
 
 #[test]
