@@ -109,13 +109,7 @@ pub(crate) fn worktree_write(path: &Path, bytes: &[u8], git_mode: Option<u32>) -
     #[cfg(windows)]
     if existing.is_some() {
         // Copy the established file's ACL, rather than broadening or narrowing it on refresh.
-        let result = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; Set-Acl -LiteralPath $env:OVER_CRYPT_DESTINATION -AclObject (Get-Acl -LiteralPath $env:OVER_CRYPT_SOURCE)"])
-            .env("OVER_CRYPT_SOURCE", path).env("OVER_CRYPT_DESTINATION", &prepared).output()?;
-        ensure!(
-            result.status.success(),
-            "could not preserve worktree access control"
-        );
+        super::windows::copy_acl(path, &prepared)?;
     }
     #[cfg(not(unix))]
     let _ = git_mode;
