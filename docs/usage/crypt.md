@@ -173,13 +173,14 @@ Existing Git-prefixed helper commands remain hidden compatibility aliases for
 installed configurations. Run `over unlock` to refresh them to the crypt namespace
 without changing `.gitattributes`.
 
-For direct Git configuration, the equivalent driver settings are below. Replace
-`/home/alice/.cargo/bin/over` with your installed executable's absolute path,
+For direct Git configuration, the ordinary protected-file driver settings are below.
+Use `over unlock` for complete setup, including the native-secret diff driver.
+Replace `/home/alice/.cargo/bin/over` with your installed executable's absolute path,
 retaining the inner shell quotes (escape any apostrophes in the path):
 
 ```sh
-git config --local filter.over.clean "'/home/alice/.cargo/bin/over' crypt filter clean"
-git config --local filter.over.smudge "'/home/alice/.cargo/bin/over' crypt filter smudge"
+git config --local filter.over.clean "'/home/alice/.cargo/bin/over' crypt filter clean -- %f"
+git config --local filter.over.smudge "'/home/alice/.cargo/bin/over' crypt filter smudge -- %f"
 git config --local filter.over.process "'/home/alice/.cargo/bin/over' crypt filter-process"
 git config --local filter.over.required true
 git config --local diff.over.textconv "'/home/alice/.cargo/bin/over' crypt textconv --"
