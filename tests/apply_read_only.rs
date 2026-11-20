@@ -499,3 +499,59 @@ fn read_only_apply_reconciles_partial_blocks_without_source_or_state_writes() {
     assert_eq!(snapshot(&fixture.source), before);
     assert!(!fixture.temp.path().join("state").exists());
 }
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn read_only_apply_preserves_target_git_protection_without_touching_source_git(
+    #[case] protected: bool,
+) {
+    let fixture = Fixture::new(true);
+    if protected {
+        fixture.protect();
+    }
+    fs::create_dir_all(&fixture.target).unwrap();
+    let target = git2::Repository::init(&fixture.target).unwrap();
+    let source = snapshot(&fixture.source);
+    fixture.apply().assert().success();
+    assert!(target.is_path_ignored(Path::new("config")).unwrap());
+    assert!(target.is_path_ignored(Path::new("nested/plain")).unwrap());
+    assert!(!target.is_path_ignored(Path::new("unrelated")).unwrap());
+    assert_eq!(snapshot(&fixture.source), source);
+    assert!(!fixture.temp.path().join("state").exists());
+}
+
+#[test]
+fn read_only_apply_refuses_plaintext_publication_into_a_tracked_target_file() {
+    let fixture = Fixture::new(true);
+    fixture.protect();
+    fs::create_dir_all(fixture.target.join("nested")).unwrap();
+    fs::write(fixture.target.join("nested/plain"), "tracked user content").unwrap();
+    let target = git2::Repository::init(&fixture.target).unwrap();
+    let mut index = target.index().unwrap();
+    index.add_path(Path::new("nested/plain")).unwrap();
+    index.write().unwrap();
+    let source = snapshot(&fixture.source);
+    let before = snapshot(&fixture.target);
+    fixture.apply().arg("--force").assert().failure();
+    assert_eq!(snapshot(&fixture.target), before);
+    assert_eq!(snapshot(&fixture.source), source);
+}
+
+#[test]
+fn read_only_apply_refuses_target_exclusions_stored_inside_the_source_repository() {
+    let fixture = Fixture::new(false);
+    fs::create_dir_all(&fixture.target).unwrap();
+    // A separate worktree path can conceal administration located inside the immutable source.
+    let mut options = git2::RepositoryInitOptions::new();
+    options.workdir_path(&fixture.target);
+    git2::Repository::init_opts(fixture.source.join("target-gitdir"), &options).unwrap();
+    let source = snapshot(&fixture.source);
+    fixture
+        .apply()
+        .assert()
+        .failure()
+        .stderr(contains("shares source Git administration"));
+    assert_eq!(snapshot(&fixture.source), source);
+    assert!(!fixture.target.join("config").exists());
+}
