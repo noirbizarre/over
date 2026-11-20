@@ -4,6 +4,71 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/noirbizarre/over/compare/0.5.1..0.6.0) - 2026-11-20
+
+### 💫 Features
+
+- **apply** Support skipping overlays by name or glob ([#342](https://github.com/noirbizarre/over/issues/342)) - ([a0d4a00](https://github.com/noirbizarre/over/commit/a0d4a00d3554a280abc6f1e0a7c710a1c2bd8e66))
+- **devcontainer** Support read-only mounted checkouts ([#347](https://github.com/noirbizarre/over/issues/347)) - ([d8c5999](https://github.com/noirbizarre/over/commit/d8c5999e50ca2c183f6535a2027abb1c2a2382d4))
+- **secrets** Read native secrets from bare repositories ([#344](https://github.com/noirbizarre/over/issues/344)) - ([f76258e](https://github.com/noirbizarre/over/commit/f76258eb8a9e1e12d73130bc196af02ba038ee7a))
+- **secrets** Read locked secrets without persisting an unlock ([#343](https://github.com/noirbizarre/over/issues/343)) - ([480c408](https://github.com/noirbizarre/over/commit/480c4084853829f5b1866b778e0634bb6425a59a))
+
+### 🐛 Bug Fixes
+
+- **apply** Finalize published directory metadata on failure - ([4fc7ecd](https://github.com/noirbizarre/over/commit/4fc7ecdc4d7587e7c59410825135a01a329fee73))
+- **apply** Finalize scaffold metadata after deferred partial writes - ([abd1bb0](https://github.com/noirbizarre/over/commit/abd1bb0991d50b29986f5554b9b85d16221c10d9))
+- **checkout** Retry generated snapshot ref lock contention ([#339](https://github.com/noirbizarre/over/issues/339)) - ([10a20de](https://github.com/noirbizarre/over/commit/10a20de2e8da1fc02b6801568d4ff14646b33222))
+- **crypt** Repair read-only destination permissions without rewriting - ([917c8f8](https://github.com/noirbizarre/over/commit/917c8f8b49219fee4f255aa5c7a137dc5e448ec2))
+- **git** Tolerate index cache refreshes during commit preparation ([#337](https://github.com/noirbizarre/over/issues/337)) - ([f1c7bd6](https://github.com/noirbizarre/over/commit/f1c7bd62e60c8ce3223dfb7959662139e3e47596))
+- **partial** Reject overlapping selected block ownership - ([3903362](https://github.com/noirbizarre/over/commit/3903362fadca8f771b85d6e3940bcb2ca713d8e8))
+- **sync** Report missing targets before stale mapping checks - ([6a7bc32](https://github.com/noirbizarre/over/commit/6a7bc324203cd8fbcd3000da11076011b254f847))
+- **sync** Handle local edits after virtual checkout refresh - ([f764369](https://github.com/noirbizarre/over/commit/f764369844557385aa55eff04cf1dcc133c54a27))
+- Protect rendered source metadata and align checkout behavior ([#348](https://github.com/noirbizarre/over/issues/348)) - ([983493a](https://github.com/noirbizarre/over/commit/983493a65de40420c2ad89daac9ce5b14b016a58))
+- Label rendered diffs as current to desired - ([86bac98](https://github.com/noirbizarre/over/commit/86bac98eec241ed64c73ca82e2d972ad90f11422))
+- Correct sync conflict recovery guidance - ([25b0aae](https://github.com/noirbizarre/over/commit/25b0aaee28eb04773a763c18db063e1add5e2fe2))
+- Require applied generated checkouts before sync - ([69557f6](https://github.com/noirbizarre/over/commit/69557f668fb328675057a84f2fab23d6089c41e9))
+- Protect source git metadata from rendered destinations - ([2a8ffc7](https://github.com/noirbizarre/over/commit/2a8ffc768f024bb47a7849e71b930304bc994b31))
+- Reconcile partial ownership, permission repair, sync, and documentation ([#346](https://github.com/noirbizarre/over/issues/346)) - ([f36843c](https://github.com/noirbizarre/over/commit/f36843cf4e4b281aec17ed76e9fd9d9fb34bea41))
+
+### ⚡ Performance
+
+- **crypt** Avoid PowerShell for Windows ACL operations ([#349](https://github.com/noirbizarre/over/issues/349)) - ([6999c13](https://github.com/noirbizarre/over/commit/6999c13393cb7dfcdafa561b73786d562191f06e))
+
+### 🔨 Refactor
+
+- **secrets** Store authenticated binary values ([#340](https://github.com/noirbizarre/over/issues/340)) - ([f0220d8](https://github.com/noirbizarre/over/commit/f0220d8d135fd82dc07f1c39bf0ea8cf9c8b4cdf))
+
+### 📚 Documentation
+
+- **config** Select a directory in the checkout example - ([c8570a1](https://github.com/noirbizarre/over/commit/c8570a1b32f71afa4c6beae44b97513526d1d711))
+- **config** Document strict permissions object fields - ([a67e0c0](https://github.com/noirbizarre/over/commit/a67e0c02e75a2f8af124f6eb39e7b823056059c2))
+- **crypt** Clarify native-secret diff bypass after rotation - ([1a68eff](https://github.com/noirbizarre/over/commit/1a68eff457e3594513cb1e8a65a0cb99953f8bea))
+- **crypt** Use the native-secret diff driver in policy examples - ([163fb7c](https://github.com/noirbizarre/over/commit/163fb7c6720f50de8082fd811dbf1969b13c69f6))
+- **crypt** Clarify locked one-shot secret reads - ([a03dbc1](https://github.com/noirbizarre/over/commit/a03dbc1bc0e3fcca24d8cc1beb3b96b87cbbd80c))
+- **restore** Describe generated writes and metadata preservation - ([206b339](https://github.com/noirbizarre/over/commit/206b33901c3bab17704bbf466e08204225c9a646))
+- **selection** Distinguish commit context from path inference - ([bda98af](https://github.com/noirbizarre/over/commit/bda98af064c9e2bd3a4339da2f7a10f767df24d2))
+- **status** Align exit codes with inspection failures - ([bb28995](https://github.com/noirbizarre/over/commit/bb2899558d749e74b8b6258a77c7649bda8d563b))
+- Note strict permissions object validation - ([1cfbf35](https://github.com/noirbizarre/over/commit/1cfbf35cf178fd9dc7be0770713beab7dc812157))
+- Correct symlink materializer responsibilities - ([bf43f66](https://github.com/noirbizarre/over/commit/bf43f66513747e53199249811e42d8ed1ad46bde))
+- Distinguish mode and ownership policies - ([de14143](https://github.com/noirbizarre/over/commit/de14143bb95ebc1c91b0d2d54bf1d562910be47f))
+- Distinguish generated restore platform support - ([7f5e486](https://github.com/noirbizarre/over/commit/7f5e486ada7e2b97bad6b09761d665dfa115c0f1))
+- Clarify legacy sync abort reset semantics - ([5d7c8f7](https://github.com/noirbizarre/over/commit/5d7c8f75521508a6727a3ef232aa8df6c1e846ef))
+- Pass filename context in manual filter setup - ([55e0cfc](https://github.com/noirbizarre/over/commit/55e0cfc9d9011d3f6e7f9e028f0e2ca3f23b46e4))
+
+### 🧪 Tests
+
+- **sync** Expect pending mapped edits to report blocked - ([b269118](https://github.com/noirbizarre/over/commit/b2691187316654d2f9a4c899abed0b0109b8d4db))
+- Define rendered diff symlink inspection policy - ([10ccb17](https://github.com/noirbizarre/over/commit/10ccb17904cdfa14431e098a35e7563935522d62))
+
+### 🧹 Chores
+
+- **template** Merge latest rust.tpl updates ([#345](https://github.com/noirbizarre/over/issues/345)) - ([5d1fd67](https://github.com/noirbizarre/over/commit/5d1fd6737ab37bb8edec281848d37fb05b4d5d05))
+- **template** Merge latest rust.tpl updates - ([98ec67b](https://github.com/noirbizarre/over/commit/98ec67bcbea07a19c7f315f87aed5a497840b03a))
+
+### Tpl
+
+- Render rust at main - ([80f38aa](https://github.com/noirbizarre/over/commit/80f38aae4c79ead7ff0742a165aaf711508d3f7a))
+
 ## [0.5.1](https://github.com/noirbizarre/over/compare/0.5.0..0.5.1) - 2026-11-17
 
 ### 🐛 Bug Fixes
