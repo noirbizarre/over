@@ -595,7 +595,6 @@ async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Resu
         });
     }
     // Reconcile also initializes during apply; sync must not acquire deployment authority that way.
-    vc_state::verify_live_target(entry)?;
     let actual = crate::plan::actual::inspect_with(&entry.target, &entry.access.fs)?;
     let record = vc_state::record_for_entry(entry)?;
     let blocked = match (&actual, &record) {
@@ -615,6 +614,8 @@ async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Resu
             reason: reason.into(),
         });
     }
+    // Report the selected target's apply requirement before checking an older deployment's mapping.
+    vc_state::verify_live_target(entry)?;
     if let Some(record) = &record {
         vc_state::verify(entry, record)?;
     }
