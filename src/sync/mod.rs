@@ -206,7 +206,7 @@ impl fmt::Display for SyncOutcome {
                 emojis::warning(),
                 style::yellow("conflict:"),
                 target,
-                style::white("resolve manually, then re-run `over sync`, or `over sync --abort`"),
+                style::white("resolve the conflicting files manually, then rerun synchronization"),
             ),
             SyncOutcome::Blocked { reason, .. } => write!(
                 f,
@@ -557,7 +557,7 @@ fn handle_unresolved_state(
     }
     Ok(SyncOutcome::Blocked {
         path: path.to_path_buf(),
-        reason: "finish resolving and commit, or run `over sync --abort`".to_string(),
+        reason: "finish resolving and commit, or abort the merge with Git".to_string(),
     })
 }
 
