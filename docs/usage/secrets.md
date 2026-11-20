@@ -154,6 +154,30 @@ entry. Interactive approval requires terminal stdin and stderr; use
 As with any versioned data, removing
 a value does not erase prior Git history.
 
+### Read from a bare repository
+
+A provisioning environment can fetch the repository without checking out any
+files, then read a committed secret with an invocation-only key:
+
+```sh
+git clone --bare https://example.org/dotfiles.git /run/dotfiles.git
+over --home /run/dotfiles.git secret get provisioning-token \
+  --identity /run/credentials/identity | consuming-program
+```
+
+`OVER_HOME=/run/dotfiles.git` can also select the repository, independently of the
+current directory. Lookup uses the bare repository's current HEAD commit, captured
+once, including when HEAD is detached. Commit the secret and its access metadata
+before cloning; missing or invalid committed state fails without filesystem
+fallback or partial plaintext output.
+
+Cloning writes the repository; the subsequent `secret get` does not modify it.
+Retrieval creates no checkout, index, persistent key, or unlock state, and leaves
+refs, configuration, and Git objects unchanged. The identity must be usable in
+the provisioning environment; an unencrypted software identity supports
+noninteractive reads. The existing one-shot credential and plugin restrictions
+apply. Bare repository support is limited to `secret get`.
+
 ## Use secrets in hooks
 
 Lifecycle hooks support native secret interpolation

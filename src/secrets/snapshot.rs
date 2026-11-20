@@ -24,26 +24,30 @@ struct Snapshot {
 impl Snapshot {
     fn capture(repo: &git2::Repository, name: &SecretName) -> Result<Option<Self>> {
         let commit = match repo.head() {
-            Ok(head) => head.peel_to_commit()?,
+            Ok(head) => head
+                .peel_to_commit()
+                .context("could not resolve HEAD to a commit")?,
             Err(error)
                 if matches!(
                     error.code(),
                     git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
                 ) =>
             {
+                // Bare administration files must never masquerade as an uncommitted legacy store.
                 ensure!(
-                    !access::configured(repo)?,
+                    !repo.is_bare() && !access::configured(repo)?,
                     "native secret reads require a committed HEAD snapshot; commit the repository first"
                 );
                 return Ok(None);
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error).context("could not resolve committed HEAD"),
         };
         // Never resolve HEAD again: a prompt may outlive a checkout or key rotation.
-        let tree = commit.tree()?;
+        let tree = commit.tree().context("could not read the HEAD tree")?;
         let Some(registry) = access::registry_from_tree(repo, &tree)? else {
+            // Only working trees can opt into the historical filesystem fallback.
             ensure!(
-                !access::configured(repo)?,
+                !repo.is_bare() && !access::configured(repo)?,
                 "native secret reads require access metadata in the HEAD commit"
             );
             return Ok(None);
@@ -182,8 +186,14 @@ pub(super) fn read(
     let Some(snapshot) = Snapshot::capture(&repo, name)? else {
         return Ok(None);
     };
+    // A bare Git directory is the source itself, never a filesystem-store fallback.
+    let source = if repo.is_bare() {
+        repo.path()
+    } else {
+        access::root(&repo)?
+    };
     ensure!(
-        root.canonicalize()? == access::root(&repo)?.canonicalize()?,
+        root.canonicalize()? == source.canonicalize()?,
         "select the source Git repository root with --home for repository-key secrets"
     );
     let key = match access::snapshot_key(&repo, &snapshot.registry)? {
@@ -245,10 +255,12 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn moving_head_during_acquisition_does_not_mix_key_generations_or_values() {
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn moving_head_during_acquisition_does_not_mix_key_generations_or_values(#[case] bare: bool) {
         let temp = tempfile::tempdir().unwrap();
-        let repo = git2::Repository::init(temp.path()).unwrap();
+        let repo = initialize(temp.path(), bare);
         let original = RepositoryKey::generate().unwrap();
         publish(&repo, &original, b"original\0\xff");
         let name = SecretName::parse("token").unwrap();
@@ -268,10 +280,12 @@ mod tests {
         assert!(!repo.commondir().join("over-crypt").exists());
     }
 
-    #[test]
-    fn an_acquired_key_must_match_the_captured_registry() {
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn an_acquired_key_must_match_the_captured_registry(#[case] bare: bool) {
         let temp = tempfile::tempdir().unwrap();
-        let repo = git2::Repository::init(temp.path()).unwrap();
+        let repo = initialize(temp.path(), bare);
         publish(&repo, &RepositoryKey::generate().unwrap(), b"private");
         let error = read(
             temp.path(),
@@ -318,10 +332,12 @@ mod tests {
         assert_eq!(std::fs::read(path).unwrap(), before);
     }
 
-    #[test]
-    fn a_missing_committed_secret_never_attempts_credential_acquisition() {
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn a_missing_committed_secret_never_attempts_credential_acquisition(#[case] bare: bool) {
         let temp = tempfile::tempdir().unwrap();
-        let repo = git2::Repository::init(temp.path()).unwrap();
+        let repo = initialize(temp.path(), bare);
         publish(&repo, &RepositoryKey::generate().unwrap(), b"private");
         let result = read(
             temp.path(),
@@ -336,5 +352,119 @@ mod tests {
                 .contains("does not exist in HEAD")
         );
         assert!(!repo.commondir().join("over-crypt").exists());
+    }
+
+    fn initialize(path: &std::path::Path, bare: bool) -> git2::Repository {
+        if bare {
+            git2::Repository::init_bare(path).unwrap()
+        } else {
+            git2::Repository::init(path).unwrap()
+        }
+    }
+
+    #[rstest::rstest]
+    #[case("commit", false)]
+    #[case("tree", false)]
+    #[case("blob", false)]
+    #[case("tree", true)]
+    #[case("blob", true)]
+    fn missing_or_corrupt_snapshot_objects_fail_before_acquisition(
+        #[case] object: &str,
+        #[case] corrupt: bool,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = initialize(temp.path(), true);
+        publish(&repo, &RepositoryKey::generate().unwrap(), b"private");
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        let oid = match object {
+            "commit" => commit.id(),
+            "tree" => commit.tree_id(),
+            "blob" => commit
+                .tree()
+                .unwrap()
+                .get_path(std::path::Path::new(".over/secrets/token"))
+                .unwrap()
+                .id(),
+            _ => unreachable!(),
+        };
+        let hex = oid.to_string();
+        let path = repo.path().join("objects").join(&hex[..2]).join(&hex[2..]);
+        drop(commit);
+        drop(repo);
+        // Reopen after damaging loose storage so libgit2 cannot satisfy reads from its cache.
+        std::fs::remove_file(&path).unwrap();
+        if corrupt {
+            std::fs::write(path, b"not a compressed Git object").unwrap();
+        }
+        let result = read(
+            temp.path(),
+            &SecretName::parse("token").unwrap(),
+            &CryptoService::default(),
+            |_, _| panic!("must not acquire credentials for an unreadable snapshot"),
+        );
+        assert!(result.is_err());
+        assert!(!temp.path().join("over-crypt").exists());
+    }
+
+    #[rstest::rstest]
+    #[case("symlink")]
+    #[case("wrong-type")]
+    #[case("malformed-tree")]
+    fn invalid_git_tree_entries_fail_before_acquisition(#[case] invalid: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = initialize(temp.path(), true);
+        publish(&repo, &RepositoryKey::generate().unwrap(), b"private");
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        let root = parent.tree().unwrap();
+        let administration = root.get_path(std::path::Path::new(".over")).unwrap();
+        let administration = repo.find_tree(administration.id()).unwrap();
+        let secrets = administration.get_name("secrets").unwrap();
+        let entry = repo.find_tree(secrets.id()).unwrap();
+        let token = entry.get_name("token").unwrap();
+        let oid = if invalid == "wrong-type" {
+            secrets.id()
+        } else {
+            token.id()
+        };
+        let mode = if invalid == "symlink" {
+            "120000"
+        } else {
+            "100644"
+        };
+        let mut bytes = format!("{mode} token\0").into_bytes();
+        bytes.extend_from_slice(oid.as_bytes());
+        if invalid == "malformed-tree" {
+            bytes.truncate(5);
+        }
+        // Raw ODB writes bypass treebuilder's type checks to model hostile committed data.
+        let secrets = repo
+            .odb()
+            .unwrap()
+            .write(git2::ObjectType::Tree, &bytes)
+            .unwrap();
+        let mut builder = repo.treebuilder(Some(&administration)).unwrap();
+        builder.insert("secrets", secrets, 0o040000).unwrap();
+        let mut root_builder = repo.treebuilder(Some(&root)).unwrap();
+        root_builder
+            .insert(".over", builder.write().unwrap(), 0o040000)
+            .unwrap();
+        let tree = repo.find_tree(root_builder.write().unwrap()).unwrap();
+        let signature = git2::Signature::now("Snapshot test", "snapshot@example.invalid").unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "invalid tree",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+        let result = read(
+            temp.path(),
+            &SecretName::parse("token").unwrap(),
+            &CryptoService::default(),
+            |_, _| panic!("must not acquire credentials for an invalid Git tree"),
+        );
+        assert!(result.is_err());
     }
 }
