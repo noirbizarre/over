@@ -102,8 +102,8 @@ The toolchain, hooks, CI and release workflows come from
 [rust.tpl](https://github.com/noirbizarre/rust.tpl). Use `git tpl update` to refresh
 the rendered ref, inspect the diff, then `git tpl merge` to apply it; see the
 [contributor workflow](CONTRIBUTING.md#this-repository-is-generated-from-a-template).
-Files carrying template-owned content end with a
-`# --- project-specific ---` marker: add below it. Global mise tools instead go
+Files carrying template-owned content end with
+project-specific section markers: add below them. Global mise tools instead go
 between the begin/end project-specific tools markers inside `[tools]`.
 
 Changing template-owned content here fixes it in one repository. Changing it
