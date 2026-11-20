@@ -18,12 +18,9 @@ use super::Materializer;
 
 /// The default materialization backend (ADR-006): plain directories and
 /// symlinks (file- or directory-level), dispatched to the existing
-/// `actions::fs`/`actions::symlink` `Action` impls. Owns every
-/// [`MaterializationIntent`] except
-/// [`MaterializationIntent::Checkout`](crate::desired::MaterializationIntent::Checkout)
-/// (owned by `CheckoutMaterializer`, #110) and
-/// [`MaterializationIntent::PartialFile`](crate::desired::MaterializationIntent::PartialFile)
-/// (owned by `PartialFileMaterializer`, #66).
+/// `actions::fs`/`actions::symlink` `Action` impls. Handles directory scaffolds
+/// and ordinary file/directory links; specialized backends handle checkout,
+/// generated, encrypted, ephemeral, and partial-file intents.
 ///
 /// This is a pure move of the logic that used to live directly in
 /// `plan::reconcile` (`classify`/`build_action`) — no behavior change.

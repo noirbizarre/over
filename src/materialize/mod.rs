@@ -21,8 +21,9 @@
 //! [`MaterializerRegistry`] also registers an encrypted whole-file backend (#62),
 //! whose intent holds only a ciphertext recipe. Other backends are [`PartialFileMaterializer`]
 //! (#66, [`MaterializationIntent::PartialFile`](crate::desired::MaterializationIntent::PartialFile)),
-//! [`SymlinkMaterializer`] (every remaining intent except `Checkout`/
-//! `VirtualCheckout`), [`CheckoutMaterializer`] (#110), which owns
+//! [`SymlinkMaterializer`] (directory scaffolds and ordinary file/directory links),
+//! the specialized rendered and ephemeral file backends, and
+//! [`CheckoutMaterializer`] (#110), which owns
 //! [`MaterializationIntent::Checkout`](crate::desired::MaterializationIntent::Checkout) —
 //! ensuring a git checkout/worktree is present and configured, exactly like
 //! `actions::git::clone_repositories` already does — and
