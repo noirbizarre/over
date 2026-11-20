@@ -58,7 +58,11 @@ receive a diagnostic explaining that no Git comparison is available.
 ### Rendered files
 
 For templated symlink-mode files, diff compares the deployed content with the
-rendered output. Inspection follows destination-file and parent-directory
+rendered output. This corrective comparison is **current target → desired rendered
+output**, identified in the comparison header: removed lines are current content,
+and added lines are desired output. A missing target appears as an addition.
+This differs from checkout local-edit views, which compare a baseline to local content.
+Inspection follows destination-file and parent-directory
 symlinks, including links into another dotfiles repository, using the caller's
 read access. This lets you compare an existing configuration before replacing it.
 Unlike apply/unapply ownership checks, a foreign link or conflicting scaffold

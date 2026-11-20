@@ -3165,6 +3165,38 @@ fn sync_requires_an_initialized_deployment_for_both_checkout_backends(
 }
 
 #[rstest]
+#[case(false)]
+#[case(true)]
+fn rendered_diff_labels_the_correction_from_current_content_to_desired_output(
+    #[case] missing: bool,
+) {
+    let fixture = Fixture::new(false);
+    fixture.apply();
+    let target = fixture.target.join("config");
+    if missing {
+        fs::remove_file(&target).unwrap();
+    } else {
+        fs::write(&target, "local edit\n").unwrap();
+    }
+    let assertion = fixture
+        .command("diff")
+        .env("GIT_PAGER", "cat")
+        .args(["app", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .success()
+        .stderr(contains("current target -> desired rendered output"))
+        .stdout(contains("+host=first"));
+    if missing {
+        assertion.stdout(contains("new file mode"));
+        assert!(!target.exists());
+    } else {
+        assertion.stdout(contains("-local edit"));
+        assert_eq!(fs::read(&target).unwrap(), b"local edit\n");
+    }
+}
+
+#[rstest]
 #[case("~/config")]
 #[case("~/config/child")]
 fn rendered_checkout_leaves_cannot_overlap_independently_mapped_targets(#[case] target: &str) {

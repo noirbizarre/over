@@ -195,7 +195,10 @@ impl Report {
                             scope: vec![path],
                             view: View::Unstaged,
                             trees: Some((left, right)),
-                            baseline: Some(format!("rendered source {}", file.source.display())),
+                            baseline: Some(format!(
+                                "current target -> desired rendered output; source template {}",
+                                file.source.display()
+                            )),
                             scratch,
                         });
                     }
@@ -562,7 +565,7 @@ fn source_virtual_comparisons(
             scope,
             view,
             trees: Some((left, right)),
-            baseline: Some(record.base_oid.clone()),
+            baseline: Some(format!("recorded base {}", record.base_oid)),
             scratch,
         });
     }
@@ -622,7 +625,7 @@ fn generated_comparisons(
             view: View::Unstaged,
             trees: Some((left, right_id)),
             baseline: Some(format!(
-                "generated {label}: {}",
+                "recorded base generated {label}: {}",
                 record
                     .generated
                     .as_ref()
