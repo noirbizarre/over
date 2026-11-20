@@ -96,6 +96,29 @@ impl Fixture {
         self.git(&["diff", "--no-renames", "HEAD^", "HEAD", "--name-only"])
     }
 
+    fn bare_clone(&self) -> PathBuf {
+        let destination = self.temp.path().join("bare.git");
+        self.git(&[
+            "clone",
+            "-q",
+            "--bare",
+            "--no-local",
+            self.root.to_str().unwrap(),
+            destination.to_str().unwrap(),
+        ]);
+        destination
+    }
+
+    fn bare_read(&self, root: &Path, name: &str, identity: &Path) -> Output {
+        self.command(&cargo_bin("over"))
+            .current_dir(self.temp.path())
+            .args(["--home", root.to_str().unwrap(), "secret", "get", name])
+            .arg("--identity")
+            .arg(identity)
+            .output()
+            .unwrap()
+    }
+
     fn commit_raw_blob(&self, path: &str, bytes: &[u8]) {
         let repo = git2::Repository::open(&self.root).unwrap();
         let mut index = repo.index().unwrap();
@@ -197,6 +220,142 @@ fn a_fresh_locked_clone_reads_binary_secrets_without_creating_any_artifacts() {
     }
     assert_inventory_unchanged(fixture.temp.path(), &before);
     assert!(!clone.join(".git/over-crypt").exists());
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn bare_reads_use_the_selected_head_without_creating_any_artifacts(#[case] detached: bool) {
+    let fixture = Fixture::new();
+    let value: Vec<u8> = (0..=255).collect();
+    success(fixture.secret("token", &value, false));
+    let bare = fixture.bare_clone();
+    let repo = git2::Repository::open_bare(&bare).unwrap();
+    if detached {
+        repo.set_head_detached(repo.head().unwrap().target().unwrap())
+            .unwrap();
+    }
+    // The invoking working tree has a different HEAD, so accidental CWD selection is observable.
+    success(fixture.secret("token", b"different working repository", true));
+    let identity = fixture.temp.path().join("alice.age");
+    let before = inventory(fixture.temp.path());
+    for _ in 0..2 {
+        assert_eq!(
+            success(fixture.bare_read(&bare, "token", &identity)).stdout,
+            value
+        );
+    }
+    let output = fixture
+        .command(&cargo_bin("over"))
+        .env("OVER_HOME", &bare)
+        .args(["secret", "get", "token", "--identity"])
+        .arg(&identity)
+        .output()
+        .unwrap();
+    assert_eq!(success(output).stdout, value);
+    assert!(repo.workdir().is_none());
+    assert_inventory_unchanged(fixture.temp.path(), &before);
+}
+
+#[rstest::rstest]
+#[case("missing-secret")]
+#[case("missing-identity")]
+#[case("wrong-identity")]
+#[case("invalid-metadata")]
+#[case("unsupported-format")]
+#[case("tampered")]
+#[case("truncated")]
+#[case("renamed")]
+fn invalid_bare_reads_fail_without_plaintext_or_artifacts(#[case] failure: &str) {
+    let fixture = Fixture::new();
+    success(fixture.secret("token", b"never-print-this", false));
+    let mut name = "token";
+    let mut identity = fixture.temp.path().join("alice.age");
+    match failure {
+        "missing-secret" => name = "missing",
+        "missing-identity" => identity = fixture.temp.path().join("missing.age"),
+        "wrong-identity" => {
+            let wrong = age::x25519::Identity::generate();
+            use age::secrecy::ExposeSecret as _;
+            identity = fixture.temp.path().join("wrong.age");
+            fs::write(&identity, wrong.to_string().expose_secret()).unwrap();
+        }
+        "invalid-metadata" => fixture.commit_raw_blob(".over/crypt.json", b"invalid"),
+        _ => {
+            let mut bytes = fs::read(fixture.root.join(".over/secrets/token")).unwrap();
+            match failure {
+                // Leave the magic intact so this exercises version rejection, not format detection.
+                "unsupported-format" => bytes[8] = 255,
+                "tampered" => *bytes.last_mut().unwrap() ^= 1,
+                "truncated" => bytes.truncate(bytes.len() - 1),
+                "renamed" => name = "other",
+                _ => unreachable!(),
+            }
+            fixture.commit_raw_blob(&format!(".over/secrets/{name}"), &bytes);
+        }
+    }
+    let bare = fixture.bare_clone();
+    let before = inventory(fixture.temp.path());
+    let output = fixture.bare_read(&bare, name, &identity);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("never-print-this"));
+    assert_inventory_unchanged(fixture.temp.path(), &before);
+}
+
+#[rstest::rstest]
+#[case("unborn")]
+#[case("dangling")]
+#[case("no-metadata")]
+#[case("no-store")]
+fn incomplete_bare_snapshots_never_fall_back_to_filesystem_secrets(#[case] failure: &str) {
+    let fixture = Fixture::new();
+    success(fixture.secret("token", b"private", false));
+    if matches!(failure, "no-metadata" | "no-store") {
+        let path = if failure == "no-metadata" {
+            ".over/crypt.json"
+        } else {
+            ".over/secrets"
+        };
+        fixture.git(&["rm", "-r", "--cached", path]);
+        if failure == "no-metadata" {
+            fixture.git(&["rm", "-r", "--cached", ".over/users"]);
+        }
+        fixture.git(&[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-qm",
+            "remove committed input",
+        ]);
+    }
+    let bare = fixture.bare_clone();
+    let repo = git2::Repository::open_bare(&bare).unwrap();
+    match failure {
+        "unborn" => repo.set_head("refs/heads/unborn").unwrap(),
+        "dangling" => {
+            // Reference APIs reject missing objects, so model a damaged detached HEAD directly.
+            fs::write(bare.join("HEAD"), format!("{}\n", "1".repeat(40))).unwrap();
+        }
+        _ => (),
+    }
+    // Files beneath a bare administration directory must never supply missing committed state.
+    fs::create_dir_all(bare.join(".over/secrets")).unwrap();
+    fs::write(bare.join(".over/secrets/token.age"), b"not committed").unwrap();
+    let before = inventory(fixture.temp.path());
+    let output = fixture.bare_read(&bare, "token", &fixture.temp.path().join("alice.age"));
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let error = String::from_utf8_lossy(&output.stderr);
+    if failure == "no-metadata" {
+        assert!(
+            error.contains("require access metadata in the HEAD commit"),
+            "{error}"
+        );
+    }
+    assert!(!error.contains("requires a working tree"), "{error}");
+    assert!(!error.contains("decrypt"), "{error}");
+    assert_inventory_unchanged(fixture.temp.path(), &before);
 }
 
 #[test]

@@ -42,6 +42,14 @@ envelopes, and ciphertext come from that same snapshot, even if HEAD changes
 during a prompt. Commit changes before reading them. Historical standalone Age
 stores retain their filesystem-based behavior.
 
+`get` also accepts a bare Git repository selected with `--home` or `OVER_HOME`.
+Its current HEAD (including detached HEAD) selects the commit; there is no
+separate revision option. Both access metadata and the requested secret must
+exist in that commit. An unborn or missing HEAD, missing entry/object, corrupt
+Git data, unsupported format, or unavailable credential fails with a nonzero
+status and no plaintext. Bare reads never fall back to files in the repository
+directory. See the [provisioning example](../usage/secrets.md#read-from-a-bare-repository).
+
 On a locked repository, provide a repeatable `--identity` (`-i`) file, reuse an
 existing identity hint, or answer the identity/passphrase prompts. `--user` and
 `--key` restrict the credentials tried. A matching local repository key takes
@@ -61,6 +69,8 @@ Encrypted identities and hardware plugins may require terminal interaction.
 
 Over creates no lock files, temporary files, keys, identity hints, or other
 filesystem artifacts during native reads, and does not configure Git filters.
+Bare reads create no working tree and do not update the index, refs, Git
+configuration, or object database. Bare support is limited to `get`.
 External identity plugins may manage their own state. The native-PQ adapter
 requires a temporary ciphertext file and is unavailable for one-shot acquisition;
 use another credential or normal `over unlock` for that identity. Temporary
