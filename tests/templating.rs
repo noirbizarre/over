@@ -3087,6 +3087,84 @@ fn changing_only_context_rerenders_checkout_and_metadata_does_not_duplicate_valu
 }
 
 #[rstest]
+fn sync_requires_an_initialized_deployment_for_both_checkout_backends(
+    #[values(false, true)] generated: bool,
+    #[values("never", "unapplied", "initializing", "applied", "removed", "replaced")]
+    lifecycle: &str,
+    #[values(false, true)] dry_run: bool,
+    #[values("--pull-only", "--push-only")] direction: &str,
+) {
+    let fixture = Fixture::new(true);
+    if !generated {
+        fs::write(fixture.source.join("app/over.yaml"), "mode: checkout\n").unwrap();
+        commit_all(&fixture.repo());
+    }
+    if lifecycle != "never" {
+        fixture.apply();
+    }
+    let state = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    match lifecycle {
+        "unapplied" => {
+            fixture
+                .command("unapply")
+                .args(["app", "--target"])
+                .arg(&fixture.target)
+                .assert()
+                .success();
+        }
+        "initializing" => {
+            let mut metadata: toml::Value =
+                toml::from_str(&fs::read_to_string(&state).unwrap()).unwrap();
+            for (_, record) in metadata["state"]["checkouts"]
+                .as_table_mut()
+                .unwrap()
+                .iter_mut()
+            {
+                record
+                    .as_table_mut()
+                    .unwrap()
+                    .insert("initializing".into(), true.into());
+            }
+            fs::write(state, toml::to_string(&metadata).unwrap()).unwrap();
+        }
+        "removed" | "replaced" => {
+            fs::remove_dir_all(&fixture.target).unwrap();
+            if lifecycle == "replaced" {
+                fs::write(&fixture.target, "foreign obstruction\n").unwrap();
+            }
+        }
+        _ => {}
+    }
+    // Snapshot all persistent bytes, including association journals and generated refs.
+    let snapshot = || {
+        walkdir::WalkDir::new(fixture.temp.path())
+            .into_iter()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| (entry.path().to_path_buf(), fs::read(entry.path()).unwrap()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let before = snapshot();
+    let target_existed = fixture.target.exists();
+    let mut command = fixture.sync();
+    command.arg(direction);
+    if dry_run {
+        command.arg("--dry-run");
+    }
+    if lifecycle == "applied" {
+        command.assert().success();
+    } else {
+        let assertion = command.assert().failure();
+        // Exclusion preflight may reject a non-directory root before sync admission.
+        if lifecycle != "replaced" {
+            assertion.stdout(contains("over apply"));
+        }
+        assert_eq!(snapshot(), before);
+        assert_eq!(fixture.target.exists(), target_existed);
+    }
+}
+
+#[rstest]
 #[case("~/config")]
 #[case("~/config/child")]
 fn rendered_checkout_leaves_cannot_overlap_independently_mapped_targets(#[case] target: &str) {

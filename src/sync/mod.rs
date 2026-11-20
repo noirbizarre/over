@@ -592,6 +592,30 @@ async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Resu
             reason: "virtual checkout has no abortable operation".into(),
         });
     }
+    // Reconcile also initializes during apply; sync must not acquire deployment authority that way.
+    vc_state::verify_live_target(entry)?;
+    let actual = crate::plan::actual::inspect_with(&entry.target, &entry.access.fs)?;
+    let record = vc_state::record_for_entry(entry)?;
+    let blocked = match (&actual, &record) {
+        (crate::plan::ActualState::Missing, _) => Some("not materialized yet; run `over apply`"),
+        (crate::plan::ActualState::Directory, None) => {
+            Some("virtual checkout association is broken; run `over apply` to re-adopt it")
+        }
+        (crate::plan::ActualState::Directory, Some(record)) if record.initializing => {
+            Some("checkout initialization was interrupted; rerun over apply before syncing")
+        }
+        (crate::plan::ActualState::Directory, Some(_)) => None,
+        _ => Some("virtual checkout target is not a directory; run `over apply` to repair it"),
+    };
+    if let Some(reason) = blocked {
+        return Ok(SyncOutcome::Blocked {
+            path,
+            reason: reason.into(),
+        });
+    }
+    if let Some(record) = &record {
+        vc_state::verify(entry, record)?;
+    }
     if crate::materialize::virtual_checkout::generated::active(entry)? {
         return sync_generated_virtual_checkout(entry, opts).await;
     }
