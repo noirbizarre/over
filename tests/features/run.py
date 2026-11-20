@@ -45,6 +45,9 @@ def scenario(name, options, assertion, prepare="", mounts=None, error=None,
         source = config_dir / "source"
         shutil.copytree(Path(__file__).parent / "source", source)
         command("git", "-C", str(source), "init", "--quiet")
+        # Background Git housekeeping would race administrative byte-for-byte snapshots.
+        command("git", "-C", str(source), "config", "maintenance.auto", "false")
+        command("git", "-C", str(source), "config", "gc.auto", "0")
         command("git", "-C", str(source), "add", ".")
         command("git", "-C", str(source), "-c", "user.name=Feature test", "-c",
                 "user.email=feature@example.invalid", "-c", "core.hooksPath=/dev/null",

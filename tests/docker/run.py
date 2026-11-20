@@ -37,6 +37,9 @@ def main():
         (source / "app/config.jinja").write_text("hello={{ data.name }}")
         (source / "app/plain").write_text("protected content")
         run("git", "-C", str(source), "init", "--quiet")
+        # Snapshots must observe Over's writes, not asynchronous Git housekeeping.
+        run("git", "-C", str(source), "config", "maintenance.auto", "false")
+        run("git", "-C", str(source), "config", "gc.auto", "0")
 
         def container(*args, readonly=False, entrypoint=None, success=True):
             source_mount = f"type=bind,source={source},target=/dotfiles"
