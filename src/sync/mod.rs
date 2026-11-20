@@ -106,7 +106,8 @@ pub enum SyncOutcome {
     /// `SyncOptions::abort`, or an unresolved non-conflicted merge state.
     Blocked { path: PathBuf, reason: String },
     /// The legacy library operation's `SyncOptions::abort` cleared an
-    /// in-progress merge, restoring the pre-merge working tree.
+    /// in-progress merge by hard-resetting tracked working-tree and index state
+    /// to HEAD. Uncommitted tracked/index edits are discarded, not restored.
     Aborted { path: PathBuf },
 }
 
@@ -366,8 +367,9 @@ fn sync_units(entry: &DesiredEntry) -> Result<Vec<SyncUnit>> {
     Ok(units)
 }
 
-/// Drive a single [`SyncUnit`] through pull/push, never touching anything
-/// if the working tree is dirty or a prior merge is unresolved.
+/// Drive a single [`SyncUnit`] through pull/push, blocking pulls with a dirty
+/// working tree and blocking unresolved operations unless explicitly aborting
+/// a merge. That abort hard-resets tracked working-tree/index state to HEAD.
 fn sync_unit(unit: &SyncUnit, opts: &SyncOptions) -> Result<SyncOutcome> {
     let path = unit.path.clone();
     let repo = Repository::open(&path)
