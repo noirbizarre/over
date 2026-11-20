@@ -439,6 +439,10 @@ detached when required to protect other aliases. Declared hard links use a soft
 link fallback when owner/group must differ from the source, preserving ownership
 without treating an unmarked regular copy as a managed link.
 
+Apply finalizes scaffold directory ownership after all selected overlays publish
+their children, including shared partial files, and before success hooks run.
+This keeps a parent ownership change from blocking a later unprivileged child.
+
 ### Sudo mode
 
 Set `sudo: true` for the entire overlay or individual rules. The normal sudo

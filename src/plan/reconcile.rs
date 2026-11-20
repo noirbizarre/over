@@ -14,6 +14,34 @@ type MetadataRepair = (
     crate::overlays::Permissions,
 );
 
+/// Operation-wide finalization keeps restrictive parents writable until all children exist.
+#[derive(Default)]
+pub(crate) struct DirectoryMetadata(Vec<MetadataRepair>);
+
+impl DirectoryMetadata {
+    pub(crate) async fn finalize(mut self) -> Result<()> {
+        // Participant order does not imply depth order when roots share scaffolds.
+        self.0.sort_by(|(a, _), (b, _)| {
+            b.path()
+                .components()
+                .count()
+                .cmp(&a.path().components().count())
+                .then_with(|| a.path().cmp(b.path()))
+        });
+        tokio::task::spawn_blocking(move || {
+            // Check every captured identity before any restrictive parent can hide a stale child.
+            for (guard, _) in &self.0 {
+                guard.verify()?;
+            }
+            for (guard, permissions) in self.0 {
+                guard.apply(&permissions)?;
+            }
+            anyhow::Ok(())
+        })
+        .await?
+    }
+}
+
 fn snapshot_metadata(entry: &DesiredEntry) -> Result<Vec<MetadataRepair>> {
     let assignments = if entry.intent.is_virtual_checkout() {
         crate::materialize::virtual_checkout::metadata::assignments(entry)?
@@ -275,7 +303,11 @@ impl Plan {
     }
 
     /// Reconcile scaffolds before parallel repository provisioning needs them.
-    pub(crate) async fn prepare_scaffolds(&self, ctx: Ctx) -> Result<()> {
+    pub(crate) async fn prepare_scaffolds(
+        &self,
+        ctx: Ctx,
+        metadata: &mut DirectoryMetadata,
+    ) -> Result<()> {
         self.validate_boundaries()?;
         let mut scaffolds = Self {
             desired: self.desired.clone(),
@@ -293,7 +325,7 @@ impl Plan {
                 scaffolds.blocked_by.push(self.blocked_by[index].clone());
             }
         }
-        scaffolds.execute(ctx).await
+        scaffolds.execute_deferred(ctx, metadata).await
     }
 
     /// Execute every actionable step (`Create`/`Conflict`/an unblocked
@@ -304,6 +336,16 @@ impl Plan {
     /// blocked `Migrate` fails preflight: silently skipping it could let
     /// descendants write through an unresolved parent and run success hooks.
     pub async fn execute(&self, ctx: Ctx) -> Result<()> {
+        let mut metadata = DirectoryMetadata::default();
+        self.execute_deferred(ctx, &mut metadata).await?;
+        metadata.finalize().await
+    }
+
+    pub(crate) async fn execute_deferred(
+        &self,
+        ctx: Ctx,
+        metadata: &mut DirectoryMetadata,
+    ) -> Result<()> {
         self.validate_boundaries()?;
         crate::materialize::encrypted::prepare(&self.desired, &ctx).await?;
         let has_actionable = self.steps.iter().any(|s| is_actionable(&s.operation));
@@ -512,10 +554,8 @@ impl Plan {
             }
         }
 
-        // Restrictive ownership/modes belong after child publication, deepest first.
-        for (guard, permissions) in directory_metadata.into_iter().rev() {
-            tokio::task::spawn_blocking(move || guard.apply(&permissions)).await??;
-        }
+        // The caller also knows about children deferred beyond this individual plan.
+        metadata.0.extend(directory_metadata);
         Ok(())
     }
 
@@ -705,6 +745,91 @@ mod tests {
     use rstest::rstest;
     use std::fs;
     use std::path::PathBuf;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn deferred_partial_children_publish_before_directory_metadata_is_finalized() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = TempDir::new().unwrap();
+        let parent = temp.path().join("parent");
+        let child = parent.join("child");
+        let mut access = crate::target_fs::Access::default();
+        access.permissions.mode = Some(crate::overlays::FileMode::from_bits(0o500));
+        let provenance = Provenance::Overlay {
+            overlay: "ov".into(),
+            source: temp.path().into(),
+        };
+        let directory = |target| DesiredEntry {
+            target,
+            access: access.clone(),
+            provenance: provenance.clone(),
+            intent: MaterializationIntent::Directory,
+            permissions: None,
+        };
+        // Reverse participant depth order to exercise global, rather than per-plan finalization.
+        let mut metadata = DirectoryMetadata::default();
+        let ctx = std::sync::Arc::new(Context {
+            defer_partials: true,
+            ..Context::builder().build().as_ref().clone()
+        });
+        for target in [parent.clone(), child.clone()] {
+            Plan::build(&DesiredTree::from_entries(vec![directory(target)]))
+                .unwrap()
+                .execute_deferred(ctx.clone(), &mut metadata)
+                .await
+                .unwrap();
+        }
+        assert_ne!(
+            fs::metadata(&parent).unwrap().permissions().mode() & 0o200,
+            0
+        );
+        let partial = DesiredEntry {
+            target: child.join("settings"),
+            access: Default::default(),
+            provenance,
+            intent: MaterializationIntent::PartialFile {
+                marker: "owned".into(),
+                content: "published".into(),
+            },
+            permissions: None,
+        };
+        crate::materialize::partial::reconcile_partials(&[partial], ctx).unwrap();
+        metadata.finalize().await.unwrap();
+        assert_eq!(
+            fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+            0o500
+        );
+        assert_eq!(
+            fs::metadata(&child).unwrap().permissions().mode() & 0o777,
+            0o500
+        );
+        assert!(
+            fs::read_to_string(child.join("settings"))
+                .unwrap()
+                .contains("published")
+        );
+        // Restrictive fixture parents must be reopened before TempDir removes their children.
+        for path in [&parent, &child] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn deferred_metadata_rejects_a_directory_replaced_after_publication() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("parent");
+        fs::create_dir(&path).unwrap();
+        let guard = crate::target_fs::MetadataGuard::capture(
+            &crate::target_fs::Access::default().fs,
+            &path,
+        )
+        .unwrap();
+        let metadata = DirectoryMetadata(vec![(guard, crate::overlays::Permissions::default())]);
+        fs::rename(&path, temp.path().join("old")).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(metadata.finalize().await.is_err());
+    }
 
     fn repo_and_root() -> (TempDir, Repository) {
         let td = TempDir::new().unwrap();
