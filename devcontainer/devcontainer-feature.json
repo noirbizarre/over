@@ -13,6 +13,11 @@
         "configuration"
     ],
     "options": {
+        "readOnly": {
+            "type": "boolean",
+            "description": "Apply an existing checkout without source writes or persistent Over state; hooks and Git dependencies still run",
+            "default": false
+        },
         "overlay": {
             "type": "string",
             "description": "Comma-separated overlay names to compose (empty skips apply)",

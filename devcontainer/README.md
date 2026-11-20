@@ -12,7 +12,7 @@ or extract a Docker image. The Feature reference selects the binary release.
 installer checks for the Git command and CA bundle, and installs prerequisites
 only when missing. Prepared base images skip package management entirely.
 
-`setup.sh` only adapts the repository, CSV overlay selection and explicit home
+`setup.sh` only adapts the repository, CSV overlay selection, read-only mode and explicit home
 options to CLI calls. Defaults, initialization policy, errors and conflicts stay
 with Over. Empty options install only the binary.
 
@@ -38,7 +38,8 @@ mise run test:features
 Unreleased testing uses the matching Linux build outputs at the same paths.
 Staged binaries are ignored by Git. Missing inputs fail installation rather than
 falling back to a download. The tests verify native installed-binary identity,
-option boundaries, non-root lifecycle behavior, clone/retry, mounted sources and
+option boundaries, non-root lifecycle behavior, clone/retry, genuine read-only
+bind mounts, persistent checkout/home/XDG-state recreation and
 conflict refusal. Containers and anonymous volumes are removed; Docker caches
 remain. Set `DEVCONTAINER` to an absolute CLI path if needed.
 

@@ -80,6 +80,20 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
+      - name: Build runtime test image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ runner.temp }}/over-image
+          file: Dockerfile
+          build-args: BINARY=over
+          platforms: ${{ matrix.platform }}
+          tags: over:smoke
+          load: true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+
+      - name: Test mounted runtime workflows
+        run: python3 tests/docker/run.py over:smoke
+
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v7

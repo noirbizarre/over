@@ -59,7 +59,10 @@ impl Snapshot {
             current.is_none() || old.is_none(),
             "conflicting secret stores in HEAD"
         );
-        let selected = current.or(old).context("secret does not exist in HEAD")?;
+        let selected = current
+            .or(old)
+            .ok_or(super::ProviderError::Missing)
+            .context("secret does not exist in HEAD")?;
         let aggregate = selected.kind() != Some(git2::ObjectType::Tree);
         let mut encoding = Encoding::Aggregate;
         let selected = if aggregate {
@@ -100,6 +103,7 @@ impl Snapshot {
             };
             entries
                 .get_name(&filename)
+                .ok_or(super::ProviderError::Missing)
                 .context("secret does not exist in HEAD")?
                 .to_owned()
         };
@@ -138,6 +142,7 @@ impl Snapshot {
         Ok(SecretBytes::new(
             map.0
                 .remove(name.as_str())
+                .ok_or(super::ProviderError::Missing)
                 .context("secret does not exist in HEAD")?,
         ))
     }
@@ -201,6 +206,47 @@ pub(super) fn read(
         None => acquire(&repo, &snapshot.registry)?,
     };
     Ok(Some(snapshot.decrypt(&key, name, crypto)?))
+}
+
+pub(super) fn read_existing(
+    root: &Path,
+    name: &SecretName,
+    crypto: &CryptoService,
+) -> Result<Option<SecretBytes>, super::ProviderError> {
+    use super::ProviderError;
+    let repo = git2::Repository::discover(root).map_err(|_| ProviderError::StoreFailure)?;
+    let Some(snapshot) = Snapshot::capture(&repo, name).map_err(|error| {
+        error
+            .downcast_ref::<ProviderError>()
+            .copied()
+            .unwrap_or(ProviderError::StoreFailure)
+    })?
+    else {
+        return Ok(None);
+    };
+    let source = access::root(&repo).map_err(|_| ProviderError::StoreFailure)?;
+    if root
+        .canonicalize()
+        .map_err(|_| ProviderError::StoreFailure)?
+        != source
+            .canonicalize()
+            .map_err(|_| ProviderError::StoreFailure)?
+    {
+        return Err(ProviderError::StoreFailure);
+    }
+    // Missing/stale installed state is recoverable by a declared fallback, never by unlocking.
+    let key = access::snapshot_key(&repo, &snapshot.registry)
+        .map_err(|_| ProviderError::StoreFailure)?
+        .ok_or(ProviderError::SessionUnavailable)?;
+    snapshot
+        .decrypt(&key, name, crypto)
+        .map(Some)
+        .map_err(|error| {
+            error
+                .downcast_ref::<ProviderError>()
+                .copied()
+                .unwrap_or(ProviderError::DecryptionFailed)
+        })
 }
 
 #[cfg(test)]

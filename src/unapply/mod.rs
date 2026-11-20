@@ -554,6 +554,9 @@ async fn dematerialize(entry: &DesiredEntry) -> Result<()> {
         .await?;
     }
     match &entry.intent {
+        MaterializationIntent::EphemeralFile(_) => anyhow::bail!(
+            "ephemeral files have no deployment association; remove disposable targets directly"
+        ),
         MaterializationIntent::RenderedFile(file) => {
             remove_symlink_if_unchanged(
                 entry.target.clone(),

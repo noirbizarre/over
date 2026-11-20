@@ -16,6 +16,7 @@ Options:
   -r, --target <TARGET>   Set the target directory (defaults to ~) [env: OVER_TARGET=]
   -d, --debug             Toggle debug traces
   -n, --dry-run           Run without applying changes
+      --read-only         Apply without source writes or persistent Over state (hooks and Git dependencies still run)
   -f, --force             Overwrite ordinary filesystem conflicts without prompting
   -v, --verbose           Toggle verbose output
       --discard-checkout  Discard owned real checkouts, including local files and Git history
@@ -65,6 +66,37 @@ Options:
   as untracked. Skipped on `--dry-run`; a path already tracked by that
   repository is never excluded. See [`over status`](status.md#git-configuration)
   for missing effective protection, tracked conflicts and malformed markers.
+
+## Consume a read-only source
+
+```sh
+over --home /mounted/dotfiles apply --read-only --no-prompt -- container/base
+```
+
+`--read-only` consumes an existing complete Git checkout, including any required
+already-unlocked private Git state. It never unlocks, repairs, or installs native
+keys; prepare those on the host before mounting. Missing or unsuitable state
+fails with a diagnostic. Ordinary apply remains the writable, persistent mode.
+
+Targets are writable: ordinary links retain their behavior, while templates and
+virtual checkouts publish direct files without generated Git objects/refs, XDG
+artifacts, or deployment associations. Source hard links and Absorb are refused.
+Existing managed-checkout ownership cannot be overwritten in this mode, even
+with force. Identical reapplication is a no-op; changed files require explicit
+overwrite permission. There is no historical base for three-way sync/commit,
+stale-output pruning, or managed reversal of direct files. Ordinary links need
+the source mount to remain available.
+
+Hooks and configured Git dependencies **run normally**, with their own side
+effects and network/filter requirements. This policy governs Over-managed
+source and operational-state writes, not arbitrary child commands. Target
+files, metadata, and target Git exclusions remain normal deployment effects.
+Use an actual read-only bind mount to enforce source protection for child
+commands too. `--dry-run --read-only` still performs no deployment or hooks.
+
+Use disposable targets, or preserve the operational state required by regular
+managed deployments. See [Dev Containers and Docker](../devcontainer.md) for
+read-only consumption and persistent writable development examples.
 
 ## Example
 

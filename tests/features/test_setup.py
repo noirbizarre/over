@@ -12,13 +12,14 @@ import unittest
 
 
 class SetupTests(unittest.TestCase):
-    def run_setup(self, selection="", repository="source", home="", failure=""):
+    def run_setup(self, selection="", repository="source", home="", failure="", read_only=False):
         with tempfile.TemporaryDirectory(prefix="over-setup-") as directory:
             root = Path(directory)
             shutil.copyfile(Path(__file__).resolve().parents[2] / "devcontainer/setup.sh", root / "setup.sh")
             (root / "options.sh").write_text(
                 f"OVERLAY={shlex.quote(selection)}\nREPOSITORY={shlex.quote(repository)}\n"
                 f"OVERHOME={shlex.quote(home)}\n"
+                f"READONLY={str(read_only).lower()}\n"
             )
             # JSON records boundaries and effective home without reinterpreting shell data.
             (root / "over").write_text(
@@ -53,6 +54,17 @@ class SetupTests(unittest.TestCase):
                 self.assertEqual([call[0] for call in calls], [
                     ["init", "--", "source"], ["apply", "--no-prompt", "--", *expected],
                 ])
+
+    def test_read_only_uses_one_apply_without_initialization_or_unlock(self):
+        result, calls = self.run_setup(" base ,a name,glob*", repository="", home="/source", read_only=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, [[["apply", "--read-only", "--no-prompt", "--", "base", "a name", "glob*"], "/source"]])
+
+    def test_read_only_rejects_initialization_before_any_cli_command(self):
+        result, calls = self.run_setup("base", read_only=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("omit 'repository'", result.stderr)
+        self.assertEqual(calls, [])
 
     def test_blank_elements_fail_before_initialization(self):
         for value, position in [(" ", 1), (",base", 1), ("base,", 2), ("base,,rust", 2)]:

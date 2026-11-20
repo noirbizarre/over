@@ -422,11 +422,15 @@ impl Overlay {
         });
         let ctx = &prepared;
         let mut desired = DesiredTree::build_many(ctx, overlays)?;
+        if ctx.source_read_only {
+            crate::materialize::ephemeral::validate_source(&ctx.repository.root)?;
+            crate::materialize::ephemeral::validate_entries(ctx, desired.entries())?;
+        }
         let has_virtual_checkouts = desired
             .entries()
             .iter()
             .any(|entry| entry.intent.is_virtual_checkout());
-        let ownership = if ctx.dry_run || !has_virtual_checkouts {
+        let ownership = if ctx.dry_run || ctx.source_read_only || !has_virtual_checkouts {
             None
         } else {
             Some(

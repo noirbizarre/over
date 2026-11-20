@@ -582,6 +582,7 @@ fn explain(entry: &DesiredEntry, overlays: &[Overlay]) -> Vec<Field> {
         ),
     };
     let intent = match entry.intent {
+        MaterializationIntent::EphemeralFile(_) => "ephemeral file",
         MaterializationIntent::RenderedFile(_) => "rendered file",
         MaterializationIntent::EncryptedFile(_) => "encrypted file",
         MaterializationIntent::Directory => "directory scaffold",

@@ -72,9 +72,15 @@ Add the Over Feature to your existing development image:
 
 ```json
 {
+    "image": "mcr.microsoft.com/devcontainers/base:bookworm",
+    "remoteUser": "vscode",
+    "mounts": [
+        "source=${localEnv:HOME}/.dotfiles,target=/home/vscode/.dotfiles,type=bind,readonly"
+    ],
     "features": {
         "ghcr.io/noirbizarre/features/over:0": {
-            "repository": "https://github.com/user/dotfiles.git",
+            "overHome": "/home/vscode/.dotfiles",
+            "readOnly": true,
             "overlay": "container/base,container/rust"
         }
     }
@@ -82,8 +88,8 @@ Add the Over Feature to your existing development image:
 ```
 
 The Feature bundles its matching Over release; no custom Dockerfile is required.
-See the [Dev Containers guide](docs/devcontainer.md) for clone/mount examples,
-options and release pinning.
+See the [Dev Containers guide](docs/devcontainer.md) for read-only consumption,
+persistent writable development, remote initialization, options and release pinning.
 
 ## Quickstart
 

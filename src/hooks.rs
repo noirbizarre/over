@@ -330,11 +330,14 @@ fn prepare(
         absolute(&context.templates.repository.root)
             .map_err(|_| failure("context", "could not resolve secret repository"))?
     };
-    let resolver = SecretResolver::new(std::sync::Arc::new(NativeProvider::new(
-        repository,
-        context.templates.crypto.clone(),
-        !context.templates.no_prompt,
-    )));
+    let resolver = SecretResolver::new(std::sync::Arc::new(
+        NativeProvider::new(
+            repository,
+            context.templates.crypto.clone(),
+            !context.templates.no_prompt,
+        )
+        .read_only(context.templates.source_read_only),
+    ));
     crate::exec::templates::register_secrets(&mut environment, resolver);
     let definition = match hook {
         Hook::Command(_) => None,

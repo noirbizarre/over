@@ -1,0 +1,2 @@
+mode = 'checkout'
+target = '~/persistent-target'

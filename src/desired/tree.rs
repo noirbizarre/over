@@ -497,6 +497,9 @@ fn collect_own_entries(
         for entry in &entries {
             crate::materialize::virtual_checkout::safety::validate_entry(entry)?;
         }
+        if ctx.source_read_only {
+            crate::materialize::ephemeral::lower(ctx, overlay, &mut entries)?;
+        }
         return Ok(entries);
     }
 
@@ -542,6 +545,9 @@ fn collect_own_entries(
     attach_rendered_checkouts(ctx, overlay, &mut entries)?;
     for entry in &entries {
         crate::materialize::virtual_checkout::safety::validate_entry(entry)?;
+    }
+    if ctx.source_read_only {
+        crate::materialize::ephemeral::lower(ctx, overlay, &mut entries)?;
     }
     Ok(entries)
 }
@@ -607,14 +613,20 @@ fn attach_rendered_checkouts(
         if !entry.intent.is_virtual_checkout() {
             continue;
         }
-        let previous = crate::materialize::virtual_checkout::state::record_for_entry(entry)?;
+        // Ephemeral inventories describe today's source, never historical deployment authority.
+        let previous = if ctx.source_read_only {
+            None
+        } else {
+            crate::materialize::virtual_checkout::state::record_for_entry(entry)?
+        };
         let can_transform = overlay.scopes.iter().any(|scope| {
             scope
                 .rules
                 .iter()
                 .any(|rule| rule.template == Some(true) || rule.strip_extension == Some(true))
         });
-        if !can_transform
+        if !ctx.source_read_only
+            && !can_transform
             && !previous
                 .as_ref()
                 .is_some_and(|record| record.generated.is_some())
@@ -638,8 +650,19 @@ fn attach_rendered_checkouts(
             let logical = full.strip_prefix(&overlay.root)?;
             let protection =
                 crate::crypt::protection::Protection::for_path(&repo, &managed.join(&relative))?;
+            anyhow::ensure!(
+                !ctx.source_read_only
+                    || mode != 0o120000
+                    || protection == crate::crypt::protection::Protection::Plain,
+                "protected symlinks cannot be published as read-only checkout outputs"
+            );
             // Rendering requires plaintext: smudge's locked passthrough would render ciphertext.
-            let bytes = protection.decode(&repo, repo.find_blob(oid)?.content())?;
+            let blob = repo.find_blob(oid)?;
+            let bytes = if ctx.source_read_only {
+                protection.decode_read_only(&repo, blob.content())?
+            } else {
+                protection.decode(&repo, blob.content())?
+            };
             let (destination, mut content) = super::content::transform(
                 ctx, overlay, logical, &bytes, mode,
             )
@@ -685,7 +708,8 @@ fn attach_rendered_checkouts(
             }
         }
         // Source-only checkouts retain their established staging and canonical-filter workflow.
-        if transformed
+        if ctx.source_read_only
+            || transformed
             || previous
                 .as_ref()
                 .is_some_and(|record| record.generated.is_some())
@@ -816,7 +840,9 @@ fn finalize_entries(
     }
     if !overlay.has_target_rules() {
         for entry in entries {
-            crate::materialize::virtual_checkout::state::resolve_projection(entry, !reporting)?;
+            if !ctx.source_read_only {
+                crate::materialize::virtual_checkout::state::resolve_projection(entry, !reporting)?;
+            }
         }
         return Ok(());
     }
@@ -876,7 +902,9 @@ fn finalize_entries(
         }
     }
     for entry in entries.iter_mut() {
-        crate::materialize::virtual_checkout::state::resolve_projection(entry, !reporting)?;
+        if !ctx.source_read_only {
+            crate::materialize::virtual_checkout::state::resolve_projection(entry, !reporting)?;
+        }
     }
     for (index, entry) in entries.iter().enumerate() {
         for other in &entries[index + 1..] {
