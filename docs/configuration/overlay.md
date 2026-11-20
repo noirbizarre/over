@@ -73,6 +73,10 @@ Warnings do not prevent application. Invalid values for recognized settings,
 missing required fields, and malformed descriptors remain errors. Arbitrary
 consumer keys inside `data`, `host`, and supported Git configuration namespaces are allowed.
 
+Structured `permissions` and `rules[].permissions` objects are an exception to
+unknown-key warnings: they accept only `mode`, `owner`, and `group`. An unknown
+field in either permissions object prevents descriptor loading.
+
 ## Targets and templates
 
 `target` is the base destination for ordinary entries. An overlay with
