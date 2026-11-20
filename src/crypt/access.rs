@@ -199,37 +199,11 @@ pub(crate) fn check_private(repo: &git2::Repository, path: &Path, directory: boo
 
 #[cfg(windows)]
 pub(crate) fn windows_acl(path: &Path, initialize: bool) -> Result<()> {
-    if !initialize {
-        return super::windows::check_acl(path);
+    if initialize {
+        super::windows::initialize_acl(path)
+    } else {
+        super::windows::check_acl(path)
     }
-    // Use the OS ACL implementation; readonly attributes do not provide key confidentiality.
-    let script = "$ErrorActionPreference='Stop'; $p=$env:OVER_CRYPT_ACL_PATH; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=Get-Acl -LiteralPath $p; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); foreach($r in @($acl.Access)){$acl.RemoveAccessRuleSpecific($r)}; $flags=if((Get-Item -LiteralPath $p).PSIsContainer){'ContainerInherit,ObjectInherit'}else{'None'}; $r=[System.Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl',$flags,'None','Allow'); $acl.AddAccessRule($r); Set-Acl -LiteralPath $p -AclObject $acl";
-    let result = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .env("OVER_CRYPT_ACL_PATH", path)
-        .output()
-        .with_context(|| {
-            format!(
-                "could not {} private ACL at '{}'; PowerShell is required on Windows",
-                if initialize { "initialize" } else { "inspect" },
-                path.display()
-            )
-        })?;
-    // Only public ACL diagnostics are requested; escape terminal controls and bound subprocess output.
-    let stderr: String = String::from_utf8_lossy(&result.stderr)
-        .chars()
-        .take(2048)
-        .flat_map(char::escape_default)
-        .collect();
-    ensure!(
-        result.status.success(),
-        "could not {} private ACL at '{}': status {}; stderr: {}",
-        if initialize { "initialize" } else { "inspect" },
-        path.display(),
-        result.status,
-        stderr
-    );
-    Ok(())
 }
 
 /// Sentinel inode is never replaced, so atomic data writes cannot split locks.
