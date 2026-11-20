@@ -957,7 +957,8 @@ pub(super) fn secure_write(
     let mut options = std::fs::OpenOptions::new();
     options
         .read(true)
-        .write(true)
+        // Permission-only repairs must not require the permission being restored.
+        .write(before != Some(bytes))
         .custom_flags(libc::O_NOFOLLOW)
         .mode(0o600);
     if before.is_none() {
@@ -1357,6 +1358,21 @@ pub(super) fn repair_metadata_checked(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secure_permission_repair_does_not_require_content_write_access() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("secret");
+        std::fs::write(&path, b"secret").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        let before = std::fs::metadata(&path).unwrap();
+        secure_write(&path, b"secret", Some(b"secret"), 0o600).unwrap();
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(after.mode() & 0o777, 0o600);
+        assert_eq!(before.ino(), after.ino());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        assert_eq!(std::fs::read(path).unwrap(), b"secret");
+    }
 
     #[test]
     fn checked_metadata_mutation_rejects_a_replaced_file_without_chmod() {

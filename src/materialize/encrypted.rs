@@ -150,7 +150,8 @@ impl Materializer for EncryptedFileMaterializer {
                 );
             }
             let mut options = OpenOptions::new();
-            options.write(true);
+            // A readable owner-owned secret can be chmodded even when content writes are forbidden.
+            options.read(content_matches).write(!content_matches);
             if matches!(state, ActualState::Missing) {
                 options.create_new(true);
             }
