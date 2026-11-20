@@ -65,6 +65,8 @@ warnings once per declaration and continues checking recognized settings, so a
 warning does not hide a genuine configuration error. It also continues past a
 broken overlay to report on anything that `uses` it, and flags dependency cycles. See
 [ADR-009](../adr/009-lint-is-a-separate-tolerant-pass.md).
+Structured [permissions objects](../configuration/overlay.md#file-permissions) are an
+exception: unknown fields prevent descriptor loading instead of merely warning.
 
 ## Diagnostic output
 
