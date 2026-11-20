@@ -577,7 +577,8 @@ fn handle_unresolved_state(
 ///   committing — declining, or `no_prompt`, leaves everything untouched
 ///   and reports [`SyncOutcome::Blocked`].
 /// - `Diverged`: reconcile source-only changes and converged files while
-///   preserving independent target/index edits; overlapping edits block.
+///   preserving independent target/index edits, then handle remaining changes
+///   with the `Modified` policy; overlapping edits block.
 /// - `Conflict`: never auto-resolve incompatible same-file edits.
 /// - `Missing`/`Broken` -> [`SyncOutcome::Blocked`] (nothing to sync;
 ///   `over apply` materializes it).
@@ -598,20 +599,33 @@ async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Resu
 
     match vc_status {
         Status::Locked => anyhow::bail!("encrypted virtual checkouts are unsupported"),
-        Status::Applied => Ok(SyncOutcome::UpToDate { path }),
+        Status::Applied => {
+            finish_virtual_checkout_sync(entry, opts, SyncOutcome::UpToDate { path }).await
+        }
         Status::Behind(_) | Status::Diverged { .. } => {
             if !opts.pull {
+                if has_independent_virtual_changes(entry)? {
+                    return finish_virtual_checkout_sync(
+                        entry,
+                        opts,
+                        SyncOutcome::UpToDate { path },
+                    )
+                    .await;
+                }
                 return Ok(SyncOutcome::UpToDate { path });
             }
             if opts.dry_run {
                 reconcile_virtual_checkout(entry, true).await?;
+                if has_independent_virtual_changes(entry)? {
+                    return Ok(SyncOutcome::Blocked { path, reason: "would refresh from source; remaining local changes require an explicit commit".into() });
+                }
                 return Ok(SyncOutcome::Preview {
                     path,
                     action: "refresh virtual checkout from source".into(),
                 });
             }
             reconcile_virtual_checkout(entry, false).await?;
-            Ok(SyncOutcome::FastForwarded { path })
+            finish_virtual_checkout_sync(entry, opts, SyncOutcome::FastForwarded { path }).await
         }
         Status::Modified => {
             if !opts.push {
@@ -649,6 +663,55 @@ async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Resu
     }
 }
 
+/// Source-only target differences disappear after a previewed pull; do not call them local edits.
+fn has_independent_virtual_changes(entry: &DesiredEntry) -> Result<bool> {
+    let (staged, unstaged) = ordinary_virtual_checkout_changes(entry)?;
+    if !staged.is_empty() {
+        return Ok(true);
+    }
+    let record =
+        vc_state::record_for_entry(entry)?.context("missing virtual checkout association")?;
+    let Provenance::Overlay { source, .. } = &entry.provenance else {
+        anyhow::bail!("virtual checkout has no source");
+    };
+    let (repo, managed_path) = vc_git::discover_source(source)?;
+    let scope = entry.intent.checkout_scope();
+    let base = vc_git::scoped_entries(
+        &repo,
+        &vc_git::base_tree(&repo, Some(&record.base_oid))?,
+        &managed_path,
+        &scope,
+    )?;
+    let head = vc_git::scoped_entries(
+        &repo,
+        &vc_git::base_tree(&repo, None)?,
+        &managed_path,
+        &scope,
+    )?;
+    Ok(unstaged
+        .iter()
+        .any(|change| base.get(&change.path) == head.get(&change.path)))
+}
+
+/// Both backends must handle pending ordinary edits in the same invocation as their pull.
+async fn finish_virtual_checkout_sync(
+    entry: &DesiredEntry,
+    opts: &SyncOptions,
+    clean: SyncOutcome,
+) -> Result<SyncOutcome> {
+    let (staged, unstaged) = ordinary_virtual_checkout_changes(entry)?;
+    if staged.is_empty() && unstaged.is_empty() {
+        return Ok(clean);
+    }
+    if !opts.push {
+        return Ok(SyncOutcome::Blocked {
+            path: entry.target.clone(),
+            reason: "uncommitted changes; run `over commit` or re-run without --pull-only".into(),
+        });
+    }
+    commit_virtual_checkout_interactively(entry, opts).await
+}
+
 async fn sync_generated_virtual_checkout(
     entry: &DesiredEntry,
     opts: &SyncOptions,
@@ -673,14 +736,7 @@ async fn sync_generated_virtual_checkout(
             });
         }
     }
-    let (staged, unstaged) = ordinary_virtual_checkout_changes(entry)?;
-    if !staged.is_empty() || !unstaged.is_empty() {
-        if !opts.push {
-            return Ok(SyncOutcome::Blocked { path, reason: "uncommitted ordinary file changes; run `over commit` or re-run without --pull-only".into() });
-        }
-        return commit_virtual_checkout_interactively(entry, opts).await;
-    }
-    Ok(if opts.pull && opts.dry_run {
+    let clean = if opts.pull && opts.dry_run {
         SyncOutcome::Preview {
             path,
             action: "reconcile generated checkout with local edits preserved".into(),
@@ -689,7 +745,8 @@ async fn sync_generated_virtual_checkout(
         SyncOutcome::FastForwarded { path }
     } else {
         SyncOutcome::UpToDate { path }
-    })
+    };
+    finish_virtual_checkout_sync(entry, opts, clean).await
 }
 
 fn ordinary_virtual_checkout_changes(
@@ -2130,7 +2187,7 @@ mod tests {
         let desired = DesiredTree::from_entries(vec![entry]);
         let outcomes = sync(&desired, &SyncOptions::default()).await.unwrap();
         assert_eq!(outcomes.len(), 1);
-        assert!(matches!(outcomes[0], SyncOutcome::FastForwarded { .. }));
+        assert!(matches!(outcomes[0], SyncOutcome::Blocked { .. }));
         assert_eq!(
             fs::read_to_string(target_td.path().join("a.txt")).unwrap(),
             "local edit"
@@ -2139,6 +2196,81 @@ mod tests {
             fs::read_to_string(target_td.path().join("b.txt")).unwrap(),
             "source edit"
         );
+    }
+
+    #[rstest::rstest]
+    #[tokio::test]
+    async fn incoming_changes_do_not_hide_pending_local_changes(
+        #[values("staged", "unstaged", "mixed")] local: &str,
+        #[values("both", "pull", "push", "preview")] direction: &str,
+    ) {
+        let xdg = isolate_xdg_state();
+        let source = TempDir::new().unwrap();
+        source.child("a.txt").write_str("a").unwrap();
+        source.child("b.txt").write_str("b").unwrap();
+        let repo = init_committed_repo_ret(source.path());
+        let target = TempDir::new().unwrap();
+        materialize_virtual_checkout(source.path(), target.path()).await;
+        source.child("b.txt").write_str("incoming").unwrap();
+        commit_all(&repo, "advance b");
+        target.child("a.txt").write_str("local").unwrap();
+        if local != "unstaged" {
+            let mut index = repo.index().unwrap();
+            let original = index.get_path(Path::new("a.txt"), 0).unwrap();
+            index.add_frombuffer(&original, b"local").unwrap();
+            index.write().unwrap();
+        }
+        if local == "mixed" {
+            target.child("a.txt").write_str("unstaged").unwrap();
+        }
+        let entry = virtual_checkout_entry(target.path().into(), source.path().into());
+        let state_before = fs::read(xdg.path().join("over/virtual_checkout.toml")).unwrap();
+        let head_before = repo.head().unwrap().target();
+        let index_before = fs::read(repo.path().join("index")).unwrap();
+        let outcome = sync_virtual_checkout(
+            &entry,
+            &SyncOptions {
+                no_prompt: true,
+                pull: direction != "push",
+                push: direction != "pull",
+                dry_run: direction == "preview",
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(outcome, SyncOutcome::Blocked { .. }),
+            "{outcome:?}"
+        );
+        target.child("a.txt").assert(if local == "mixed" {
+            "unstaged"
+        } else {
+            "local"
+        });
+        target
+            .child("b.txt")
+            .assert(if matches!(direction, "push" | "preview") {
+                "b"
+            } else {
+                "incoming"
+            });
+        assert_eq!(repo.head().unwrap().target(), head_before);
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), index_before);
+        if matches!(direction, "push" | "preview") {
+            assert_eq!(
+                fs::read(xdg.path().join("over/virtual_checkout.toml")).unwrap(),
+                state_before
+            );
+        } else {
+            assert_eq!(
+                vc_state::record_for_entry(&entry)
+                    .unwrap()
+                    .unwrap()
+                    .base_oid,
+                head_before.unwrap().to_string()
+            );
+        }
     }
 
     #[tokio::test]
