@@ -1324,7 +1324,7 @@ fn staging_never_follows_source_symlinks_into_unrelated_files() {
 }
 
 #[test]
-fn sync_advances_source_only_changes_without_losing_staged_snapshots_or_local_edits() {
+fn sync_advances_source_changes_but_reports_pending_local_edits_as_blocked() {
     let fixture = Fixture::new(true);
     let second = fixture.source.join("workspace/client/main/second");
     fs::write(&second, "original").unwrap();
@@ -1369,7 +1369,9 @@ fn sync_advances_source_only_changes_without_losing_staged_snapshots_or_local_ed
         .args(["workspace/client", "--no-prompt", "--target"])
         .arg(&fixture.home)
         .assert()
-        .success();
+        .failure()
+        .stdout(contains("blocked:"))
+        .stdout(contains("unstaged edits are preserved"));
     assert_eq!(
         fs::read_to_string(&first_target).unwrap(),
         "later unstaged edit"
