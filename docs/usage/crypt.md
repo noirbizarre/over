@@ -113,9 +113,10 @@ public access metadata unfiltered, restore normal diffs, and preserve its bytes
 without text normalization. `crypt/** -filter !diff -text` retains the same
 exemption for the historical nested access layout.
 `.gitattributes -filter !diff` keeps that policy itself readable, while
-`secrets/* filter=over diff=over -text` protects current per-entry native secrets.
+`secrets/* filter=over diff=over-secret -text` protects current per-entry native secrets
+and selects their path-aware diff driver.
 New administrative policy also includes `secrets` and `secrets.yaml` protection
-rules for legacy single-file stores. These nearer
+rules using `diff=over` for legacy single-file stores. These nearer
 rules override root assignments; deeper rules or `.git/info/attributes` can
 override them and must also keep bootstrap metadata unfiltered.
 
