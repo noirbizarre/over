@@ -300,7 +300,10 @@ the local key. It preserves staged content rather than resetting to `HEAD`.
 Filters remain configured while locked. Unlock refreshes the linked worktrees
 together. Different access metadata must be reconciled before a common rotation.
 
-Native secret operations fail while locked. Smudge and textconv preserve supported
+Native secret mutations, listing, and hook lookup require the installed key.
+[`secret get`](../commands/secret.md#one-shot-reads) can authenticate separately for a one-shot
+committed read without persistently unlocking the repository.
+Smudge and textconv preserve supported
 ciphertext byte-for-byte without decryption, so locked checkout and diffs remain
 usable. Ciphertext passthrough cannot authenticate the encrypted payload.
 Unlock restores access to the native store without converting its ciphertext into a

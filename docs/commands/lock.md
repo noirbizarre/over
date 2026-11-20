@@ -21,7 +21,9 @@ An already-locked repository is not an unconditional successful no-op.
 
 Successful lock has no machine-readable payload. Errors are reported on stderr
 with nonzero status. Required filters and the diff driver remain configured;
-native secret operations become unavailable. New smudge and textconv invocations
+native secret mutations, listing, and hook lookup require an installed key.
+[`secret get`](secret.md#one-shot-reads) can authenticate separately for a one-shot committed
+read without persistently unlocking the repository. New smudge and textconv invocations
 preserve ciphertext without decrypting it, so locked checkout and diff remain
 usable. Clean accepts supported ciphertext but refuses plaintext while locked.
 
