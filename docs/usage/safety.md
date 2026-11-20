@@ -113,11 +113,13 @@ metadata cloning refuse shared-file updates rather than changing unrelated hard
 links or silently losing metadata. This is per-file handling, not multi-file
 rollback.
 
-Virtual-checkout commit/restore transactions also detach shared files on macOS
+Virtual-checkout commit and ordinary-file restore transactions also detach shared files on macOS
 when native filesystem cloning is supported (for example, APFS). They retain
 xattrs/resource forks and install the exact original ACL rather than merging
 inherited access; unexpected ownership or mode changes and cloning failures refuse the
 replacement. Existing single-link files retain the in-place behavior.
+Generated-file restore supports shared-file detachment only on Linux; see
+[generated checkout restore](../commands/restore.md#generated-checkout-files).
 
 ## Regression coverage
 

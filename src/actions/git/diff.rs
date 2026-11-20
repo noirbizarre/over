@@ -21,6 +21,7 @@ pub(crate) struct Comparison {
     pub scope: Vec<PathBuf>,
     pub view: View,
     pub trees: Option<(Oid, Oid)>,
+    /// Complete baseline/direction label: rendered corrections have no recorded checkout base.
     pub baseline: Option<String>,
     pub scratch: Scratch,
 }

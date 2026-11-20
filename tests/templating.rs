@@ -2926,6 +2926,132 @@ fn rendering_directory_components_does_not_materialize_literal_jinja_scaffolds()
     assert!(!fixture.target.join("{{ data.hostname }}").exists());
 }
 
+#[cfg(unix)]
+#[rstest]
+fn rendered_destinations_preserve_git_storage_but_allow_siblings(
+    #[values(false, true)] linked: bool,
+    #[values("index", "config", "gitfile", "alias", "sibling", "untracked")] destination: &str,
+) {
+    let fixture = Fixture::new(false);
+    let source = if linked {
+        let path = fixture.temp.path().join("linked");
+        fixture.git(&["worktree", "add", "-qb", "linked", path.to_str().unwrap()]);
+        path
+    } else {
+        fixture.source.clone()
+    };
+    let repo = git2::Repository::open(&source).unwrap();
+    let target = match destination {
+        "index" => repo.path().join("index"),
+        "config" => repo.commondir().join("config"),
+        "gitfile" => source.join(".git"),
+        "alias" => {
+            let alias = fixture.temp.path().join("git-alias");
+            std::os::unix::fs::symlink(repo.commondir(), &alias).unwrap();
+            alias.join("config")
+        }
+        "sibling" => source.join(".git-sibling"),
+        "untracked" => source.join("untracked-output"),
+        _ => unreachable!(),
+    };
+    fs::write(source.join("app/over.yaml"), format!(
+        "mode: symlink\ndata: {{hostname: first}}\nrules:\n  - {{path: config.jinja, template: true, target: '{}'}}\n",
+        target.display()
+    )).unwrap();
+    // A staged edit must survive refusal, not just HEAD's committed tree.
+    fs::write(source.join("app/plain"), "staged sentinel\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("app/plain")).unwrap();
+    index.write().unwrap();
+    let index_before = fs::read(repo.path().join("index")).unwrap();
+    let config_before = fs::read(repo.commondir().join("config")).unwrap();
+    let head_before = repo.head().unwrap().target();
+    let refs_before = repo
+        .references()
+        .unwrap()
+        .map(|r| {
+            let r = r.unwrap();
+            (r.name().unwrap().to_owned(), r.target())
+        })
+        .collect::<Vec<_>>();
+    let mut command = fixture.command_at(&source, "apply");
+    command
+        .args(["app", "--force", "--no-prompt", "--target"])
+        .arg(&fixture.target);
+    if matches!(destination, "sibling" | "untracked") {
+        command.assert().success();
+        assert!(target.is_symlink());
+        assert!(fs::read_to_string(target).unwrap().contains("host=first"));
+    } else {
+        let assertion = command.assert().failure();
+        if destination != "gitfile" || linked {
+            assertion.stderr(contains("protected source Git storage"));
+        }
+    }
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index_before);
+    assert_eq!(
+        fs::read(repo.commondir().join("config")).unwrap(),
+        config_before
+    );
+    assert_eq!(repo.head().unwrap().target(), head_before);
+    assert_eq!(
+        repo.references()
+            .unwrap()
+            .map(|r| {
+                let r = r.unwrap();
+                (r.name().unwrap().to_owned(), r.target())
+            })
+            .collect::<Vec<_>>(),
+        refs_before
+    );
+}
+
+#[cfg(unix)]
+#[rstest]
+#[case("absolute")]
+#[case("relative")]
+#[case("parent")]
+fn rendered_diff_can_inspect_another_dotfiles_repository_without_claiming_its_links(
+    #[case] link: &str,
+) {
+    let fixture = Fixture::new(false);
+    fixture.apply();
+    let foreign = fixture.temp.path().join("other-dotfiles");
+    let repo = git2::Repository::init(&foreign).unwrap();
+    fs::write(foreign.join("config"), "foreign-dotfile-sentinel\n").unwrap();
+    commit_all(&repo);
+    let target = fixture.target.join("config");
+    fs::remove_file(&target).unwrap();
+    let (location, referent) = match link {
+        "absolute" => (target.clone(), foreign.join("config")),
+        "relative" => (target.clone(), PathBuf::from("../other-dotfiles/config")),
+        "parent" => {
+            fs::remove_file(fixture.target.join("plain")).unwrap();
+            fs::remove_dir(&fixture.target).unwrap();
+            (fixture.target.clone(), foreign.clone())
+        }
+        _ => unreachable!(),
+    };
+    std::os::unix::fs::symlink(&referent, &location).unwrap();
+    let source_before = fs::read(fixture.source.join("app/config.jinja")).unwrap();
+    let index_before = fs::read(repo.path().join("index")).unwrap();
+    fixture
+        .command("diff")
+        .env("GIT_PAGER", "cat")
+        .args(["app", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .success()
+        .stdout(contains("-foreign-dotfile-sentinel").and(contains("+host=first")));
+    assert_eq!(fs::read_link(&location).unwrap(), referent);
+    assert_eq!(fs::read(&target).unwrap(), b"foreign-dotfile-sentinel\n");
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index_before);
+    assert_eq!(
+        fs::read(fixture.source.join("app/config.jinja")).unwrap(),
+        source_before
+    );
+}
+
 #[test]
 fn changing_only_context_rerenders_checkout_and_metadata_does_not_duplicate_values() {
     let fixture = Fixture::new(true);
@@ -2958,6 +3084,116 @@ fn changing_only_context_rerenders_checkout_and_metadata_does_not_duplicate_valu
     let output = assertion.get_output();
     assert!(!String::from_utf8_lossy(&output.stdout).contains("PRIVATE_RENDER_SENTINEL"));
     assert!(!String::from_utf8_lossy(&output.stderr).contains("PRIVATE_RENDER_SENTINEL"));
+}
+
+#[rstest]
+fn sync_requires_an_initialized_deployment_for_both_checkout_backends(
+    #[values(false, true)] generated: bool,
+    #[values("never", "unapplied", "initializing", "applied", "removed", "replaced")]
+    lifecycle: &str,
+    #[values(false, true)] dry_run: bool,
+    #[values("--pull-only", "--push-only")] direction: &str,
+) {
+    let fixture = Fixture::new(true);
+    if !generated {
+        fs::write(fixture.source.join("app/over.yaml"), "mode: checkout\n").unwrap();
+        commit_all(&fixture.repo());
+    }
+    if lifecycle != "never" {
+        fixture.apply();
+    }
+    let state = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    match lifecycle {
+        "unapplied" => {
+            fixture
+                .command("unapply")
+                .args(["app", "--target"])
+                .arg(&fixture.target)
+                .assert()
+                .success();
+        }
+        "initializing" => {
+            let mut metadata: toml::Value =
+                toml::from_str(&fs::read_to_string(&state).unwrap()).unwrap();
+            for (_, record) in metadata["state"]["checkouts"]
+                .as_table_mut()
+                .unwrap()
+                .iter_mut()
+            {
+                record
+                    .as_table_mut()
+                    .unwrap()
+                    .insert("initializing".into(), true.into());
+            }
+            fs::write(state, toml::to_string(&metadata).unwrap()).unwrap();
+        }
+        "removed" | "replaced" => {
+            fs::remove_dir_all(&fixture.target).unwrap();
+            if lifecycle == "replaced" {
+                fs::write(&fixture.target, "foreign obstruction\n").unwrap();
+            }
+        }
+        _ => {}
+    }
+    // Snapshot all persistent bytes, including association journals and generated refs.
+    let snapshot = || {
+        walkdir::WalkDir::new(fixture.temp.path())
+            .into_iter()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| (entry.path().to_path_buf(), fs::read(entry.path()).unwrap()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let before = snapshot();
+    let target_existed = fixture.target.exists();
+    let mut command = fixture.sync();
+    command.arg(direction);
+    if dry_run {
+        command.arg("--dry-run");
+    }
+    if lifecycle == "applied" {
+        command.assert().success();
+    } else {
+        let assertion = command.assert().failure();
+        // Exclusion preflight may reject a non-directory root before sync admission.
+        if lifecycle != "replaced" {
+            assertion.stdout(contains("over apply"));
+        }
+        assert_eq!(snapshot(), before);
+        assert_eq!(fixture.target.exists(), target_existed);
+    }
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn rendered_diff_labels_the_correction_from_current_content_to_desired_output(
+    #[case] missing: bool,
+) {
+    let fixture = Fixture::new(false);
+    fixture.apply();
+    let target = fixture.target.join("config");
+    if missing {
+        fs::remove_file(&target).unwrap();
+    } else {
+        fs::write(&target, "local edit\n").unwrap();
+    }
+    let assertion = fixture
+        .command("diff")
+        .env("GIT_PAGER", "cat")
+        .args(["app", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .success()
+        .stderr(contains("current target -> desired rendered output"))
+        .stdout(contains("+host=first"));
+    if missing {
+        assertion.stdout(contains("new file mode"));
+        assert!(!target.exists());
+    } else {
+        assertion.stdout(contains("-local edit"));
+        assert_eq!(fs::read(&target).unwrap(), b"local edit\n");
+    }
 }
 
 #[rstest]

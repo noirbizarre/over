@@ -143,6 +143,8 @@ impl Report {
             match &entry.intent {
                 MaterializationIntent::RenderedFile(file) => {
                     if views.contains(&View::Unstaged) {
+                        // Comparing an existing dotfile is useful even through foreign file/parent links;
+                        // read-only inspection deliberately does not grant apply/unapply ownership.
                         let (repo, _) = vc::discover_source(&file.source)?;
                         let scratch = Scratch::new(&repo)?;
                         let path = PathBuf::from(
@@ -193,7 +195,10 @@ impl Report {
                             scope: vec![path],
                             view: View::Unstaged,
                             trees: Some((left, right)),
-                            baseline: Some(format!("rendered source {}", file.source.display())),
+                            baseline: Some(format!(
+                                "current target -> desired rendered output; source template {}",
+                                file.source.display()
+                            )),
                             scratch,
                         });
                     }
@@ -560,7 +565,7 @@ fn source_virtual_comparisons(
             scope,
             view,
             trees: Some((left, right)),
-            baseline: Some(record.base_oid.clone()),
+            baseline: Some(format!("recorded base {}", record.base_oid)),
             scratch,
         });
     }
@@ -620,7 +625,7 @@ fn generated_comparisons(
             view: View::Unstaged,
             trees: Some((left, right_id)),
             baseline: Some(format!(
-                "generated {label}: {}",
+                "recorded base generated {label}: {}",
                 record
                     .generated
                     .as_ref()

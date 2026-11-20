@@ -106,7 +106,8 @@ pub enum SyncOutcome {
     /// `SyncOptions::abort`, or an unresolved non-conflicted merge state.
     Blocked { path: PathBuf, reason: String },
     /// The legacy library operation's `SyncOptions::abort` cleared an
-    /// in-progress merge, restoring the pre-merge working tree.
+    /// in-progress merge by hard-resetting tracked working-tree and index state
+    /// to HEAD. Uncommitted tracked/index edits are discarded, not restored.
     Aborted { path: PathBuf },
 }
 
@@ -206,7 +207,7 @@ impl fmt::Display for SyncOutcome {
                 emojis::warning(),
                 style::yellow("conflict:"),
                 target,
-                style::white("resolve manually, then re-run `over sync`, or `over sync --abort`"),
+                style::white("resolve the conflicting files manually, then rerun synchronization"),
             ),
             SyncOutcome::Blocked { reason, .. } => write!(
                 f,
@@ -366,8 +367,9 @@ fn sync_units(entry: &DesiredEntry) -> Result<Vec<SyncUnit>> {
     Ok(units)
 }
 
-/// Drive a single [`SyncUnit`] through pull/push, never touching anything
-/// if the working tree is dirty or a prior merge is unresolved.
+/// Drive a single [`SyncUnit`] through pull/push, blocking pulls with a dirty
+/// working tree and blocking unresolved operations unless explicitly aborting
+/// a merge. That abort hard-resets tracked working-tree/index state to HEAD.
 fn sync_unit(unit: &SyncUnit, opts: &SyncOptions) -> Result<SyncOutcome> {
     let path = unit.path.clone();
     let repo = Repository::open(&path)
@@ -557,7 +559,7 @@ fn handle_unresolved_state(
     }
     Ok(SyncOutcome::Blocked {
         path: path.to_path_buf(),
-        reason: "finish resolving and commit, or run `over sync --abort`".to_string(),
+        reason: "finish resolving and commit, or abort the merge with Git".to_string(),
     })
 }
 
@@ -591,6 +593,31 @@ async fn sync_virtual_checkout(entry: &DesiredEntry, opts: &SyncOptions) -> Resu
             path,
             reason: "virtual checkout has no abortable operation".into(),
         });
+    }
+    // Reconcile also initializes during apply; sync must not acquire deployment authority that way.
+    let actual = crate::plan::actual::inspect_with(&entry.target, &entry.access.fs)?;
+    let record = vc_state::record_for_entry(entry)?;
+    let blocked = match (&actual, &record) {
+        (crate::plan::ActualState::Missing, _) => Some("not materialized yet; run `over apply`"),
+        (crate::plan::ActualState::Directory, None) => {
+            Some("virtual checkout association is broken; run `over apply` to re-adopt it")
+        }
+        (crate::plan::ActualState::Directory, Some(record)) if record.initializing => {
+            Some("checkout initialization was interrupted; rerun over apply before syncing")
+        }
+        (crate::plan::ActualState::Directory, Some(_)) => None,
+        _ => Some("virtual checkout target is not a directory; run `over apply` to repair it"),
+    };
+    if let Some(reason) = blocked {
+        return Ok(SyncOutcome::Blocked {
+            path,
+            reason: reason.into(),
+        });
+    }
+    // Report the selected target's apply requirement before checking an older deployment's mapping.
+    vc_state::verify_live_target(entry)?;
+    if let Some(record) = &record {
+        vc_state::verify(entry, record)?;
     }
     if crate::materialize::virtual_checkout::generated::active(entry)? {
         return sync_generated_virtual_checkout(entry, opts).await;

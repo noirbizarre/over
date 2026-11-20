@@ -137,7 +137,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 comparison
                     .baseline
                     .as_ref()
-                    .map(|base| format!(" (recorded base {base})"))
+                    .map(|base| format!(" ({base})"))
                     .unwrap_or_default(),
                 comparison
                     .scope

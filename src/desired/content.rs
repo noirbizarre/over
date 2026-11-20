@@ -67,6 +67,23 @@ pub(crate) fn validate_destination(
         Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
+    let mut protected = vec![
+        crate::overlays::mapping::physical(repo.path())?,
+        crate::overlays::mapping::physical(repo.commondir())?,
+    ];
+    if let Some(root) = repo.workdir() {
+        // Linked worktrees keep an administrative gitfile outside their gitdir.
+        protected.push(crate::overlays::mapping::location(&root.join(".git"))?);
+    }
+    for root in protected {
+        // Replacing a leaf link only unlinks it: protect its location, not its referent.
+        ensure!(
+            !destination.starts_with(&root) && !root.starts_with(&destination),
+            "rendered destination '{}' overlaps protected source Git storage '{}'",
+            target.display(),
+            root.display()
+        );
+    }
     if let Some(root) = repo.workdir()
         && let Ok(relative) = destination.strip_prefix(crate::overlays::mapping::physical(root)?)
     {

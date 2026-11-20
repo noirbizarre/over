@@ -39,7 +39,9 @@ editors.
 
 Schemas describe authored settings, so inherited fields may be omitted.
 Unknown keys in documented objects are editor errors; Over still warns and
-ignores unknown keys when loading. Consumer metadata, Git option names, remote
+ignores unknown keys when loading, except in
+[structured permissions objects](configuration/overlay.md#file-permissions), which reject unknown fields.
+Consumer metadata, Git option names, remote
 extras, and hook environment names remain open namespaces with their documented
 value types. Schemas do not replace [`over lint`](commands/lint.md) or runtime
 checks for filesystem state, dependency cycles, glob syntax, template evaluation,

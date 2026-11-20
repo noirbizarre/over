@@ -40,10 +40,11 @@
 //!   `crate::overlays::rules` before this module walks the overlay tree.
 //! - Rendered file bytes and source identity live in [`content`]; checkout units
 //!   carry complete desired-leaf inventories without overlapping child entries.
-//! - Permission policy applies to content Over writes directly: partial files,
+//! - Chmod policy applies to content Over writes directly: partial files,
 //!   encrypted whole files, and rendered artifacts use `DesiredEntry.permissions`;
 //!   generated checkout leaves carry assignments in their rendered inventory.
-//!   Ordinary checkout files have no independent permission policy. Ordinary
+//!   Ordinary checkout files have no independent chmod policy; owner/group
+//!   assignments still apply through their access metadata policy. Ordinary
 //!   symlinks share their source's inode, so chmod would mutate source content
 //!   and stays out of scope (see ADR-020).
 //! - Comparing against actual filesystem state and materializing anything —
