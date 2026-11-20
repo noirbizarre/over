@@ -3006,6 +3006,52 @@ fn rendered_destinations_preserve_git_storage_but_allow_siblings(
     );
 }
 
+#[cfg(unix)]
+#[rstest]
+#[case("absolute")]
+#[case("relative")]
+#[case("parent")]
+fn rendered_diff_can_inspect_another_dotfiles_repository_without_claiming_its_links(
+    #[case] link: &str,
+) {
+    let fixture = Fixture::new(false);
+    fixture.apply();
+    let foreign = fixture.temp.path().join("other-dotfiles");
+    let repo = git2::Repository::init(&foreign).unwrap();
+    fs::write(foreign.join("config"), "foreign-dotfile-sentinel\n").unwrap();
+    commit_all(&repo);
+    let target = fixture.target.join("config");
+    fs::remove_file(&target).unwrap();
+    let (location, referent) = match link {
+        "absolute" => (target.clone(), foreign.join("config")),
+        "relative" => (target.clone(), PathBuf::from("../other-dotfiles/config")),
+        "parent" => {
+            fs::remove_file(fixture.target.join("plain")).unwrap();
+            fs::remove_dir(&fixture.target).unwrap();
+            (fixture.target.clone(), foreign.clone())
+        }
+        _ => unreachable!(),
+    };
+    std::os::unix::fs::symlink(&referent, &location).unwrap();
+    let source_before = fs::read(fixture.source.join("app/config.jinja")).unwrap();
+    let index_before = fs::read(repo.path().join("index")).unwrap();
+    fixture
+        .command("diff")
+        .env("GIT_PAGER", "cat")
+        .args(["app", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .success()
+        .stdout(contains("-foreign-dotfile-sentinel").and(contains("+host=first")));
+    assert_eq!(fs::read_link(&location).unwrap(), referent);
+    assert_eq!(fs::read(&target).unwrap(), b"foreign-dotfile-sentinel\n");
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index_before);
+    assert_eq!(
+        fs::read(fixture.source.join("app/config.jinja")).unwrap(),
+        source_before
+    );
+}
+
 #[test]
 fn changing_only_context_rerenders_checkout_and_metadata_does_not_duplicate_values() {
     let fixture = Fixture::new(true);
