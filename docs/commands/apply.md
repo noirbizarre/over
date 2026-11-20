@@ -21,6 +21,7 @@ Options:
       --discard-checkout  Discard owned real checkouts, including local files and Git history
       --no-prompt         Fail on conflict instead of prompting
       --no-uses           Skip dependency operations, retaining dependency data
+      --skip <NAME_OR_GLOB>  Skip overlay deployment by canonical name or glob (repeatable; quote 'workspace/*')
   -i, --install           Run install hooks after applying files
   -h, --help              Print help
 ```
@@ -95,6 +96,64 @@ With `--install`, install hooks run after all overlays reconcile and before
 post-apply hooks. Later failure does not undo file or command changes.
 External commands retain their own
 prompt policies; Over's force/no-prompt flags do not control child prompts.
+
+## Skip overlays during staged provisioning
+
+Repeat `--skip` to exclude overlay deployments from the normal explicit,
+active-context, or opt-in host selection:
+
+```sh
+over apply --skip neovim --skip 'workspace/*'
+over apply base desktop --skip 'workspace/**' --dry-run
+```
+
+This does not select every overlay in the repository. Quote patterns so your
+shell passes them unchanged to Over.
+
+Patterns match whole, case-sensitive canonical overlay names relative to the
+collection root, with `/` separators (for example, `workspace/private`). Explicit
+selection aliases such as `./workspace/private/` are normalized before matching.
+An exact name excludes only that overlay, not its descendants. Glob syntax is:
+
+- `*` matches zero or more characters within a path component; `?` matches one.
+  Thus `'workspace/*'` matches `workspace/private`, but not `workspace/team/private`.
+- `**` in a recursive component matches nested paths; use `'workspace/**'` for
+  descendants at any depth.
+- `[abc]`, `[a-z]`, and `[!abc]` select or negate character classes;
+  `{base,desktop}` matches alternatives. Backslashes escape metacharacters,
+  including on Windows; use `/` for path separators.
+
+Invalid patterns fail before application. Each unmatched name or pattern emits
+a warning and application continues. Matching diagnostics cover names encountered
+in this invocation's selection (including inference candidates) and dependency
+graph, rather than scanning every unrelated overlay. Overlapping patterns each
+count as matched; skipped overlay lines are deduplicated and appear in dry-run
+and redirected output too.
+
+Skipped overlays do not deploy files, clone or check out Git repositories,
+prepare their own content/secrets, or run their overlay hooks. Their metadata
+can still be loaded: configured host overrides and dependency data/target values
+remain available to retained overlays.
+
+Normally, if a retained overlay requires a skipped overlay through `uses`, apply
+fails before content preparation or mutation, identifying the dependency chain
+and matching exclusion. Remove the exclusion or select different roots to resolve
+the conflict. With `--no-uses`, dependencies supply metadata only, so a skipped
+dependency does not cause a deployment conflict:
+
+```sh
+over apply base --no-uses --skip private
+```
+
+During target inference, a candidate with a skipped deployment dependency cannot
+be discarded merely because its content was not prepared. If its routing matches
+your current directory, Over reports the conflict and asks for an explicit name
+rather than potentially applying a different overlay.
+
+If all selected roots are excluded, apply succeeds without changes or repository
+hooks. An excluded explicit, source-context, Git-associated, or default-host
+selection never falls through to a replacement host. Repository hooks still run
+normally when retained overlays are applied.
 
 ## Lifecycle hooks
 

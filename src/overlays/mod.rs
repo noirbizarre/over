@@ -15,6 +15,7 @@ pub(crate) const EXTENSIONS: &[&str] = &["yml", "yaml", "toml"];
 
 pub mod data;
 pub mod discovery;
+pub(crate) mod exclusions;
 pub mod ignore;
 #[cfg(feature = "schema")]
 pub mod json_schema;

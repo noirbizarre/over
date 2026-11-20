@@ -9,12 +9,14 @@ use crate::actions::git::association;
 use crate::desired::{DesiredEntry, DesiredTree, MaterializationIntent};
 use crate::exec::Context;
 use crate::overlays::Overlay;
+use crate::overlays::exclusions::Exclusions;
 use crate::overlays::mapping::{self, ResolvedMappings, ReverseMatch, ReverseResolution};
 
 struct Candidate {
     overlay: Overlay,
     routing: ResolvedMappings,
     tree: Result<DesiredTree>,
+    deployment_blocked: bool,
 }
 
 // Declaration order is policy: weaker containment must not dilute concrete ownership.
@@ -33,6 +35,15 @@ pub struct InferredOverlay {
 
 /// Infer from paths (or captured cwd when empty). Ambiguity is never absence.
 pub fn infer_selection(ctx: &Context, paths: &[PathBuf]) -> Result<Option<InferredOverlay>> {
+    infer_selection_with_exclusions(ctx, paths, None, &mut false)
+}
+
+fn infer_selection_with_exclusions(
+    ctx: &Context,
+    paths: &[PathBuf],
+    mut exclusions: Option<&mut Exclusions>,
+    excluded_context: &mut bool,
+) -> Result<Option<InferredOverlay>> {
     let paths = if paths.is_empty() {
         vec![ctx.absolute_path(Path::new("."))?]
     } else {
@@ -47,6 +58,12 @@ pub fn infer_selection(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Inferr
     let mut resolved_paths = Vec::new();
     for path in &paths {
         if let Some(name) = git_association(path)? {
+            if let Some(policy) = exclusions.as_deref_mut()
+                && policy.excludes(&ctx.repository.canonical_name(&name)?)
+            {
+                *excluded_context = true;
+                return Ok(None);
+            }
             let overlay = ctx.repository.get(&name).with_context(|| {
                 format!("over.overlay references unavailable overlay '{name}'; specify an overlay explicitly or fix the repository config")
             })?;
@@ -74,9 +91,19 @@ pub fn infer_selection(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Inferr
             let name = directory
                 .strip_prefix(&ctx.repository.root)?
                 .to_string_lossy();
+            if let Some(policy) = exclusions.as_deref_mut()
+                && policy.excludes(&ctx.repository.canonical_name(&name)?)
+            {
+                // Authoritative excluded context must never activate host fallback.
+                *excluded_context = true;
+                return Ok(None);
+            }
             let overlay = (|| -> Result<_> {
                 let overlay = ctx.repository.get(&name)?;
                 let own_ctx = ctx.with_overlay(overlay.clone()).resolve_data()?;
+                if let Some(policy) = exclusions.as_deref_mut() {
+                    policy.validate(&own_ctx, std::slice::from_ref(&overlay))?;
+                }
                 overlay.resolve_mappings(&own_ctx)?;
                 Ok(overlay)
             })()
@@ -89,6 +116,34 @@ pub fn infer_selection(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Inferr
         if candidates.is_none() {
             let mut prepared = Vec::new();
             for directory in directories {
+                let name = ctx.repository.canonical_name(
+                    &directory
+                        .strip_prefix(&ctx.repository.root)?
+                        .to_string_lossy(),
+                )?;
+                if let Some(policy) = exclusions.as_deref_mut()
+                    && policy.excludes(&name)
+                {
+                    // Metadata routing can identify an excluded target without rendering its content.
+                    let routing = (|| -> Result<_> {
+                        let overlay = ctx.repository.get(&name)?;
+                        let own_ctx = ctx.with_overlay(overlay.clone()).resolve_data()?;
+                        overlay.resolve_mappings(&own_ctx)
+                    })();
+                    match routing {
+                        Ok(routing) => {
+                            for path in &paths {
+                                if !matches!(routing.reverse(path)?, ReverseResolution::Absent) {
+                                    *excluded_context = true;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            tracing::debug!(overlay = %name, %error, "skipping unresolved excluded selection candidate");
+                        }
+                    }
+                    continue;
+                }
                 let candidate = (|| -> Result<_> {
                     let overlay = ctx.repository.get(
                         &directory
@@ -96,11 +151,17 @@ pub fn infer_selection(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Inferr
                             .to_string_lossy(),
                     )?;
                     let ctx = ctx.with_overlay(overlay.clone()).resolve_data()?;
+                    // Keep conflicts attached to routing evidence rather than hiding a winning candidate.
+                    let validation = match exclusions.as_deref_mut() {
+                        Some(policy) => policy.validate(&ctx, std::slice::from_ref(&overlay)),
+                        None => Ok(()),
+                    };
                     Ok(Candidate {
                         overlay: overlay.clone(),
                         routing: overlay.resolve_mappings(&ctx)?,
+                        deployment_blocked: validation.is_err(),
                         // A broken sidecar must not erase an already-identifiable target.
-                        tree: DesiredTree::build_own(&ctx, &overlay),
+                        tree: validation.and_then(|()| DesiredTree::build_own(&ctx, &overlay)),
                     })
                 })();
                 match candidate {
@@ -158,6 +219,17 @@ pub fn infer_selection(ctx: &Context, paths: &[PathBuf]) -> Result<Option<Inferr
                 None
             };
             if let Some(tier) = tier {
+                if candidate.deployment_blocked {
+                    // Missing tree evidence must not let another root win and execute unexpectedly.
+                    // An explicit name avoids preparing this blocked candidate's content.
+                    if let Err(error) = &candidate.tree {
+                        bail!(
+                            "cannot safely infer an overlay for '{}': candidate '{}' has a deployment conflict: {error:#}; specify NAME explicitly to disambiguate",
+                            path.display(),
+                            candidate.overlay.name
+                        );
+                    }
+                }
                 tiers
                     .entry(tier)
                     .or_default()
@@ -391,6 +463,30 @@ pub fn select_apply(ctx: &Context, name: Option<&str>) -> Result<Overlay> {
         && let Some(overlay) = ctx.repository.host_overlay(ctx)?
     {
         return Ok(overlay);
+    }
+    bail!(
+        "cannot infer an overlay; run `over apply NAME`, use an active overlay context, or configure host_overlay and apply.default_to_host = true"
+    )
+}
+
+/// Select apply roots without treating an excluded authoritative context as absence.
+pub(crate) fn select_apply_with_exclusions(
+    ctx: &Context,
+    exclusions: &mut Exclusions,
+) -> Result<Option<Overlay>> {
+    let mut excluded_context = false;
+    if let Some(selection) =
+        infer_selection_with_exclusions(ctx, &[], Some(exclusions), &mut excluded_context)?
+    {
+        return Ok(Some(selection.overlay));
+    }
+    if excluded_context {
+        return Ok(None);
+    }
+    if ctx.repository.apply_config()?.default_to_host
+        && let Some(overlay) = ctx.repository.host_overlay(ctx)?
+    {
+        return Ok((!exclusions.excludes(&overlay.name)).then_some(overlay));
     }
     bail!(
         "cannot infer an overlay; run `over apply NAME`, use an active overlay context, or configure host_overlay and apply.default_to_host = true"

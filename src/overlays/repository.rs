@@ -239,6 +239,20 @@ impl Repository {
             .collect())
     }
 
+    /// Obtain the same identity as a loaded overlay without reading its descriptor.
+    pub(crate) fn canonical_name(&self, name: &str) -> Result<String> {
+        let root = super::mapping::lexical(&self.root.join(name));
+        anyhow::ensure!(
+            !root.starts_with(self.root.join(".over")),
+            ".over is reserved repository administration"
+        );
+        Ok(root
+            .strip_prefix(&self.root)?
+            .to_str()
+            .context("overlay name is not valid UTF-8")?
+            .replace('\\', "/"))
+    }
+
     /// Get an overlay by its name/relative path
     pub fn get(&self, name: &str) -> Result<Overlay> {
         let root = self.root.join(name);

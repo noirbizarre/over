@@ -104,6 +104,40 @@ impl Fixture {
 }
 
 #[test]
+fn skipped_roots_never_prepare_hook_secrets_or_run_hooks_and_all_skipped_skips_root_hooks() {
+    let fixture = Fixture::new();
+    fixture.config(
+        "over.yaml",
+        json!({"hooks": {
+            "post-apply": ["echo root >> \"$HOOK_TRACE\""]
+        }}),
+    );
+    fixture.config("private/over.yaml", json!({"hooks": {
+        "install": [{"command": "echo private >> \"$HOOK_TRACE\"", "env": {"TOKEN": "{{ secret('missing') }}"}}],
+        "post-apply": ["echo private >> \"$HOOK_TRACE\""]
+    }}));
+    fixture
+        .apply("private")
+        .args(["--skip", "private", "--install"])
+        .assert()
+        .success();
+    assert_eq!(fixture.trace(), "");
+
+    fixture.config(
+        "base/over.yaml",
+        json!({"uses": ["private"], "hooks": {
+            "post-apply": ["echo base >> \"$HOOK_TRACE\""]
+        }}),
+    );
+    fixture
+        .apply("base")
+        .args(["--skip", "private", "--no-uses", "--install"])
+        .assert()
+        .success();
+    assert_eq!(fixture.trace(), "root\nbase\n");
+}
+
+#[test]
 fn install_hooks_run_only_on_request_after_all_files_and_before_post_apply() {
     let fixture = Fixture::new();
     fixture.config("over.yaml", json!({"target": "~", "hooks": {
