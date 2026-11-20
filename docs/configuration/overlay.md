@@ -446,6 +446,8 @@ without treating an unmarked regular copy as a managed link.
 Apply finalizes scaffold directory ownership after all selected overlays publish
 their children, including shared partial files, and before success hooks run.
 This keeps a parent ownership change from blocking a later unprivileged child.
+If later publication fails, Over still attempts to finalize already-published
+directory metadata and reports any finalization failure alongside the original error.
 
 ### Sudo mode
 

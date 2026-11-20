@@ -19,6 +19,17 @@ type MetadataRepair = (
 pub(crate) struct DirectoryMetadata(Vec<MetadataRepair>);
 
 impl DirectoryMetadata {
+    pub(crate) async fn finish(self, result: Result<()>) -> Result<()> {
+        // Published children remain after failure, so their parents still need the declared policy.
+        match (result, self.finalize().await) {
+            (Ok(()), metadata) => metadata,
+            (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(metadata)) => Err(error.context(format!(
+                "directory metadata finalization also failed: {metadata:#}"
+            ))),
+        }
+    }
+
     pub(crate) async fn finalize(mut self) -> Result<()> {
         // Participant order does not imply depth order when roots share scaffolds.
         self.0.sort_by(|(a, _), (b, _)| {
@@ -337,8 +348,8 @@ impl Plan {
     /// descendants write through an unresolved parent and run success hooks.
     pub async fn execute(&self, ctx: Ctx) -> Result<()> {
         let mut metadata = DirectoryMetadata::default();
-        self.execute_deferred(ctx, &mut metadata).await?;
-        metadata.finalize().await
+        let result = self.execute_deferred(ctx, &mut metadata).await;
+        metadata.finish(result).await
     }
 
     pub(crate) async fn execute_deferred(
@@ -359,7 +370,8 @@ impl Plan {
             guard.verify()?;
         }
         let progress = ctx.ui_progress.phase("Reconciling files");
-        let mut directory_metadata = Vec::new();
+        // Enqueue immediately so an error in a later step cannot abandon published metadata.
+        let directory_metadata = &mut metadata.0;
 
         for (index, step) in self.steps.iter().enumerate() {
             if ctx.defer_partials
@@ -554,8 +566,6 @@ impl Plan {
             }
         }
 
-        // The caller also knows about children deferred beyond this individual plan.
-        metadata.0.extend(directory_metadata);
         Ok(())
     }
 
@@ -829,6 +839,56 @@ mod tests {
         fs::rename(&path, temp.path().join("old")).unwrap();
         fs::create_dir(&path).unwrap();
         assert!(metadata.finalize().await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_publication_still_finalizes_previously_published_directory_metadata() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("parent");
+        fs::create_dir(&path).unwrap();
+        let guard = crate::target_fs::MetadataGuard::capture(
+            &crate::target_fs::Access::default().fs,
+            &path,
+        )
+        .unwrap();
+        let permissions = crate::overlays::Permissions {
+            mode: Some(crate::overlays::FileMode::from_bits(0o700)),
+            ..Default::default()
+        };
+        let error = DirectoryMetadata(vec![(guard, permissions)])
+            .finish(Err(anyhow::anyhow!("later participant failed")))
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "later participant failed");
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_finalization_retains_the_original_publication_error() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("parent");
+        fs::create_dir(&path).unwrap();
+        let guard = crate::target_fs::MetadataGuard::capture(
+            &crate::target_fs::Access::default().fs,
+            &path,
+        )
+        .unwrap();
+        fs::remove_dir(&path).unwrap();
+        let error = DirectoryMetadata(vec![(guard, Default::default())])
+            .finish(Err(anyhow::anyhow!("publication failed")))
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("metadata finalization also failed")
+        );
+        assert_eq!(error.root_cause().to_string(), "publication failed");
     }
 
     fn repo_and_root() -> (TempDir, Repository) {

@@ -481,22 +481,27 @@ impl Overlay {
         }
         let mut applied = Vec::new();
         let mut directory_metadata = crate::plan::DirectoryMetadata::default();
-        for overlay in &participants {
-            let overlay_ctx = ctx.with_overlay(overlay.clone());
-            overlay
-                .apply_own(&overlay_ctx, &mut directory_metadata)
-                .await?;
-            applied.push((overlay, overlay.resolve_target(&overlay_ctx)?));
+        let publication = async {
+            for overlay in &participants {
+                let overlay_ctx = ctx.with_overlay(overlay.clone());
+                overlay
+                    .apply_own(&overlay_ctx, &mut directory_metadata)
+                    .await?;
+                applied.push((overlay, overlay.resolve_target(&overlay_ctx)?));
+            }
+            if !ctx.dry_run {
+                let entries = desired.entries().to_vec();
+                let ctx = ctx.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::materialize::partial::reconcile_partials(&entries, ctx)
+                })
+                .await??;
+            }
+            anyhow::Ok(())
         }
-        if !ctx.dry_run {
-            let entries = desired.entries().to_vec();
-            let ctx = ctx.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::materialize::partial::reconcile_partials(&entries, ctx)
-            })
-            .await??;
-        }
-        directory_metadata.finalize().await?;
+        .await;
+        // Failed publication retains earlier writes; finalize their ownership before returning.
+        directory_metadata.finish(publication).await?;
         drop(ownership);
         if ctx.dry_run || !hooks_enabled || crate::hooks::nested() {
             return Ok(());
