@@ -88,9 +88,13 @@ source template to change generated source content. Interrupted sync or reverse
 commit publication must finish before generated restore can proceed.
 
 Ordinary siblings in the same checkout retain the index/revision semantics
-above. Generated restore replaces files using recorded permissions, or private
-defaults with recorded executability. Unlike ordinary restore, it does not
-preserve existing inode identity or native ownership, ACLs, and xattrs.
+above. Generated restore writes using recorded permissions, or private defaults
+with recorded executability. Existing single-link files retain their inode,
+ownership, ACLs, and xattrs through in-place writes on all platforms; requested
+mode changes still apply. These writes are not atomic, and an I/O failure after
+writing starts can leave partial content. On Linux, shared hard links are detached
+through a metadata-preserving replacement. Generated restore refuses shared-file
+updates on other platforms. Metadata that cannot be preserved causes refusal.
 
 ## Select files and an overlay
 
@@ -163,8 +167,8 @@ exception: protected blobs undergo its materialization transform, producing
 decrypted worktree content with the matching local repository key.
 
 Existing ordinary files retain private access permissions and native metadata.
-Generated restore has the replacement semantics described above. On Linux,
-shared hard links are detached using a metadata-preserving replacement. On macOS,
+For ordinary restore on Linux, shared hard links are detached using a
+metadata-preserving replacement. On macOS,
 shared hard links require filesystem support for native cloning (for example,
 APFS); the replacement retains extended attributes, resource forks, and the exact
 ACL, and unexpected ownership/mode changes are rejected. A cloning or metadata failure leaves

@@ -231,7 +231,7 @@ rules:
     target: ~/.config/editor
   - path: config/private
     permissions: "0600"
-  - path: 'scripts/*.sh'
+  - path: scripts
     mode: checkout
 ```
 
@@ -484,6 +484,10 @@ values and missing required fields remain errors. `data`, `host`, Git option nam
 additional remote options, and hook environment names are intentionally open
 namespaces with the value types described above. Schemas do not replace
 [`over lint`](../commands/lint.md) or runtime validation.
+
+Structured `permissions` and `rules[].permissions` objects are strict at runtime:
+only `mode`, `owner`, and `group` are accepted. Unknown fields in these objects
+are errors rather than ignored warnings.
 
 Removed attributes `install`, `default`, `defaults`, `materialization`, and
 `link_dirs` are unsupported. Use `hooks.install`, `host_overlay`, scalar

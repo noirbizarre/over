@@ -73,6 +73,10 @@ Warnings do not prevent application. Invalid values for recognized settings,
 missing required fields, and malformed descriptors remain errors. Arbitrary
 consumer keys inside `data`, `host`, and supported Git configuration namespaces are allowed.
 
+Structured `permissions` and `rules[].permissions` objects are an exception to
+unknown-key warnings: they accept only `mode`, `owner`, and `group`. An unknown
+field in either permissions object prevents descriptor loading.
+
 ## Targets and templates
 
 `target` is the base destination for ordinary entries. An overlay with
@@ -439,6 +443,12 @@ detached when required to protect other aliases. Declared hard links use a soft
 link fallback when owner/group must differ from the source, preserving ownership
 without treating an unmarked regular copy as a managed link.
 
+Apply finalizes scaffold directory ownership after all selected overlays publish
+their children, including shared partial files, and before success hooks run.
+This keeps a parent ownership change from blocking a later unprivileged child.
+If later publication fails, Over still attempts to finalize already-published
+directory metadata and reports any finalization failure alongside the original error.
+
 ### Sudo mode
 
 Set `sudo: true` for the entire overlay or individual rules. The normal sudo
@@ -492,7 +502,11 @@ content = "alias ll='ls -la'\n"
 root. `content` is literal. Markers cannot contain CR, LF, or NUL, and content
 cannot contain its own exact end-delimiter line; these declarations are rejected
 before deployment because they cannot round-trip. Begin-delimiter lines and
-other markers' delimiters are allowed inside content.
+other markers' delimiters are allowed inside content unless they overlap another
+partial claim in the selected composition. Independently claimed blocks must not
+nest or cross, including in an existing destination. This check covers selected
+claims only: Over does not persist partial ownership across separate selections,
+so unselected markers remain indistinguishable from literal content.
 
 `marker` distinguishes blocks in the same file:
 

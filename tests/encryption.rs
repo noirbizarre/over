@@ -92,6 +92,34 @@ fn apply_status_and_unapply_share_the_ciphertext_recipe_without_modifying_the_so
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn read_only_encrypted_destinations_can_repair_permissions_without_rewriting() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let (_temp, home, root, _) = fixture();
+    command(&home, &root, "apply")
+        .args(["selected", "--no-prompt"])
+        .assert()
+        .success();
+    let target = root.join("config/token");
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o400)).unwrap();
+    let before = fs::metadata(&target).unwrap();
+    command(&home, &root, "apply")
+        .args(["selected", "--no-prompt", "--dry-run"])
+        .assert()
+        .success();
+    assert_eq!(fs::metadata(&target).unwrap().mode() & 0o777, 0o400);
+    command(&home, &root, "apply")
+        .args(["selected", "--no-prompt"])
+        .assert()
+        .success();
+    let after = fs::metadata(&target).unwrap();
+    assert_eq!(after.mode() & 0o777, 0o600);
+    assert_eq!(before.ino(), after.ino());
+    assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+    assert_eq!(fs::read(target).unwrap(), VALUE);
+}
+
 #[test]
 fn unapproved_unapply_does_not_unlock_or_remove_encrypted_and_ordinary_siblings() {
     let (temp, home, root, ciphertext) = fixture();

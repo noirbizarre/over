@@ -59,5 +59,6 @@ mod reconcile;
 mod step;
 
 pub use actual::ActualState;
+pub(crate) use reconcile::DirectoryMetadata;
 pub use reconcile::Plan;
 pub use step::{Operation, PlanStep};

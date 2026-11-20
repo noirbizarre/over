@@ -33,5 +33,7 @@ access, use [`over user revoke` or `over user key revoke`](user.md).
 
 The textconv driver uses only the current key. Old-generation ciphertext,
 including the pre-rotation side of the commit or a linked worktree's staged transition, cannot be converted;
-use `--no-textconv` for that review. See [key rotation](../usage/crypt.md#users-and-keys)
+use `--no-textconv` to bypass ordinary protected-file conversion. For ciphertext-only
+review that also bypasses the native-secret external diff driver, use
+`--no-ext-diff --no-textconv`. See [key rotation](../usage/crypt.md#users-and-keys)
 for the full access lifecycle.

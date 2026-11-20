@@ -134,7 +134,10 @@ Reconciliation outcomes:
 - Unstaged target edits → report blocked. Select changes with `over add` and
   commit with `over commit` first.
 - Independent source and local changes → refresh only source-changed paths after
-  checking target/index snapshots. Preserve local edits and staged snapshots.
+  checking target/index snapshots. Preserve local edits and staged snapshots,
+  then handle remaining local changes in the same invocation: offer to commit
+  staged-only changes, or report blocked for unstaged edits, `--no-prompt`, or
+  `--pull-only`. A completed refresh does not make pending local changes successful.
 - Different changes to the same file → report conflict without auto-resolution;
   edit target/source as needed, then rerun.
 

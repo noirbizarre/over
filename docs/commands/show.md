@@ -13,5 +13,6 @@ over show desktop --short
 ```
 
 Selection, `--target`, `OVER_TARGET`, `--no-uses`, `--all`, `--short`, verbosity, read-only behavior, and exit
-statuses are identical. In particular, `show` now returns `1` for missing,
-unhealthy, or uncheckable overlays; it is no longer a configuration-only command.
+statuses are identical. Successfully inspected overlays return `0` even when
+missing or unhealthy; inspection and output failures return `1`. Like `status`,
+`show` reports deployment health as well as configuration.

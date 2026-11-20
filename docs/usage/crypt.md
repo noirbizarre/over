@@ -113,9 +113,10 @@ public access metadata unfiltered, restore normal diffs, and preserve its bytes
 without text normalization. `crypt/** -filter !diff -text` retains the same
 exemption for the historical nested access layout.
 `.gitattributes -filter !diff` keeps that policy itself readable, while
-`secrets/* filter=over diff=over -text` protects current per-entry native secrets.
+`secrets/* filter=over diff=over-secret -text` protects current per-entry native secrets
+and selects their path-aware diff driver.
 New administrative policy also includes `secrets` and `secrets.yaml` protection
-rules for legacy single-file stores. These nearer
+rules using `diff=over` for legacy single-file stores. These nearer
 rules override root assignments; deeper rules or `.git/info/attributes` can
 override them and must also keep bootstrap metadata unfiltered.
 
@@ -300,7 +301,10 @@ the local key. It preserves staged content rather than resetting to `HEAD`.
 Filters remain configured while locked. Unlock refreshes the linked worktrees
 together. Different access metadata must be reconciled before a common rotation.
 
-Native secret operations fail while locked. Smudge and textconv preserve supported
+Native secret mutations, listing, and hook lookup require the installed key.
+[`secret get`](../commands/secret.md#one-shot-reads) can authenticate separately for a one-shot
+committed read without persistently unlocking the repository.
+Smudge and textconv preserve supported
 ciphertext byte-for-byte without decryption, so locked checkout and diffs remain
 usable. Ciphertext passthrough cannot authenticate the encrypted payload.
 Unlock restores access to the native store without converting its ciphertext into a

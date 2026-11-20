@@ -192,6 +192,31 @@ fn end_line(marker: &str) -> String {
     format!("# <<< over: {marker} <<<")
 }
 
+/// Keep independently claimed regions disjoint without reserving unclaimed literal markers.
+pub(crate) fn validate_independent_blocks(text: &str, markers: &[&str]) -> Result<()> {
+    for (index, marker) in markers.iter().enumerate() {
+        let Some((start, begin_end)) = find_line(text, &begin_line(marker), 0) else {
+            continue;
+        };
+        let Some((_, end)) = find_line(text, &end_line(marker), begin_end) else {
+            continue;
+        };
+        for (other_index, other) in markers.iter().enumerate() {
+            if index == other_index {
+                continue;
+            }
+            // Either delimiter inside our range makes replacement/removal consume another claim.
+            for delimiter in [begin_line(other), end_line(other)] {
+                anyhow::ensure!(
+                    find_line(text, &delimiter, start).is_none_or(|(offset, _)| offset >= end),
+                    "overlapping partial markers '{marker}' and '{other}'"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Whether — and how — a managed block for `marker` currently exists in a
 /// target file's content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

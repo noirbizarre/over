@@ -33,11 +33,14 @@ values and stale associations also require correction or an explicit override.
 Multiple valid source explanations within one overlay are also ambiguous.
 Neither an explicit overlay nor a configured host chooses between its rules.
 
-File-taking commands infer from their operands, including missing literal paths
+`add`, `git add`, and `restore` infer from their operands, including missing literal paths
 that represent tracked deletions. Inferred operands must agree on one overlay;
 an ambiguous operand is not resolved by another operand. Selection does not
 bypass the operation's path, materialization, or ownership validation. Commands
 without file operands use the invocation directory.
+
+[`commit`](../commands/commit.md) selects from `--overlay` or current-directory
+context before resolving its path filters. File operands do not select its overlay.
 
 ## Fallbacks when no context matches
 

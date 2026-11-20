@@ -480,19 +480,28 @@ impl Overlay {
             ctx.repository.validate_initialization()?;
         }
         let mut applied = Vec::new();
-        for overlay in &participants {
-            let overlay_ctx = ctx.with_overlay(overlay.clone());
-            overlay.apply_own(&overlay_ctx).await?;
-            applied.push((overlay, overlay.resolve_target(&overlay_ctx)?));
+        let mut directory_metadata = crate::plan::DirectoryMetadata::default();
+        let publication = async {
+            for overlay in &participants {
+                let overlay_ctx = ctx.with_overlay(overlay.clone());
+                overlay
+                    .apply_own(&overlay_ctx, &mut directory_metadata)
+                    .await?;
+                applied.push((overlay, overlay.resolve_target(&overlay_ctx)?));
+            }
+            if !ctx.dry_run {
+                let entries = desired.entries().to_vec();
+                let ctx = ctx.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::materialize::partial::reconcile_partials(&entries, ctx)
+                })
+                .await??;
+            }
+            anyhow::Ok(())
         }
-        if !ctx.dry_run {
-            let entries = desired.entries().to_vec();
-            let ctx = ctx.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::materialize::partial::reconcile_partials(&entries, ctx)
-            })
-            .await??;
-        }
+        .await;
+        // Failed publication retains earlier writes; finalize their ownership before returning.
+        directory_metadata.finish(publication).await?;
         drop(ownership);
         if ctx.dry_run || !hooks_enabled || crate::hooks::nested() {
             return Ok(());
@@ -607,7 +616,11 @@ impl Overlay {
         Ok(())
     }
 
-    async fn apply_own(&self, ctx: &Ctx) -> Result<()> {
+    async fn apply_own(
+        &self,
+        ctx: &Ctx,
+        metadata: &mut crate::plan::DirectoryMetadata,
+    ) -> Result<()> {
         let target = self.resolve_target(ctx)?;
         // Match plan output's home-relative paths instead of leaking sandbox paths.
         let display_target = short_path(&target.to_string_lossy());
@@ -633,7 +646,8 @@ impl Overlay {
         if self.git.is_some() && plan.has_blocked_children() {
             // Parallel clone provisioning cannot run through an obstructed scaffold.
             // The plan authorizes its replacement before provisioning inspects children.
-            plan.prepare_scaffolds(ctx_with_target.clone()).await?;
+            plan.prepare_scaffolds(ctx_with_target.clone(), metadata)
+                .await?;
             plan = Plan::build(&desired)?;
             plan.validate_boundaries()?;
         }
@@ -648,7 +662,7 @@ impl Overlay {
             // never execute the stale pre-clone destructive operation.
             plan = Plan::build(&desired)?;
         }
-        plan.execute(ctx_with_target).await?;
+        plan.execute_deferred(ctx_with_target, metadata).await?;
 
         // #146: exclude this overlay's managed paths (symlinks,
         // checkouts) from any git repository they landed in, so a

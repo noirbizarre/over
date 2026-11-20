@@ -171,6 +171,10 @@ pub(crate) struct MetadataGuard {
 }
 
 impl MetadataGuard {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub(crate) fn capture(fs: &TargetFs, path: &Path) -> Result<Self> {
         Ok(Self {
             fs: fs.clone(),
