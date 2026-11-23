@@ -9,6 +9,38 @@ use tempfile::TempDir;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[rstest]
+#[case::root(vec!["--help"])]
+#[case::nested(vec!["user", "key", "--help"])]
+#[case::implicit(vec![])]
+fn help_uses_foreground_colors_only_when_enabled(#[case] args: Vec<&str>) -> TestResult {
+    for colored in [false, true] {
+        let output = Command::cargo_bin("over")?
+            .env_remove("NO_COLOR")
+            .env("CLICOLOR_FORCE", if colored { "1" } else { "0" })
+            .env("CLICOLOR", "0")
+            .args(&args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let output = String::from_utf8(output)?;
+        assert_eq!(output.contains("\x1b[36m"), colored, "{output:?}");
+        if !colored {
+            assert!(!output.contains('\x1b'));
+        }
+    }
+    Command::cargo_bin("over")?
+        .env("NO_COLOR", "1")
+        .env_remove("CLICOLOR_FORCE")
+        .args(args)
+        .assert()
+        .success()
+        .stdout(contains("\x1b").not());
+    Ok(())
+}
+
 #[cfg(unix)]
 #[rstest]
 #[case::top_level(vec!["--help"])]
@@ -3830,6 +3862,67 @@ fn virtual_checkout_log_lists_commits_scoped_to_the_overlay() -> TestResult {
     Ok(())
 }
 
+// HOME isolates the default target on Unix; Windows uses the account's known folder.
+#[cfg(unix)]
+#[rstest]
+#[case::ambiguous(true, true)]
+#[case::implicit_non_checkout(false, true)]
+#[case::no_context(false, false)]
+fn unnamed_log_falls_back_to_repository_history_without_selecting_the_host(
+    #[case] ambiguous: bool,
+    #[case] contextual: bool,
+) -> TestResult {
+    let temp = TempDir::new()?;
+    let home = temp.path().join("home");
+    let source = home.join(".dotfiles");
+    fs::create_dir_all(source.join("first"))?;
+    fs::write(source.join("over.toml"), "host_overlay = 'first'\n")?;
+    let target = if contextual { "~" } else { "~/elsewhere" };
+    let mode = if contextual && !ambiguous {
+        "symlink"
+    } else {
+        "checkout"
+    };
+    fs::write(
+        source.join("first/over.toml"),
+        format!("target = '{target}'\nmode = '{mode}'\n"),
+    )?;
+    fs::write(source.join("first/file"), "first")?;
+    if ambiguous {
+        fs::create_dir_all(source.join("second"))?;
+        fs::write(
+            source.join("second/over.toml"),
+            "target = '~'\nmode = 'checkout'\n",
+        )?;
+        fs::write(source.join("second/file"), "second")?;
+    }
+    git(&source, &["init"]);
+    commit_all(&source, "overlay history");
+    fs::write(source.join("README.md"), "outside every overlay")?;
+    commit_all(&source, "repository-wide history");
+    let index = fs::read(source.join(".git/index"))?;
+    let unrelated = temp.path().join("unrelated");
+    fs::create_dir(&unrelated)?;
+    for cwd in [&source, if contextual { &home } else { &unrelated }] {
+        Command::cargo_bin("over")?
+            .current_dir(cwd)
+            .env("HOME", &home)
+            .env_remove("OVER_TARGET")
+            .env("XDG_STATE_HOME", temp.path().join("state"))
+            .env("XDG_CACHE_HOME", temp.path().join("cache"))
+            .arg("--home")
+            .arg(&source)
+            .arg("log")
+            .assert()
+            .success()
+            .stdout(contains("repository-wide history"))
+            .stdout(contains("overlay history"));
+    }
+    assert_eq!(fs::read(source.join(".git/index"))?, index);
+    assert!(!temp.path().join("state").exists());
+    Ok(())
+}
+
 #[test]
 fn log_resolves_revisions_in_the_overlay_repository_and_keeps_piped_output_plain() -> TestResult {
     let tmp = TempDir::new()?;
@@ -3875,6 +3968,70 @@ fn log_resolves_revisions_in_the_overlay_repository_and_keeps_piped_output_plain
         .failure()
         .stdout(predicates::str::is_empty())
         .stderr(contains("invalid or unsupported revision 'missing'"));
+    Ok(())
+}
+
+#[test]
+fn log_includes_deleted_source_templates_without_rendering_them() -> TestResult {
+    let temp = TempDir::new()?;
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(source.join("overlay"))?;
+    fs::write(
+        source.join("overlay/over.toml"),
+        "mode = 'checkout'\n[[rules]]\npath = '*.tmpl'\ntemplate = true\nstrip_extension = true\n",
+    )?;
+    fs::write(
+        source.join("overlay/settings.tmpl"),
+        "{{ unavailable_value }}",
+    )?;
+    git(&source, &["init"]);
+    commit_all(&source, "add source template");
+    fs::remove_file(source.join("overlay/settings.tmpl"))?;
+    commit_all(&source, "delete source template");
+    fs::write(source.join("README.md"), "outside")?;
+    commit_all(&source, "unrelated collection change");
+    Command::cargo_bin("over")?
+        .current_dir(&source)
+        .arg("--home")
+        .arg(&source)
+        .args(["log", "overlay", "--target"])
+        .arg(&target)
+        .env("XDG_STATE_HOME", temp.path().join("state"))
+        .assert()
+        .success()
+        .stdout(contains("add source template"))
+        .stdout(contains("delete source template"))
+        .stdout(contains("unrelated collection change").not());
+    Ok(())
+}
+
+#[test]
+fn log_falls_back_when_two_mapping_rules_explain_the_same_context() -> TestResult {
+    let temp = TempDir::new()?;
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(source.join("overlay/first"))?;
+    fs::create_dir_all(source.join("overlay/second"))?;
+    fs::create_dir_all(target.join("shared"))?;
+    fs::write(
+        source.join("overlay/over.toml"),
+        "mode = 'checkout'\n[[rules]]\npath = 'first'\ntarget = '~/shared'\n[[rules]]\npath = 'second'\ntarget = '~/shared'\n",
+    )?;
+    git(&source, &["init"]);
+    commit_all(&source, "overlay history");
+    fs::write(source.join("README.md"), "outside")?;
+    commit_all(&source, "repository-wide history");
+    Command::cargo_bin("over")?
+        .current_dir(target.join("shared"))
+        .arg("--home")
+        .arg(&source)
+        .args(["log", "--target"])
+        .arg(&target)
+        .env("XDG_STATE_HOME", temp.path().join("state"))
+        .assert()
+        .success()
+        .stdout(contains("repository-wide history"));
     Ok(())
 }
 

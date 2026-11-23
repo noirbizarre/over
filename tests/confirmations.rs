@@ -149,6 +149,8 @@ fn success(output: Output) -> Output {
 #[case(&["user", "delete", "alice"])]
 #[case(&["user", "key", "revoke", "alice", "default"])]
 #[case(&["user", "key", "detach", "alice", "default"])]
+#[case(&["user", "key", "revoke", "alice/default"])]
+#[case(&["user", "key", "detach", "alice/default"])]
 #[case(&["secret", "remove", "token"])]
 #[case(&["crypt", "remove", "ov/file"])]
 fn unattended_removal_preserves_all_repository_and_local_state(#[case] args: &[&str]) {
@@ -178,15 +180,74 @@ fn unattended_removal_preserves_all_repository_and_local_state(#[case] args: &[&
     fixture.assert_unchanged(&before);
 }
 
-#[test]
-fn explicit_key_revocation_rotates_current_state_for_remaining_users() {
+#[rstest]
+#[case("revoke", false)]
+#[case("revoke", true)]
+#[case("detach", false)]
+#[case("detach", true)]
+fn either_key_reference_syntax_removes_only_the_selected_key_and_rotates_only_for_revocation(
+    #[case] operation: &str,
+    #[case] joined: bool,
+) {
     let fixture = Fixture::new();
     fixture.enroll();
-    fixture.run(&["user", "key", "revoke", "alice", "default", "--yes"]);
+    let recipient = age::x25519::Identity::generate().to_public().to_string();
+    fixture.run(&[
+        "user",
+        "key",
+        "add",
+        "alice",
+        "spare",
+        "--recipient",
+        &recipient,
+    ]);
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let generation = over::crypt::access::load(&repo).unwrap().generation;
+    let reference = if joined {
+        vec!["alice/default"]
+    } else {
+        vec!["alice", "default"]
+    };
+    let args = ["user", "key", operation]
+        .into_iter()
+        .chain(reference)
+        .chain(["--yes"])
+        .collect::<Vec<_>>();
+    fixture.run(&args);
     let users = fixture.run(&["user", "show", "alice"]);
-    assert_eq!(users.stdout, b"alice\n");
+    let users = String::from_utf8(users.stdout).unwrap();
+    assert!(users.contains("spare:"));
+    assert!(!users.contains("default:"));
     let users = fixture.run(&["user", "show", "bob"]);
     assert!(String::from_utf8_lossy(&users.stdout).contains("default"));
+    assert_eq!(
+        over::crypt::access::load(&repo).unwrap().generation != generation,
+        operation == "revoke"
+    );
+}
+
+#[rstest]
+#[case(&["alice"])]
+#[case(&["alice/default", "other"])]
+#[case(&["alice/default/other"])]
+#[case(&["/default"])]
+#[case(&["alice/"])]
+#[case(&["alice", "default/other"])]
+fn malformed_key_references_fail_before_confirmation_or_mutation(
+    #[case] reference: &[&str],
+    #[values("detach", "revoke")] operation: &str,
+) {
+    let fixture = Fixture::new();
+    fixture.enroll();
+    let before = fixture.snapshot();
+    let args = ["user", "key", operation]
+        .into_iter()
+        .chain(reference.iter().copied())
+        .collect::<Vec<_>>();
+    let output = fixture.command(&args).output().unwrap();
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("confirmation required"));
+    fixture.assert_unchanged(&before);
 }
 
 #[rstest]

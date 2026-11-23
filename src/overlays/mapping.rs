@@ -42,6 +42,7 @@ pub struct ResolvedMappings {
     pub boundaries: BTreeMap<PathBuf, PathBuf>,
     assignments: Vec<TargetAssignment>,
     access: crate::target_fs::Access,
+    history: bool,
 }
 
 /// Normalize lexically: resolving symlinks would turn managed target links
@@ -179,6 +180,15 @@ pub(crate) fn validate_sources(overlay: &Overlay) -> Result<()> {
 
 impl ResolvedMappings {
     pub fn new(overlay: &Overlay, ctx: &exec::Context) -> Result<Self> {
+        Self::new_mode(overlay, ctx, true)
+    }
+
+    /// History resolves namespaces, not permission to deploy into their destinations.
+    pub(crate) fn for_history(overlay: &Overlay, ctx: &exec::Context) -> Result<Self> {
+        Self::new_mode(overlay, ctx, false)
+    }
+
+    fn new_mode(overlay: &Overlay, ctx: &exec::Context, validate_targets: bool) -> Result<Self> {
         // Both planning and clone provisioning must reject escapes before resolving destinations.
         if let Some(repositories) = &overlay.git {
             for key in repositories.keys() {
@@ -223,14 +233,19 @@ impl ResolvedMappings {
         }
         let mut routing = Self {
             base,
+            history: !validate_targets,
             boundaries: BTreeMap::new(),
             assignments,
-            access: crate::target_fs::Access::new(
-                ctx,
-                std::sync::Arc::new(overlay.clone()),
-                Path::new(""),
-                true,
-            ),
+            access: if validate_targets {
+                crate::target_fs::Access::new(
+                    ctx,
+                    std::sync::Arc::new(overlay.clone()),
+                    Path::new(""),
+                    true,
+                )
+            } else {
+                Default::default()
+            },
         };
         let mut prefixes: Vec<_> = routing
             .assignments
@@ -266,7 +281,12 @@ impl ResolvedMappings {
             let access =
                 ctx.target_fs
                     .target(properties.sudo, ctx.no_prompt, ctx.dry_run || ctx.read_only);
-            let physical_target = access.physical_destination(target, &root.join(source))?;
+            let physical_target = if validate_targets {
+                access.physical_destination(target, &root.join(source))?
+            } else {
+                // Lexical configuration remains meaningful even when deployment targets are inaccessible.
+                target.clone()
+            };
             let physical_root = physical(&root)?;
             ensure!(
                 !overlay
@@ -321,7 +341,11 @@ impl ResolvedMappings {
             let access =
                 ctx.target_fs
                     .target(properties.sudo, ctx.no_prompt, ctx.dry_run || ctx.read_only);
-            let physical_target = access.physical_destination(&root_target, &root)?;
+            let physical_target = if validate_targets {
+                access.physical_destination(&root_target, &root)?
+            } else {
+                root_target.clone()
+            };
             let physical_root = physical(&root)?;
             // Only projected checkouts can safely share an ancestor container.
             ensure!(
@@ -391,8 +415,8 @@ impl ResolvedMappings {
             .map(|source| self.access.child(&source, false).fs)
             .find(|access| access.is_privileged());
         let identity = match query_access {
-            Some(access) => alias_location_with(&target, &access)?,
-            None => alias_location(&target)?,
+            Some(access) => self.alias_location(&target, Some(&access))?,
+            None => self.alias_location(&target, None)?,
         };
         for (source, destination) in std::iter::once((Path::new(""), &self.base)).chain(
             self.assignments
@@ -400,7 +424,7 @@ impl ResolvedMappings {
                 .map(|assignment| (assignment.source.as_path(), &assignment.target)),
         ) {
             let destination_identity = if identity.is_some() {
-                alias_location_with(destination, &self.access.child(source, true).fs)?
+                self.alias_location(destination, Some(&self.access.child(source, true).fs))?
             } else {
                 None
             };
@@ -412,9 +436,9 @@ impl ResolvedMappings {
                 reserved |= target.starts_with(boundary_target);
                 if let (Some(identity), Some(boundary)) = (
                     &identity,
-                    alias_location_with(
+                    self.alias_location(
                         boundary_target,
-                        &self.access.child(boundary_source, true).fs,
+                        Some(&self.access.child(boundary_source, true).fs),
                     )?,
                 ) {
                     reserved |= identity.starts_with(boundary);
@@ -438,7 +462,7 @@ impl ResolvedMappings {
                     let aliases_match = if forward != target
                         && let Some(identity) = &identity
                     {
-                        alias_location_with(&forward, &self.access.child(&logical, false).fs)?
+                        self.alias_location(&forward, Some(&self.access.child(&logical, false).fs))?
                             .as_ref()
                             == Some(identity)
                     } else {
@@ -483,6 +507,30 @@ impl ResolvedMappings {
             target.display(),
             self.base.display()
         )
+    }
+
+    fn alias_location(
+        &self,
+        path: &Path,
+        access: Option<&crate::target_fs::TargetFs>,
+    ) -> Result<Option<PathBuf>> {
+        let result = match access {
+            Some(access) => alias_location_with(path, access),
+            None => alias_location(path),
+        };
+        match result {
+            Err(error)
+                if self.history
+                    && error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                        error.kind() == std::io::ErrorKind::PermissionDenied
+                    }) =>
+            {
+                // Inaccessible aliases cannot supply evidence; lexical routing still applies to history.
+                tracing::debug!(path = %path.display(), %error, "skipping inaccessible history alias");
+                Ok(None)
+            }
+            result => result,
+        }
     }
 }
 

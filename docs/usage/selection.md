@@ -26,7 +26,8 @@ Over checks evidence in this order, stopping at the first matching tier:
    directory correspondence, including the remaining relative suffix.
 
 The first matching tier must identify one overlay. Multiple candidates are an
-error, even when one target is deeper or a default is configured. The error lists
+error (except for `log`'s repository-history fallback), even when one target is
+deeper or a default is configured. The error lists
 the candidates and asks for an explicit overlay. Conflicting Git association
 values and stale associations also require correction or an explicit override.
 
@@ -51,10 +52,11 @@ context before resolving its path filters. File operands do not select its overl
 | `data` | Configured host, otherwise require an explicit overlay |
 | `add`, `git add`, `git mount`, `unapply`, `commit`, `restore` | Require an explicit overlay |
 | `status` / `show`, `diff` | Configured host, otherwise all overlays |
-| `log` | History of the source repository |
+| `log` | Whole history of the repository containing the configured Over home; also used for ambiguous context or an inferred non-checkout overlay |
 
-Active context precedes the host. Ambiguity never invokes a fallback or an overlay
-selection prompt. `--all` on status/diff/sync explicitly bypasses inference and
+Active context precedes the host. Except for `log`, ambiguity never invokes a
+fallback or an overlay selection prompt. `log` never selects the host implicitly;
+name the host overlay explicitly to scope its history. `--all` on status/diff/sync explicitly bypasses inference and
 host selection. The configured host's own `host` overrides still apply
 when another overlay is selected; its data and unrelated dependencies do not.
 Invalid configured hosts remain errors during data resolution.

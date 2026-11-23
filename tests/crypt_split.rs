@@ -842,6 +842,74 @@ fn independent_user_enrollments_merge_without_changing_the_header() {
 }
 
 #[test]
+fn native_filter_errors_identify_the_operation_and_logical_path_without_diff_advice() {
+    let fixture = Fixture::new();
+    success(fixture.secret("TOKEN", b"do-not-display-this-value", false));
+    // Supply ciphertext directly: a malformed logical path must never bypass name binding.
+    let mut child = fixture
+        .command(&cargo_bin("over"))
+        .args(["crypt", "filter", "clean", "--", "TOKEN"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&fs::read(fixture.root.join(".over/secrets/TOKEN")).unwrap())
+        .unwrap();
+    let failed = child.wait_with_output().unwrap();
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+    let error = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        error.contains("Git clean filter failed for TOKEN"),
+        "{error}"
+    );
+    assert!(error.contains(".over/secrets/NAME"), "{error}");
+    assert!(!error.contains("--no-relative"));
+    assert!(!error.contains("do-not-display-this-value"));
+}
+
+#[test]
+fn revocation_authenticates_native_paths_from_any_invocation_directory() {
+    let fixture = Fixture::new();
+    for name in ["ONE", "TWO", "THREE", "FOUR"] {
+        success(fixture.secret(name, name.as_bytes(), false));
+    }
+    fixture.git(&["config", "diff.relative", "true"]);
+    for cwd in [
+        fixture.root.clone(),
+        fixture.root.join(".over"),
+        fixture.temp.path().to_path_buf(),
+    ] {
+        fixture.enroll("bob");
+        let output = success(
+            fixture
+                .command(&cargo_bin("over"))
+                .current_dir(cwd)
+                .arg("--home")
+                .arg(&fixture.root)
+                .args(["user", "key", "revoke", "bob", "default", "--yes"])
+                .output()
+                .unwrap(),
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("native secret"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for name in ["ONE", "TWO", "THREE", "FOUR"] {
+            assert_eq!(fixture.value(name), name.as_bytes());
+        }
+        success(fixture.over(&["user", "delete", "bob", "--yes"]));
+        fs::remove_file(fixture.temp.path().join("bob.age")).unwrap();
+    }
+}
+
+#[test]
 fn rotation_commits_ciphertext_and_preserves_unrelated_staging() {
     let fixture = Fixture::new();
     success(fixture.secret("TOKEN", b"value\0\xff", false));
@@ -1221,7 +1289,6 @@ fn independent_keys_for_one_user_merge_and_preserve_existing_record_bytes() {
         "key",
         "add",
         "alice",
-        "--name",
         "laptop",
         "--recipient",
         &left,

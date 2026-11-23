@@ -39,7 +39,9 @@ pub enum Commands {
 
 #[derive(Subcommand, Debug)]
 pub enum FilterCommand {
+    /// Encrypt protected content for Git storage
     Clean { path: Option<PathBuf> },
+    /// Decrypt protected content for the working tree
     Smudge { path: Option<PathBuf> },
 }
 
@@ -57,8 +59,12 @@ pub struct Unlock {
 #[derive(Args, Clone, Debug)]
 pub struct NewKey {
     pub user: String,
-    #[arg(long, conflicts_with = "name_prefix")]
+    /// Name the new access key
+    #[arg(conflicts_with_all = ["name_option", "name_prefix"])]
     pub name: Option<String>,
+    /// Name the new access key (alternative to positional NAME)
+    #[arg(long = "name", value_name = "NAME", conflicts_with = "name_prefix")]
+    pub name_option: Option<String>,
     /// Name imported recipients PREFIX-1, PREFIX-2, in input order
     #[arg(long)]
     pub name_prefix: Option<String>,
@@ -78,40 +84,52 @@ pub struct NewKey {
 
 #[derive(Subcommand, Debug)]
 pub enum UserCommands {
+    /// List repository users and their access keys
     List,
-    Show {
-        user: String,
-    },
+    /// Show a repository user's access keys
+    Show { user: String },
+    /// Create a repository user and their first access key
     Add(NewKey),
+    /// Revoke a user's keys and rotate encryption for current state
     Revoke {
         user: String,
         #[arg(long, help = "Approve revocation without prompting")]
         yes: bool,
     },
+    /// Delete a repository user who has no access keys
     Delete {
         user: String,
         #[arg(long, help = "Approve deletion without prompting")]
         yes: bool,
     },
+    /// Manage a repository user's named access keys
     #[command(subcommand)]
     Key(UserKeyCommands),
 }
 
 #[derive(Subcommand, Debug)]
 pub enum UserKeyCommands {
-    List {
-        user: String,
-    },
+    /// List a repository user's named access keys
+    List { user: String },
+    /// Add a named access key for an existing repository user
     Add(NewKey),
+    /// Detach a key envelope without rotating encryption or revoking learned access
     Detach {
+        /// Select a user, or a named key as USER/KEY
+        #[arg(value_name = "USER[/KEY]")]
         user: String,
-        key: String,
+        /// Select the key when USER is given separately
+        key: Option<String>,
         #[arg(long, help = "Approve detachment without prompting")]
         yes: bool,
     },
+    /// Revoke a key and rotate encryption for current state
     Revoke {
+        /// Select a user, or a named key as USER/KEY
+        #[arg(value_name = "USER[/KEY]")]
         user: String,
-        key: String,
+        /// Select the key when USER is given separately
+        key: Option<String>,
         #[arg(long, help = "Approve revocation without prompting")]
         yes: bool,
     },
@@ -119,7 +137,20 @@ pub enum UserKeyCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum KeyCommands {
+    /// Rotate the repository encryption key and re-encrypt current state
     Rotate,
+}
+
+fn key_reference<'a>(user: &'a str, key: Option<&'a str>) -> Result<(&'a str, &'a str)> {
+    let (user, key) = match (user.split_once('/'), key) {
+        (Some(reference), None) => reference,
+        (None, Some(key)) => (user, key),
+        // Reject mixed forms instead of ignoring an extra key on a destructive command.
+        _ => anyhow::bail!("specify USER KEY or USER/KEY"),
+    };
+    access::validate_name(user)?;
+    access::validate_name(key)?;
+    Ok((user, key))
 }
 
 pub fn repository(cli: &super::CLI) -> Result<git2::Repository> {
@@ -320,6 +351,8 @@ fn passphrase_with_confirmation(
 
 fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> {
     let mut opt = opt.clone();
+    // Normalize the compatibility option before applying prompting and import rules.
+    opt.name = opt.name.take().or(opt.name_option.take());
     if access::configured(repo)? {
         let registry = access::load(repo)?;
         ensure!(
@@ -404,7 +437,7 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
     } else if new_user {
         "default".to_owned()
     } else {
-        ensure!(can_prompt(), "supply --name for an additional key");
+        ensure!(can_prompt(), "supply NAME or --name for an additional key");
         dialoguer::Input::new()
             .with_prompt("Key name")
             .interact_text()?
@@ -538,6 +571,7 @@ pub fn user(cli: &super::CLI, command: &UserCommands) -> Result<()> {
         }
         UserCommands::Key(UserKeyCommands::Add(opt)) => add_key(&repo, opt, false),
         UserCommands::Key(UserKeyCommands::Detach { user, key, yes }) => {
+            let (user, key) = key_reference(user, key.as_deref())?;
             eprintln!(
                 "Detaching only removes the current envelope; it does not revoke a learned key or historical access."
             );
@@ -552,6 +586,7 @@ pub fn user(cli: &super::CLI, command: &UserCommands) -> Result<()> {
             access::detach_committed(&repo, user, key)
         }
         UserCommands::Key(UserKeyCommands::Revoke { user, key, yes }) => {
+            let (user, key) = key_reference(user, key.as_deref())?;
             super::common::confirm_removal(
                 &format!(
                     "Revoke key {key:?} for user {user:?} in {} and rotate/re-encrypt current state (history remains accessible)?",

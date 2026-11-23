@@ -5,13 +5,15 @@ Manage logical users and their independent Age envelopes for the repository key.
 ```text
 over user list
 over user show <USER>
-over user add <USER> [KEY-OPTIONS]
+over user add <USER> [NAME] [KEY-OPTIONS]
 over user revoke <USER> [--yes]
 over user delete <USER> [--yes]
 over user key list <USER>
-over user key add <USER> [KEY-OPTIONS]
+over user key add <USER> [NAME] [KEY-OPTIONS]
 over user key detach <USER> <KEY> [--yes]
+over user key detach <USER>/<KEY> [--yes]
 over user key revoke <USER> <KEY> [--yes]
+over user key revoke <USER>/<KEY> [--yes]
 ```
 
 Accepts [global options](index.md#shared-options-and-selection). Repository
@@ -24,14 +26,15 @@ Names identify logical access records, not operating-system accounts.
 
 | Option | Meaning |
 | --- | --- |
-| `--name <NAME>` | Name the new access key |
+| `--name <NAME>` | Alternative to the positional key name |
 | `--name-prefix <PREFIX>` | Name imported recipients `PREFIX-1`, `PREFIX-2`, etc. |
 | `-r`, `--recipient <RECIPIENT>` | Wrap for an existing public Age recipient; repeatable |
 | `-R`, `--recipients-file <PATH>` | Import recipients from a standard Age list; repeatable |
 | `--identity-output <PATH>` | Generate a software identity at a new private local path |
 | `--passphrase` | Wrap with a passphrase entered twice through hidden input |
 
-`--name` conflicts with `--name-prefix`. Recipient imports conflict with identity
+The positional `NAME` and `--name` are alternatives; both conflict with
+`--name-prefix`. Recipient imports conflict with identity
 generation and passphrase wrapping; generation and passphrase are alternatives.
 Multiple recipients require a prefix, with inline recipients preceding file
 recipients. Without a method, an interactive chooser is required. The first key
@@ -49,7 +52,7 @@ the working tree and back them up.
 
 ```sh
 over user add alice --identity-output ~/.config/age/over-alice.txt
-over user key add alice --name recovery --recipient age1...
+over user key add alice recovery --recipient age1...
 over user key list alice
 ```
 
@@ -76,6 +79,9 @@ Existing aggregate and nested split access metadata migrate automatically in the
 next user/key mutation's commit. List/show/unlock remain compatible without migration.
 
 ## Inspect and remove access
+
+`key detach` and `key revoke` accept either `USER KEY` or `USER/KEY`.
+Do not supply a separate key after a combined `USER/KEY` reference.
 
 Revocation, deletion, and detachment require confirmation, defaulting to No.
 Interactive confirmation requires terminal stdin and stderr; pass `--yes` to

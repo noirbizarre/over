@@ -410,15 +410,18 @@ Interactive approval requires terminal stdin and stderr; use each command's
 ```text
 over user list
 over user show <user>
-over user add <user> [--name <key>] [--recipient <age-recipient> | --identity-output <path> | --passphrase]
+over user add <user> [<name>] [--recipient <age-recipient> | --identity-output <path> | --passphrase]
 over user key list <user>
-over user key add <user> [--name <key>] [--recipient <age-recipient> | --identity-output <path> | --passphrase]
+over user key add <user> [<name>] [--recipient <age-recipient> | --identity-output <path> | --passphrase]
 over user key detach <user> <key>
 over user key revoke <user> <key>
 over user revoke <user>
 over user delete <user>
 over key rotate
 ```
+
+`user key detach` and `user key revoke` also accept a combined `<user>/<key>`
+reference, for example `over user key revoke alice/laptop`.
 
 A user is a logical grouping, not an Age identity. Each key independently wraps
 the same repository key in a separately addressable standard Age envelope.
@@ -429,7 +432,7 @@ Import standard recipient lists directly, including Passage's recipient files:
 
 ```sh
 over user add alice --recipients-file ~/.passage/store/.age-recipients --name-prefix imported
-over user key add alice --name laptop --recipient age1...
+over user key add alice laptop --recipient age1...
 over unlock --identity ~/.passage/identities
 over unlock --identity ~/.passage/identities --identity ~/.config/age/recovery.txt
 ```
@@ -440,7 +443,8 @@ the example creates `imported-1`, `imported-2`, and so on. Inline recipients com
 first in argument order, followed by files in argument order and their lines in
 file order. Name collisions, duplicate recipients, and failures abort the entire
 import. No partially configured new user is published. For one recipient, use
-`--name` or the new user's default key name. Input paths must name files; `-`
+the positional name, the compatibility option `--name`, or the new user's default
+key name. Explicit names conflict with `--name-prefix`. Input paths must name files; `-`
 stdin inputs are not supported.
 
 Recipient files accept comments, empty lines, CRLF, and multiple recipients.
@@ -474,9 +478,11 @@ post-quantum protection.
 Duplicate canonical public recipients are rejected so revocation cannot leave the
 same recipient authorized through another key alias. Distinct plugin recipient
 strings can still represent related underlying credentials; Over cannot prove
-their independence. Revocation also refuses
-a retained passphrase that unlocks a revoked envelope; replace that reused
-credential first.
+their independence. Passphrases are verified only against their own retained
+envelopes, never compared across users or keys. Revocation allows shared
+passphrases: anyone who knows a passphrase shared with a retained key can still
+unlock that retained key's new envelope. Use independent credentials when
+revocation must remove that person's access.
 
 Detaching removes a current envelope only: someone who learned the old key still
 has it. Revoking a key/user rotates once for the remaining trusted keys and

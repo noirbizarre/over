@@ -33,9 +33,28 @@ pub struct InferredOverlay {
     pub paths: Vec<(PathBuf, ReverseMatch)>,
 }
 
+/// Read-only history may fall back on ambiguity; mutations must still reject it.
+#[derive(Debug)]
+pub(crate) struct AmbiguousSelection(String);
+
+impl std::fmt::Display for AmbiguousSelection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for AmbiguousSelection {}
+
 /// Infer from paths (or captured cwd when empty). Ambiguity is never absence.
 pub fn infer_selection(ctx: &Context, paths: &[PathBuf]) -> Result<Option<InferredOverlay>> {
-    infer_selection_with_exclusions(ctx, paths, None, &mut false)
+    infer_selection_with_exclusions(ctx, paths, None, &mut false, false)
+}
+
+pub(crate) fn infer_history(ctx: &Context) -> Result<Option<Overlay>> {
+    Ok(
+        infer_selection_with_exclusions(ctx, &[], None, &mut false, true)?
+            .map(|selection| selection.overlay),
+    )
 }
 
 fn infer_selection_with_exclusions(
@@ -43,6 +62,7 @@ fn infer_selection_with_exclusions(
     paths: &[PathBuf],
     mut exclusions: Option<&mut Exclusions>,
     excluded_context: &mut bool,
+    history: bool,
 ) -> Result<Option<InferredOverlay>> {
     let paths = if paths.is_empty() {
         vec![ctx.absolute_path(Path::new("."))?]
@@ -83,8 +103,10 @@ fn infer_selection_with_exclusions(
             .collect::<Vec<_>>();
         ensure!(
             sources.len() <= 1,
-            "ambiguous source overlay for '{}'; specify NAME or --overlay NAME explicitly",
-            path.display()
+            AmbiguousSelection(format!(
+                "ambiguous source overlay for '{}'; specify NAME or --overlay NAME explicitly",
+                path.display()
+            ))
         );
         if let Some(directory) = sources.first() {
             // Source context is authoritative: resolving unrelated targets here defeats lazy loading.
@@ -104,7 +126,11 @@ fn infer_selection_with_exclusions(
                 if let Some(policy) = exclusions.as_deref_mut() {
                     policy.validate(&own_ctx, std::slice::from_ref(&overlay))?;
                 }
-                overlay.resolve_mappings(&own_ctx)?;
+                if history {
+                    ResolvedMappings::for_history(&overlay, &own_ctx)?;
+                } else {
+                    overlay.resolve_mappings(&own_ctx)?;
+                }
                 Ok(overlay)
             })()
             .with_context(|| {
@@ -158,10 +184,20 @@ fn infer_selection_with_exclusions(
                     };
                     Ok(Candidate {
                         overlay: overlay.clone(),
-                        routing: overlay.resolve_mappings(&ctx)?,
+                        routing: if history {
+                            ResolvedMappings::for_history(&overlay, &ctx)?
+                        } else {
+                            overlay.resolve_mappings(&ctx)?
+                        },
                         deployment_blocked: validation.is_err(),
                         // A broken sidecar must not erase an already-identifiable target.
-                        tree: validation.and_then(|()| DesiredTree::build_own(&ctx, &overlay)),
+                        tree: validation.and_then(|()| {
+                            if history {
+                                DesiredTree::build_own_history(&ctx, &overlay)
+                            } else {
+                                DesiredTree::build_own(&ctx, &overlay)
+                            }
+                        }),
                     })
                 })();
                 match candidate {
@@ -239,16 +275,20 @@ fn infer_selection_with_exclusions(
         if let Some(tier) = tiers.into_values().next() {
             ensure!(
                 tier.len() == 1,
-                "ambiguous overlay for '{}': {}; specify NAME or --overlay NAME explicitly",
-                path.display(),
-                tier.keys().cloned().collect::<Vec<_>>().join(", ")
+                AmbiguousSelection(format!(
+                    "ambiguous overlay for '{}': {}; specify NAME or --overlay NAME explicitly",
+                    path.display(),
+                    tier.keys().cloned().collect::<Vec<_>>().join(", ")
+                ))
             );
             for (name, candidate) in tier {
                 match candidate.routing.reverse(path)? {
                     ReverseResolution::Unique(found) => resolved_paths.push((path.clone(), found)),
                     ReverseResolution::Ambiguous(_) => {
                         // Naming the overlay cannot disambiguate two source paths within it.
-                        candidate.routing.logical_path_for(path)?;
+                        if let Err(error) = candidate.routing.logical_path_for(path) {
+                            return Err(AmbiguousSelection(error.to_string()).into());
+                        }
                     }
                     ReverseResolution::Absent => {}
                 }
@@ -264,8 +304,10 @@ fn infer_selection_with_exclusions(
     }
     ensure!(
         selected.len() <= 1,
-        "ambiguous overlay across selected paths: {}; specify NAME or --overlay NAME explicitly",
-        selected.keys().cloned().collect::<Vec<_>>().join(", ")
+        AmbiguousSelection(format!(
+            "ambiguous overlay across selected paths: {}; specify NAME or --overlay NAME explicitly",
+            selected.keys().cloned().collect::<Vec<_>>().join(", ")
+        ))
     );
     Ok(selected
         .into_values()
@@ -476,7 +518,7 @@ pub(crate) fn select_apply_with_exclusions(
 ) -> Result<Option<Overlay>> {
     let mut excluded_context = false;
     if let Some(selection) =
-        infer_selection_with_exclusions(ctx, &[], Some(exclusions), &mut excluded_context)?
+        infer_selection_with_exclusions(ctx, &[], Some(exclusions), &mut excluded_context, false)?
     {
         return Ok(Some(selection.overlay));
     }

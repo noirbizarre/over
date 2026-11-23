@@ -16,7 +16,8 @@ pub(crate) fn secret_name(path: &Path) -> Result<SecretName> {
         .and_then(|suffix| suffix.to_str())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "native secret requires its repository-relative path; use --no-relative"
+                "native secret requires its repository-relative path .over/secrets/NAME; received {}",
+                path.display()
             )
         })?;
     SecretName::parse(name)

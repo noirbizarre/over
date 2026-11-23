@@ -38,7 +38,13 @@ fn transform_for_git(
             None => super::bootstrap::initial_checkout_registry(repo)?,
         }
     };
-    transform_with_registry(repo, clean, input, registry.as_ref(), path)
+    transform_with_registry(repo, clean, input, registry.as_ref(), path).with_context(|| {
+        let operation = if clean { "clean" } else { "smudge" };
+        match path {
+            Some(path) => format!("Git {operation} filter failed for {}", path.display()),
+            None => format!("Git {operation} filter failed without a logical pathname"),
+        }
+    })
 }
 
 fn transform_with_registry(

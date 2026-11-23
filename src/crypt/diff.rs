@@ -120,7 +120,8 @@ pub fn run(args: &[OsString]) -> Result<()> {
         "invalid Git external diff arguments"
     );
     let old_path = Path::new(&args[0]);
-    context::secret_name(old_path)?;
+    context::secret_name(old_path)
+        .context("invalid old native-secret diff path; use --no-relative")?;
     if args.len() == 1 {
         println!("Unmerged native secret {}", old_path.display());
         return Ok(());
@@ -130,7 +131,8 @@ pub fn run(args: &[OsString]) -> Result<()> {
     } else {
         old_path
     };
-    context::secret_name(new_path)?;
+    context::secret_name(new_path)
+        .context("invalid new native-secret diff path; use --no-relative")?;
     let repo = git2::Repository::open_from_env().or_else(|_| git2::Repository::discover("."))?;
     let _guard = access::guard(&repo, false)?;
     let key = if access::local_key_missing(&repo)? {
