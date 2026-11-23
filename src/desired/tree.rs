@@ -1499,11 +1499,9 @@ fn build_partial_sidecars(
         let resolved = crate::overlays::mapping::resolve_path(&config.target, &overlay.root, ctx)?;
         let config_path = partial_sidecar_config_path(&overlay.root, &name, policy);
         let marker = config.marker.unwrap_or_else(|| name.clone());
-        // The only intent `over` writes real target content for directly
-        // (#65) — resolved against the sidecar's own overlay-relative stem
-        // (not the rendered, possibly-external `target`), so `permissions`
-        // rules match the same identity `.link.*`/`.partial.*` naming
-        // already uses elsewhere.
+        // Resolve permissions against the sidecar's overlay-relative stem so
+        // source rules keep matching even when rendering redirects the target
+        // outside the overlay's destination tree.
         let permissions = overlay.permission_for(Path::new(&name));
 
         entries.push(DesiredEntry {
