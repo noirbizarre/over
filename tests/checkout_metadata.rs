@@ -94,7 +94,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         // Reopen restrictive parents so the fixture can remove its children.
-        for path in ["checkout/parent", "checkout/parent/child"] {
+        for path in ["checkout", "checkout/parent", "checkout/parent/child"] {
             if self.target.join(path).exists() {
                 fs::set_permissions(self.target.join(path), fs::Permissions::from_mode(0o700))
                     .unwrap();
@@ -154,4 +154,62 @@ fn later_publication_failure_still_finalizes_intermediate_checkout_directories()
         fs::read_to_string(fixture.target.join("zz")).unwrap(),
         "foreign"
     );
+}
+
+#[test]
+fn refusing_an_unassociated_checkout_conflict_preserves_existing_metadata_and_state() {
+    use std::os::unix::fs::MetadataExt;
+
+    let fixture = Fixture::new(false, false);
+    let descriptor = fixture.source.join("ov/over.yaml");
+    let mut policy: serde_json::Value =
+        serde_json::from_slice(&fs::read(&descriptor).unwrap()).unwrap();
+    policy["rules"][0]["permissions"] = json!("0500");
+    fs::write(&descriptor, policy.to_string()).unwrap();
+    fs::create_dir_all(fixture.target.join("checkout/parent/child")).unwrap();
+    fs::write(
+        fixture.target.join("checkout/parent/child/plain"),
+        "foreign",
+    )
+    .unwrap();
+    // Apply always takes its lifecycle lock; precreate only that empty sentinel,
+    // leaving no association, so state publication is observable independently.
+    let state_root = fixture.temp.path().join("state");
+    fs::create_dir_all(state_root.join("over")).unwrap();
+    fs::write(state_root.join("over/virtual_checkout.mutation.lock"), "").unwrap();
+    // ctime catches even metadata writes that happen to restore the original values.
+    let snapshot = |root: &std::path::Path| {
+        walkdir::WalkDir::new(root)
+            .into_iter()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                let node = fs::symlink_metadata(path).unwrap();
+                (
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    (
+                        node.mode(),
+                        node.uid(),
+                        node.gid(),
+                        node.ctime(),
+                        node.ctime_nsec(),
+                        node.is_file().then(|| fs::read(path).unwrap()),
+                    ),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let target = snapshot(&fixture.target);
+    let source = snapshot(&fixture.source);
+    let state = snapshot(&state_root);
+    fixture
+        .apply()
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("virtual checkout conflict"));
+    assert_eq!(snapshot(&fixture.target), target);
+    assert_eq!(snapshot(&fixture.source), source);
+    assert_eq!(snapshot(&state_root), state);
+    assert!(!fixture.temp.path().join("cache").exists());
+    assert!(!fixture.temp.path().join("config").exists());
 }

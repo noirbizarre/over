@@ -515,18 +515,51 @@ impl Plan {
                 scope.defer_directory_metadata = true;
                 publication_step.entry.intent = MaterializationIntent::ScopedVirtualCheckout(scope);
             }
+            let checkout_metadata = if !ctx.dry_run && step.entry.intent.is_virtual_checkout() {
+                use crate::materialize::virtual_checkout::{metadata, state};
+                let established = match state::record_for_entry(&step.entry)? {
+                    Some(record) => {
+                        state::verify(&step.entry, &record)?;
+                        !record.initializing
+                    }
+                    None => false,
+                };
+                let mut directories = Vec::new();
+                for (path, access) in metadata::assignments(&step.entry)? {
+                    if !access.has_metadata() {
+                        continue;
+                    }
+                    let existed = match access.fs.metadata(&path, false) {
+                        Ok(node) => node.is_dir(),
+                        // Structural conflicts can hide descendants until authorized replacement.
+                        Err(error)
+                            if crate::target_fs::is_not_found(&error)
+                                || error.downcast_ref::<std::io::Error>().is_some_and(
+                                    |error| error.kind() == std::io::ErrorKind::NotADirectory,
+                                ) =>
+                        {
+                            false
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    directories.push((path, access, existed));
+                }
+                Some((established, directories))
+            } else {
+                None
+            };
             let publication = materializer
                 .materialize(ctx.clone(), &publication_step)
                 .await
                 .with_context(|| format!("failed to reconcile '{}'", step.entry.target.display()));
-            if !ctx.dry_run && step.entry.intent.is_virtual_checkout() {
+            if let Some((established, directories)) = checkout_metadata {
                 // Even a failed publication may have created parents. Capture them before
                 // returning the error so operation-wide failure finalization still protects them.
                 let capture = (|| -> Result<()> {
-                    for (path, access) in
-                        crate::materialize::virtual_checkout::metadata::assignments(&step.entry)?
-                    {
-                        if !access.has_metadata() {
+                    for (path, access, existed) in directories {
+                        // Refusing an unassociated conflict grants no metadata authority over
+                        // its existing containers, even when they match desired directory paths.
+                        if publication.is_err() && !established && existed {
                             continue;
                         }
                         match access.fs.metadata(&path, false) {
