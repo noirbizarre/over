@@ -152,8 +152,15 @@ fn resolve_scope(
     let ctx = Context::builder()
         .root(root.to_path_buf())
         .repository(repo.clone())
+        .read_only(true)
         .build();
-    let inferred = crate::selection::infer(&ctx, &[])?;
+    let inferred = match crate::selection::infer_history(&ctx) {
+        Ok(overlay) => overlay,
+        Err(error) if error.is::<crate::selection::AmbiguousSelection>() => {
+            return repository_scope(repo);
+        }
+        Err(error) => return Err(error),
+    };
     let cwd = ctx.absolute_path(Path::new("."))?;
     // Selection identifies an overlay; history still honors its containing checkout unit.
     let mut best: Option<(usize, GitRepository, HistoryScope, String)> = None;
@@ -162,28 +169,30 @@ fn resolve_scope(
             .root(root.to_path_buf())
             .repository(repo.clone())
             .overlay(overlay.clone())
+            .read_only(true)
             .build();
         let ctx = ctx.resolve_data()?;
-        let desired = match DesiredTree::build_own(&ctx, overlay) {
-            Ok(desired) => desired,
-            Err(error) => {
-                // Inference must not make unrelated machine-specific configs mandatory.
-                tracing::debug!(overlay = %overlay.name, %error, "skipping unresolved history candidate");
-                continue;
+        let desired = DesiredTree::build_own_history(&ctx, overlay)?;
+        let routing = crate::overlays::mapping::ResolvedMappings::for_history(overlay, &ctx)?;
+        let routed_cwd = if let Ok(logical) = cwd.strip_prefix(&overlay.root) {
+            Some(routing.target_for(logical))
+        } else {
+            use crate::overlays::mapping::ReverseResolution;
+            match routing.reverse(&cwd)? {
+                ReverseResolution::Unique(found) => Some(routing.target_for(&found.source)),
+                ReverseResolution::Absent => None,
+                ReverseResolution::Ambiguous(_) => return repository_scope(repo),
             }
         };
-        let routing = overlay.resolve_mappings(&ctx)?;
-        let Ok(logical) = routing.logical_path_for(&cwd) else {
-            continue;
-        };
-        let routed_cwd = routing.target_for(&logical);
         for entry in desired
             .entries()
             .iter()
             .filter(|entry| entry.intent.is_virtual_checkout())
         {
             let specificity = entry.target.components().count();
-            if crate::stage::owns(entry, &routed_cwd)
+            if routed_cwd
+                .as_ref()
+                .is_some_and(|cwd| crate::stage::owns(entry, cwd))
                 && best.as_ref().is_none_or(|(depth, ..)| specificity > *depth)
             {
                 let Provenance::Overlay { source, .. } = &entry.provenance else {
@@ -201,11 +210,20 @@ fn resolve_scope(
                     git_repo,
                     HistoryScope {
                         managed,
-                        scope: entry.intent.checkout_scope(),
+                        scope: source_history_scope(entry),
                     },
                     overlay.name.clone(),
                 ));
             }
+        }
+        if best.is_none()
+            && let Some((git_repo, scopes)) = checkout_tree_scope(&desired)?
+        {
+            return Ok((
+                git_repo,
+                scopes,
+                HistoryLabel::Overlay(overlay.name.clone()),
+            ));
         }
     }
 
@@ -213,14 +231,11 @@ fn resolve_scope(
         return Ok((git_repo, vec![scope], HistoryLabel::Overlay(name)));
     }
 
-    if let Some(overlay) = inferred {
-        return checkout_scope(repo, root, &overlay)
-            .with_context(|| format!("overlay '{}' is not checkout-materialized", overlay.name))
-            .map(|(git_repo, managed)| (git_repo, managed, HistoryLabel::Overlay(overlay.name)));
-    }
+    // An implicit non-checkout overlay cannot scope history; an explicit one remains an error.
+    repository_scope(repo)
+}
 
-    // Nothing matched (or matched but isn't checkout-materialized): fall
-    // back to the whole repository's own history.
+fn repository_scope(repo: &Repository) -> Result<(GitRepository, Vec<HistoryScope>, HistoryLabel)> {
     let git_repo = GitRepository::discover(&repo.root)
         .with_context(|| format!("'{}' is not inside a git repository", repo.root.display()))?;
     Ok((
@@ -245,12 +260,19 @@ fn checkout_scope(
         .root(root.to_path_buf())
         .repository(repo.clone())
         .overlay(overlay.clone())
+        .read_only(true)
         .build();
     let ctx = ctx.resolve_data()?;
     let target = overlay.resolve_target(&ctx)?;
     let ctx = ctx.with_resolved_overlay(overlay.name.clone(), target.to_string_lossy().to_string());
-    let desired = DesiredTree::build_own(&ctx, overlay)?;
+    let desired = DesiredTree::build_own_history(&ctx, overlay)?;
+    checkout_tree_scope(&desired)?
+        .context("no `checkout` materialization rule applies to this overlay")
+}
 
+fn checkout_tree_scope(
+    desired: &DesiredTree,
+) -> Result<Option<(GitRepository, Vec<HistoryScope>)>> {
     let mut repository: Option<GitRepository> = None;
     let mut scopes = Vec::new();
     for entry in desired
@@ -275,13 +297,17 @@ fn checkout_scope(
         }
         scopes.push(HistoryScope {
             managed,
-            scope: entry.intent.checkout_scope(),
+            scope: source_history_scope(entry),
         });
     }
-    Ok((
-        repository.context("no `checkout` materialization rule applies to this overlay")?,
-        scopes,
-    ))
+    Ok(repository.map(|repository| (repository, scopes)))
+}
+
+fn source_history_scope(entry: &crate::desired::DesiredEntry) -> CheckoutScope {
+    let mut scope = entry.intent.checkout_scope();
+    // Deployment projections use output names; history must include source templates and deleted files.
+    scope.projection = None;
+    scope
 }
 
 /// One rendered commit line.

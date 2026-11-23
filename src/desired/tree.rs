@@ -41,6 +41,13 @@ pub(crate) struct SourceSelection {
     pub policy: Arc<SourcePolicy>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EntryPurpose {
+    Deployment,
+    Reporting,
+    History,
+}
+
 impl DesiredTree {
     /// Build the desired tree for `overlay` and everything it transitively
     /// `uses` (flat union, ADR-008), honoring `ctx.no_uses`.
@@ -99,12 +106,25 @@ impl DesiredTree {
     /// remains the entry point for whole-overlay status/diff (#12/#109),
     /// which need every `uses` dependency's entries too.
     pub fn build_own(ctx: &exec::Context, overlay: &Overlay) -> Result<Self> {
+        Self::build_own_for(ctx, overlay, EntryPurpose::Deployment)
+    }
+
+    /// Resolve ownership for history without validating or acquiring deployment access.
+    pub(crate) fn build_own_history(ctx: &exec::Context, overlay: &Overlay) -> Result<Self> {
+        Self::build_own_for(ctx, overlay, EntryPurpose::History)
+    }
+
+    fn build_own_for(
+        ctx: &exec::Context,
+        overlay: &Overlay,
+        purpose: EntryPurpose,
+    ) -> Result<Self> {
         let prepared = ctx.prepare_rendering(overlay)?;
         let ctx = prepared.as_ref();
         // Stage selections are absolute; relative roots must share their namespace.
         let target = mapping::absolute(&overlay.resolve_target(ctx)?)?;
         let mut sources = Vec::new();
-        let mut entries = collect_own_entries(ctx, overlay, &target, &mut sources, false)?;
+        let mut entries = collect_own_entries(ctx, overlay, &target, &mut sources, purpose)?;
         // Same deterministic ordering as `build()`.
         entries.sort_by(|a, b| a.target.cmp(&b.target));
         Ok(Self { entries, sources })
@@ -266,17 +286,16 @@ impl DesiredTree {
             });
         }
         build_git_entries(overlay, &routing, &mut entries);
-        build_symlink_sidecars(
-            ctx,
-            overlay,
-            &policy,
-            &overlay.resolve_target(ctx)?,
-            &mut entries,
-            true,
-        )?;
+        build_symlink_sidecars(ctx, overlay, &policy, &routing, &mut entries, true)?;
         build_partial_sidecars(ctx, overlay, &policy, &mut entries)?;
         attach_source_policy(&mut entries, &policy);
-        finalize_entries(ctx, overlay, &routing, &mut entries, true)?;
+        finalize_entries(
+            ctx,
+            overlay,
+            &routing,
+            &mut entries,
+            EntryPurpose::Reporting,
+        )?;
         for entry in &mut entries {
             if !entry.intent.is_virtual_checkout() {
                 continue;
@@ -422,7 +441,15 @@ fn build_inner(
     // Preserve every claim: uses is a flat union, so traversal order must
     // never silently choose a winner for conflicting target ownership.
     entries.extend(collect_own_entries(
-        ctx, overlay, &target, sources, reporting,
+        ctx,
+        overlay,
+        &target,
+        sources,
+        if reporting {
+            EntryPurpose::Reporting
+        } else {
+            EntryPurpose::Deployment
+        },
     )?);
 
     stack.pop();
@@ -441,7 +468,7 @@ fn collect_own_entries(
     overlay: &Overlay,
     target: &Path,
     sources: &mut Vec<SourceSelection>,
-    reporting: bool,
+    purpose: EntryPurpose,
 ) -> Result<Vec<DesiredEntry>> {
     // Explicit ownership wins over any overlay selected by the caller.
     let prepared = ctx
@@ -449,7 +476,11 @@ fn collect_own_entries(
         .with_target(target.to_path_buf());
     let ctx = prepared.as_ref();
     let mut entries = Vec::new();
-    let routing = overlay.resolve_mappings(ctx)?;
+    let routing = if purpose == EntryPurpose::History {
+        ResolvedMappings::for_history(overlay, ctx)?
+    } else {
+        overlay.resolve_mappings(ctx)?
+    };
     let policy = ctx.repository.source_policy(overlay)?;
     sources.push(SourceSelection {
         overlay: overlay.clone(),
@@ -476,7 +507,15 @@ fn collect_own_entries(
             permissions: None,
         });
         for source in routing.boundaries.keys() {
-            walk_overlay_tree(ctx, overlay, &routing, &policy, source, &mut entries)?;
+            walk_overlay_tree(
+                ctx,
+                overlay,
+                &routing,
+                &policy,
+                source,
+                &mut entries,
+                purpose,
+            )?;
         }
         build_git_entries(overlay, &routing, &mut entries);
         let ctx_with_target =
@@ -485,14 +524,17 @@ fn collect_own_entries(
             &ctx_with_target,
             overlay,
             &policy,
-            target,
+            &routing,
             &mut entries,
-            false,
+            purpose == EntryPurpose::History,
         )?;
         build_partial_sidecars(&ctx_with_target, overlay, &policy, &mut entries)?;
         attach_source_policy(&mut entries, &policy);
         prune_transformed_scaffolds(&mut entries);
-        finalize_entries(ctx, overlay, &routing, &mut entries, reporting)?;
+        finalize_entries(ctx, overlay, &routing, &mut entries, purpose)?;
+        if purpose == EntryPurpose::History {
+            return Ok(entries);
+        }
         attach_rendered_checkouts(ctx, overlay, &mut entries)?;
         for entry in &entries {
             crate::materialize::virtual_checkout::safety::validate_entry(entry)?;
@@ -519,9 +561,25 @@ fn collect_own_entries(
 
     build_git_entries(overlay, &routing, &mut entries);
 
-    walk_overlay_tree(ctx, overlay, &routing, &policy, Path::new(""), &mut entries)?;
+    walk_overlay_tree(
+        ctx,
+        overlay,
+        &routing,
+        &policy,
+        Path::new(""),
+        &mut entries,
+        purpose,
+    )?;
     for source in routing.boundaries.keys() {
-        walk_overlay_tree(ctx, overlay, &routing, &policy, source, &mut entries)?;
+        walk_overlay_tree(
+            ctx,
+            overlay,
+            &routing,
+            &policy,
+            source,
+            &mut entries,
+            purpose,
+        )?;
     }
 
     // Mirrors the same resolved-overlay bookkeeping `Overlay::apply` uses so
@@ -533,15 +591,18 @@ fn collect_own_entries(
         &ctx_with_target,
         overlay,
         &policy,
-        target,
+        &routing,
         &mut entries,
-        false,
+        purpose == EntryPurpose::History,
     )?;
     build_partial_sidecars(&ctx_with_target, overlay, &policy, &mut entries)?;
 
     attach_source_policy(&mut entries, &policy);
     prune_transformed_scaffolds(&mut entries);
-    finalize_entries(ctx, overlay, &routing, &mut entries, reporting)?;
+    finalize_entries(ctx, overlay, &routing, &mut entries, purpose)?;
+    if purpose == EntryPurpose::History {
+        return Ok(entries);
+    }
     attach_rendered_checkouts(ctx, overlay, &mut entries)?;
     for entry in &entries {
         crate::materialize::virtual_checkout::safety::validate_entry(entry)?;
@@ -753,8 +814,19 @@ fn finalize_entries(
     overlay: &Overlay,
     routing: &ResolvedMappings,
     entries: &mut [DesiredEntry],
-    reporting: bool,
+    purpose: EntryPurpose,
 ) -> Result<()> {
+    if purpose == EntryPurpose::History {
+        // History needs ownership holes and Git projections, never destination safety or identity checks.
+        if overlay.has_target_rules() {
+            attach_target_exclusions(entries);
+        }
+        for entry in entries {
+            crate::materialize::virtual_checkout::state::resolve_projection(entry, false)?;
+        }
+        return Ok(());
+    }
+    let reporting = purpose == EntryPurpose::Reporting;
     let overlay = Arc::new(overlay.clone());
     for entry in entries.iter_mut() {
         let logical = match &entry.provenance {
@@ -846,27 +918,8 @@ fn finalize_entries(
         }
         return Ok(());
     }
-    let independent: Vec<_> = entries
-        .iter()
-        .filter(|entry| !matches!(entry.intent, MaterializationIntent::Directory))
-        .map(|entry| (entry.target.clone(), entry.intent.clone()))
-        .collect();
+    attach_target_exclusions(entries);
     for entry in entries.iter_mut() {
-        if entry.intent.is_virtual_checkout() {
-            let mut scope = entry.intent.checkout_scope();
-            for (target, _) in &independent {
-                if target != &entry.target
-                    && let Ok(relative) = target.strip_prefix(&entry.target)
-                {
-                    scope.target_excludes.push(relative.to_path_buf());
-                }
-            }
-            scope.target_excludes.sort();
-            scope.target_excludes.dedup();
-            if !scope.target_excludes.is_empty() {
-                entry.intent = MaterializationIntent::ScopedVirtualCheckout(scope);
-            }
-        }
         if matches!(
             entry.intent,
             MaterializationIntent::SymlinkDirectory { .. } | MaterializationIntent::Checkout
@@ -920,6 +973,32 @@ fn finalize_entries(
         }
     }
     Ok(())
+}
+
+fn attach_target_exclusions(entries: &mut [DesiredEntry]) {
+    let independent: Vec<_> = entries
+        .iter()
+        .filter(|entry| !matches!(entry.intent, MaterializationIntent::Directory))
+        .map(|entry| entry.target.clone())
+        .collect();
+    for entry in entries
+        .iter_mut()
+        .filter(|entry| entry.intent.is_virtual_checkout())
+    {
+        let mut scope = entry.intent.checkout_scope();
+        for target in &independent {
+            if target != &entry.target
+                && let Ok(relative) = target.strip_prefix(&entry.target)
+            {
+                scope.target_excludes.push(relative.to_path_buf());
+            }
+        }
+        scope.target_excludes.sort();
+        scope.target_excludes.dedup();
+        if !scope.target_excludes.is_empty() {
+            entry.intent = MaterializationIntent::ScopedVirtualCheckout(scope);
+        }
+    }
 }
 
 fn validate_directory_link_policy(
@@ -1030,6 +1109,7 @@ fn walk_overlay_tree(
     policy: &SourcePolicy,
     start: &Path,
     entries: &mut Vec<DesiredEntry>,
+    purpose: EntryPurpose,
 ) -> Result<()> {
     let mut walk_root = overlay.root.join(start);
     if !walk_root.exists() {
@@ -1126,9 +1206,10 @@ fn walk_overlay_tree(
             match overlay.materialization_for(rel_path) {
                 MaterializationKind::SymlinkDirectory if !subtree_has_transform(overlay, path)? => {
                     policy.validate_directory_link(path, path)?;
-                    if entry_target
-                        .symlink_metadata()
-                        .is_ok_and(|metadata| metadata.is_dir())
+                    if purpose != EntryPurpose::History
+                        && entry_target
+                            .symlink_metadata()
+                            .is_ok_and(|metadata| metadata.is_dir())
                     {
                         // A clean managed view does not authorize deleting newly ignored target files.
                         policy.validate_directory_link(&entry_target, path)?;
@@ -1193,18 +1274,25 @@ fn walk_overlay_tree(
                 let mode = i32::from(crate::materialize::virtual_checkout::git::on_disk_filemode(
                     path,
                 )?);
-                let (destination, content) =
-                    super::content::transform(ctx, overlay, rel_path, &std::fs::read(path)?, mode)
-                        .with_context(|| {
-                            format!("cannot render source template '{}'", path.display())
-                        })?;
+                // Ownership requires rendered names, not plaintext template contents or credentials.
+                let bytes = if purpose == EntryPurpose::History {
+                    Vec::new()
+                } else {
+                    std::fs::read(path)?
+                };
+                let (destination, content) = super::content::transform(
+                    ctx, overlay, rel_path, &bytes, mode,
+                )
+                .with_context(|| format!("cannot render source template '{}'", path.display()))?;
                 entry_target = transformed_target(routing, rel_path, &destination)?;
-                let access = ctx.target_fs.target(
-                    properties.sudo,
-                    ctx.no_prompt,
-                    ctx.dry_run || ctx.read_only,
-                );
-                super::content::validate_destination(&content, &entry_target, &access)?;
+                if purpose != EntryPurpose::History {
+                    let access = ctx.target_fs.target(
+                        properties.sudo,
+                        ctx.no_prompt,
+                        ctx.dry_run || ctx.read_only,
+                    );
+                    super::content::validate_destination(&content, &entry_target, &access)?;
+                }
                 Some(content)
             } else {
                 None
@@ -1287,12 +1375,11 @@ fn build_symlink_sidecars(
     ctx: &exec::Context,
     overlay: &Overlay,
     policy: &SourcePolicy,
-    _target: &Path,
+    routing: &ResolvedMappings,
     entries: &mut Vec<DesiredEntry>,
     inventory_only: bool,
 ) -> Result<()> {
     let symlinks = symlink::discover_symlinks_selected(&overlay.root, Some(policy))?;
-    let routing = overlay.resolve_mappings(ctx)?;
     for (name, config) in symlinks {
         let resolved = crate::overlays::mapping::resolve_path(&config.target, &overlay.root, ctx)?;
         let resolved_str = resolved.to_string_lossy();

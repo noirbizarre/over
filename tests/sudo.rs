@@ -109,6 +109,51 @@ impl Fixture {
 }
 
 #[test]
+fn history_resolves_privileged_mapped_ownership_without_starting_sudo_or_rendering_contents() {
+    let fixture = Fixture::new();
+    fixture.config(json!({"mode": "checkout", "sudo": true, "rules": [
+        {"path": "link", "mode": "symlink-directory", "target": "~/mapped"},
+        {"path": "settings.tmpl", "template": true, "strip_extension": true}
+    ]}));
+    fs::create_dir_all(fixture.source.join("overlay/link")).unwrap();
+    fs::write(fixture.source.join("overlay/link/file"), "linked").unwrap();
+    fs::write(
+        fixture.source.join("overlay/settings.tmpl"),
+        "{{ missing_template_value }}",
+    )
+    .unwrap();
+    let restricted = fixture.temp.path().join("restricted");
+    fs::create_dir(&restricted).unwrap();
+    fs::create_dir_all(fixture.source.join("unrelated")).unwrap();
+    fs::write(
+        fixture.source.join("unrelated/over.yaml"),
+        serde_json::to_vec(
+            &json!({"sudo": true, "mode": "checkout", "target": restricted.join("target")}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    fixture.commit();
+    let index = fs::read(fixture.source.join(".git/index")).unwrap();
+    let head = fs::read(fixture.source.join(".git/HEAD")).unwrap();
+    fs::set_permissions(&restricted, fs::Permissions::from_mode(0o000)).unwrap();
+    for named in [false, true] {
+        fixture
+            .selected_command("log", named)
+            .current_dir(&fixture.target)
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("fixture"));
+    }
+    fs::set_permissions(&restricted, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(fixture.starts(), 0);
+    assert_eq!(fs::read(fixture.source.join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(fixture.source.join(".git/HEAD")).unwrap(), head);
+    assert_eq!(fs::read_dir(&fixture.target).unwrap().count(), 0);
+    assert!(!fixture.temp.path().join("state").exists());
+}
+
+#[test]
 fn target_operations_and_multiple_hooks_share_one_helper_with_real_standard_streams() {
     let fixture = Fixture::new();
     fs::write(fixture.source.join("overlay/file"), "source").unwrap();

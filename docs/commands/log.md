@@ -34,9 +34,16 @@ checkout's history excludes its independently mapped source directories.
   checkout-materialized.
 - Without an overlay name: [infer the overlay from context](../usage/selection.md), then
   select its containing virtual-checkout unit or all its units when outside a
-  checkout. Ambiguity requires an explicit overlay. With no contextual candidate,
-  fall back to the repository containing the configured Over home. A selected
-  overlay must be checkout-materialized.
+  checkout. With ambiguous context, no contextual candidate, or an inferred overlay
+  without checkout units, fall back to the whole repository containing the
+  configured Over home. The host overlay is never selected implicitly; name it
+  explicitly to scope history to it. Invalid authoritative configuration still
+  reports an error.
+
+History resolves source ownership without validating deployment permissions or
+reading privileged destination contents, so it does not request sudo access.
+Generated checkouts are filtered by source names, including templates, rather
+than their rendered output names; reading history does not render their contents.
 
 Path filtering compares each commit's tree with its first parent (or an empty
 tree for the initial commit). Commits changing only unrelated paths are skipped,
