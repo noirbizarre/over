@@ -1,6 +1,7 @@
 name: 📚 Documentation
 
 on:
+  # Validate every PR without deploying; only pushes use the path filter below.
   pull_request:
   push:
     branches: [main]
@@ -14,8 +15,8 @@ on:
       - mise.lock
       - zensical.toml
       - .github/workflows/docs.yaml
-  # Same paths as the push trigger: this is a check that the docs still
-  # build, not a deploy. Rust inputs affect the schemas published with the site.
+  # Manual runs build and deploy too. Rust inputs in the push filter affect
+  # the schemas published with the site.
   workflow_dispatch:
 
 permissions:
@@ -61,9 +62,7 @@ jobs:
   deploy:
     name: 🌐 Publish documentation
     needs: build
-    # Never deploy from a pull_request event — including from forks, which
-    # get no `pages`/`id-token` write access from GitHub regardless of what's
-    # declared above. `workflow_dispatch` keeps deploying, as today.
+    # PRs only validate; filtered main pushes and manual runs publish the site.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
