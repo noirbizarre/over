@@ -11,7 +11,9 @@ over user delete <USER> [--yes]
 over user key list <USER>
 over user key add <USER> [NAME] [KEY-OPTIONS]
 over user key detach <USER> <KEY> [--yes]
+over user key detach <USER>/<KEY> [--yes]
 over user key revoke <USER> <KEY> [--yes]
+over user key revoke <USER>/<KEY> [--yes]
 ```
 
 Accepts [global options](index.md#shared-options-and-selection). Repository
@@ -77,6 +79,9 @@ Existing aggregate and nested split access metadata migrate automatically in the
 next user/key mutation's commit. List/show/unlock remain compatible without migration.
 
 ## Inspect and remove access
+
+`key detach` and `key revoke` accept either `USER KEY` or `USER/KEY`.
+Do not supply a separate key after a combined `USER/KEY` reference.
 
 Revocation, deletion, and detachment require confirmation, defaulting to No.
 Interactive confirmation requires terminal stdin and stderr; pass `--yes` to

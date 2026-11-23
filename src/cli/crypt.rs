@@ -115,15 +115,21 @@ pub enum UserKeyCommands {
     Add(NewKey),
     /// Detach a key envelope without rotating encryption or revoking learned access
     Detach {
+        /// Select a user, or a named key as USER/KEY
+        #[arg(value_name = "USER[/KEY]")]
         user: String,
-        key: String,
+        /// Select the key when USER is given separately
+        key: Option<String>,
         #[arg(long, help = "Approve detachment without prompting")]
         yes: bool,
     },
     /// Revoke a key and rotate encryption for current state
     Revoke {
+        /// Select a user, or a named key as USER/KEY
+        #[arg(value_name = "USER[/KEY]")]
         user: String,
-        key: String,
+        /// Select the key when USER is given separately
+        key: Option<String>,
         #[arg(long, help = "Approve revocation without prompting")]
         yes: bool,
     },
@@ -133,6 +139,18 @@ pub enum UserKeyCommands {
 pub enum KeyCommands {
     /// Rotate the repository encryption key and re-encrypt current state
     Rotate,
+}
+
+fn key_reference<'a>(user: &'a str, key: Option<&'a str>) -> Result<(&'a str, &'a str)> {
+    let (user, key) = match (user.split_once('/'), key) {
+        (Some(reference), None) => reference,
+        (None, Some(key)) => (user, key),
+        // Reject mixed forms instead of ignoring an extra key on a destructive command.
+        _ => anyhow::bail!("specify USER KEY or USER/KEY"),
+    };
+    access::validate_name(user)?;
+    access::validate_name(key)?;
+    Ok((user, key))
 }
 
 pub fn repository(cli: &super::CLI) -> Result<git2::Repository> {
@@ -553,6 +571,7 @@ pub fn user(cli: &super::CLI, command: &UserCommands) -> Result<()> {
         }
         UserCommands::Key(UserKeyCommands::Add(opt)) => add_key(&repo, opt, false),
         UserCommands::Key(UserKeyCommands::Detach { user, key, yes }) => {
+            let (user, key) = key_reference(user, key.as_deref())?;
             eprintln!(
                 "Detaching only removes the current envelope; it does not revoke a learned key or historical access."
             );
@@ -567,6 +586,7 @@ pub fn user(cli: &super::CLI, command: &UserCommands) -> Result<()> {
             access::detach_committed(&repo, user, key)
         }
         UserCommands::Key(UserKeyCommands::Revoke { user, key, yes }) => {
+            let (user, key) = key_reference(user, key.as_deref())?;
             super::common::confirm_removal(
                 &format!(
                     "Revoke key {key:?} for user {user:?} in {} and rotate/re-encrypt current state (history remains accessible)?",

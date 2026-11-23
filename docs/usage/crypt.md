@@ -420,6 +420,9 @@ over user delete <user>
 over key rotate
 ```
 
+`user key detach` and `user key revoke` also accept a combined `<user>/<key>`
+reference, for example `over user key revoke alice/laptop`.
+
 A user is a logical grouping, not an Age identity. Each key independently wraps
 the same repository key in a separately addressable standard Age envelope.
 Software, SSH, passphrase/scrypt and plugin-backed keys can belong to the same
