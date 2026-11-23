@@ -1052,7 +1052,11 @@ mod tests {
             &source
         };
         std::os::unix::fs::symlink(referent, &target).unwrap();
-        assert_eq!(physical_destination(&target, &source).unwrap(), target);
+        // Physical identity resolves parent aliases, including macOS's /var -> /private/var.
+        assert_eq!(
+            physical_destination(&target, &source).unwrap(),
+            temp.path().canonicalize().unwrap().join("target")
+        );
         // Foreign dangling referents cannot acquire managed ownership by being absent.
         assert!(physical_destination(&target, &temp.path().join("other")).is_err());
     }

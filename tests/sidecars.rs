@@ -60,8 +60,12 @@ fn unknown_sidecar_attributes_warn_with_the_source_path_and_preserve_optional_de
         .clone();
     let stderr = String::from_utf8(output.stderr).unwrap();
     if optional == "typo" {
+        // Discovery uses native separators; the fixture's joined filename may
+        // retain forward slashes on Windows while naming the same source path.
         assert!(
-            stderr.contains(&sidecar.to_string_lossy().to_string()),
+            stderr
+                .replace('\\', "/")
+                .contains(&sidecar.to_string_lossy().replace('\\', "/")),
             "{stderr}"
         );
         assert!(
