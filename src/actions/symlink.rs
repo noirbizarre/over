@@ -202,13 +202,41 @@ pub fn discover_symlinks_selected(
         let content = fs::read_to_string(path)
             .with_context(|| format!("failed to read symlink config: {}", rel.display()))?;
 
-        let config: SymlinkConfig = if rel_str.ends_with(".toml") {
-            toml::from_str(&content)
-                .with_context(|| format!("failed to parse {}", rel.display()))?
-        } else {
-            serde_yml::from_str(&content)
-                .with_context(|| format!("failed to parse {}", rel.display()))?
+        // Keep unknown attributes permissive, but make typos and their source actionable.
+        let warn_unknown = |field: String| {
+            tracing::warn!(
+                "{}: unknown key `{field}` ignored; check spelling and supported attributes",
+                path.display()
+            );
         };
+        let config: SymlinkConfig = if rel_str.ends_with(".toml") {
+            let deserializer = toml::de::Deserializer::parse(&content)
+                .with_context(|| format!("failed to parse {}", rel.display()))?;
+            serde_ignored::deserialize(deserializer, |field| warn_unknown(field.to_string()))
+                .map_err(anyhow::Error::from)
+        } else {
+            // Deserialize through the compatibility parser so scalar typing and duplicate-field
+            // handling stay identical to ordinary typed YAML parsing, including source locations.
+            struct WithUnknownFields(SymlinkConfig, Vec<String>);
+            impl<'de> Deserialize<'de> for WithUnknownFields {
+                fn deserialize<D: serde::Deserializer<'de>>(
+                    deserializer: D,
+                ) -> Result<Self, D::Error> {
+                    let mut unknown = Vec::new();
+                    let config = serde_ignored::deserialize(deserializer, |field| {
+                        unknown.push(field.to_string());
+                    })?;
+                    Ok(Self(config, unknown))
+                }
+            }
+            let WithUnknownFields(config, unknown) = serde_yml::from_str(&content)
+                .with_context(|| format!("failed to parse {}", rel.display()))?;
+            for field in unknown {
+                warn_unknown(field);
+            }
+            Ok(config)
+        }
+        .with_context(|| format!("failed to parse {}", rel.display()))?;
 
         if config.target.is_empty() {
             tracing::warn!(
