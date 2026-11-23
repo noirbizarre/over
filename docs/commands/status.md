@@ -107,6 +107,11 @@ association metadata is read as a snapshot; older state schemas migrate only in
 memory. `NO_COLOR` and redirected stdout produce readable output without ANSI
 color escapes, even if color is otherwise forced.
 
+Protected-content inspection shares the existing crypt operation lock without
+opening it for writing. If that administrative lock is missing, inspection fails
+without recreating it; run `over unlock` on a writable source to repair the
+administrative state before inspecting again. `over diff` uses the same boundary.
+
 Ordinary staged or unstaged changes in declared Git repositories are not reported.
 Changes to overlay-managed files remain visible. Use [`over diff`](diff.md) for
 content diffs.

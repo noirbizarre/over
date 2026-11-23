@@ -186,7 +186,9 @@ rerun `over commit` to finish it after a successful source commit.
 - Silently pick a side for overlapping local and source changes. Ordinary
   selected conflicts block the commit; reverse-patch conflicts leave that
   template untouched while independent successful files can still be committed.
-- Touch anything outside the managed path in the source repository.
+- Include unrelated changes outside the managed paths in the source repository.
+  Necessary staged canonical encryption policy (`.gitattributes`) and access
+  metadata are included with selected checkout changes, even outside those paths.
 
 See [ADR-022](../adr/022-virtual-checkout-materialization.md) for the full
 design rationale.

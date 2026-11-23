@@ -134,11 +134,15 @@ pub fn run(args: &[OsString]) -> Result<()> {
     context::secret_name(new_path)
         .context("invalid new native-secret diff path; use --no-relative")?;
     let repo = git2::Repository::open_from_env().or_else(|_| git2::Repository::discover("."))?;
-    let _guard = access::guard(&repo, false)?;
-    let key = if access::local_key_missing(&repo)? {
-        None
-    } else {
+    // Locked summaries expose no plaintext and must also work in fresh clones
+    // that have never created local crypt administration.
+    let guard = (!access::local_key_missing(&repo)?)
+        .then(|| access::inspection_guard(&repo))
+        .transpose()?;
+    let key = if guard.is_some() {
         Some(access::local_key(&repo)?)
+    } else {
+        None
     };
     // Authenticate both sides before constructing or writing any plaintext patch.
     let old = value(key.as_ref(), old_path, Path::new(&args[1]), &args[3])

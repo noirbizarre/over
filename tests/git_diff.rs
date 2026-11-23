@@ -235,8 +235,22 @@ fn encrypted_views_use_the_installed_driver_without_mutating_comparison_inputs(
         fixture.git(&["add", "ov/file"]);
     }
     fs::write(deployed.join("file"), "encrypted working\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Inspection and its native filter/textconv children must not request
+        // write access even when another command created the sentinel earlier.
+        fs::set_permissions(
+            fixture.source.join(".git/over-crypt/operation.lock"),
+            fs::Permissions::from_mode(0o400),
+        )
+        .unwrap();
+    }
     let before_source = inventory(&fixture.source);
     let before_target = inventory(&fixture.target);
+    let before_state = inventory(&fixture.temp.path().join("state"));
+    fixture.over("status", &[]);
+    fixture.over("status", &["--short"]);
     let staged = fixture.over("diff", &["--staged"]);
     let working = fixture.over("diff", &[]);
     assert!(
@@ -251,6 +265,17 @@ fn encrypted_views_use_the_installed_driver_without_mutating_comparison_inputs(
     );
     assert_eq!(inventory(&fixture.source), before_source);
     assert_eq!(inventory(&fixture.target), before_target);
+    assert_eq!(inventory(&fixture.temp.path().join("state")), before_state);
+    if checkout {
+        // An unlocked key alone cannot replace synchronization with a lifecycle writer.
+        let lock = fixture.source.join(".git/over-crypt/operation.lock");
+        fs::remove_file(&lock).unwrap();
+        let before = inventory(&fixture.source);
+        let output = fixture.command("diff", &[]).output().unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("operation lock"));
+        assert_eq!(inventory(&fixture.source), before);
+    }
 }
 
 #[rstest]

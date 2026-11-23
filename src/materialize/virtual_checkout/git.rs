@@ -886,6 +886,38 @@ pub(crate) fn walk_owned_files(root: &Path, scope: &CheckoutScope) -> Result<Vec
     Ok(files)
 }
 
+/// Diff must see unsupported nodes too, so they cannot masquerade as deletions.
+pub(crate) fn walk_owned_target_entries(
+    root: &Path,
+    scope: &CheckoutScope,
+) -> Result<Vec<(PathBuf, fs::Metadata)>> {
+    let selected = |relative: &Path, is_dir: bool| {
+        scope.owns_source_kind(relative, is_dir) && !is_overlay_metadata(relative)
+    };
+    if let Some(paths) = &scope.projection {
+        // A projected checkout owns finite leaves, never the shared container's inventory.
+        let mut entries = Vec::new();
+        for relative in paths
+            .iter()
+            .filter(|path| scope.owns_target(path) && selected(path, false))
+        {
+            let path = root.join(relative);
+            match scope
+                .access
+                .child(relative, false)
+                .fs
+                .metadata(&path, false)
+            {
+                Ok(metadata) => entries.push((path, metadata)),
+                Err(error) if crate::target_fs::is_not_found(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        return Ok(entries);
+    }
+    walk_target_selected(root, scope, false, &selected)
+}
+
 pub(crate) fn has_owned_content(root: &Path, scope: &CheckoutScope) -> Result<bool> {
     for (_, metadata) in walk_target(root, scope, false)? {
         if !metadata.is_dir() {
@@ -911,6 +943,15 @@ fn walk_target(
     scope: &CheckoutScope,
     include_unowned: bool,
 ) -> Result<Vec<(PathBuf, fs::Metadata)>> {
+    walk_target_selected(root, scope, include_unowned, &|_, _| true)
+}
+
+fn walk_target_selected(
+    root: &Path,
+    scope: &CheckoutScope,
+    include_unowned: bool,
+    selected: &impl Fn(&Path, bool) -> bool,
+) -> Result<Vec<(PathBuf, fs::Metadata)>> {
     let mut result = Vec::new();
     let mut pending = vec![PathBuf::new()];
     while let Some(relative) = pending.pop() {
@@ -931,7 +972,8 @@ fn walk_target(
         };
         if !relative.as_os_str().is_empty()
             && !include_unowned
-            && !scope.owns_target_kind(&relative, metadata.is_dir())
+            && (!scope.owns_target_kind(&relative, metadata.is_dir())
+                || !selected(&relative, metadata.is_dir()))
         {
             continue;
         }

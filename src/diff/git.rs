@@ -16,6 +16,10 @@ use crate::overlays::MaterializationKind;
 use crate::overlays::mapping;
 use crate::plan::actual::{self, ActualState};
 
+#[cfg(test)]
+#[path = "git_target_tests.rs"]
+mod target_files_tests;
+
 type Entries = BTreeMap<PathBuf, (Oid, i32)>;
 
 #[derive(Default)]
@@ -335,29 +339,19 @@ impl Report {
                 }
             }
             ActualState::Symlink { points_to } => {
-                let resolved = if points_to.is_absolute() {
-                    points_to
-                } else {
-                    target
-                        .parent()
-                        .context("link has no parent")?
-                        .join(points_to)
-                };
-                if mapping::absolute(&resolved)? != mapping::absolute(source)?
-                    && mapping::physical(&resolved)? != mapping::physical(source)?
-                {
+                // Ownership requires the exact managed referent. Physical equivalence
+                // alone must not hide a conflict that status and unapply retain.
+                if points_to != source {
                     Some(format!(
                         "misdirected symlink (expected {})",
                         source.display()
                     ))
-                } else if if access.fs.is_privileged() {
+                } else if {
                     match access.fs.metadata(target, true) {
                         Ok(_) => false,
                         Err(error) if crate::target_fs::is_not_found(&error) => true,
                         Err(error) => return Err(error),
                     }
-                } else {
-                    !resolved.exists()
                 } {
                     Some("broken symlink".into())
                 } else {
@@ -523,7 +517,7 @@ fn source_virtual_comparisons(
             );
             let mut candidates = paths.clone();
             candidates.extend(
-                target_files(&entry.target, &scope)?
+                target_files(&entry.target, &scope, &entry.access)?
                     .into_iter()
                     .map(|path| managed.join(path)),
             );
@@ -638,32 +632,25 @@ fn generated_comparisons(
     Ok(comparisons)
 }
 
-fn target_files(root: &Path, scope: &CheckoutScope) -> Result<Vec<PathBuf>> {
-    if !root.exists() {
-        return Ok(Vec::new());
-    }
+fn target_files(
+    root: &Path,
+    scope: &CheckoutScope,
+    access: &crate::target_fs::Access,
+) -> Result<Vec<PathBuf>> {
+    let mut scope = scope.clone();
+    // The entry carries invocation/rule access; legacy scopes may still have default access.
+    *scope.access = access.clone();
     let mut files = Vec::new();
-    for entry in walkdir::WalkDir::new(root)
-        .min_depth(1)
-        .into_iter()
-        .filter_entry(|entry| {
-            entry.path().strip_prefix(root).is_ok_and(|path| {
-                scope.owns_source_kind(path, entry.file_type().is_dir())
-                    && scope.owns_target_kind(path, entry.file_type().is_dir())
-                    && !vc::is_overlay_metadata(path)
-            })
-        })
-    {
-        let entry = entry?;
+    for (path, metadata) in vc::walk_owned_target_entries(root, &scope)? {
         // Following a newly added link would include content outside ownership;
         // silently dropping it would disguise an unsupported target change.
         ensure!(
-            entry.file_type().is_file() || entry.file_type().is_dir(),
+            metadata.is_file() || metadata.is_dir(),
             "unsupported virtual checkout target entry '{}'",
-            entry.path().display()
+            path.display()
         );
-        if entry.file_type().is_file() {
-            files.push(entry.path().strip_prefix(root)?.to_path_buf());
+        if metadata.is_file() {
+            files.push(path.strip_prefix(root)?.to_path_buf());
         }
     }
     Ok(files)
@@ -674,6 +661,51 @@ mod tests {
     use super::*;
     use crate::actions::symlink::LinkType;
     use crate::plan::{Operation, PlanStep};
+
+    #[cfg(unix)]
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn equivalent_but_noncanonical_links_remain_conflicts_in_diff(#[case] alias: bool) {
+        let td = tempfile::TempDir::new().unwrap();
+        Repository::init(td.path()).unwrap();
+        let source = td.path().join("source");
+        let target = td.path().join("target");
+        std::fs::write(&source, "same content").unwrap();
+        let referent = if alias {
+            let alias = td.path().join("alias");
+            std::os::unix::fs::symlink(&source, &alias).unwrap();
+            alias
+        } else {
+            PathBuf::from("source")
+        };
+        std::os::unix::fs::symlink(&referent, &target).unwrap();
+        let entry = DesiredEntry {
+            access: Default::default(),
+            target: target.clone(),
+            provenance: Provenance::SymlinkSidecar {
+                overlay: "ov".into(),
+                config: td.path().join("link.link.toml"),
+                template: source.display().to_string(),
+                resolved: source.clone(),
+            },
+            intent: MaterializationIntent::SymlinkFile {
+                source,
+                link_type: LinkType::Soft,
+            },
+            permissions: None,
+        };
+        let desired = DesiredTree::from_entries(vec![entry]);
+        assert!(
+            crate::status::Report::build(&desired).unwrap().entries()[0]
+                .status
+                .needs_attention()
+        );
+        let report = Report::build(&desired, &[]).unwrap();
+        assert_eq!(report.diagnostics.len(), 1);
+        assert!(report.diagnostics[0].contains("misdirected symlink"));
+        assert_eq!(std::fs::read_link(target).unwrap(), referent);
+    }
 
     #[test]
     fn a_missing_hard_link_source_does_not_hide_other_diagnostics() {

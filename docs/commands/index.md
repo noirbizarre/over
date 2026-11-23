@@ -97,6 +97,11 @@ An explicit overlay name selects that overlay. Otherwise commands first try
 managed siblings, then target containment. Active context precedes any permitted host fallback;
 ambiguous contexts require an explicit overlay. Status/diff retain their
 all-overlay fallback without active or host context (`--all` forces all).
+Commit uses bounded inference from the current directory's Git association,
+recorded checkout/source ownership, or an ancestor source descriptor within the
+configured Over home, without discovering every overlay. Missing or ambiguous
+context requires `--overlay NAME`, including from shared destination directories;
+commit's file operands only filter changes after selection, and it never falls back to the host.
 Apply and sync can separately opt into host fallback; sync requires explicit
 `--all` to operate repository-wide.
 Lint and doctor retain their broader diagnostic scopes. See

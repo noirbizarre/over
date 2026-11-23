@@ -224,24 +224,60 @@ pub(crate) fn lifecycle_guard(repo: &git2::Repository, exclusive: bool) -> Resul
 }
 
 pub(crate) fn raw_guard(repo: &git2::Repository, exclusive: bool) -> Result<File> {
-    let directory = prepare_private(repo)?;
+    open_guard(repo, exclusive, true)
+}
+
+pub(crate) fn inspection_guard(repo: &git2::Repository) -> Result<File> {
+    let file = open_guard(repo, false, false)?;
+    ensure!(
+        !private_dir(repo).join("transaction.json").try_exists()?
+            && !super::mutation::pending(repo)?,
+        "interrupted crypt transaction; run over crypt recover before continuing"
+    );
+    crate::materialize::virtual_checkout::generated_migration::ensure_ready(repo)?;
+    Ok(file)
+}
+
+fn open_guard(repo: &git2::Repository, exclusive: bool, create: bool) -> Result<File> {
+    let directory = if exclusive || (create && !private_dir(repo).try_exists()?) {
+        prepare_private(repo)?
+    } else {
+        let directory = private_dir(repo);
+        // Inspection must not repair administrative storage on a read-only source.
+        check_private(repo, &directory, true)?;
+        directory
+    };
     let path = directory.join("operation.lock");
     // Reject special files before opening: opening a hostile FIFO can block forever.
-    match fs::symlink_metadata(&path) {
-        Ok(_) => check_private(repo, &path, false)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+    let exists = match fs::symlink_metadata(&path) {
+        Ok(_) => {
+            check_private(repo, &path, false)?;
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => return Err(error.into()),
-    }
+    };
     let mut options = OpenOptions::new();
     #[cfg(windows)]
-    let existed = path.try_exists()?;
-    options.read(true).write(true).create(true).truncate(false);
+    let existed = exists;
+    // Existing shared sentinels need no write access. Inspection disables creation
+    // so a missing sentinel fails closed instead of bypassing lifecycle synchronization.
+    options
+        .read(true)
+        .write(exclusive || (create && !exists))
+        .create(create && !exists)
+        .truncate(false);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let file = options.open(&path)?;
+    let file = options.open(&path).with_context(|| {
+        format!(
+            "cannot open crypt operation lock '{}'; repair missing administrative state with over unlock",
+            path.display()
+        )
+    })?;
     #[cfg(windows)]
     if !existed {
         windows_acl(&path, true)?;
@@ -1281,6 +1317,34 @@ mod tests {
             None,
             true,
         )
+    }
+
+    #[test]
+    fn shared_inspection_does_not_create_a_missing_operation_lock() {
+        let (_directory, repo) = repository();
+        add(&repo, "alice").unwrap();
+        let path = private_dir(&repo).join("operation.lock");
+        fs::remove_file(&path).unwrap();
+        assert!(inspection_guard(&repo).is_err());
+        assert!(!path.exists());
+        // Only an explicit lifecycle operation may restore synchronization state.
+        assert!(guard(&repo, true).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_inspection_accepts_a_non_writable_operation_lock() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_directory, repo) = repository();
+        add(&repo, "alice").unwrap();
+        let path = private_dir(&repo).join("operation.lock");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(inspection_guard(&repo).is_ok());
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
     }
 
     #[test]

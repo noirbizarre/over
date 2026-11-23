@@ -35,7 +35,7 @@ impl Protection {
         if self == Self::Plain {
             return Ok(Zeroizing::new(stored.to_vec()));
         }
-        let _guard = access::guard(repo, false)?;
+        let _guard = access::inspection_guard(repo)?;
         self.decode_with_key(stored, &access::local_key(repo)?)
             .context("cannot read protected generated content; unlock the matching repository generation")
     }

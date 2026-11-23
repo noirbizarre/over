@@ -129,6 +129,20 @@ pub(crate) fn location(path: &Path) -> Result<PathBuf> {
 /// An already-deployed managed symlink owns its link location, not its source.
 pub(crate) fn physical_destination(target: &Path, source: &Path) -> Result<PathBuf> {
     if target.is_symlink() {
+        let referent = std::fs::read_link(target)?;
+        let referent = if referent.is_absolute() {
+            referent
+        } else {
+            target
+                .parent()
+                .context("target has no parent")?
+                .join(referent)
+        };
+        // Managed dangling links still own their deployment location; following
+        // them first would reject a legitimate broken-link inspection or teardown.
+        if absolute(&referent)? == absolute(source)? {
+            return location(target);
+        }
         let resolved = physical(target)?;
         if resolved == physical(source)? {
             let target = absolute(target)?;
@@ -1022,6 +1036,29 @@ mod tests {
                 .contains("overlaps the overlay source")
         );
         assert!(!temp.path().join("ov/new").exists());
+    }
+
+    #[cfg(unix)]
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn managed_dangling_links_preserve_their_deployment_location(#[case] relative: bool) {
+        let temp = assert_fs::TempDir::new().unwrap();
+        let source = temp.path().join("missing");
+        let target = temp.path().join("target");
+        let referent = if relative {
+            Path::new("missing")
+        } else {
+            &source
+        };
+        std::os::unix::fs::symlink(referent, &target).unwrap();
+        // Physical identity resolves parent aliases, including macOS's /var -> /private/var.
+        assert_eq!(
+            physical_destination(&target, &source).unwrap(),
+            temp.path().canonicalize().unwrap().join("target")
+        );
+        // Foreign dangling referents cannot acquire managed ownership by being absent.
+        assert!(physical_destination(&target, &temp.path().join("other")).is_err());
     }
 
     #[cfg(unix)]

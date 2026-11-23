@@ -80,8 +80,12 @@ pub trait Materializer: Send + Sync {
     /// mutates the filesystem (or any other backing store).
     fn classify(&self, entry: &DesiredEntry) -> Result<Operation>;
 
-    /// Turn an actionable (`Create`/`Conflict`) step into concrete changes.
-    /// Never called for `Noop`/`Deferred` steps.
+    /// Turn `Create`, `Conflict`, `Repair`, `NeedsUnlock`, or an unblocked
+    /// `Migrate` step into concrete changes after plan validation.
+    ///
+    /// The plan handles `RepairMetadata` centrally, except that hard-link
+    /// metadata repair also dispatches here to avoid mutating the source inode.
+    /// Never called for `Noop`, `Deferred`, or blocked `Migrate` steps.
     async fn materialize(&self, ctx: Ctx, step: &PlanStep) -> Result<()>;
 }
 

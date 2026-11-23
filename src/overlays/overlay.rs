@@ -507,6 +507,19 @@ impl Overlay {
         // Failed publication retains earlier writes; finalize their ownership before returning.
         directory_metadata.finish(publication).await?;
         drop(ownership);
+        // Participant plans leave shared partials and restrictive directory metadata unfinished.
+        // Report only after both operation-wide phases succeed, in dependency-first order.
+        for (overlay, target) in &applied {
+            ui::info(format!(
+                "{} {} {} {} {}",
+                emojis::checkmark(),
+                style::heading("Applied overlay"),
+                style::overlay(&overlay.name),
+                style::white_b("to"),
+                style::path(short_path(&target.to_string_lossy())),
+            ))
+            .ok();
+        }
         if ctx.dry_run || !hooks_enabled || crate::hooks::nested() {
             return Ok(());
         }
@@ -685,16 +698,6 @@ impl Overlay {
                 )
             })?;
         }
-
-        ui::info(format!(
-            "{} {} {} {} {}",
-            emojis::checkmark(),
-            style::heading("Applied overlay"),
-            style::overlay(&self.name),
-            style::white_b("to"),
-            style::path(&display_target),
-        ))
-        .ok();
 
         Ok(())
     }

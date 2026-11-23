@@ -17,12 +17,14 @@ pub fn transform(repo: &git2::Repository, input: &[u8]) -> Result<Zeroizing<Vec<
         // Git also converts unlocked working files and historical plaintext blobs.
         return Ok(Zeroizing::new(input.to_vec()));
     }
-    let _guard = access::guard(repo, false)?;
     let domain = format::file_domain(input)?;
     // Checkout can visit protected blobs before their access metadata is present.
     if access::local_key_missing(repo)? {
         return Ok(Zeroizing::new(input.to_vec()));
     }
+    // Opaque locked output needs no administrative storage; only decryption
+    // requires synchronization with key lifecycle operations.
+    let _guard = access::inspection_guard(repo)?;
     // Explicit display decrypts the native store too, but never bypasses authentication.
     access::local_key(repo)?.decrypt(input, domain)
 }
@@ -77,5 +79,6 @@ mod tests {
             transform(&repo, &ciphertext).unwrap().as_slice(),
             ciphertext
         );
+        assert!(!access::private_dir(&repo).exists());
     }
 }

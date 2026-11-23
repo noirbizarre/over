@@ -560,3 +560,69 @@ fn virtual_checkouts_share_target_access_across_apply_inspection_sync_and_unappl
     assert!(!fixture.target.join("file").exists());
     assert!(!fixture.target.join("local").exists());
 }
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn privileged_checkout_diffs_enumerate_projected_and_legacy_targets_without_mutation(
+    #[case] legacy: bool,
+) {
+    let fixture = Fixture::new();
+    fixture.config(json!({"sudo": true, "mode": "checkout"}));
+    fs::write(fixture.source.join("overlay/file"), "original\n").unwrap();
+    fixture.commit();
+    fixture
+        .command("apply")
+        .arg("--no-prompt")
+        .assert()
+        .success();
+    let state_path = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    if legacy {
+        // Pre-projection deployments own additions throughout their exclusive target tree.
+        let mut state: toml::Value =
+            toml::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
+        state["version"] = 2.into();
+        let records = state["state"]["checkouts"].as_table_mut().unwrap();
+        let key = records.keys().next().unwrap().clone();
+        let mut record = records.remove(&key).unwrap();
+        record["scope"].as_table_mut().unwrap().remove("projection");
+        records.insert(
+            fixture
+                .target
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            record,
+        );
+        fs::write(&state_path, toml::to_string(&state).unwrap()).unwrap();
+    }
+    fs::write(fixture.target.join("file"), "local edit\n").unwrap();
+    fs::create_dir(fixture.target.join("untracked")).unwrap();
+    fs::write(fixture.target.join("untracked/added"), "target addition\n").unwrap();
+    let state = fs::read(&state_path).unwrap();
+    let index = fs::read(fixture.source.join(".git/index")).unwrap();
+    fs::write(&fixture.trace, "").unwrap();
+    let output = fixture
+        .command("diff")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("+local edit"), "{output}");
+    assert_eq!(output.contains("+target addition"), legacy, "{output}");
+    assert_eq!(fixture.starts(), 1);
+    assert!(
+        fs::read_to_string(&fixture.trace)
+            .unwrap()
+            .contains("read-only")
+    );
+    assert_eq!(fs::read(&state_path).unwrap(), state);
+    assert_eq!(fs::read(fixture.source.join(".git/index")).unwrap(), index);
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("file")).unwrap(),
+        "local edit\n"
+    );
+}

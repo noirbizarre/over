@@ -33,6 +33,10 @@ pub(crate) fn canonical_source_entry(
     // Only targets contain materializer-written raw blobs. A real worktree must
     // always be cleaned, or a non-idempotent filter can hide native Git edits.
     let scratch = crate::actions::git::diff::Scratch::new(repo)?;
+    // Validate and lock before a native clean-filter subprocess can touch crypt state.
+    let _guard = crate::crypt::policy::protected(repo, path)?
+        .then(|| crate::crypt::access::inspection_guard(repo))
+        .transpose()?;
     // A newly protected historical plaintext blob is still an unchanged source
     // baseline. This comparison-only exception must never be used to stage targets.
     let legacy_baseline = if crate::crypt::policy::protected(repo, path)? {
@@ -83,6 +87,10 @@ pub(crate) fn canonical_entry(
 ) -> Result<(git2::Oid, i32)> {
     let raw = git2::Oid::hash_object(git2::ObjectType::Blob, content)?;
     let protected = crate::crypt::policy::protected(repo, logical)?;
+    // Hold the existing sentinel across filtering as well as authentication.
+    let _guard = protected
+        .then(|| crate::crypt::access::inspection_guard(repo))
+        .transpose()?;
     let oid = if (!protected || crate::crypt::format::inspect(content).is_ok())
         && expected.iter().flatten().any(|entry| entry.0 == raw)
     {
@@ -91,7 +99,6 @@ pub(crate) fn canonical_entry(
         scratch.target_blob(repo, logical, content)?
     };
     if protected {
-        let _guard = crate::crypt::access::guard(repo, false)?;
         // A successful configured filter is not proof that its output is ciphertext.
         let blob = scratch.repo.find_blob(oid)?;
         crate::crypt::context::decrypt(

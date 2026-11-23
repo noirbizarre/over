@@ -25,8 +25,7 @@ Options:
 
 | Section | Source | What it covers |
 |---|---|---|
-| Environment | doctor | Git on `PATH` and XDG state directory writability. |
-| Encryption security | repository encryption | Effective attributes, required local filters, raw index/HEAD blobs, and bounded historical exposure. |
+| Environment | doctor and repository encryption | Git on `PATH`, XDG state directory writability, and encryption-security diagnostics: effective attributes, required local filters, raw index/HEAD blobs, and bounded historical exposure. |
 | Overlay health | lint and status | Per-overlay warning/error summaries. |
 | XDG state | doctor | Stale or corrupt sync/virtual-checkout bookkeeping. |
 

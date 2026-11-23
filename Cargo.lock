@@ -2170,6 +2170,7 @@ dependencies = [
  "same-file",
  "schemars",
  "serde",
+ "serde_ignored",
  "serde_json",
  "similar",
  "symlink",

@@ -9,6 +9,9 @@ use crate::overlays::ignore::SourcePolicy;
 /// Source routing holes and optional positive destination-leaf ownership.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct CheckoutScope {
+    /// Reconciliation finalizes directories after all participants have published children.
+    #[serde(skip)]
+    pub defer_directory_metadata: bool,
     #[serde(skip)]
     pub access: Box<crate::target_fs::Access>,
     /// Desired leaves are runtime inputs, not a second snapshot store in XDG.

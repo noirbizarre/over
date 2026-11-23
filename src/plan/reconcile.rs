@@ -484,13 +484,8 @@ impl Plan {
                         repairs = snapshot_metadata(&step.entry)?;
                     }
                     if step.entry.intent.is_virtual_checkout() {
-                        tokio::task::spawn_blocking(move || -> Result<()> {
-                            for (guard, permissions) in repairs.into_iter().rev() {
-                                guard.apply(&permissions)?;
-                            }
-                            Ok(())
-                        })
-                        .await??;
+                        // A metadata-only checkout can share parents with later participants too.
+                        directory_metadata.extend(repairs);
                         continue;
                     }
                     if matches!(step.entry.intent, MaterializationIntent::Directory) {
@@ -514,13 +509,82 @@ impl Plan {
                     step.entry.target.display()
                 )
             })?;
-            materializer
-                .materialize(ctx.clone(), step)
+            let mut publication_step = step.clone();
+            if publication_step.entry.intent.is_virtual_checkout() {
+                let mut scope = publication_step.entry.intent.checkout_scope();
+                scope.defer_directory_metadata = true;
+                publication_step.entry.intent = MaterializationIntent::ScopedVirtualCheckout(scope);
+            }
+            let checkout_metadata = if !ctx.dry_run && step.entry.intent.is_virtual_checkout() {
+                use crate::materialize::virtual_checkout::{metadata, state};
+                let established = match state::record_for_entry(&step.entry)? {
+                    Some(record) => {
+                        state::verify(&step.entry, &record)?;
+                        !record.initializing
+                    }
+                    None => false,
+                };
+                let mut directories = Vec::new();
+                for (path, access) in metadata::assignments(&step.entry)? {
+                    if !access.has_metadata() {
+                        continue;
+                    }
+                    let existed = match access.fs.metadata(&path, false) {
+                        Ok(node) => node.is_dir(),
+                        // Structural conflicts can hide descendants until authorized replacement.
+                        Err(error)
+                            if crate::target_fs::is_not_found(&error)
+                                || error.downcast_ref::<std::io::Error>().is_some_and(
+                                    |error| error.kind() == std::io::ErrorKind::NotADirectory,
+                                ) =>
+                        {
+                            false
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    directories.push((path, access, existed));
+                }
+                Some((established, directories))
+            } else {
+                None
+            };
+            let publication = materializer
+                .materialize(ctx.clone(), &publication_step)
                 .await
-                .with_context(|| {
-                    format!("failed to reconcile '{}'", step.entry.target.display())
-                })?;
+                .with_context(|| format!("failed to reconcile '{}'", step.entry.target.display()));
+            if let Some((established, directories)) = checkout_metadata {
+                // Even a failed publication may have created parents. Capture them before
+                // returning the error so operation-wide failure finalization still protects them.
+                let capture = (|| -> Result<()> {
+                    for (path, access, existed) in directories {
+                        // Refusing an unassociated conflict grants no metadata authority over
+                        // its existing containers, even when they match desired directory paths.
+                        if publication.is_err() && !established && existed {
+                            continue;
+                        }
+                        match access.fs.metadata(&path, false) {
+                            Ok(node) if node.is_dir() => directory_metadata.push((
+                                crate::target_fs::MetadataGuard::capture(&access.fs, &path)?,
+                                access.permissions,
+                            )),
+                            Ok(_) => {}
+                            Err(error) if crate::target_fs::is_not_found(&error) => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = capture {
+                    return match publication {
+                        Ok(()) => Err(error),
+                        Err(publication) => Err(publication
+                            .context(format!("could not capture directory metadata: {error:#}"))),
+                    };
+                }
+            }
+            publication?;
             if !ctx.dry_run
+                && !step.entry.intent.is_virtual_checkout()
                 && step.entry.access.has_metadata()
                 && matches!(
                     materializer.classify(&step.entry)?,
@@ -839,6 +903,68 @@ mod tests {
         fs::rename(&path, temp.path().join("old")).unwrap();
         fs::create_dir(&path).unwrap();
         assert!(metadata.finalize().await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn checkout_finalization_rejects_stale_children_before_restricting_parents() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = TempDir::new().unwrap();
+        // Nextest isolates this process; checkout persistence must not touch the user's XDG state.
+        unsafe {
+            std::env::set_var("XDG_STATE_HOME", temp.path().join("state"));
+        }
+        let source = temp.path().join("source");
+        fs::create_dir_all(source.join("nested/deeper")).unwrap();
+        fs::write(source.join("nested/deeper/file"), "owned").unwrap();
+        let repo = git2::Repository::init(&source).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("Fixture", "fixture@example.invalid").unwrap();
+        repo.commit(Some("HEAD"), &signature, &signature, "fixture", &tree, &[])
+            .unwrap();
+        let target = temp.path().join("target");
+        let mut access = crate::target_fs::Access::default();
+        access.permissions.mode = Some(crate::overlays::FileMode::from_bits(0o500));
+        let desired = DesiredTree::from_entries(vec![DesiredEntry {
+            target: target.clone(),
+            access,
+            provenance: Provenance::Overlay {
+                overlay: "ov".into(),
+                source,
+            },
+            intent: MaterializationIntent::VirtualCheckout,
+            permissions: None,
+        }]);
+        let mut metadata = DirectoryMetadata::default();
+        Plan::build(&desired)
+            .unwrap()
+            .execute_deferred(Context::builder().build(), &mut metadata)
+            .await
+            .unwrap();
+        assert_ne!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o200,
+            0
+        );
+        fs::rename(target.join("nested/deeper"), target.join("nested/original")).unwrap();
+        fs::create_dir(target.join("nested/deeper")).unwrap();
+        assert!(metadata.finalize().await.is_err());
+        assert_ne!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o200,
+            0
+        );
+        assert_ne!(
+            fs::metadata(target.join("nested/deeper"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o200,
+            0
+        );
     }
 
     #[cfg(unix)]
