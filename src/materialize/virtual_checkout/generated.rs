@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, ensure};
-use git2::{ObjectType, Oid, Repository};
+use git2::{IndexEntryExtendedFlag, ObjectType, Oid, Repository};
 use serde::{Deserialize, Serialize};
 
 use crate::desired::content::{RenderedFile, RenderedInventory};
@@ -975,21 +975,53 @@ pub(crate) fn inspection(
     };
     let base = hashes(&analysis.base)?;
     let desired = hashes(&analysis.desired)?;
-    let local = hashes(&analysis.local)?;
+    let mut local = hashes(&analysis.local)?;
     let (_, root) = source(entry)?;
     let (repo, managed) = git::discover_source(root)?;
     let scope = entry.intent.checkout_scope();
     let staged = git::staged_changes(&repo, &managed, &scope)?;
     let mut indexed = base.clone();
     let index = repo.index()?;
-    for (path, _) in analysis
+    let generated_paths = generated_paths(entry)?;
+    let mut ordinary_paths: BTreeSet<_> = analysis
         .base
         .iter()
         .chain(analysis.desired.iter())
         .filter(|(_, file)| !file.generated)
-    {
+        .map(|(path, _)| path.clone())
+        .collect();
+    // Index additions are inspection inputs only: reconciliation must not adopt
+    // staged files as desired output or discover unrelated target siblings.
+    for item in index.iter() {
+        if let Some(path) = git::relative_index_path(&item.path, &managed)?
+            && scope.owns_source(&path)
+            && scope.owns_target(&path)
+            && !git::is_overlay_metadata(&path)
+            && !generated_paths.contains(&path)
+            && git::is_supported_mode(item.mode)
+        {
+            ordinary_paths.insert(path);
+        }
+    }
+    super::safety::SourceProtection::new(&repo)?.validate_paths(
+        &entry.target,
+        &ordinary_paths,
+        &entry.access,
+    )?;
+    for path in &ordinary_paths {
+        match self::local(entry, path)? {
+            Some(file) => {
+                local.insert(path.clone(), oid(&file)?);
+            }
+            None => {
+                local.remove(path);
+            }
+        }
         let source_path = managed.join(path);
-        if let Some(item) = index.get_path(&source_path, 0) {
+        if let Some(item) = index.get_path(&source_path, 0).filter(|item| {
+            // Intent-to-add reserves a path, but its empty blob is not staged content.
+            !IndexEntryExtendedFlag::from_bits_truncate(item.flags_extended).is_intent_to_add()
+        }) {
             let bytes = crate::crypt::policy::materialized_blob(&repo, &source_path, item.id)?;
             indexed.insert(
                 path.clone(),

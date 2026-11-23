@@ -3345,6 +3345,105 @@ fn staged_ordinary_changes_keep_a_generated_checkout_modified() {
     );
 }
 
+#[rstest]
+#[case("unchanged", Some("A app/new (staged)"), None)]
+#[case("edited", Some("A app/new (staged)"), Some("M app/new (unstaged)"))]
+#[case("deleted", Some("A app/new (staged)"), Some("D app/new (unstaged)"))]
+#[case("intent", None, Some("A app/new (unstaged)"))]
+fn index_only_ordinary_paths_are_inspected_without_adopting_untracked_siblings(
+    #[case] change: &str,
+    #[case] staged: Option<&str>,
+    #[case] unstaged: Option<&str>,
+) {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    fs::write(fixture.target.join("new"), "new staged content\n").unwrap();
+    fixture.stage("new");
+    if change == "intent" {
+        // Keep the admitted ownership while replacing staged content with a reservation.
+        fixture.git(&["reset", "-N", "HEAD", "--", "app/new"]);
+    }
+    match change {
+        "edited" => fs::write(fixture.target.join("new"), "later edit\n").unwrap(),
+        "deleted" => fs::remove_file(fixture.target.join("new")).unwrap(),
+        _ => {}
+    }
+    fs::write(fixture.target.join("unrelated"), "host data\n").unwrap();
+    let repo = fixture.repo();
+    let head = repo.head().unwrap().target();
+    let index = fs::read(repo.path().join("index")).unwrap();
+    let snapshot = fixture.snapshot();
+    let state = fs::read(fixture.temp.path().join("state/over/virtual_checkout.toml")).unwrap();
+    let status = fixture
+        .command("status")
+        .args(["app", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status = String::from_utf8(status).unwrap();
+    if let Some(staged) = staged {
+        assert!(status.contains(staged), "{status}");
+    }
+    if let Some(unstaged) = unstaged {
+        assert!(status.contains(unstaged), "{status}");
+    } else {
+        assert!(!status.contains("new (unstaged)"), "{status}");
+    }
+    if change == "intent" {
+        assert!(!status.contains("new (staged)"), "{status}");
+    }
+    assert!(!status.contains("unrelated"), "{status}");
+    let diff = fixture
+        .command("diff")
+        .args(["app", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let diff = String::from_utf8(diff).unwrap();
+    assert_eq!(diff.contains("diff --git"), unstaged.is_some(), "{diff}");
+    assert!(!diff.contains("unrelated"), "{diff}");
+    // The unstaged guard must win over the sync-time commit consent path.
+    fixture
+        .sync()
+        .arg("--push-only")
+        .assert()
+        .failure()
+        .stdout(contains(if unstaged.is_some() {
+            "unstaged edits are preserved"
+        } else {
+            "no-prompt disables the sync-time"
+        }));
+    assert_eq!(repo.head().unwrap().target(), head);
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+    assert_eq!(fixture.snapshot(), snapshot);
+    assert_eq!(
+        fs::read(fixture.temp.path().join("state/over/virtual_checkout.toml")).unwrap(),
+        state
+    );
+    assert_eq!(
+        fs::read(fixture.target.join("unrelated")).unwrap(),
+        b"host data\n"
+    );
+    if change == "deleted" {
+        assert!(!fixture.target.join("new").exists());
+    } else {
+        assert_eq!(
+            fs::read(fixture.target.join("new")).unwrap(),
+            if change == "edited" {
+                b"later edit\n".as_slice()
+            } else {
+                b"new staged content\n".as_slice()
+            }
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn restoring_generated_executables_preserves_snapshot_executable_bits() {
