@@ -9,6 +9,38 @@ use tempfile::TempDir;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[rstest]
+#[case::root(vec!["--help"])]
+#[case::nested(vec!["user", "key", "--help"])]
+#[case::implicit(vec![])]
+fn help_uses_foreground_colors_only_when_enabled(#[case] args: Vec<&str>) -> TestResult {
+    for colored in [false, true] {
+        let output = Command::cargo_bin("over")?
+            .env_remove("NO_COLOR")
+            .env("CLICOLOR_FORCE", if colored { "1" } else { "0" })
+            .env("CLICOLOR", "0")
+            .args(&args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let output = String::from_utf8(output)?;
+        assert_eq!(output.contains("\x1b[36m"), colored, "{output:?}");
+        if !colored {
+            assert!(!output.contains('\x1b'));
+        }
+    }
+    Command::cargo_bin("over")?
+        .env("NO_COLOR", "1")
+        .env_remove("CLICOLOR_FORCE")
+        .args(args)
+        .assert()
+        .success()
+        .stdout(contains("\x1b").not());
+    Ok(())
+}
+
 #[cfg(unix)]
 #[rstest]
 #[case::top_level(vec!["--help"])]

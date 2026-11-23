@@ -375,9 +375,9 @@ impl Theme for DialogTheme {
 
 pub fn clap_styles() -> styling::Styles {
     styling::Styles::plain()
-        .header(styling::Style::new().bold())
-        .usage(styling::Style::new().bold())
-        .literal(styling::Style::new().bold())
+        .header(styling::AnsiColor::Cyan.on_default().bold())
+        .usage(styling::AnsiColor::Cyan.on_default().bold())
+        .literal(styling::AnsiColor::Green.on_default().bold())
         .error(styling::AnsiColor::Red.on_default().bold())
 }
 
