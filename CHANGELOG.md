@@ -4,6 +4,54 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1](https://github.com/noirbizarre/over/compare/0.6.0..0.6.1) - 2026-11-23
+
+### 🐛 Bug Fixes
+
+- **cli** Improve help, key management, and history defaults ([#356](https://github.com/noirbizarre/over/issues/356)) - ([0e5df05](https://github.com/noirbizarre/over/commit/0e5df05b278234d39b83331e4b9cc324733eeb0b))
+- **cli** Restore colored help output - ([e27076b](https://github.com/noirbizarre/over/commit/e27076b1f75cbeded8ad784cdfcecbff30978d5d))
+- **crypt** Choose a user/key before interactive acquisition ([#358](https://github.com/noirbizarre/over/issues/358)) - ([8de3f97](https://github.com/noirbizarre/over/commit/8de3f97b90945cd15796a94b43a84da9fada708e))
+- **crypt** Report precise sanitized decryption failures ([#357](https://github.com/noirbizarre/over/issues/357)) - ([463556d](https://github.com/noirbizarre/over/commit/463556da0dbbecf2f620ca65ed8fa62810846310))
+- **crypt** Allow revocation with reused passphrases - ([663d941](https://github.com/noirbizarre/over/commit/663d9414c5e02f8d3f5085ea29f1280270c2a0d0))
+- **crypt** Identify failing native secret filter paths - ([a3bb626](https://github.com/noirbizarre/over/commit/a3bb6269786302f9bdc9e1a1ea1bfe261d81258f))
+- **log** Fall back to repository history for ambiguous context - ([14de04c](https://github.com/noirbizarre/over/commit/14de04cb2090611272deab3abd1a350e7d2160a3))
+- **user** Accept combined user/key references for key removal - ([b7edb03](https://github.com/noirbizarre/over/commit/b7edb0394c5d2d462ea165cd8704620c9a300fb4))
+- **user** Accept positional key names - ([6f84cc5](https://github.com/noirbizarre/over/commit/6f84cc5b509284b0a7f9703a5ac4c40aca6bd0ea))
+- Align overlay inspection, application, and documentation ([#359](https://github.com/noirbizarre/over/issues/359)) - ([29c2d5a](https://github.com/noirbizarre/over/commit/29c2d5a8849a8ad50b791aa27e05ca5460005df5))
+- Preserve locked inspection without local crypt state - ([6786771](https://github.com/noirbizarre/over/commit/6786771f69b114f99e018c59ed79d7ebdea66839))
+- Preserve unassociated directories after checkout conflicts - ([c89a7cd](https://github.com/noirbizarre/over/commit/c89a7cdf0da77d13a5c261400d89b1b5943d61e6))
+- Reject symlink replacements in ordinary generated-checkout inspection - ([04c642c](https://github.com/noirbizarre/over/commit/04c642cfebba3c76f9fb78fe3d21ed97c3e9a406))
+- Align diff with managed symlink identity - ([5836345](https://github.com/noirbizarre/over/commit/5836345298575670acec428ff91c5c24a4c89c9c))
+- Resolve managed dangling mappings consistently - ([8d1426c](https://github.com/noirbizarre/over/commit/8d1426ca9d84f8475a109b04be88e0bcf3969625))
+- Keep protected inspection read-only - ([31c6836](https://github.com/noirbizarre/over/commit/31c6836a236e2221bea6c511b89e07c14b1c7328))
+- Honor target access when enumerating diffs - ([40466f0](https://github.com/noirbizarre/over/commit/40466f0a830412a4e25733a718bd06e7de9bc231))
+- Enforce intermediate checkout directory ownership - ([1d16974](https://github.com/noirbizarre/over/commit/1d16974c38659f8e6d95f081c04acc753fb8e291))
+- Warn about unknown sidecar attributes - ([038fa09](https://github.com/noirbizarre/over/commit/038fa09019bdf4ef5bb82fa4ef01fc761574440d))
+- Preserve Git semantics for ordinary generated-checkout siblings - ([43aca58](https://github.com/noirbizarre/over/commit/43aca589dc7ac7329317bd49d0c56e5933ff1db3))
+- Report overlay completion after deferred application - ([c0ed1d3](https://github.com/noirbizarre/over/commit/c0ed1d3ecd9a1c78553a2e4e6d6e962877335756))
+- Inspect staged additions in generated checkouts - ([ed6f27b](https://github.com/noirbizarre/over/commit/ed6f27bea6121afc8cbe98a44d3cc29b691dfc8d))
+
+### 📚 Documentation
+
+- **cli** Describe user and key commands - ([e97dd28](https://github.com/noirbizarre/over/commit/e97dd28f348e634cc8d5eb13bd3696936b2b4f3e))
+- Align doctor report section descriptions - ([7d1e067](https://github.com/noirbizarre/over/commit/7d1e0670227df7ca39439f38f6b3115a6bd4f75f))
+- Clarify materializer operation dispatch - ([76936e7](https://github.com/noirbizarre/over/commit/76936e790cf2d9b344617baf60f131e67525b2d9))
+- Clarify documentation workflow triggers - ([536f514](https://github.com/noirbizarre/over/commit/536f51403906b6d47818fe4cd9854ae020077bb0))
+- Correct partial permission rationale - ([42ad136](https://github.com/noirbizarre/over/commit/42ad1363cd8d7a87963069e2303caf153e307fdb))
+- Clarify commit contextual selection - ([a17155c](https://github.com/noirbizarre/over/commit/a17155ccea058aee5e4da2cded49518b61995f34))
+- Clarify encryption metadata in commit scope - ([5b78921](https://github.com/noirbizarre/over/commit/5b7892197bf8ccde5fcc713659643e85749cf3d2))
+
+### 🧪 Tests
+
+- Normalize path assertions across platforms - ([930bfab](https://github.com/noirbizarre/over/commit/930bfab188d8e0ee8c3df7a57574fd17da84fe74))
+- Renormalize tracked files after configuring clean filters - ([4aebe45](https://github.com/noirbizarre/over/commit/4aebe45ad1570c23dd11e0cf4da018f360f73caa))
+
+### 🏗️ Build
+
+- **deps** Bump the rust-dependencies group with 4 updates ([#350](https://github.com/noirbizarre/over/issues/350)) - ([d033e0b](https://github.com/noirbizarre/over/commit/d033e0b1996eec57fbab2d0b3538b3d19da44a51))
+- **deps** Bump jsonschema from 0.52.0 to 0.61.2 ([#351](https://github.com/noirbizarre/over/issues/351)) - ([3e05e66](https://github.com/noirbizarre/over/commit/3e05e66a2eb97da3bcc7e1c87ab729879b279a7e))
+- **deps** Bump noyalib from 0.0.60 to 0.0.62 ([#352](https://github.com/noirbizarre/over/issues/352)) - ([e520199](https://github.com/noirbizarre/over/commit/e520199c37e82c19cdde6c77a0bec9786d12e301))
+
 ## [0.6.0](https://github.com/noirbizarre/over/compare/0.5.1..0.6.0) - 2026-11-20
 
 ### 💫 Features
