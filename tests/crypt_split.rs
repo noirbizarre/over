@@ -119,6 +119,45 @@ impl Fixture {
             .unwrap()
     }
 
+    #[cfg(unix)]
+    fn terminal(&self, root: &Path, args: &[&str], steps: &[(&str, &str)]) -> Output {
+        let output = self
+            .command(Path::new("python3"))
+            .env("OVER_TEST_PTY_SPLIT_STDOUT", "1")
+            .args(["-c", include_str!("fixtures/age-pty.py")])
+            .arg(serde_json::to_string(steps).unwrap())
+            .arg(cargo_bin("over"))
+            .arg("--home")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            !matches!(output.status.code(), Some(124 | 125)),
+            "PTY failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    }
+
+    #[cfg(unix)]
+    fn passphrase(&self, user: &str, name: &str, password: &str, new_user: bool) {
+        let args = if new_user {
+            vec!["user", "add", user, name, "--passphrase"]
+        } else {
+            vec!["user", "key", "add", user, name, "--passphrase"]
+        };
+        let answer = format!("{password}\n");
+        success(self.terminal(
+            &self.root,
+            &args,
+            &[
+                ("New Age key passphrase", &answer),
+                ("Confirm new Age key passphrase", &answer),
+            ],
+        ));
+    }
+
     fn commit_raw_blob(&self, path: &str, bytes: &[u8]) {
         let repo = git2::Repository::open(&self.root).unwrap();
         let mut index = repo.index().unwrap();
@@ -239,9 +278,51 @@ fn bare_reads_use_the_selected_head_without_creating_any_artifacts(#[case] detac
     success(fixture.secret("token", b"different working repository", true));
     let identity = fixture.temp.path().join("alice.age");
     let before = inventory(fixture.temp.path());
+    let listing = |args: &[&str]| {
+        fixture
+            .command(&cargo_bin("over"))
+            .arg("--home")
+            .arg(&bare)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert_eq!(success(listing(&["user", "list"])).stdout, b"alice\n");
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&success(listing(&["user", "list", "--json"])).stdout).unwrap();
+    assert_eq!(metadata["users"][0]["name"], "alice");
+    assert_eq!(metadata["users"][0]["keys"][0]["name"], "default");
+    assert_eq!(metadata["users"][0]["keys"][0]["kind"], "recipient");
+    assert_eq!(
+        metadata["users"][0]["keys"][0].as_object().unwrap().len(),
+        3
+    );
+    for args in [
+        vec!["user", "show", "alice", "--json"],
+        vec!["user", "key", "list", "alice", "--json"],
+    ] {
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&success(listing(&args)).stdout).unwrap(),
+            metadata
+        );
+    }
+    let unknown = listing(&["user", "show", "missing", "--json"]);
+    assert!(!unknown.status.success());
+    assert!(unknown.stdout.is_empty());
     for _ in 0..2 {
         assert_eq!(
-            success(fixture.bare_read(&bare, "token", &identity)).stdout,
+            success(listing(&[
+                "secret",
+                "get",
+                "token",
+                "--identity",
+                identity.to_str().unwrap(),
+                "--user",
+                metadata["users"][0]["name"].as_str().unwrap(),
+                "--key",
+                metadata["users"][0]["keys"][0]["name"].as_str().unwrap(),
+            ]))
+            .stdout,
             value
         );
     }
@@ -254,6 +335,58 @@ fn bare_reads_use_the_selected_head_without_creating_any_artifacts(#[case] detac
         .unwrap();
     assert_eq!(success(output).stdout, value);
     assert!(repo.workdir().is_none());
+    assert_inventory_unchanged(fixture.temp.path(), &before);
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn public_json_filters_users_and_preserves_users_without_keys(#[case] bare: bool) {
+    let fixture = Fixture::new();
+    fixture.enroll("bob");
+    success(fixture.over(&["user", "key", "detach", "bob", "default", "--yes"]));
+    let root = if bare {
+        fixture.bare_clone()
+    } else {
+        fixture.root.clone()
+    };
+    let before = inventory(fixture.temp.path());
+    let listing = |args: &[&str]| {
+        let output = success(
+            fixture
+                .command(&cargo_bin("over"))
+                .arg("--home")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap(),
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+    let all = listing(&["user", "list", "--json"]);
+    let alice = &all["users"][0];
+    assert!(
+        alice["keys"][0]["recipient"]
+            .as_str()
+            .unwrap()
+            .starts_with("age1")
+    );
+    assert_eq!(
+        all,
+        serde_json::json!({"users": [
+            {"name": "alice", "keys": [{"name": "default", "kind": "recipient", "recipient": alice["keys"][0]["recipient"]}]},
+            {"name": "bob", "keys": []},
+        ]})
+    );
+    for args in [
+        vec!["user", "show", "bob", "--json"],
+        vec!["user", "key", "list", "bob", "--json"],
+    ] {
+        assert_eq!(
+            listing(&args),
+            serde_json::json!({"users": [{"name": "bob", "keys": []}]})
+        );
+    }
     assert_inventory_unchanged(fixture.temp.path(), &before);
 }
 
@@ -355,6 +488,126 @@ fn incomplete_bare_snapshots_never_fall_back_to_filesystem_secrets(#[case] failu
     }
     assert!(!error.contains("requires a working tree"), "{error}");
     assert!(!error.contains("decrypt"), "{error}");
+    if failure != "no-store" {
+        let listing = fixture
+            .command(&cargo_bin("over"))
+            .arg("--home")
+            .arg(&bare)
+            .args(["user", "list", "--json"])
+            .output()
+            .unwrap();
+        assert!(!listing.status.success());
+        assert!(listing.stdout.is_empty());
+    }
+    assert_inventory_unchanged(fixture.temp.path(), &before);
+}
+
+#[cfg(unix)]
+#[rstest::rstest]
+#[case(&[], "\x1b[B\x1b[B\n", true, "bob/recovery")]
+#[case(&["--user", "alice"], "\x1b[B\n", true, "alice/recovery")]
+#[case(&["--key", "recovery"], "\x1b[B\n", true, "bob/recovery")]
+#[case(&["--user", "bob"], "", false, "bob/recovery")]
+#[case(&["--user", "alice", "--key", "recovery"], "", false, "alice/recovery")]
+#[case(&["--key", "default"], "", false, "alice/default")]
+fn interactive_filters_choose_only_the_intended_bare_key(
+    #[case] selectors: &[&str],
+    #[case] choice: &str,
+    #[case] menu: bool,
+    #[case] selected: &str,
+) {
+    let fixture = Fixture::new();
+    fixture.passphrase("alice", "recovery", "alice-password", false);
+    fixture.passphrase("bob", "recovery", "bob-password", true);
+    success(fixture.secret("token", b"binary\0\xff\n\n", false));
+    let bare = fixture.bare_clone();
+    let mut steps = Vec::new();
+    if menu {
+        // Wait for the last visible row so navigation cannot race menu rendering.
+        let last = if selectors == ["--user", "alice"] {
+            "alice/recovery (Age passphrase)"
+        } else {
+            "bob/recovery (Age passphrase)"
+        };
+        steps.push((last, choice));
+    }
+    let identity_answer = format!("{}\n", fixture.temp.path().join("alice.age").display());
+    if selected == "alice/default" {
+        steps.push(("Age identity file", identity_answer.as_str()));
+    } else {
+        steps.push((
+            "Age key passphrase: ",
+            if selected.starts_with("bob/") {
+                "bob-password\n"
+            } else {
+                "alice-password\n"
+            },
+        ));
+    }
+    let mut args = vec!["secret", "get", "token"];
+    args.extend_from_slice(selectors);
+    let before = inventory(fixture.temp.path());
+    let public = success(
+        fixture
+            .command(&cargo_bin("over"))
+            .arg("--home")
+            .arg(&bare)
+            .args(["user", "key", "list", "bob", "--json"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&public.stdout).unwrap(),
+        serde_json::json!({"users": [{"name": "bob", "keys": [{"name": "recovery", "kind": "passphrase", "recipient": null}]}]})
+    );
+    let output = success(fixture.terminal(&bare, &args, &steps));
+    assert_eq!(output.stdout, b"binary\0\xff\n\n");
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(diagnostics.contains("Choose a repository key"), menu);
+    if selected != "alice/default" {
+        assert!(!diagnostics.contains("Age identity file"));
+    }
+    assert_inventory_unchanged(fixture.temp.path(), &before);
+}
+
+#[cfg(unix)]
+#[rstest::rstest]
+#[case("menu-cancel")]
+#[case("credential-cancel")]
+#[case("wrong-password")]
+#[case("no-match")]
+fn failed_interactive_selection_never_tries_another_bare_key(#[case] failure: &str) {
+    let fixture = Fixture::empty();
+    fixture.passphrase("alice", "recovery", "alice-password", true);
+    fixture.passphrase("bob", "recovery", "bob-password", true);
+    success(fixture.secret("token", b"never-print-this", false));
+    let bare = fixture.bare_clone();
+    let mut args = vec!["secret", "get", "token"];
+    let steps = match failure {
+        "no-match" => {
+            args.extend(["--user", "missing"]);
+            vec![]
+        }
+        "menu-cancel" => vec![("bob/recovery (Age passphrase)", "q")],
+        _ => vec![
+            ("bob/recovery (Age passphrase)", "\n"),
+            (
+                "Age key passphrase: ",
+                if failure == "credential-cancel" {
+                    "\x03"
+                } else {
+                    "bob-password\n"
+                },
+            ),
+        ],
+    };
+    let before = inventory(fixture.temp.path());
+    let output = fixture.terminal(&bare, &args, &steps);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(!diagnostics.contains("Trying passphrase key bob/recovery"));
+    assert!(!diagnostics.contains("never-print-this"));
     assert_inventory_unchanged(fixture.temp.path(), &before);
 }
 

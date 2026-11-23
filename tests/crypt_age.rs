@@ -1117,6 +1117,49 @@ fn a_passphrase_key_remains_usable_after_a_missing_or_failed_plugin(#[case] miss
 }
 
 #[rstest]
+#[case(false)]
+#[case(true)]
+fn interactive_unlock_scopes_device_interaction_to_the_chosen_key(#[case] device: bool) {
+    let fixture = Fixture::new();
+    fixture.enroll();
+    success(fixture.terminal(
+        &["user", "key", "add", "alice", "recovery", "--passphrase"],
+        &[
+            ("New Age key passphrase", "recovery-sentinel\n"),
+            ("Confirm new Age key passphrase", "recovery-sentinel\n"),
+        ],
+        "success",
+    ));
+    let repo = git2::Repository::open(&fixture.repo).unwrap();
+    access::remember_identity(&repo, RECIPIENT, &fixture.identity).unwrap();
+    fixture.run(&["lock"]);
+    let log = fs::read(&fixture.log).unwrap();
+    let steps = if device {
+        vec![
+            ("alice/recovery (Age passphrase)", "\n"),
+            ("Device PIN", "recovery-sentinel\n"),
+        ]
+    } else {
+        vec![
+            ("alice/recovery (Age passphrase)", "\x1b[B\n"),
+            ("Age key passphrase: ", "recovery-sentinel\n"),
+        ]
+    };
+    let output = fixture.terminal_output(&["unlock"], &steps, "pin", true);
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(!diagnostics.contains("Age identity file"));
+    if device {
+        assert!(!output.status.success());
+        assert!(!diagnostics.contains("Trying passphrase key alice/recovery"));
+        assert!(!fixture.repo.join(".git/over-crypt/key").exists());
+    } else {
+        success(output);
+        assert_eq!(fs::read(&fixture.log).unwrap(), log);
+        assert!(fixture.repo.join(".git/over-crypt/key").exists());
+    }
+}
+
+#[rstest]
 #[case(true, false)]
 #[case(true, true)]
 #[case(false, false)]

@@ -537,6 +537,52 @@ fn forced_unlock_starts_credential_acquisition_without_confirmation_before_check
 }
 
 #[cfg(target_os = "linux")]
+#[rstest::rstest]
+#[case(true)]
+#[case(false)]
+fn initialization_selects_one_key_before_checkout_and_never_falls_back(#[case] valid: bool) {
+    let fixture = Fixture::new(true, valid);
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    over::crypt::access::add_key(
+        &repo,
+        "bob",
+        "recovery",
+        None,
+        Some("independent-backup-password".into()),
+        true,
+    )
+    .unwrap();
+    // The API configures filters for this test executable; restore real CLI drivers before staging.
+    checked(run(fixture.over(&fixture.source).arg("unlock")));
+    fixture.git(&fixture.source, &["add", "."]);
+    fixture.git(
+        &fixture.source,
+        &["commit", "-qm", "add second access method"],
+    );
+    let answer = if valid {
+        format!("{PASSPHRASE}\n")
+    } else {
+        "incorrect-password-sentinel\n".to_owned()
+    };
+    let output = checked(fixture.interact(
+        fixture.init().arg("--unlock"),
+        &[
+            ("bob/recovery (Age passphrase)", "\n"),
+            ("passphrase: ", &answer),
+        ],
+    ));
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("Trying passphrase key bob/recovery")
+    );
+    if valid {
+        fixture.assert_hooks(&["post-clone", "post-init"]);
+        fixture.assert_persistent_unlock();
+    } else {
+        fixture.assert_locked();
+    }
+}
+
+#[cfg(target_os = "linux")]
 #[test]
 fn no_unlock_suppresses_confirmation_and_credentials_even_with_a_terminal() {
     let fixture = Fixture::new(true, true);
