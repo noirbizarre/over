@@ -1450,6 +1450,7 @@ fn checkout_intent(routing: &ResolvedMappings, logical: &Path) -> Materializatio
         MaterializationIntent::VirtualCheckout
     } else {
         MaterializationIntent::ScopedVirtualCheckout(super::CheckoutScope {
+            defer_directory_metadata: false,
             access: Default::default(),
             rendered: None,
             source_excludes,
