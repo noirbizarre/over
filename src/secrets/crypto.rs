@@ -124,14 +124,12 @@ impl CryptoService {
     pub fn decrypt(&self, ciphertext: &[u8], prompt: bool) -> Result<SecretBytes> {
         // Reject malformed input before requesting a credential it cannot use.
         let decryptor = age::Decryptor::new(age::armor::ArmoredReader::new(ciphertext))
-            .map_err(|_| anyhow!("invalid Age ciphertext"))?;
+            .map_err(|error| crate::crypt::age::decrypt_error(&error, None))?;
         let credential = self.credential(prompt)?.ok_or_else(locked)?;
         let identity = age::scrypt::Identity::new(credential);
         let mut reader = decryptor
             .decrypt(std::iter::once(&identity as &dyn age::Identity))
-            .map_err(|_| {
-                anyhow!("could not decrypt Age data; check OVER_SECRET or the passphrase")
-            })?;
+            .map_err(|error| crate::crypt::age::decrypt_error(&error, None))?;
         let mut plaintext = SecretBytes::new(Vec::new());
         // Authenticate EOF before exposing any bytes to a destination.
         reader

@@ -3285,8 +3285,12 @@ mod tests {
         assert!(access::local_key(&repo).is_ok());
     }
 
-    #[test]
-    fn unavailable_retained_passphrases_abort_rotation_without_changing_metadata() {
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn unavailable_retained_passphrases_abort_rotation_without_changing_metadata(
+        #[case] excessive_work: bool,
+    ) {
         let temporary = tempfile::tempdir().unwrap();
         let repo = git2::Repository::init(temporary.path()).unwrap();
         access::add_key(
@@ -3298,12 +3302,44 @@ mod tests {
             true,
         )
         .unwrap();
+        if excessive_work {
+            let mut registry = access::load(&repo).unwrap();
+            let envelope = &mut registry
+                .users
+                .get_mut("owner")
+                .unwrap()
+                .get_mut("password")
+                .unwrap()
+                .envelope;
+            let start = envelope.iter().position(|byte| *byte == b'\n').unwrap() + 1;
+            let end = start
+                + envelope[start..]
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .unwrap();
+            let stanza = std::str::from_utf8(&envelope[start..end]).unwrap();
+            // Reject synthetic cost before doing any work or checking the damaged header MAC.
+            let stanza = format!("{} 255", stanza.rsplit_once(' ').unwrap().0);
+            envelope.splice(start..end, stanza.bytes());
+            access::save(&repo, &registry).unwrap();
+        }
         let before = fs::read(access::metadata_path(&repo).unwrap()).unwrap();
-        assert!(rotate(&repo, None, |_| Ok("wrong credential".into())).is_err());
+        let key = access::local_key(&repo).unwrap().encode();
+        let error = rotate(&repo, None, |_| Ok("wrong credential".into())).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(if excessive_work {
+                "password verification was not attempted"
+            } else {
+                "incorrect credential or damaged ciphertext"
+            }),
+            "{message}"
+        );
         assert_eq!(
             fs::read(access::metadata_path(&repo).unwrap()).unwrap(),
             before
         );
+        assert!(access::local_key(&repo).unwrap().encode() == key);
         assert!(!access::private_dir(&repo).join("transaction.json").exists());
     }
 

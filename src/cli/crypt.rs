@@ -331,20 +331,16 @@ fn passphrase_with_confirmation(
     label: &str,
     confirmation: Option<&str>,
 ) -> Result<age::secrecy::SecretString> {
-    ensure!(
-        can_prompt(),
-        "unlock requires a terminal credential prompt; use --identity for noninteractive access"
-    );
-    let _pause = crate::ui::progress::pause()?;
+    if !can_prompt() {
+        return Err(crate::crypt::age::InteractionError::Unavailable.into());
+    }
+    let _pause =
+        crate::ui::progress::pause().map_err(|_| crate::crypt::age::InteractionError::Failed)?;
     let mut prompt = dialoguer::Password::new().with_prompt(label);
     if let Some(confirmation) = confirmation {
         prompt = prompt.with_confirmation(confirmation, "Passphrases do not match");
     }
-    let entered = zeroize::Zeroizing::new(
-        prompt
-            .interact()
-            .map_err(|_| anyhow::anyhow!("secure credential input unavailable"))?,
-    );
+    let entered = zeroize::Zeroizing::new(prompt.interact().map_err(crate::ui::age::prompt_error)?);
     // Avoid shrinking/freeing an ordinary owned String while it still contains the credential.
     Ok(age::secrecy::SecretString::new(entered.as_str().into()))
 }
