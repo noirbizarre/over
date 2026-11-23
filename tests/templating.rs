@@ -402,7 +402,7 @@ fn checkout_sync_preserves_native_metadata_without_editing_other_hard_links(
 }
 
 impl Fixture {
-    fn git(&self, arguments: &[&str]) {
+    fn git(&self, arguments: &[&str]) -> std::process::Output {
         let output = std::process::Command::new("git")
             .current_dir(&self.source)
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -415,6 +415,7 @@ impl Fixture {
             "{arguments:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        output
     }
 
     fn protect(&self) {
@@ -554,6 +555,48 @@ impl Fixture {
             .arg(self.target.join(name))
             .assert()
             .success();
+    }
+
+    fn assert_ordinary_inspection(&self, expected_diff: &[u8]) {
+        let index = fs::read(self.repo().path().join("index")).unwrap();
+        let state_path = self.temp.path().join("state/over/virtual_checkout.toml");
+        let state = fs::read(&state_path).unwrap();
+        let target = fs::read(self.target.join("plain")).unwrap();
+        let status = self
+            .command("status")
+            .args(["app", "--short", "--target"])
+            .arg(&self.target)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        assert_eq!(
+            status.is_empty(),
+            expected_diff.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&status)
+        );
+        if !status.is_empty() {
+            assert!(String::from_utf8_lossy(&status).starts_with(" M\t"));
+            assert!(String::from_utf8_lossy(&status).contains("app/plain"));
+        }
+        let diff = self
+            .command("diff")
+            .args(["app", "--target"])
+            .arg(&self.target)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        assert_eq!(
+            String::from_utf8_lossy(&diff),
+            String::from_utf8_lossy(expected_diff)
+        );
+        assert_eq!(fs::read(self.repo().path().join("index")).unwrap(), index);
+        assert_eq!(fs::read(state_path).unwrap(), state);
+        assert_eq!(fs::read(self.target.join("plain")).unwrap(), target);
     }
 
     fn restore(&self, name: &str, options: &[&str]) {
@@ -3442,6 +3485,170 @@ fn index_only_ordinary_paths_are_inspected_without_adopting_untracked_siblings(
             }
         );
     }
+}
+
+#[cfg(unix)]
+#[rstest]
+#[case("mode", false)]
+#[case("mode", true)]
+#[case("lf", true)]
+#[case("crlf", true)]
+#[case("edited_lf", true)]
+#[case("edited_crlf", true)]
+fn ordinary_siblings_retain_git_content_and_filemode_semantics(
+    #[values(false, true)] generated: bool,
+    #[values(false, true)] protected: bool,
+    #[case] change: &str,
+    #[case] filemode: bool,
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new(true);
+    if !generated {
+        fs::write(fixture.source.join("app/over.yaml"), "mode: checkout\n").unwrap();
+    }
+    fs::write(
+        fixture.source.join(".gitattributes"),
+        "app/plain text eol=lf\n",
+    )
+    .unwrap();
+    fixture.git(&["config", "core.autocrlf", "false"]);
+    if protected {
+        fixture.protect();
+    } else {
+        fixture.git(&["add", "--all"]);
+        fixture.git(&["commit", "-qm", "configure ordinary sibling"]);
+    }
+    fixture.git(&[
+        "config",
+        "core.filemode",
+        if filemode { "true" } else { "false" },
+    ]);
+    fixture.apply();
+    let source = fixture.source.join("app/plain");
+    let target = fixture.target.join("plain");
+    let original = fs::read(&source).unwrap();
+    let permissions = fs::metadata(&source).unwrap().permissions();
+    let mut bytes = if change.starts_with("edited") {
+        b"genuine ordinary edit\n".to_vec()
+    } else {
+        original.clone()
+    };
+    if change.ends_with("crlf") {
+        bytes = String::from_utf8(bytes)
+            .unwrap()
+            .replace('\n', "\r\n")
+            .into_bytes();
+    }
+    fs::write(&target, &bytes).unwrap();
+    if change == "mode" {
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    // Ask native Git about the same worktree input, then restore the independent
+    // source so inspection cannot mistake source edits for target changes.
+    fs::write(&source, &bytes).unwrap();
+    fs::set_permissions(&source, fs::metadata(&target).unwrap().permissions()).unwrap();
+    let expected = fixture.git(&["diff", "--", "app/plain"]).stdout;
+    fs::write(&source, original).unwrap();
+    fs::set_permissions(&source, permissions).unwrap();
+    fixture.assert_ordinary_inspection(&expected);
+}
+
+#[cfg(unix)]
+#[rstest]
+fn ordinary_siblings_clean_non_idempotent_filters_once_without_recleaning_raw_blobs(
+    #[values(false, true)] generated: bool,
+    #[values(false, true)] edited: bool,
+) {
+    let fixture = Fixture::new(true);
+    if !generated {
+        fs::write(fixture.source.join("app/over.yaml"), "mode: checkout\n").unwrap();
+    }
+    fs::write(
+        fixture.source.join(".gitattributes"),
+        "app/plain filter=prefix\n",
+    )
+    .unwrap();
+    fixture.git(&["config", "filter.prefix.clean", "sed 's/^/clean:/'"]);
+    fixture.git(&["config", "filter.prefix.required", "true"]);
+    fixture.git(&["add", "--all"]);
+    fixture.git(&["commit", "-qm", "configure non-idempotent filter"]);
+    fixture.apply();
+    assert_eq!(
+        fs::read(fixture.target.join("plain")).unwrap(),
+        b"clean:ordinary\n"
+    );
+    let expected = if edited {
+        fs::write(fixture.target.join("plain"), "genuine ordinary edit\n").unwrap();
+        fs::write(fixture.source.join("app/plain"), "genuine ordinary edit\n").unwrap();
+        let expected = fixture.git(&["diff", "--", "app/plain"]).stdout;
+        fs::write(fixture.source.join("app/plain"), "ordinary\n").unwrap();
+        expected
+    } else {
+        // Our checkout publishes the canonical blob directly; native Git's
+        // worktree oracle applies only to subsequent edits, not that raw blob.
+        Vec::new()
+    };
+    fixture.assert_ordinary_inspection(&expected);
+}
+
+#[cfg(unix)]
+#[test]
+fn normalization_only_ordinary_edits_do_not_invent_generated_checkout_conflicts() {
+    let fixture = Fixture::new(true);
+    fs::write(
+        fixture.source.join(".gitattributes"),
+        "app/plain text eol=lf\n",
+    )
+    .unwrap();
+    fixture.git(&["add", "--all"]);
+    fixture.git(&["commit", "-qm", "normalize ordinary sibling"]);
+    fixture.apply();
+    fs::write(fixture.target.join("plain"), "ordinary\r\n").unwrap();
+    fs::write(fixture.source.join("app/plain"), "source update\n").unwrap();
+    fixture.git(&["add", "app/plain"]);
+    fixture.git(&["commit", "-qm", "advance ordinary sibling"]);
+    fixture
+        .command("status")
+        .args(["app", "--short", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .success()
+        .stdout(
+            contains(" M\t")
+                .and(contains("app/plain"))
+                .and(contains("U").not()),
+        );
+    assert_eq!(
+        fs::read(fixture.target.join("plain")).unwrap(),
+        b"ordinary\r\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn generated_leaf_drift_keeps_physical_modes_when_git_ignores_filemode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new(true);
+    fixture.git(&["config", "core.filemode", "false"]);
+    fixture.apply();
+    let target = fixture.target.join("config");
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+    fixture
+        .command("status")
+        .args(["app", "--short", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .success()
+        .stdout(contains(" M\t").and(contains("/target/config")));
+    fixture
+        .command("diff")
+        .args(["app", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .success()
+        .stdout(contains("new mode 100755"));
 }
 
 #[cfg(unix)]

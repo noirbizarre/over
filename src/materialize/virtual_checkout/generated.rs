@@ -12,7 +12,7 @@ use crate::desired::{DesiredEntry, Provenance};
 use crate::materialize::disposal::PathGuard;
 use crate::plan::{ActualState, Operation, actual};
 
-use super::{generated_snapshot, git, state};
+use super::{generated_snapshot, git, snapshot, state};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GeneratedState {
@@ -973,14 +973,13 @@ pub(crate) fn inspection(
             .map(|(path, file)| Ok((path.clone(), oid(file)?)))
             .collect::<Result<BTreeMap<_, _>>>()
     };
-    let base = hashes(&analysis.base)?;
-    let desired = hashes(&analysis.desired)?;
+    let mut base = hashes(&analysis.base)?;
+    let mut desired = hashes(&analysis.desired)?;
     let mut local = hashes(&analysis.local)?;
     let (_, root) = source(entry)?;
     let (repo, managed) = git::discover_source(root)?;
     let scope = entry.intent.checkout_scope();
     let staged = git::staged_changes(&repo, &managed, &scope)?;
-    let mut indexed = base.clone();
     let index = repo.index()?;
     let generated_paths = generated_paths(entry)?;
     let mut ordinary_paths: BTreeSet<_> = analysis
@@ -988,6 +987,14 @@ pub(crate) fn inspection(
         .iter()
         .chain(analysis.desired.iter())
         .filter(|(_, file)| !file.generated)
+        // A conversion still has a generated side: retain its physical comparison domain.
+        .filter(|(path, _)| {
+            !analysis.base.get(*path).is_some_and(|file| file.generated)
+                && !analysis
+                    .desired
+                    .get(*path)
+                    .is_some_and(|file| file.generated)
+        })
         .map(|(path, _)| path.clone())
         .collect();
     // Index additions are inspection inputs only: reconciliation must not adopt
@@ -1008,37 +1015,79 @@ pub(crate) fn inspection(
         &ordinary_paths,
         &entry.access,
     )?;
+    let scratch = crate::actions::git::diff::Scratch::new(&repo)?;
+    let head = git::base_tree(&repo, None)?;
+    let mut indexed = base.clone();
     for path in &ordinary_paths {
-        match self::local(entry, path)? {
-            Some(file) => {
-                local.insert(path.clone(), oid(&file)?);
-            }
-            None => {
-                local.remove(path);
-            }
-        }
         let source_path = managed.join(path);
         if let Some(item) = index.get_path(&source_path, 0).filter(|item| {
             // Intent-to-add reserves a path, but its empty blob is not staged content.
             !IndexEntryExtendedFlag::from_bits_truncate(item.flags_extended).is_intent_to_add()
         }) {
-            let bytes = crate::crypt::policy::materialized_blob(&repo, &source_path, item.id)?;
-            indexed.insert(
-                path.clone(),
-                (
-                    Oid::hash_object(ObjectType::Blob, &bytes)?,
-                    item.mode as i32,
-                ),
-            );
+            indexed.insert(path.clone(), (item.id, item.mode as i32));
         } else {
             indexed.remove(path);
         }
+        for (inventory, entries) in [
+            (&analysis.base, &mut base),
+            (&analysis.desired, &mut desired),
+        ] {
+            if let Some(file) = inventory.get(path) {
+                // Snapshot bytes are materialized blobs, not worktree inputs: a known
+                // raw blob must bypass non-idempotent clean filters. Protected plaintext
+                // still passes through the shared authenticated canonicalization path.
+                let canonical = snapshot::canonical_entry(
+                    &repo,
+                    &scratch,
+                    &source_path,
+                    &file.bytes,
+                    file.mode,
+                    &[Some(oid(file)?)],
+                )?;
+                entries.insert(path.clone(), canonical);
+            }
+        }
+        match self::local(entry, path)? {
+            Some(file) => {
+                let head = head
+                    .get_path(&source_path)
+                    .ok()
+                    .map(|item| (item.id(), item.filemode()));
+                let canonical = snapshot::canonical_entry(
+                    &repo,
+                    &scratch,
+                    &source_path,
+                    &file.bytes,
+                    file.mode,
+                    &[indexed.get(path).copied(), base.get(path).copied(), head],
+                )?;
+                local.insert(path.clone(), canonical);
+            }
+            None => {
+                local.remove(path);
+            }
+        }
     }
     let unstaged = git::entry_changes(&indexed, &local);
-    let status = if !analysis.conflicts.is_empty() {
+    // Reconciliation/journals use physical bytes. Only inspection may dismiss
+    // an ordinary conflict or update made equivalent by Git's filters/filemode.
+    let conflicts: Vec<_> = analysis
+        .conflicts
+        .keys()
+        .filter(|path| {
+            !ordinary_paths.contains(*path)
+                || (local.get(*path) != base.get(*path) && local.get(*path) != desired.get(*path))
+        })
+        .cloned()
+        .collect();
+    let generated_updates = analysis
+        .updates
+        .keys()
+        .any(|path| !ordinary_paths.contains(path));
+    let status = if !conflicts.is_empty() {
         crate::status::Status::Conflict
     } else if base != desired
-        || !analysis.updates.is_empty()
+        || generated_updates
         || (!tracked && (!unstaged.is_empty() || !staged.is_empty()))
     {
         crate::status::Status::Modified
@@ -1049,7 +1098,7 @@ pub(crate) fn inspection(
         status,
         staged,
         unstaged,
-        unmerged: analysis.conflicts.into_keys().collect(),
+        unmerged: conflicts,
     })
 }
 
