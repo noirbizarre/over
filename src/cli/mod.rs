@@ -315,6 +315,28 @@ mod tests {
     }
 
     #[rstest]
+    #[case(vec!["laptop"], true)]
+    #[case(vec!["--name", "laptop"], true)]
+    #[case(vec![], true)]
+    #[case(vec!["--name-prefix", "imported"], true)]
+    #[case(vec!["laptop", "--name", "other"], false)]
+    #[case(vec!["laptop", "--name-prefix", "imported"], false)]
+    #[case(vec!["--name", "laptop", "--name-prefix", "imported"], false)]
+    #[case(vec!["laptop", "extra"], false)]
+    fn enrollment_accepts_one_explicit_name_or_an_import_prefix(
+        #[case] options: Vec<&str>,
+        #[case] valid: bool,
+    ) {
+        for command in [
+            vec!["over", "user", "add", "alice"],
+            vec!["over", "user", "key", "add", "alice"],
+        ] {
+            let result = CLI::try_parse_from(command.into_iter().chain(options.iter().copied()));
+            assert_eq!(result.is_ok(), valid, "{result:?}");
+        }
+    }
+
+    #[rstest]
     #[case("add")]
     #[case("apply")]
     #[case("commit")]

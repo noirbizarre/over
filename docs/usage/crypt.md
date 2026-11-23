@@ -410,9 +410,9 @@ Interactive approval requires terminal stdin and stderr; use each command's
 ```text
 over user list
 over user show <user>
-over user add <user> [--name <key>] [--recipient <age-recipient> | --identity-output <path> | --passphrase]
+over user add <user> [<name>] [--recipient <age-recipient> | --identity-output <path> | --passphrase]
 over user key list <user>
-over user key add <user> [--name <key>] [--recipient <age-recipient> | --identity-output <path> | --passphrase]
+over user key add <user> [<name>] [--recipient <age-recipient> | --identity-output <path> | --passphrase]
 over user key detach <user> <key>
 over user key revoke <user> <key>
 over user revoke <user>
@@ -429,7 +429,7 @@ Import standard recipient lists directly, including Passage's recipient files:
 
 ```sh
 over user add alice --recipients-file ~/.passage/store/.age-recipients --name-prefix imported
-over user key add alice --name laptop --recipient age1...
+over user key add alice laptop --recipient age1...
 over unlock --identity ~/.passage/identities
 over unlock --identity ~/.passage/identities --identity ~/.config/age/recovery.txt
 ```
@@ -440,7 +440,8 @@ the example creates `imported-1`, `imported-2`, and so on. Inline recipients com
 first in argument order, followed by files in argument order and their lines in
 file order. Name collisions, duplicate recipients, and failures abort the entire
 import. No partially configured new user is published. For one recipient, use
-`--name` or the new user's default key name. Input paths must name files; `-`
+the positional name, the compatibility option `--name`, or the new user's default
+key name. Explicit names conflict with `--name-prefix`. Input paths must name files; `-`
 stdin inputs are not supported.
 
 Recipient files accept comments, empty lines, CRLF, and multiple recipients.

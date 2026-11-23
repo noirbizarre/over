@@ -1221,7 +1221,6 @@ fn independent_keys_for_one_user_merge_and_preserve_existing_record_bytes() {
         "key",
         "add",
         "alice",
-        "--name",
         "laptop",
         "--recipient",
         &left,

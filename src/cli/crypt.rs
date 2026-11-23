@@ -59,8 +59,12 @@ pub struct Unlock {
 #[derive(Args, Clone, Debug)]
 pub struct NewKey {
     pub user: String,
-    #[arg(long, conflicts_with = "name_prefix")]
+    /// Name the new access key
+    #[arg(conflicts_with_all = ["name_option", "name_prefix"])]
     pub name: Option<String>,
+    /// Name the new access key (alternative to positional NAME)
+    #[arg(long = "name", value_name = "NAME", conflicts_with = "name_prefix")]
+    pub name_option: Option<String>,
     /// Name imported recipients PREFIX-1, PREFIX-2, in input order
     #[arg(long)]
     pub name_prefix: Option<String>,
@@ -329,6 +333,8 @@ fn passphrase_with_confirmation(
 
 fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> {
     let mut opt = opt.clone();
+    // Normalize the compatibility option before applying prompting and import rules.
+    opt.name = opt.name.take().or(opt.name_option.take());
     if access::configured(repo)? {
         let registry = access::load(repo)?;
         ensure!(
@@ -413,7 +419,7 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
     } else if new_user {
         "default".to_owned()
     } else {
-        ensure!(can_prompt(), "supply --name for an additional key");
+        ensure!(can_prompt(), "supply NAME or --name for an additional key");
         dialoguer::Input::new()
             .with_prompt("Key name")
             .interact_text()?
