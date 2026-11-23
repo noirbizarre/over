@@ -4,7 +4,8 @@ Commands accepting an existing overlay can usually omit its name when the
 current context identifies exactly one candidate. An explicit `NAME` or
 `--overlay NAME` always takes precedence.
 
-Over checks evidence in this order, stopping at the first matching tier:
+Most commands check evidence in this order, stopping at the first matching tier
+(`commit` uses the bounded inference described below):
 
 1. **Git association:** the containing repository's explicit `over.overlay`
    setting. Repository-local settings apply; an enabled worktree configuration
@@ -42,6 +43,13 @@ without file operands use the invocation directory.
 
 [`commit`](../commands/commit.md) selects from `--overlay` or current-directory
 context before resolving its path filters. File operands do not select its overlay.
+Its bounded inference checks the containing Git repository's association first,
+then recorded checkout ownership (source context takes precedence over target
+context), then ancestor source descriptors within the configured Over home.
+It does not discover every overlay or use the sibling and target-containment tiers
+above. Missing or ambiguous context requires `--overlay NAME`; use it when
+committing from a shared destination directory. The configured host is never a
+fallback for commit.
 
 ## Fallbacks when no context matches
 
