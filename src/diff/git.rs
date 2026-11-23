@@ -16,6 +16,10 @@ use crate::overlays::MaterializationKind;
 use crate::overlays::mapping;
 use crate::plan::actual::{self, ActualState};
 
+#[cfg(test)]
+#[path = "git_target_tests.rs"]
+mod target_files_tests;
+
 type Entries = BTreeMap<PathBuf, (Oid, i32)>;
 
 #[derive(Default)]
@@ -523,7 +527,7 @@ fn source_virtual_comparisons(
             );
             let mut candidates = paths.clone();
             candidates.extend(
-                target_files(&entry.target, &scope)?
+                target_files(&entry.target, &scope, &entry.access)?
                     .into_iter()
                     .map(|path| managed.join(path)),
             );
@@ -638,32 +642,25 @@ fn generated_comparisons(
     Ok(comparisons)
 }
 
-fn target_files(root: &Path, scope: &CheckoutScope) -> Result<Vec<PathBuf>> {
-    if !root.exists() {
-        return Ok(Vec::new());
-    }
+fn target_files(
+    root: &Path,
+    scope: &CheckoutScope,
+    access: &crate::target_fs::Access,
+) -> Result<Vec<PathBuf>> {
+    let mut scope = scope.clone();
+    // The entry carries invocation/rule access; legacy scopes may still have default access.
+    *scope.access = access.clone();
     let mut files = Vec::new();
-    for entry in walkdir::WalkDir::new(root)
-        .min_depth(1)
-        .into_iter()
-        .filter_entry(|entry| {
-            entry.path().strip_prefix(root).is_ok_and(|path| {
-                scope.owns_source_kind(path, entry.file_type().is_dir())
-                    && scope.owns_target_kind(path, entry.file_type().is_dir())
-                    && !vc::is_overlay_metadata(path)
-            })
-        })
-    {
-        let entry = entry?;
+    for (path, metadata) in vc::walk_owned_target_entries(root, &scope)? {
         // Following a newly added link would include content outside ownership;
         // silently dropping it would disguise an unsupported target change.
         ensure!(
-            entry.file_type().is_file() || entry.file_type().is_dir(),
+            metadata.is_file() || metadata.is_dir(),
             "unsupported virtual checkout target entry '{}'",
-            entry.path().display()
+            path.display()
         );
-        if entry.file_type().is_file() {
-            files.push(entry.path().strip_prefix(root)?.to_path_buf());
+        if metadata.is_file() {
+            files.push(path.strip_prefix(root)?.to_path_buf());
         }
     }
     Ok(files)
