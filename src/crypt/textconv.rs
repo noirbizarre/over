@@ -17,7 +17,7 @@ pub fn transform(repo: &git2::Repository, input: &[u8]) -> Result<Zeroizing<Vec<
         // Git also converts unlocked working files and historical plaintext blobs.
         return Ok(Zeroizing::new(input.to_vec()));
     }
-    let _guard = access::guard(repo, false)?;
+    let _guard = access::inspection_guard(repo)?;
     let domain = format::file_domain(input)?;
     // Checkout can visit protected blobs before their access metadata is present.
     if access::local_key_missing(repo)? {

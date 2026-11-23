@@ -134,7 +134,7 @@ pub fn run(args: &[OsString]) -> Result<()> {
     context::secret_name(new_path)
         .context("invalid new native-secret diff path; use --no-relative")?;
     let repo = git2::Repository::open_from_env().or_else(|_| git2::Repository::discover("."))?;
-    let _guard = access::guard(&repo, false)?;
+    let _guard = access::inspection_guard(&repo)?;
     let key = if access::local_key_missing(&repo)? {
         None
     } else {
