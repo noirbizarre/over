@@ -694,13 +694,107 @@ fn a_later_materialization_failure_suppresses_all_hooks() {
         .get_output()
         .clone();
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("Applied overlay dependency"));
+    assert!(!stdout.contains("Applied overlay dependency"));
     assert!(!stdout.contains("Applied overlay selected"));
     assert!(!stdout.contains("Applying overlay"));
     assert_eq!(
         fs::read_to_string(fixture.target.join("first")).unwrap(),
         "applied"
     );
+    assert_eq!(fixture.trace(), "");
+}
+
+#[rstest]
+fn grouped_partial_failure_withholds_completions_and_hooks_but_retains_published_files(
+    #[values(false, true)] conflict: bool,
+) {
+    let fixture = Fixture::new();
+    fixture.config(
+        "over.yaml",
+        json!({"target": "~", "hooks": {"post-apply": ["echo root >> \"$HOOK_TRACE\""]}}),
+    );
+    fixture.config("dependency/over.yaml", json!({}));
+    fixture.write("dependency/config/file", "published");
+    fixture.config("selected/over.yaml", json!({"uses": ["dependency"]}));
+    for (overlay, marker) in [("dependency", "first"), ("selected", "second")] {
+        fixture.config(
+            &format!("{overlay}/{marker}.partial.yaml"),
+            json!({"target": "~/shellrc", "content": marker, "marker": marker}),
+        );
+    }
+    let original = "# >>> over: second >>>\nexisting\n# <<< over: second <<<\n";
+    if conflict {
+        fs::write(fixture.target.join("shellrc"), original).unwrap();
+    }
+    let mut command = fixture.apply("selected");
+    command.env("NO_COLOR", "1");
+    let assertion = command.assert();
+    let assertion = if conflict {
+        assertion.failure()
+    } else {
+        assertion.success()
+    };
+    let output = assertion.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("config/file")).unwrap(),
+        "published"
+    );
+    if conflict {
+        assert!(String::from_utf8_lossy(&output.stderr).contains("partial-file conflict"));
+        assert!(!stdout.contains("Applied overlay"), "{stdout}");
+        assert_eq!(fixture.trace(), "");
+        assert_eq!(
+            fs::read_to_string(fixture.target.join("shellrc")).unwrap(),
+            original
+        );
+    } else {
+        let dependency = stdout.find("Applied overlay dependency to").unwrap();
+        let selected = stdout.find("Applied overlay selected to").unwrap();
+        assert!(dependency < selected);
+        assert_eq!(fixture.trace(), "root\n");
+        let shellrc = fs::read_to_string(fixture.target.join("shellrc")).unwrap();
+        assert!(shellrc.contains("\nfirst\n"));
+        assert!(shellrc.contains("\nsecond\n"));
+    }
+}
+
+#[test]
+fn deferred_directory_metadata_failure_withholds_completions_and_hooks() {
+    use std::os::unix::fs::MetadataExt;
+
+    let fixture = Fixture::new();
+    // Root can chown successfully; this regression needs an actual unprivileged metadata failure.
+    if fs::metadata(&fixture.target).unwrap().uid() == 0 {
+        return;
+    }
+    fixture.config(
+        "over.yaml",
+        json!({"target": "~", "hooks": {"post-apply": ["echo root >> \"$HOOK_TRACE\""]}}),
+    );
+    fixture.config(
+        "dependency/over.yaml",
+        json!({"rules": [{"path": "private", "permissions": {"owner": 0}}]}),
+    );
+    fs::create_dir_all(fixture.source.join("dependency/private")).unwrap();
+    fixture.config("selected/over.yaml", json!({"uses": ["dependency"]}));
+    fixture.write("selected/file", "published before finalization");
+    let output = fixture
+        .apply("selected")
+        .env("NO_COLOR", "1")
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    assert!(fixture.target.join("private").is_dir());
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("file")).unwrap(),
+        "published before finalization"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Operation not permitted"), "{stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("Applied overlay"), "{stdout}");
     assert_eq!(fixture.trace(), "");
 }
 
