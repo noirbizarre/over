@@ -2167,20 +2167,6 @@ pub fn rotate_with<C: age::Callbacks>(
     new.repository = old.repository;
     let mut registry = access::load(repo)?;
     let original_registry = serde_json::to_vec(&registry)?;
-    let revoked_passwords: Vec<_> = if let Some((user, name)) = revoke {
-        registry
-            .users
-            .get(user)
-            .into_iter()
-            .flat_map(|keys| keys.iter())
-            .filter(|(key, method)| {
-                name.is_none_or(|selected| selected == key.as_str()) && method.recipient.is_none()
-            })
-            .map(|(_, method)| method.clone())
-            .collect()
-    } else {
-        Vec::new()
-    };
     if let Some((user, name)) = revoke {
         let keys = registry.users.get_mut(user).context("unknown user")?;
         if let Some(name) = name {
@@ -2204,17 +2190,6 @@ pub fn rotate_with<C: age::Callbacks>(
             };
             if let Some(passphrase) = &passphrase {
                 access::verify_passphrase(key, passphrase.clone(), &old)?;
-                ensure!(
-                    !revoked_passwords
-                        .iter()
-                        .any(|revoked| access::verify_passphrase(
-                            revoked,
-                            passphrase.clone(),
-                            &old
-                        )
-                        .is_ok()),
-                    "a retained passphrase also unlocks a revoked key; replace that reused credential before revocation"
-                );
             }
             *key = access::envelope_with(
                 &new,
@@ -2392,17 +2367,6 @@ pub fn rotate_committed_with<C: age::Callbacks>(
     let mut registry = original.clone();
     let mut new = format::RepositoryKey::generate()?;
     new.repository = old.repository;
-    let revoked_passwords: Vec<_> = revoke
-        .and_then(|(user, _)| registry.users.get(user))
-        .into_iter()
-        .flat_map(|keys| keys.iter())
-        .filter(|(name, method)| {
-            revoke.is_some_and(|(_, selected)| {
-                selected.is_none_or(|selected| selected == name.as_str())
-            }) && method.recipient.is_none()
-        })
-        .map(|(_, method)| method.clone())
-        .collect();
     if let Some((user, name)) = revoke {
         let keys = registry.users.get_mut(user).context("unknown user")?;
         if let Some(name) = name {
@@ -2427,17 +2391,6 @@ pub fn rotate_committed_with<C: age::Callbacks>(
             let passphrase = if method.recipient.is_none() {
                 let passphrase = password(&format!("Passphrase for retained key {user}/{name}"))?;
                 access::verify_passphrase(method, passphrase.clone(), &old)?;
-                ensure!(
-                    !revoked_passwords
-                        .iter()
-                        .any(|revoked| access::verify_passphrase(
-                            revoked,
-                            passphrase.clone(),
-                            &old
-                        )
-                        .is_ok()),
-                    "a retained passphrase also unlocks a revoked key; replace that reused credential before revocation"
-                );
                 Some(passphrase)
             } else {
                 None
@@ -3354,8 +3307,18 @@ mod tests {
         assert!(!access::private_dir(&repo).join("transaction.json").exists());
     }
 
-    #[test]
-    fn a_reused_passphrase_cannot_preserve_access_through_a_revoked_keys_alias() {
+    #[rstest::rstest]
+    #[case(false, "owner", Some("first"))]
+    #[case(false, "other", Some("first"))]
+    #[case(false, "other", None)]
+    #[case(true, "owner", Some("first"))]
+    #[case(true, "other", Some("first"))]
+    #[case(true, "other", None)]
+    fn revocation_removes_the_selected_envelope_even_when_a_retained_passphrase_is_shared(
+        #[case] committed: bool,
+        #[case] retained_user: &str,
+        #[case] revoked_key: Option<&str>,
+    ) {
         let temporary = tempfile::tempdir().unwrap();
         let repo = git2::Repository::init(temporary.path()).unwrap();
         access::add_key(
@@ -3369,24 +3332,77 @@ mod tests {
         .unwrap();
         access::add_key(
             &repo,
-            "owner",
+            retained_user,
             "second",
             None,
             Some("shared credential".into()),
-            false,
+            retained_user != "owner",
         )
         .unwrap();
-        let before = fs::read(access::metadata_path(&repo).unwrap()).unwrap();
-        assert!(
-            rotate(&repo, Some(("owner", Some("first"))), |_| Ok(
-                "shared credential".into()
-            ))
-            .is_err()
-        );
+        let old = access::local_key(&repo).unwrap();
+        let secret_path = temporary.path().join(".over/secrets/TOKEN");
+        fs::create_dir_all(secret_path.parent().unwrap()).unwrap();
+        let before = old.encrypt_secret(b"retained value", "TOKEN").unwrap();
+        fs::write(&secret_path, &before).unwrap();
+        fs::write(
+            temporary
+                .path()
+                .join(super::super::access_storage::ATTRIBUTES),
+            super::super::access_storage::native_attributes(b""),
+        )
+        .unwrap();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Rotation test").unwrap();
+        config
+            .set_str("user.email", "rotation@example.invalid")
+            .unwrap();
+        config.set_bool("commit.gpgSign", false).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = repo.signature().unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "initial access",
+            &tree,
+            &[],
+        )
+        .unwrap();
+        let revoke = Some(("owner", revoked_key));
+        if committed {
+            rotate_committed_with(
+                &repo,
+                revoke,
+                |_| Ok("shared credential".into()),
+                age::NoCallbacks,
+            )
+            .unwrap();
+        } else {
+            rotate(&repo, revoke, |_| Ok("shared credential".into())).unwrap();
+        }
+        let registry = access::load(&repo).unwrap();
+        assert!(!registry.users["owner"].contains_key("first"));
+        let new = access::local_key(&repo).unwrap();
+        assert_ne!(old.generation, new.generation);
+        access::verify_passphrase(
+            &registry.users[retained_user]["second"],
+            "shared credential".into(),
+            &new,
+        )
+        .unwrap();
+        let after = fs::read(secret_path).unwrap();
+        assert_ne!(before, after);
         assert_eq!(
-            fs::read(access::metadata_path(&repo).unwrap()).unwrap(),
-            before
+            new.decrypt_secret(&after, "TOKEN").unwrap().as_slice(),
+            b"retained value"
         );
+        assert!(old.decrypt_secret(&after, "TOKEN").is_err());
+        assert!(!access::private_dir(&repo).join("mutation.json").exists());
     }
 
     #[test]

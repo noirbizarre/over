@@ -475,9 +475,11 @@ post-quantum protection.
 Duplicate canonical public recipients are rejected so revocation cannot leave the
 same recipient authorized through another key alias. Distinct plugin recipient
 strings can still represent related underlying credentials; Over cannot prove
-their independence. Revocation also refuses
-a retained passphrase that unlocks a revoked envelope; replace that reused
-credential first.
+their independence. Passphrases are verified only against their own retained
+envelopes, never compared across users or keys. Revocation allows shared
+passphrases: anyone who knows a passphrase shared with a retained key can still
+unlock that retained key's new envelope. Use independent credentials when
+revocation must remove that person's access.
 
 Detaching removes a current envelope only: someone who learned the old key still
 has it. Revoking a key/user rotates once for the remaining trusted keys and
