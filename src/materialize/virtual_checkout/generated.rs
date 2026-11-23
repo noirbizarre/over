@@ -1049,6 +1049,13 @@ pub(crate) fn inspection(
         }
         match self::local(entry, path)? {
             Some(file) => {
+                // Ordinary checkout readers reject links: normalizing their mode
+                // could hide a file-to-link replacement with identical blob bytes.
+                ensure!(
+                    file.mode != 0o120000,
+                    "ordinary checkout destination '{}' is a symlink",
+                    entry.target.join(path).display()
+                );
                 let head = head
                     .get_path(&source_path)
                     .ok()

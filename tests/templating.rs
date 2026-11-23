@@ -3617,12 +3617,73 @@ fn normalization_only_ordinary_edits_do_not_invent_generated_checkout_conflicts(
         .stdout(
             contains(" M\t")
                 .and(contains("app/plain"))
-                .and(contains("U").not()),
+                .and(contains("UU\t").not()),
         );
     assert_eq!(
         fs::read(fixture.target.join("plain")).unwrap(),
         b"ordinary\r\n"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_sibling_symlinks_cannot_hide_behind_ignored_filemode_and_matching_blob_bytes() {
+    let fixture = Fixture::new(true);
+    fixture.git(&["config", "core.filemode", "false"]);
+    fixture.apply();
+    let target = fixture.target.join("plain");
+    let bytes = fs::read(&target).unwrap();
+    fs::remove_file(&target).unwrap();
+    // Git hashes a link's referent text, so these bytes collide with the old
+    // regular blob even though the referent contains different host-owned data.
+    let referent = Path::new(std::str::from_utf8(&bytes).unwrap());
+    fs::write(fixture.target.join(referent), "unrelated host data\n").unwrap();
+    std::os::unix::fs::symlink(referent, &target).unwrap();
+    let index = fs::read(fixture.repo().path().join("index")).unwrap();
+    let snapshot = fixture.snapshot();
+    let state_path = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let state = fs::read(&state_path).unwrap();
+    fixture
+        .command("status")
+        .args(["app", "--short", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .failure()
+        .stderr(contains("cannot check overlay 'app'"));
+    fixture.sync().arg("--push-only").assert().failure();
+    assert_eq!(fs::read_link(&target).unwrap(), referent);
+    assert_eq!(
+        fs::read(fixture.target.join(referent)).unwrap(),
+        b"unrelated host data\n"
+    );
+    assert_eq!(
+        fs::read(fixture.repo().path().join("index")).unwrap(),
+        index
+    );
+    assert_eq!(fixture.snapshot(), snapshot);
+    assert_eq!(fs::read(state_path).unwrap(), state);
+}
+
+#[cfg(unix)]
+#[test]
+fn generated_leaf_symlinks_keep_their_physical_type_when_git_ignores_filemode() {
+    let fixture = Fixture::new(true);
+    fixture.git(&["config", "core.filemode", "false"]);
+    fixture.apply();
+    let target = fixture.target.join("config");
+    let bytes = fs::read(&target).unwrap();
+    fs::remove_file(&target).unwrap();
+    let referent = Path::new(std::str::from_utf8(&bytes).unwrap());
+    fs::write(fixture.target.join(referent), "unrelated host data\n").unwrap();
+    std::os::unix::fs::symlink(referent, &target).unwrap();
+    fixture
+        .command("status")
+        .args(["app", "--short", "--target"])
+        .arg(&fixture.target)
+        .assert()
+        .success()
+        .stdout(contains(" M\t").and(contains("/target/config")));
+    assert_eq!(fs::read_link(target).unwrap(), referent);
 }
 
 #[cfg(unix)]
