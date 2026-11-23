@@ -39,7 +39,9 @@ pub enum Commands {
 
 #[derive(Subcommand, Debug)]
 pub enum FilterCommand {
+    /// Encrypt protected content for Git storage
     Clean { path: Option<PathBuf> },
+    /// Decrypt protected content for the working tree
     Smudge { path: Option<PathBuf> },
 }
 
@@ -78,37 +80,43 @@ pub struct NewKey {
 
 #[derive(Subcommand, Debug)]
 pub enum UserCommands {
+    /// List repository users and their access keys
     List,
-    Show {
-        user: String,
-    },
+    /// Show a repository user's access keys
+    Show { user: String },
+    /// Create a repository user and their first access key
     Add(NewKey),
+    /// Revoke a user's keys and rotate encryption for current state
     Revoke {
         user: String,
         #[arg(long, help = "Approve revocation without prompting")]
         yes: bool,
     },
+    /// Delete a repository user who has no access keys
     Delete {
         user: String,
         #[arg(long, help = "Approve deletion without prompting")]
         yes: bool,
     },
+    /// Manage a repository user's named access keys
     #[command(subcommand)]
     Key(UserKeyCommands),
 }
 
 #[derive(Subcommand, Debug)]
 pub enum UserKeyCommands {
-    List {
-        user: String,
-    },
+    /// List a repository user's named access keys
+    List { user: String },
+    /// Add a named access key for an existing repository user
     Add(NewKey),
+    /// Detach a key envelope without rotating encryption or revoking learned access
     Detach {
         user: String,
         key: String,
         #[arg(long, help = "Approve detachment without prompting")]
         yes: bool,
     },
+    /// Revoke a key and rotate encryption for current state
     Revoke {
         user: String,
         key: String,
@@ -119,6 +127,7 @@ pub enum UserKeyCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum KeyCommands {
+    /// Rotate the repository encryption key and re-encrypt current state
     Rotate,
 }
 

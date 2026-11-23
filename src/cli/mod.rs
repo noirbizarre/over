@@ -291,6 +291,29 @@ mod tests {
     use rstest::rstest;
     use std::path::PathBuf;
 
+    #[test]
+    fn every_visible_command_explains_its_purpose() {
+        fn check(command: &clap::Command) {
+            assert!(
+                command
+                    .get_about()
+                    .is_some_and(|about| !about.to_string().trim().is_empty()),
+                "missing description for {}",
+                command.get_name()
+            );
+            for child in command
+                .get_subcommands()
+                .filter(|child| !child.is_hide_set())
+            {
+                check(child);
+            }
+        }
+        let mut command = CLI::command();
+        command.build();
+        check(&command);
+        command.debug_assert();
+    }
+
     #[rstest]
     #[case("add")]
     #[case("apply")]
