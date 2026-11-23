@@ -265,10 +265,114 @@ fn one_shot_plugin_and_passphrase_reads_leave_the_repository_locked() {
         );
         assert!(!failed.status.success());
         assert!(failed.stdout.is_empty());
+        if answer.starts_with("wrong") {
+            assert!(
+                String::from_utf8_lossy(&failed.stderr)
+                    .contains("incorrect credential or damaged ciphertext")
+            );
+        }
     }
     assert!(!fixture.repo.join(".git/over-crypt").exists());
     assert_eq!(fs::read(fixture.repo.join(".git/config")).unwrap(), config);
     assert_eq!(fs::read(fixture.repo.join(".git/index")).unwrap(), index);
+}
+
+#[test]
+fn one_shot_work_limit_and_unavailable_input_failures_are_sanitized() {
+    let fixture = Fixture::new();
+    fixture.enroll();
+    let mut child = fixture
+        .command(&[
+            "--home",
+            fixture.repo.to_str().unwrap(),
+            "secret",
+            "add",
+            "token",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"plaintext-sentinel")
+        .unwrap();
+    success(child.wait_with_output().unwrap());
+    fixture.run(&["lock"]);
+    fs::remove_dir_all(fixture.repo.join(".git/over-crypt")).unwrap();
+
+    let mut recipient = age::scrypt::Recipient::new("recovery-sentinel".into());
+    recipient.set_work_factor(1);
+    let mut ciphertext = Vec::new();
+    let mut writer =
+        age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
+            .unwrap()
+            .wrap_output(&mut ciphertext)
+            .unwrap();
+    writer.write_all(b"private-identity-sentinel").unwrap();
+    writer.finish().unwrap();
+    // The public header is intentionally unauthentic: Age must reject its cost before
+    // either checking the password or deriving an expensive key on any test machine.
+    let end = ciphertext.iter().position(|byte| *byte == b'\n').unwrap() + 1;
+    let stanza_end = end
+        + ciphertext[end..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .unwrap();
+    let stanza = std::str::from_utf8(&ciphertext[end..stanza_end]).unwrap();
+    let stanza = format!("{} 255", stanza.rsplit_once(' ').unwrap().0);
+    ciphertext.splice(end..stanza_end, stanza.bytes());
+    let identity = fixture.directory.path().join("costly-identity.age");
+    fs::write(&identity, &ciphertext).unwrap();
+    let args = [
+        "--home",
+        fixture.repo.to_str().unwrap(),
+        "secret",
+        "get",
+        "token",
+        "--identity",
+        identity.to_str().unwrap(),
+    ];
+    let unavailable = fixture.command(&args).output().unwrap();
+    assert!(!unavailable.status.success());
+    assert!(unavailable.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&unavailable.stderr)
+            .contains("interaction unavailable; use a terminal")
+    );
+
+    let failed = fixture.terminal_output(
+        &args,
+        &[("Age identity file passphrase", "recovery-sentinel\n")],
+        "success",
+        true,
+    );
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+    let diagnostics = String::from_utf8_lossy(&failed.stderr);
+    for expected in [
+        "alice/default",
+        "encrypted identity file",
+        "required=255",
+        "target=",
+        "limit=",
+        "password verification was not attempted",
+    ] {
+        assert!(diagnostics.contains(expected), "{diagnostics}");
+    }
+    for private in [
+        "plaintext-sentinel",
+        "private-identity-sentinel",
+        "recovery-sentinel",
+        "private-error-sentinel",
+        "age-encryption.org/",
+    ] {
+        assert!(!diagnostics.contains(private), "{diagnostics}");
+    }
+    assert!(!fixture.repo.join(".git/over-crypt").exists());
 }
 
 #[test]
@@ -634,10 +738,14 @@ fn standard_plugin_callbacks_and_passphrase_recovery_are_independent() {
 #[case("cancel")]
 #[case("malformed")]
 #[case("interactive")]
+#[case("missing")]
 fn failed_hardware_attempts_leave_the_repository_locked_and_report_the_key(#[case] mode: &str) {
     let fixture = Fixture::new();
     fixture.enroll();
     fixture.run(&["lock"]);
+    if mode == "missing" {
+        fs::remove_file(fixture.bin.join("age-plugin-overfixture")).unwrap();
+    }
     let output = fixture
         .command(&["unlock", "--identity", fixture.identity.to_str().unwrap()])
         .env("OVER_TEST_PLUGIN_MODE", mode)
@@ -646,6 +754,14 @@ fn failed_hardware_attempts_leave_the_repository_locked_and_report_the_key(#[cas
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("alice/default"), "{stderr}");
+    assert!(
+        stderr.contains(match mode {
+            "missing" => "Age plugin unavailable",
+            "malformed" => "Age plugin interaction failed",
+            _ => "Age plugin failed",
+        }),
+        "{stderr}"
+    );
     assert!(!stderr.contains("private-error-sentinel"));
     assert!(!fixture.repo.join(".git/over-crypt/key").exists());
 }

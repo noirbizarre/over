@@ -191,7 +191,7 @@ fn credentials(
         Err(error) => {
             // Only acquisition errors are recoverable; storage and checkout errors stay fatal.
             ui::info(format!(
-                "Unlock credentials unavailable ({error:#}); continuing with a locked checkout. Run over --home {} unlock later.",
+                "Repository key acquisition failed ({error:#}); continuing with a locked checkout. Run over --home {} unlock later.",
                 git.workdir().context("missing worktree")?.display()
             ))?;
             Ok(None)

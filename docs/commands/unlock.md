@@ -32,6 +32,29 @@ The key persists privately in Git's common administrative directory until
 [`over lock`](lock.md). Closing a terminal or rebooting does not remove it.
 Success has no machine-readable payload; errors go to stderr with nonzero status.
 
+## Decryption failures
+
+Errors identify the selected user/key and distinguish malformed or unsupported
+Age input, authentication failure, unavailable or cancelled interaction, and
+plugin installation or interaction failure. Authentication failure can mean an
+incorrect credential **or damaged ciphertext**; it does not prove a wrong password.
+Repository/generation mismatches remain separate access-metadata errors.
+
+A scrypt work-limit rejection reports `required`, `target`, and `limit` as
+`log_n` factors (`N = 2^log_n`). **Password verification was not attempted.**
+Age calibrates passphrase encryption on the creation machine; a substantially
+slower machine or VM can reject that cost before checking the password. Use
+another configured access method or a trusted environment capable of reading the
+envelope, and investigate performance/resource differences. Over does not
+automatically raise resource limits or retry with a higher limit.
+
+If interaction is unavailable, use terminal stdin and stderr or an unencrypted
+software identity with `--identity`. For plugin failures, check installation on
+`PATH`, device connection, PIN, and confirmation. Plugin error bodies are withheld;
+bounded device instructions can still appear on stderr.
+
+## Materialization and recovery
+
 A no-option unlock with a valid installed key repairs filters, textconv settings,
 and unfinished materialization without reauthentication. Existing plaintext edits
 are retained. Fresh unlock refuses ambiguous dirty protected state before

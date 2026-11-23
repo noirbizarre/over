@@ -124,6 +124,7 @@ pub(crate) fn wrap<C: Callbacks>(
 
 pub(crate) enum Identity {
     Library(Box<dyn age::Identity>),
+    Plugin(Box<dyn age::Identity>),
     NativePq(Zeroizing<String>),
     Deferred {
         initialize: Option<Box<dyn FnOnce() -> Result<Identities>>>,
@@ -147,20 +148,28 @@ impl Identity {
         envelope: &[u8],
         allow_temporary_files: bool,
     ) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        // Age also represents broken plugin protocol exchanges as opaque I/O errors.
+        let plugin = matches!(self, Self::Plugin(_));
         match self {
-            Self::Library(identity) => {
-                let decryptor = age::Decryptor::new(envelope)?;
+            Self::Library(identity) | Self::Plugin(identity) => {
+                let decryptor =
+                    age::Decryptor::new(envelope).map_err(|error| decrypt_error(&error, None))?;
                 let reader = match decryptor.decrypt(std::iter::once(identity.as_ref())) {
                     Ok(reader) => reader,
                     Err(age::DecryptError::NoMatchingKeys) => return Ok(None),
+                    Err(age::DecryptError::Io(_)) if plugin => {
+                        anyhow::bail!(
+                            "Age plugin interaction failed: check plugin version, device connection and terminal availability"
+                        );
+                    }
                     Err(error) => {
                         // A plugin stub can locate multiple keys; one envelope's error must
                         // not disable the same stub for another independently configured key.
-                        return Err(anyhow::anyhow!(decrypt_error(&error)));
+                        return Err(decrypt_error(&error, None));
                     }
                 };
                 // Read through authenticated EOF; a filled key-sized buffer alone is insufficient.
-                bounded_read(reader, 96).map(Some)
+                authenticated_read(reader, 96).map(Some)
             }
             Self::NativePq(identity) => {
                 ensure!(
@@ -207,18 +216,74 @@ impl Identity {
     }
 }
 
-fn decrypt_error(error: &age::DecryptError) -> &'static str {
-    match error {
+pub(crate) fn decrypt_error(
+    error: &age::DecryptError,
+    max_work_factor: Option<u8>,
+) -> anyhow::Error {
+    // Do not attach the original error: full cause chains can disclose plugin diagnostics.
+    let message = match error {
+        age::DecryptError::ExcessiveWork { required, target } => {
+            // Age 0.12 defaults to target + 4; callers overriding it must supply that limit.
+            let limit = max_work_factor.unwrap_or_else(|| target.saturating_add(4));
+            return anyhow::anyhow!(
+                "Age scrypt work limit rejected this input (log_n: required={required}, target={target}, limit={limit}); password verification was not attempted; use another configured access method or a trusted environment capable of reading this envelope"
+            );
+        }
+        age::DecryptError::InvalidHeader => "malformed Age input: invalid header",
+        age::DecryptError::UnknownFormat => "unsupported or unrecognized Age input format",
+        age::DecryptError::DecryptionFailed
+        | age::DecryptError::InvalidMac
+        | age::DecryptError::KeyDecryptionFailed => {
+            "Age authentication failed: incorrect credential or damaged ciphertext"
+        }
+        age::DecryptError::NoMatchingKeys => "no supplied Age identity matches this envelope",
+        age::DecryptError::Io(_) => {
+            "could not read Age input: malformed, incomplete or unavailable data"
+        }
         age::DecryptError::Plugin(_) => {
             "Age plugin failed: check device connection, PIN, confirmation and plugin version"
         }
         age::DecryptError::PluginResolve(_) => {
             "Age plugin unavailable: install the required age-plugin executable on PATH"
         }
-        _ => {
-            "identity did not unlock this envelope (wrong credential, denied interaction or damaged envelope)"
-        }
+        _ => "Age decryption failed; check the selected access method and input format",
+    };
+    anyhow::anyhow!(message)
+}
+
+pub(crate) fn authenticated_read(reader: impl Read, limit: u64) -> Result<Zeroizing<Vec<u8>>> {
+    bounded_read(reader, limit).map_err(|_| {
+        anyhow::anyhow!(
+            "Age payload authentication/read failed: damaged, incomplete or oversized ciphertext"
+        )
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum InteractionError {
+    Unavailable,
+    Cancelled,
+    Failed,
+}
+
+impl std::fmt::Display for InteractionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Unavailable => "credential interaction unavailable; use a terminal or supply --identity for noninteractive access",
+            Self::Cancelled => "credential interaction cancelled or denied",
+            Self::Failed => "credential interaction unavailable or cancelled",
+        })
     }
+}
+
+impl std::error::Error for InteractionError {}
+
+pub(crate) fn interaction_error(error: &anyhow::Error) -> InteractionError {
+    // Callers can supply arbitrary errors; only our typed outcomes are safe to propagate.
+    error
+        .downcast_ref::<InteractionError>()
+        .copied()
+        .unwrap_or(InteractionError::Failed)
 }
 
 pub(crate) struct Identities {
@@ -232,16 +297,19 @@ pub(crate) fn identities<C: Callbacks>(path: &Path, callbacks: C) -> Result<Iden
         "identity inputs require a file path"
     );
     let bytes = bounded_read(
-        File::open(path).context("could not open Age identity file")?,
+        File::open(path).map_err(|_| {
+            anyhow::anyhow!("could not open Age identity file; check path and permissions")
+        })?,
         INPUT_LIMIT,
-    )?;
+    )
+    .map_err(|_| anyhow::anyhow!("could not read Age identity file or input exceeds size limit"))?;
     if encrypted_identity(&bytes) {
         // An unused encrypted file must not prompt before a supplied software key can succeed.
         return Ok(Identities {
             entries: vec![Identity::Deferred {
                 initialize: Some(Box::new(move || {
                     let loaded = parse_identities(&bytes, callbacks.clone())
-                    .map_err(|_| anyhow::anyhow!("encrypted identity unavailable: check identity-file password, format and permissions"))?;
+                        .context("encrypted identity file could not be loaded")?;
                     for failure in &loaded.failures {
                         callbacks.display_message(failure);
                     }
@@ -263,7 +331,8 @@ fn encrypted_identity(bytes: &[u8]) -> bool {
 fn parse_identities<C: Callbacks>(bytes: &[u8], callbacks: C) -> Result<Identities> {
     let mut plaintext;
     let bytes = if encrypted_identity(bytes) {
-        let decryptor = age::Decryptor::new(age::armor::ArmoredReader::new(bytes))?;
+        let decryptor = age::Decryptor::new(age::armor::ArmoredReader::new(bytes))
+            .map_err(|error| decrypt_error(&error, None))?;
         ensure!(
             decryptor.is_scrypt(),
             "encrypted identity files must be passphrase-protected"
@@ -274,9 +343,9 @@ fn parse_identities<C: Callbacks>(bytes: &[u8], callbacks: C) -> Result<Identiti
         let identity = age::scrypt::Identity::new(password);
         let reader = decryptor
             .decrypt(std::iter::once(&identity as &dyn age::Identity))
-            .map_err(|_| anyhow::anyhow!("could not decrypt Age identity file"))?;
+            .map_err(|error| decrypt_error(&error, None))?;
         // Authenticate the complete outer file before using any embedded identity or plugin.
-        plaintext = bounded_read(reader, INPUT_LIMIT)?;
+        plaintext = authenticated_read(reader, INPUT_LIMIT)?;
         plaintext.as_mut_slice()
     } else {
         bytes
@@ -313,8 +382,13 @@ fn parse_identities<C: Callbacks>(bytes: &[u8], callbacks: C) -> Result<Identiti
                 std::slice::from_ref(&identity),
                 callbacks.clone(),
             )
-            .map(|plugin| Identity::Library(Box::new(plugin)))
-            .map_err(|_| anyhow::anyhow!("install age-plugin-{} on PATH", identity.plugin()))
+            .map(|plugin| Identity::Plugin(Box::new(plugin)))
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Age plugin unavailable: install age-plugin-{} on PATH",
+                    identity.plugin()
+                )
+            })
         } else {
             // Per-line conversion prevents one missing plugin poisoning a whole identity file.
             age::IdentityFile::from_buffer(std::io::Cursor::new(line.as_bytes()))
@@ -413,7 +487,103 @@ mod tests {
     use rstest::rstest;
     use zeroize::Zeroizing;
 
-    use super::{Identities, Identity, bounded_read, parse_identities, wrap};
+    use super::{
+        Identities, Identity, authenticated_read, bounded_read, decrypt_error, parse_identities,
+        wrap,
+    };
+
+    #[test]
+    fn a_work_limit_rejects_the_correct_password_before_authentication() {
+        let mut recipient = age::scrypt::Recipient::new("password-sentinel".into());
+        recipient.set_work_factor(12);
+        let mut ciphertext = Vec::new();
+        let mut writer =
+            age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
+                .unwrap()
+                .wrap_output(&mut ciphertext)
+                .unwrap();
+        writer.write_all(b"plaintext-sentinel").unwrap();
+        writer.finish().unwrap();
+        let mut identity = age::scrypt::Identity::new("password-sentinel".into());
+        identity.set_max_work_factor(11);
+        let error = age::Decryptor::new(ciphertext.as_slice())
+            .unwrap()
+            .decrypt(std::iter::once(&identity as &dyn age::Identity))
+            .err()
+            .unwrap();
+        assert!(matches!(
+            error,
+            age::DecryptError::ExcessiveWork { required: 12, .. }
+        ));
+        let message = format!("{:#}", decrypt_error(&error, Some(11)));
+        assert!(message.contains("required=12"));
+        assert!(message.contains("target="));
+        assert!(message.contains("limit=11"));
+        assert!(message.contains("password verification was not attempted"));
+        assert!(!message.contains("sentinel"));
+
+        identity.set_max_work_factor(12);
+        let reader = age::Decryptor::new(ciphertext.as_slice())
+            .unwrap()
+            .decrypt(std::iter::once(&identity as &dyn age::Identity))
+            .unwrap();
+        assert_eq!(
+            authenticated_read(reader, 96).unwrap().as_slice(),
+            b"plaintext-sentinel"
+        );
+    }
+
+    #[rstest]
+    #[case(age::DecryptError::InvalidHeader, "malformed Age input")]
+    #[case(age::DecryptError::UnknownFormat, "unsupported or unrecognized")]
+    #[case(
+        age::DecryptError::DecryptionFailed,
+        "incorrect credential or damaged ciphertext"
+    )]
+    #[case(
+        age::DecryptError::InvalidMac,
+        "incorrect credential or damaged ciphertext"
+    )]
+    #[case(
+        age::DecryptError::KeyDecryptionFailed,
+        "incorrect credential or damaged ciphertext"
+    )]
+    #[case(
+        age::DecryptError::Io(std::io::Error::other("private-error-sentinel")),
+        "could not read Age input"
+    )]
+    fn decryption_categories_never_include_unrestricted_causes(
+        #[case] error: age::DecryptError,
+        #[case] category: &str,
+    ) {
+        let message = format!("{:#}", decrypt_error(&error, None));
+        assert!(message.contains(category), "{message}");
+        assert!(!message.contains("sentinel"));
+    }
+
+    #[test]
+    fn encrypted_identity_failures_preserve_authentication_and_input_categories() {
+        let mut recipient = age::scrypt::Recipient::new("other-password".into());
+        recipient.set_work_factor(1);
+        let mut ciphertext = Vec::new();
+        let mut writer =
+            age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
+                .unwrap()
+                .wrap_output(&mut ciphertext)
+                .unwrap();
+        writer.write_all(b"private-identity-sentinel").unwrap();
+        writer.finish().unwrap();
+        let message = parse_identities(&ciphertext, Password)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(message.contains("incorrect credential or damaged ciphertext"));
+        assert!(!message.contains("sentinel"));
+        let error = parse_identities(&ciphertext, age::NoCallbacks)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("input unavailable or cancelled"));
+    }
 
     #[derive(Clone)]
     struct Password;

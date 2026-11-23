@@ -518,9 +518,12 @@ pub fn verify_passphrase(
     key: &RepositoryKey,
 ) -> Result<()> {
     let identity = age::scrypt::Identity::new(passphrase);
-    let mut reader = age::Decryptor::new(access.envelope.as_slice())?
+    let mut reader = age::Decryptor::new(access.envelope.as_slice())
+        .map_err(|error| super::age::decrypt_error(&error, None))
+        .context("retained key verification failed; rotation aborted")?
         .decrypt(std::iter::once(&identity as &dyn age::Identity))
-        .map_err(|_| anyhow::anyhow!("retained key passphrase is incorrect; rotation aborted"))?;
+        .map_err(|error| super::age::decrypt_error(&error, None))
+        .context("retained key verification failed; rotation aborted")?;
     let bytes = read_key_bytes(&mut reader)
         .map_err(|_| anyhow::anyhow!("retained key envelope is corrupt"))?;
     let expected = key.encode();
@@ -898,9 +901,14 @@ pub(crate) fn unwrap_registry_policy<C: age::Callbacks>(
         match super::age::identities(path, callbacks.clone()) {
             Ok(loaded) => {
                 identities.extend(loaded.entries.into_iter().map(|identity| (index, identity)));
-                failures.extend(loaded.failures.into_iter().map(|failure| format!("identity source {}: {failure}", index + 1)));
+                failures.extend(
+                    loaded
+                        .failures
+                        .into_iter()
+                        .map(|failure| format!("identity source {}: {failure}", index + 1)),
+                );
             }
-            Err(_) => failures.push(format!("identity source {} unavailable: check file format, permissions, identity-file password and plugin installation", index + 1)),
+            Err(error) => failures.push(format!("identity source {}: {error:#}", index + 1)),
         }
     }
     let mut candidates: Vec<_> = registry
@@ -925,8 +933,9 @@ pub(crate) fn unwrap_registry_policy<C: age::Callbacks>(
                 Ok(password) => attempts.push(super::age::Identity::Library(Box::new(
                     age::scrypt::Identity::new(password),
                 ))),
-                Err(_) => failures.push(format!(
-                    "{label}: passphrase input unavailable or cancelled"
+                Err(error) => failures.push(format!(
+                    "{label}: {}",
+                    super::age::interaction_error(&error)
                 )),
             }
         }
@@ -956,7 +965,10 @@ pub(crate) fn unwrap_registry_policy<C: age::Callbacks>(
                         return Ok(key);
                     }
                     Ok(_) => failures.push(format!("{label}: repository/generation-mismatched envelope; restore trusted access metadata")),
-                    Err(error) => failures.push(format!("{label}: {error}")),
+                    Err(error) => {
+                        let source = source.map(|index| format!("identity source {}: ", index + 1)).unwrap_or_default();
+                        failures.push(format!("{label}: {source}{error:#}"));
+                    }
                 }
         }
         if identities.is_empty() && access.recipient.is_some() {
@@ -972,7 +984,7 @@ pub(crate) fn unwrap_registry_policy<C: age::Callbacks>(
     }
     failures.extend(unmatched.into_iter());
     anyhow::bail!(
-        "no selected Age key could unlock this repository; envelopes may be corrupt or credentials unavailable:\n{}",
+        "no selected Age key could unlock this repository:\n{}",
         failures.0.join("\n")
     )
 }
@@ -1147,6 +1159,111 @@ pub fn filter_commands() -> Result<[(&'static str, String); 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[rstest::rstest]
+    #[case("work", "password verification was not attempted")]
+    #[case("authentication", "incorrect credential or damaged ciphertext")]
+    #[case("format", "unsupported or unrecognized Age input format")]
+    fn candidate_and_rotation_errors_preserve_safe_decryption_categories(
+        #[case] failure: &str,
+        #[case] category: &str,
+    ) {
+        let key = RepositoryKey::generate().unwrap();
+        let mut recipient = age::scrypt::Recipient::new("correct-password-sentinel".into());
+        recipient.set_work_factor(1);
+        let mut envelope = Vec::new();
+        let mut writer =
+            age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
+                .unwrap()
+                .wrap_output(&mut envelope)
+                .unwrap();
+        writer.write_all(key.encode().as_ref()).unwrap();
+        writer.finish().unwrap();
+        if failure == "work" {
+            // Invalid authentication is intentional: work rejection must happen first.
+            let factor = envelope
+                .windows(3)
+                .position(|bytes| bytes == b" 1\n")
+                .unwrap();
+            envelope.splice(factor..factor + 3, b" 255\n".iter().copied());
+        } else if failure == "format" {
+            envelope = b"age-encryption.org/v999\n".to_vec();
+        }
+        let access = AccessKey {
+            recipient: None,
+            envelope,
+        };
+        let rotation =
+            verify_passphrase(&access, "wrong-password-sentinel".into(), &key).unwrap_err();
+        let message = format!("{rotation:#}");
+        assert!(message.contains(category), "{message}");
+        assert!(message.contains("rotation aborted"));
+        assert!(!message.contains("sentinel"));
+        let registry = Registry {
+            version: 1,
+            repository: key.repository,
+            generation: key.generation,
+            users: BTreeMap::from([(
+                "alice".into(),
+                BTreeMap::from([("recovery".into(), access)]),
+            )]),
+        };
+        let error = unwrap_registry_policy(
+            &registry,
+            UnwrapOptions {
+                sources: &[],
+                user: None,
+                name: None,
+                allow_temporary_files: false,
+            },
+            age::NoCallbacks,
+            |_| Ok("wrong-password-sentinel".into()),
+            |_, _| {},
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains(category), "{message}");
+        assert!(message.contains("alice/recovery"));
+        assert!(!message.contains("sentinel"));
+    }
+
+    #[test]
+    fn unavailable_passphrase_input_keeps_its_actionable_category() {
+        let key = RepositoryKey::generate().unwrap();
+        let registry = Registry {
+            version: 1,
+            repository: key.repository,
+            generation: key.generation,
+            users: BTreeMap::from([(
+                "alice".into(),
+                BTreeMap::from([(
+                    "recovery".into(),
+                    AccessKey {
+                        recipient: None,
+                        envelope: Vec::new(),
+                    },
+                )]),
+            )]),
+        };
+        let error = unwrap_registry_policy(
+            &registry,
+            UnwrapOptions {
+                sources: &[],
+                user: None,
+                name: None,
+                allow_temporary_files: false,
+            },
+            age::NoCallbacks,
+            |_| Err(super::super::age::InteractionError::Unavailable.into()),
+            |_, _| {},
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("alice/recovery: credential interaction unavailable; use a terminal")
+        );
+    }
 
     fn repository() -> (tempfile::TempDir, git2::Repository) {
         let directory = tempfile::tempdir().unwrap();

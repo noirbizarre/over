@@ -342,6 +342,15 @@ Exact flags are in [`over lock`](../commands/lock.md) and
 available unencrypted software identity; encrypted identities and hardware
 plugins can still require interaction during unlock.
 
+Unlock diagnostics distinguish scrypt work-limit rejection from authentication,
+input-format, terminal-interaction, and plugin failures. A work-limit rejection
+reports numeric `log_n` factors and means the password was **not checked**, which
+can happen when reading an envelope created on a much faster machine. An
+authentication failure may instead mean an incorrect credential or damaged
+ciphertext. See [decryption failures](../commands/unlock.md#decryption-failures)
+for recovery guidance. Failed one-shot secret reads keep stdout empty; candidate
+diagnostics go to stderr without installing an unlock key.
+
 ## Readable encrypted diffs
 
 New encryption policies include `diff=over`. While unlocked, ordinary `git diff`,
