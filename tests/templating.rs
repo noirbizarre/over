@@ -3561,6 +3561,15 @@ fn ordinary_siblings_clean_non_idempotent_filters_once_without_recleaning_raw_bl
     #[values(false, true)] edited: bool,
 ) {
     let fixture = Fixture::new(true);
+    // Make Git's unchanged-file stat fast path deterministic instead of relying
+    // on whether fixture creation happens within the index's racy timestamp window.
+    fs::File::options()
+        .write(true)
+        .open(fixture.source.join("app/plain"))
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000))
+        .unwrap();
+    fixture.git(&["update-index", "--refresh", "--", "app/plain"]);
     if !generated {
         fs::write(fixture.source.join("app/over.yaml"), "mode: checkout\n").unwrap();
     }
@@ -3572,6 +3581,13 @@ fn ordinary_siblings_clean_non_idempotent_filters_once_without_recleaning_raw_bl
     fixture.git(&["config", "filter.prefix.clean", "sed 's/^/clean:/'"]);
     fixture.git(&["config", "filter.prefix.required", "true"]);
     fixture.git(&["add", "--all"]);
+    // Changing attributes does not invalidate an unchanged tracked file's stat
+    // cache; force the new clean filter before testing materialization semantics.
+    fixture.git(&["add", "--renormalize", "--", "app/plain"]);
+    assert_eq!(
+        fixture.git(&["show", ":app/plain"]).stdout,
+        b"clean:ordinary\n"
+    );
     fixture.git(&["commit", "-qm", "configure non-idempotent filter"]);
     fixture.apply();
     assert_eq!(
