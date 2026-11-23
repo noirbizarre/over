@@ -3,12 +3,12 @@
 Manage logical users and their independent Age envelopes for the repository key.
 
 ```text
-over user list
-over user show <USER>
+over user list [--json]
+over user show <USER> [--json]
 over user add <USER> [NAME] [KEY-OPTIONS]
 over user revoke <USER> [--yes]
 over user delete <USER> [--yes]
-over user key list <USER>
+over user key list <USER> [--json]
 over user key add <USER> [NAME] [KEY-OPTIONS]
 over user key detach <USER> <KEY> [--yes]
 over user key detach <USER>/<KEY> [--yes]
@@ -91,6 +91,39 @@ and mutations, and does not bypass unlock or recovery-key safeguards.
 `user list` prints usernames only, one per line, on stdout. `user show` and
 `user key list` print the username followed by indented `KEY: RECIPIENT` lines;
 passphrase entries display `Age passphrase`. They never print private key bytes.
+
+All three listing commands also accept bare repositories through `--home` or
+`OVER_HOME`. Bare listings read committed access metadata from the current HEAD
+(including detached HEAD); ordinary repositories retain working-tree listing
+behavior. Missing or invalid committed metadata fails without falling back to
+administrative files. Listing needs no credentials and creates no repository
+state, identity hints, or working tree.
+
+Use `--json` for public metadata suitable for automation. All three commands emit
+the same shape; `show` and `key list` restrict `users` to the requested user:
+
+```json
+{"users":[{"name":"alice","keys":[{"name":"recovery","kind":"passphrase","recipient":null}]}]}
+```
+
+Users and keys are sorted by name, and empty users have `keys: []`. `kind` is
+`passphrase` or `recipient`; recipient-backed keys include their public Age
+recipient string instead of `null`. Envelopes and private identity paths are
+excluded. Unknown users fail with stderr diagnostics and no JSON output.
+
+Provisioning callers can list once, select public names in their own UI, and pass
+them explicitly for repeated reads without persisting a repository key:
+
+```sh
+over --home /run/dotfiles.git user list --json
+# Reuse the chosen public names; each read still acquires its credential.
+over --home /run/dotfiles.git secret get wifi-password --user alice --key recovery
+over --home /run/dotfiles.git secret get disk-password --user alice --key recovery
+```
+
+Each command observes its own HEAD snapshot. Reusing names does not pin a commit
+or generation across repository updates. Secret bytes alone go to stdout; menus
+and credential prompts go to stderr.
 
 `key detach` removes an envelope without revoking a repository key already learned
 through it. The only recovery key cannot be detached. `user delete` requires an

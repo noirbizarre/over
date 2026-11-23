@@ -29,8 +29,12 @@ over unlock --identity ~/.config/age/over-alice.txt
 ```
 
 Unlock configures repository-local filters, unwraps the key, and refreshes clean
-protected files. Without an identity option, Over tries all applicable locally
-remembered identities, then asks for remaining credentials. It never takes a
+protected files. Without an identity option, interactive acquisition offers a
+`USER/KEY` chooser if multiple keys match `--user` / `--key`, before using the
+chosen key's identity hints or requesting credentials. One match skips the menu;
+cancelled or failed selection never falls through to another key. Menus and
+prompts go to stderr. Initialization and one-shot `secret get` share this behavior.
+Over never takes a
 passphrase in command arguments. `--home` / `OVER_HOME` explicitly selects a
 repository; otherwise crypt/access commands discover the current Git repository,
 falling back to the usual Over home for virtual destinations.
@@ -469,11 +473,16 @@ Passage's store layout or environment variables.
 Explicit `--identity` (`-i`) arguments restrict the identity-file sources to those
 supplied, rather than silently adding remembered files. Over still tries selected
 independent passphrase keys if necessary. `--user` and `--key` limit every attempt.
-Missing plugins, unavailable devices, denied requests, wrong credentials, and
+With explicit identities or noninteractive acquisition, missing plugins,
+unavailable devices, denied requests, wrong credentials, and
 stale hints do not block another independently configured key. Successful unlock
 reports unavailable attempts; if all fail, a bounded per-key/source summary is
 returned without installing a key or publishing plaintext. A plugin-level denied
 request skips that method; interrupting the command cancels the whole operation.
+Interactive acquisition without explicit identities instead stays within the
+chosen user/key. For provisioning, [public user/key JSON listings](../commands/user.md#inspect-and-remove-access)
+work against bare HEAD snapshots and provide reusable `--user` / `--key` names
+without exposing access envelopes or saving credential state.
 
 Ordinary Age, SSH, encrypted identities and hardware plugins use the Rust Age
 library. Native software post-quantum identities (`AGE-SECRET-KEY-PQ-1...`) and

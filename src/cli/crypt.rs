@@ -85,9 +85,18 @@ pub struct NewKey {
 #[derive(Subcommand, Debug)]
 pub enum UserCommands {
     /// List repository users and their access keys
-    List,
+    List {
+        /// Print public user and key metadata as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show a repository user's access keys
-    Show { user: String },
+    Show {
+        user: String,
+        /// Print public user and key metadata as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Create a repository user and their first access key
     Add(NewKey),
     /// Revoke a user's keys and rotate encryption for current state
@@ -110,7 +119,12 @@ pub enum UserCommands {
 #[derive(Subcommand, Debug)]
 pub enum UserKeyCommands {
     /// List a repository user's named access keys
-    List { user: String },
+    List {
+        user: String,
+        /// Print public user and key metadata as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Add a named access key for an existing repository user
     Add(NewKey),
     /// Detach a key envelope without rotating encryption or revoking learned access
@@ -599,21 +613,24 @@ pub fn user(cli: &super::CLI, command: &UserCommands) -> Result<()> {
             )
         }
         command => {
-            let registry = access::load(&repo)?;
-            if let UserCommands::Show { user } | UserCommands::Key(UserKeyCommands::List { user }) =
-                command
-            {
+            let registry = public_registry(&repo)?;
+            let (selected_user, json) = match command {
+                UserCommands::List { json } => (None, *json),
+                UserCommands::Show { user, json }
+                | UserCommands::Key(UserKeyCommands::List { user, json }) => (Some(user), *json),
+                _ => unreachable!("mutating commands are handled above"),
+            };
+            if let Some(user) = selected_user {
                 ensure!(registry.users.contains_key(user), "unknown repository user");
             }
+            if json {
+                return crate::ui::json::print_json(&public_users(&registry, selected_user));
+            }
             for (name, keys) in registry.users {
-                let selected = match command {
-                    UserCommands::Show { user }
-                    | UserCommands::Key(UserKeyCommands::List { user }) => name == *user,
-                    _ => true,
-                };
+                let selected = selected_user.is_none_or(|user| name == *user);
                 if selected {
                     println!("{name}");
-                    if !matches!(command, UserCommands::List) {
+                    if !matches!(command, UserCommands::List { .. }) {
                         for (name, key) in keys {
                             println!(
                                 "  {name}: {}",
@@ -625,6 +642,68 @@ pub fn user(cli: &super::CLI, command: &UserCommands) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+fn public_registry(repo: &git2::Repository) -> Result<access::Registry> {
+    if !repo.is_bare() {
+        return access::load(repo);
+    }
+    // Bare administrative files are not a worktree: only the captured HEAD tree is authoritative.
+    let tree = repo.head()?.peel_to_tree()?;
+    access::registry_from_tree(repo, &tree)?.ok_or_else(|| {
+        anyhow::anyhow!("repository access metadata is missing from the HEAD commit")
+    })
+}
+
+#[derive(serde::Serialize)]
+struct PublicUsers<'a> {
+    users: Vec<PublicUser<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct PublicUser<'a> {
+    name: &'a str,
+    keys: Vec<PublicKey<'a>>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum PublicKeyKind {
+    Passphrase,
+    Recipient,
+}
+
+#[derive(serde::Serialize)]
+struct PublicKey<'a> {
+    name: &'a str,
+    kind: PublicKeyKind,
+    recipient: Option<&'a str>,
+}
+
+fn public_users<'a>(registry: &'a access::Registry, selected: Option<&String>) -> PublicUsers<'a> {
+    // A dedicated projection keeps envelopes and future private registry fields out of the CLI API.
+    PublicUsers {
+        users: registry
+            .users
+            .iter()
+            .filter(|(name, _)| selected.is_none_or(|user| user == *name))
+            .map(|(name, keys)| PublicUser {
+                name,
+                keys: keys
+                    .iter()
+                    .map(|(name, key)| PublicKey {
+                        name,
+                        kind: if key.recipient.is_some() {
+                            PublicKeyKind::Recipient
+                        } else {
+                            PublicKeyKind::Passphrase
+                        },
+                        recipient: key.recipient.as_deref(),
+                    })
+                    .collect(),
+            })
+            .collect(),
     }
 }
 
@@ -702,7 +781,7 @@ pub(crate) fn acquire_repository_key_policy(
     opt: &Unlock,
     allow_temporary_files: bool,
 ) -> Result<AcquiredKey> {
-    let candidates: Vec<_> = registry
+    let mut candidates: Vec<_> = registry
         .users
         .iter()
         .filter(|(user, _)| opt.user.as_ref().is_none_or(|selected| selected == *user))
@@ -713,6 +792,33 @@ pub(crate) fn acquire_repository_key_policy(
         })
         .collect();
     ensure!(!candidates.is_empty(), "no matching repository key");
+    let selection = if candidates.len() > 1 && opt.identity.is_empty() && can_prompt() {
+        let labels: Vec<_> = candidates
+            .iter()
+            .map(|(user, name, key)| {
+                let kind = if key.recipient.is_some() {
+                    "Age recipient"
+                } else {
+                    "Age passphrase"
+                };
+                format!("{user}/{name} ({kind})")
+            })
+            .collect();
+        let _pause = crate::ui::progress::pause()?;
+        let index = dialoguer::Select::new()
+            .with_prompt("Choose a repository key")
+            .items(&labels)
+            .default(0)
+            .interact_on_opt(&console::Term::stderr())
+            .map_err(crate::ui::age::prompt_error)?
+            .ok_or(crate::crypt::age::InteractionError::Cancelled)?;
+        let selected = candidates[index];
+        // Narrow before hints or identity loading so an unselected device cannot interact or recover.
+        candidates = vec![selected];
+        Some((selected.0.as_str(), selected.1.as_str()))
+    } else {
+        None
+    };
     let mut sources = opt.identity.clone();
     for (_, _, key) in candidates.iter().filter(|_| opt.identity.is_empty()) {
         if let Some(recipient) = &key.recipient {
@@ -721,7 +827,7 @@ pub(crate) fn acquire_repository_key_policy(
                 Ok(_) => (),
                 // Local hints are conveniences, not a reason to suppress recovery credentials.
                 Err(_) => {
-                    eprintln!("A local identity hint is unavailable; continuing with other keys.")
+                    eprintln!("A local identity hint is unavailable; continuing without that hint.")
                 }
             }
         }
@@ -730,10 +836,17 @@ pub(crate) fn acquire_repository_key_policy(
         && candidates.iter().any(|(_, _, key)| key.recipient.is_some())
         && can_prompt()
     {
+        let prompt = if candidates.iter().any(|(_, _, key)| key.recipient.is_none()) {
+            "Age identity file (leave empty to use passphrase keys)"
+        } else {
+            "Age identity file"
+        };
+        let _pause = crate::ui::progress::pause()?;
         let path: String = dialoguer::Input::new()
-            .with_prompt("Age identity file (leave empty to use passphrase keys)")
+            .with_prompt(prompt)
             .allow_empty(true)
-            .interact_text()?;
+            .interact_text_on(&console::Term::stderr())
+            .map_err(crate::ui::age::prompt_error)?;
         if !path.is_empty() {
             sources.push(path.into());
         }
@@ -743,8 +856,8 @@ pub(crate) fn acquire_repository_key_policy(
         registry,
         access::UnwrapOptions {
             sources: &sources,
-            user: opt.user.as_deref(),
-            name: opt.key.as_deref(),
+            user: selection.map(|(user, _)| user).or(opt.user.as_deref()),
+            name: selection.map(|(_, name)| name).or(opt.key.as_deref()),
             allow_temporary_files,
         },
         crate::ui::age::Callbacks,

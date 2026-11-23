@@ -17,9 +17,16 @@ Also accepts [global options](index.md#shared-options-and-selection).
 Repository selection follows [`over crypt`](crypt.md#repository-selection-and-options).
 There is no passphrase argument, force option, or dry-run mode.
 
-Explicit identities replace remembered identity-file sources. Otherwise applicable
-private local identity hints are tried before interactive credential acquisition.
-Independent selected passphrase envelopes can still require hidden input.
+Without explicit identities, interactive acquisition first offers a `USER/KEY`
+chooser when multiple keys match. `--user` and `--key` independently filter the
+choices; a single match skips the menu. Selection precedes identity hints,
+passphrase prompts, and device interaction. Cancellation or failure of the chosen
+key ends acquisition without trying another key. Prompts and menus go to stderr.
+
+Explicit identities replace remembered identity-file sources and skip the chooser,
+preserving automatic matching and independent credential recovery. Otherwise only
+applicable private local identity hints are used. Independent selected passphrase
+envelopes can still require hidden input.
 Credential prompts require terminal stdin and stderr. Software identities can
 support unattended unlock; encrypted identity files and plugins may still prompt.
 

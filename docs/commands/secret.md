@@ -55,6 +55,12 @@ existing identity hint, or answer the identity/passphrase prompts. `--user` and
 `--key` restrict the credentials tried. A matching local repository key takes
 precedence over these options and avoids all credential prompts.
 
+Without explicit `--identity` files, multiple matching keys offer a `USER/KEY`
+chooser before any credential or device interaction. Partial selectors limit the
+menu; one matching key skips it. Cancelling or failing the chosen credential does
+not try another key. Explicit identities retain automatic matching without a menu.
+Initialization and `over unlock` use the same acquisition behavior.
+
 Prompts require terminal stdin and stderr and never appear on stdout, so piping
 the value remains supported. Without a terminal, a usable identity must already
 be available, for example an explicit unencrypted software identity:
@@ -70,7 +76,9 @@ Encrypted identities and hardware plugins may require terminal interaction.
 Over creates no lock files, temporary files, keys, identity hints, or other
 filesystem artifacts during native reads, and does not configure Git filters.
 Bare reads create no working tree and do not update the index, refs, Git
-configuration, or object database. Bare support is limited to `get`.
+configuration, or object database. Within `secret`, bare support is limited to `get`.
+Public [`user` listing](user.md#inspect-and-remove-access) also supports bare
+repositories, including JSON metadata for reusing selectors across one-shot reads.
 External identity plugins may manage their own state. The native-PQ adapter
 requires a temporary ciphertext file and is unavailable for one-shot acquisition;
 use another credential or normal `over unlock` for that identity. Temporary
