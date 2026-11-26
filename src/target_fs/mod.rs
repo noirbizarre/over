@@ -1066,8 +1066,10 @@ mod tests {
     #[test]
     fn read_only_access_inspects_locally_even_when_the_privileged_session_is_unavailable() {
         let directory = tempfile::tempdir().unwrap();
-        let file = directory.path().join("file");
-        let link = directory.path().join("link");
+        // macOS temp paths can traverse /var, an alias of /private/var.
+        let root = directory.path().canonicalize().unwrap();
+        let file = root.join("file");
+        let link = root.join("link");
         std::fs::write(&file, "content").unwrap();
         symlink::symlink_file(&file, &link).unwrap();
         let session = Arc::new(Session::default());
