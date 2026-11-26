@@ -1066,8 +1066,9 @@ mod tests {
     #[test]
     fn read_only_access_inspects_locally_even_when_the_privileged_session_is_unavailable() {
         let directory = tempfile::tempdir().unwrap();
-        // macOS temp paths can traverse /var, an alias of /private/var.
-        let root = directory.path().canonicalize().unwrap();
+        // Resolve macOS temp aliases without retaining Windows verbatim prefixes.
+        let root =
+            crate::overlays::mapping::absolute(&directory.path().canonicalize().unwrap()).unwrap();
         let file = root.join("file");
         let link = root.join("link");
         std::fs::write(&file, "content").unwrap();
