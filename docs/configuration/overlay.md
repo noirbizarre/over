@@ -106,7 +106,7 @@ The same context is available to path templates and every lifecycle hook field
 These values are filesystem paths serialized as absolute native path strings.
 They retain symlink spelling and do not require the destination to exist. Paths
 that cannot be represented as UTF-8 produce an error rather than a lossy string.
-Each dependency and its hooks see its own target; repository install/post-apply hooks
+Each dependency and its hooks see its own target; repository apply hooks
 see the selected overlay's target when one distinct root is selected. With
 multiple distinct selected roots, repository hooks have no `overlay` or
 `paths.target`; their `OVER_TARGET_ROOT` still identifies the execution target root.

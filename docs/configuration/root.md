@@ -318,11 +318,20 @@ the actual user's home, the source repository root, and the current overlay's
 effective base destination, respectively. Install and post-apply hooks can
 read their own local `data`, resolved `host`, and explicit dependency `overlays`.
 Each participant sees its own `overlay` and scope, using the same loaded snapshot;
-root install and post-apply hooks see the selected overlay only when one distinct
+root install, post-install, and post-apply hooks see the selected overlay only when one distinct
 root is selected. With multiple distinct roots they have empty `data`, the configured
 host's overrides, and a namespace union of roots and dependencies, but no `overlay`
 or `paths.target`; guard optional
 target access with `paths.target is defined`.
+
+During apply, `allowOverlays` is the ordered sequence of actual participant
+objects, including selected roots and their complete transitive dependency closure.
+Each object exposes its `name`, source `root`, local `data`, `host`, and configured
+`target`, alongside the existing overlay fields. This shared snapshot is ready
+before root install hooks run and remains available through root post-install.
+Order is dependency-first, following selected-root and authored `uses` order;
+overlapping dependencies appear once. With `--no-uses`, the sequence contains only
+selected overlays, even though `overlays` retains metadata-only dependencies.
 
 Init hooks have machine/environment/repository context but no selected overlay
 and empty `data`, `host`, and `overlays`: bootstrap never discovers children before unlock hooks run.
@@ -372,14 +381,19 @@ or cwd, resolve execution-only secrets, or spawn a process.
    trigger it.
 2. **`post-init`**: root only, on successful unlocked init, including existing
    checkouts, after any post-clone hooks. Neither init event applies overlays.
-3. **`install`**: only with `over apply --install` (or `-i`), after all
-   materialization, Git provisioning, and Git-exclude reconciliation succeed.
-   Root hooks run once, then participating overlays' own hooks run dependency-first
-   in depth-first `uses` list order. Repeated dependencies run once.
-4. **`post-apply`**: after reconciliation and any opted-in install hooks complete,
-   with the same root-first, dependency-first ordering. Ordinary apply skips
-   install hooks entirely. A successful no-change apply still executes applicable
-   hooks; repeated install runs have no package deduplication or persistent state.
+3. **Root `install`**: once per `over apply --install` (or `-i`), after graph,
+   data, and target resolution, before any overlay deployment.
+4. **Overlay `install`**: only with `--install`, after all materialization, Git
+   provisioning, and Git-exclude reconciliation succeed. Overlay-local hooks run
+   dependency-first in depth-first `uses` list order. Repeated dependencies run once.
+5. **`post-apply`**: after reconciliation and any opted-in overlay install hooks
+   complete, root once then overlays dependency-first.
+6. **`post-install`**: root only, once with `--install`, after all overlays and
+   post-apply hooks succeed.
+
+Ordinary apply skips both root install phases and overlay install hooks entirely.
+A successful no-change apply still executes applicable hooks; repeated install
+runs have no package deduplication or persistent state.
 
 Initialization can succeed while an encrypted checkout remains locked; both
 bootstrap events are skipped in that case. Unlock and rerun init for post-init
@@ -398,7 +412,7 @@ Quote environment variables used as paths. Prefer passing sensitive values via
 command text.
 
 Hooks do not inherit. An intermediate descriptor's hooks run only when that
-overlay itself participates. Overlay-local post-clone/post-init declarations
+overlay itself participates. Overlay-local post-clone/post-init/post-install declarations
 are accepted but ignored. `--no-uses` runs only root and selected-overlay hooks;
 metadata-only overlays do not participate. Dry runs and read-only commands never
 execute hooks. Nested Over commands inherit `OVER_HOOK_ACTIVE` and skip further
@@ -431,12 +445,12 @@ the command may still request its own input.
 | `OVER_HOOK_EVENT` | All hooks: event name |
 | `OVER_REPOSITORY_ROOT` | All hooks: absolute repository source root |
 | `OVER_HOOK_ACTIVE` | All hooks: `1`, suppressing nested dispatch |
-| `OVER_TARGET_ROOT` | Install and post-apply: resolved absolute execution target root (`--target` or `OVER_TARGET`, otherwise the home directory) |
-| `OVER_OVERLAY_NAME` | Install and post-apply: repository-relative overlay name |
-| `OVER_OVERLAY_ROOT` | Install and post-apply: absolute overlay source directory |
-| `OVER_OVERLAY_TARGET` | Install and post-apply: absolute resolved base target |
+| `OVER_TARGET_ROOT` | Apply hooks (including post-install): resolved absolute execution target root (`--target` or `OVER_TARGET`, otherwise the home directory) |
+| `OVER_OVERLAY_NAME` | Apply hooks: repository-relative overlay name |
+| `OVER_OVERLAY_ROOT` | Apply hooks: absolute overlay source directory |
+| `OVER_OVERLAY_TARGET` | Apply hooks: absolute resolved base target |
 
-For root install and post-apply hooks with one distinct selected root, overlay
+For root apply hooks with one distinct selected root, overlay
 variables identify that selected overlay. With multiple distinct roots, root
 hooks remove all three `OVER_OVERLAY_*` variables, including inherited values;
 `OVER_TARGET_ROOT` remains available. Overlay hooks identify that hook's own
@@ -453,8 +467,10 @@ provider error details. Commands control their own output, which Over does not
 redact. Numeric exit codes are preserved when representable as an 8-bit code;
 spawn errors, signal termination, and unrepresentable codes return `1`.
 
-Failed reconciliation runs no install or post-apply hooks. A failed install hook
-also suppresses post-apply. A hook failure leaves completed
+Root install failure stops before overlay deployment. Failed reconciliation runs
+no overlay install, post-apply, or root post-install hooks. Overlay install or
+post-apply failure also suppresses root post-install, and a root post-install
+failure fails the command. A hook failure leaves completed
 filesystem changes and hook effects in place. Apply retries run hooks from the
 beginning, so write retry-safe commands.
 

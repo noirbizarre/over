@@ -27,12 +27,17 @@ for `--install`; dry runs execute no hooks, even with the flag.
 
 ## Lifecycle and context
 
-All participating overlays must finish reconciliation, including Git provisioning
-and Git-exclude updates, before any install hook runs. With `--install`, root
-install hooks run first, then participating overlays' own install hooks in
-dependency-first `uses` order. All install hooks finish before post-apply hooks
-start. Commands can therefore use configuration deployed by the same invocation,
-and post-apply hooks can use installed applications.
+With `--install`, root `hooks.install` runs once after dependency/data/target
+resolution and before any overlay deployment. After all participating overlays
+finish reconciliation, including Git provisioning and Git-exclude updates,
+overlays' own install hooks run in dependency-first `uses` order. Then root and
+overlay post-apply hooks run in their existing order. Finally, root-only
+`hooks.post-install` runs once, after every earlier phase succeeds.
+
+Overlay install commands can use configuration deployed by the same invocation,
+and post-apply hooks can use installed applications. Root install commands run
+before that configuration exists; use root post-install for invocation-wide
+finalization. Neither root install phase runs without `--install`.
 
 Install hooks use the same [structured-hook features](configuration/root.md#lifecycle-hooks)
 as other events: shorthand or templated `command`, `when`, `cwd`, and `env`.
@@ -54,7 +59,8 @@ Hooks do not inherit through ancestor descriptors. Put shared steps in root
 `hooks.install`, or compose an overlay that owns them through `uses`.
 `--no-uses` includes only root and selected-overlay hooks. A diamond dependency
 participates once; identical commands in different overlays still both run.
-Initialization and read-only commands never run install hooks.
+Initialization and inspection commands never run install hooks.
+`over apply --read-only --install` still runs the requested hooks.
 
 ## Explicit package aggregation
 
@@ -72,6 +78,24 @@ hooks:
     - command: "pacman -S --needed {{ data.archlinux.packages | join(' ') }}"
       sudo: true
       when: machine.distro_id == "arch"
+```
+
+Root hooks can inspect all actual participants through `allowOverlays`, an ordered
+sequence of overlay objects ready before root install. It includes selected roots
+and transitive dependencies once each in deterministic application order. Each
+object exposes its own local `data`; no lists are automatically merged. With
+`--no-uses`, only selected overlays appear. For example, users can pass overlay
+metadata to their own script in one invocation:
+
+```yaml
+# Repository-root over.yaml
+hooks:
+  install:
+    - command: ./scripts/prepare-overlays
+      env:
+        OVERLAY_ROLES: "{% for item in allowOverlays %}{{ item.data.role | default(item.name) }} {% endfor %}"
+  post-install:
+    - ./scripts/finalize-install
 ```
 
 For host provisioning, select the host overlay whose `uses` lists all desired
@@ -98,7 +122,9 @@ See [data scopes and migration](configuration/overlay.md#resolution-and-preceden
 
 ## Failures, retries, and trust
 
-The first failing hook stops later hooks, including post-apply, and fails apply.
+The first failing hook stops later hooks and fails apply. Root install failure
+prevents overlay deployment. Deployment or overlay hook failure prevents root
+post-install; post-install failure fails the overall command.
 Diagnostics identify the event, scope, and command index without printing command
 or rendered values. Completed file changes and command effects remain. Numeric
 child exit status is preserved where representable; other failures return `1`.
@@ -130,11 +156,12 @@ hooks:
       when: machine.os == "linux" and machine.distro_id == "ubuntu"
 ```
 
-Move pre/post-install steps into the same ordered command list. Choose manager
+Move per-overlay pre/post-install steps into the same ordered command list, or
+use root install/post-install hooks for invocation-wide setup/finalization. Choose manager
 flags, platform conditions, and cwd explicitly; Over no longer chooses a package
 manager or merges package lists. Move formerly inherited steps to root hooks or
 an explicitly composed overlay, since hook lists do not inherit.
 
-Installation now follows deployment rather than preceding it. Review scripts
-that relied on the old order. See [ADR-027](adr/027-installation-is-an-opt-in-hook-event.md)
+Overlay installation follows deployment; root installation precedes it. Review
+scripts that relied on the old order. See [ADR-027](adr/027-installation-is-an-opt-in-hook-event.md)
 for the architecture decision replacing the dedicated engine.

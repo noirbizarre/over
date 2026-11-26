@@ -53,7 +53,8 @@ Changing a mode authorizes automatic replacement only for reconstructible owned
 state: matching source links, exact source-link mirrors, or clean virtual
 checkouts without independent destinations. Foreign legacy links are preserved.
 To change a checkout to recursive per-file links, unapply its old layout first.
-Blocked migrations fail apply and suppress install and post-apply hooks.
+Blocked migrations fail apply and suppress overlay install, post-apply, and root
+post-install hooks. Opted-in root install hooks have already run before deployment.
 
 ## Operation inventory
 
@@ -78,7 +79,7 @@ Blocked migrations fail apply and suppress install and post-apply hooks.
 | Reverse add/staging | Selected deployment/source paths or selected source-index entries; explicit `add`/`git add` | Source selection, checkout association and mapping checks apply. Virtual staging preserves source working files and unrelated staging. Ordinary reverse-add moves content into the source: inspect paths before running. |
 | Host Git excludes | Only the overlay's marker block in `.git/info/exclude` | Does not alter the host index or tracked files; malformed blocks remain intact. Unapply retains its block when unverifiable generated links remain. Dry-run leaves excludes untouched. |
 | Lifecycle hooks/external diff tools | Arbitrary effects of trusted repository commands | Lifecycle hooks run only at their documented events, stop on failure and are suppressed under dry-run; their effects are outside Over's filesystem ownership model. External inspection tools can have their own side effects. |
-| Install hooks | Arbitrary repository-provided commands, including package-manager/system changes; explicit `apply --install` | Run only after all reconciliation succeeds, before post-apply. Dry-run skips execution. Child commands have their own prompt/privilege policies and must be safe to repeat. |
+| Install hooks | Arbitrary repository-provided commands, including package-manager/system changes; explicit `apply --install` | Root install runs before deployment; overlay install after successful reconciliation, before post-apply; root post-install last. Dry-run skips execution. Child commands have their own prompt/privilege policies and must be safe to repeat. |
 
 ## Recovery limitations
 

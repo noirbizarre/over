@@ -137,6 +137,7 @@ impl Hook {
 #[cfg_attr(feature = "schema", schemars(default, deny_unknown_fields))]
 pub struct Hooks {
     pub install: Vec<Hook>,
+    pub post_install: Vec<Hook>,
     pub post_clone: Vec<Hook>,
     pub post_init: Vec<Hook>,
     pub post_apply: Vec<Hook>,
@@ -146,6 +147,7 @@ impl fmt::Debug for Hooks {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Hooks")
             .field("install", &self.install.len())
+            .field("post_install", &self.post_install.len())
             .field("post_clone", &self.post_clone.len())
             .field("post_init", &self.post_init.len())
             .field("post_apply", &self.post_apply.len())
@@ -170,6 +172,7 @@ impl Hooks {
         for (event, commands) in events {
             let destination = match event.as_str() {
                 "install" => &mut hooks.install,
+                "post-install" => &mut hooks.post_install,
                 "post-clone" => &mut hooks.post_clone,
                 "post-init" => &mut hooks.post_init,
                 "post-apply" => &mut hooks.post_apply,
@@ -191,6 +194,7 @@ impl Hooks {
 
     pub fn is_empty(&self) -> bool {
         self.install.is_empty()
+            && self.post_install.is_empty()
             && self.post_clone.is_empty()
             && self.post_init.is_empty()
             && self.post_apply.is_empty()
@@ -199,6 +203,7 @@ impl Hooks {
     fn commands(&self, event: Event) -> &[Hook] {
         match event {
             Event::Install => &self.install,
+            Event::PostInstall => &self.post_install,
             Event::PostClone => &self.post_clone,
             Event::PostInit => &self.post_init,
             Event::PostApply => &self.post_apply,
@@ -209,6 +214,7 @@ impl Hooks {
 #[derive(Clone, Copy, Debug)]
 pub enum Event {
     Install,
+    PostInstall,
     PostClone,
     PostInit,
     PostApply,
@@ -218,6 +224,7 @@ impl fmt::Display for Event {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Install => "install",
+            Self::PostInstall => "post-install",
             Self::PostClone => "post-clone",
             Self::PostInit => "post-init",
             Self::PostApply => "post-apply",
@@ -625,15 +632,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn install_only_hooks_are_nonempty_and_hide_commands_in_debug_output() {
-        let hooks: Hooks = serde_json::from_value(json!({"install": ["install-secret"]})).unwrap();
+    #[rstest]
+    #[case(Event::Install)]
+    #[case(Event::PostInstall)]
+    fn install_only_hooks_are_nonempty_and_hide_commands_in_debug_output(#[case] event: Event) {
+        let hooks: Hooks =
+            serde_json::from_value(json!({(event.to_string()): ["install-secret"]})).unwrap();
         assert!(!hooks.is_empty());
         assert_eq!(
-            serde_json::to_value(hooks.commands(Event::Install)).unwrap(),
+            serde_json::to_value(hooks.commands(event)).unwrap(),
             json!(["install-secret"])
         );
-        assert_eq!(Event::Install.to_string(), "install");
         assert!(!format!("{hooks:?}").contains("install-secret"));
     }
 

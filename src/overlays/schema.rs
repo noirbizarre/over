@@ -29,7 +29,13 @@ pub(crate) const OVERLAY_KEYS: &[&str] = &[
     "target",
     "uses",
 ];
-pub(super) const EVENTS: &[&str] = &["install", "post-clone", "post-init", "post-apply"];
+pub(super) const EVENTS: &[&str] = &[
+    "install",
+    "post-install",
+    "post-clone",
+    "post-init",
+    "post-apply",
+];
 pub(super) const HOOK_FIELDS: &[&str] = &["command", "env", "cwd", "when", "sudo"];
 pub(super) const SYNC_FIELDS: &[&str] = &["default_to_host", "pull", "push"];
 pub(super) const APPLY_FIELDS: &[&str] = &["default_to_host"];

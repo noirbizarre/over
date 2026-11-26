@@ -470,12 +470,12 @@ mod tests {
     fn parsed_descriptors_validate_and_load_with_the_same_meaning(#[case] extension: &str) {
         let (root, child) = if extension == "toml" {
             (
-                "format = 'yaml'\ntarget = '~/shared'\noverlays = ['app']\n[sync]\npull = false\n",
+                "format = 'yaml'\ntarget = '~/shared'\noverlays = ['app']\n[sync]\npull = false\n[hooks]\npost-install = ['echo finalized']\n",
                 "exclude = ['*.tmp']\n[git.vendor]\nurl = '../source'\n[hooks]\npost-apply = ['echo ready']\n",
             )
         } else {
             (
-                "format: yaml\ntarget: '~/shared'\noverlays: [app]\nsync: {pull: false}\n",
+                "format: yaml\ntarget: '~/shared'\noverlays: [app]\nsync: {pull: false}\nhooks: {post-install: ['echo finalized']}\n",
                 "exclude: ['*.tmp']\ngit: {vendor: {url: ../source}}\nhooks: {post-apply: ['echo ready']}\n",
             )
         };
@@ -503,6 +503,7 @@ mod tests {
         }
         let repo = Repository::new(temp.path().to_path_buf()).collecting_warnings();
         assert!(!repo.sync_config().unwrap().pull);
+        assert_eq!(repo.hooks().unwrap().post_install.len(), 1);
         let overlay = repo.get("app").unwrap();
         assert_eq!(overlay.target, "~/shared");
         assert_eq!(overlay.exclude, Some(vec!["*.tmp".to_string()]));
