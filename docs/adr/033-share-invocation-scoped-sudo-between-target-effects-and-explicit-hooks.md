@@ -23,6 +23,10 @@ versioned private Unix-socket protocol carries typed target effects and prepared
 content. Authentication keeps normal sudo terminal behavior. Noninteractive
 invocations use `sudo -n`; cached authentication follows local sudo policy.
 Read-only capabilities reject effects and hook execution. Failure is not retried.
+Read-only commands and dry runs inspect targets as the invoking account and never
+start or use sudo, even with cached credentials. Inaccessible targets produce
+inspection diagnostics instead of triggering elevation. Mutating operations
+retain configured elevation for both preparatory target reads and writes.
 The helper terminates and is reaped when the invocation finishes. Launch it with
 sudo's background mode and no inherited standard input: a persistent foreground
 sudo PTY would otherwise consume keys meant for conflict prompts, crypto unlocks,

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use dirs::home_dir;
 use tokio::task::spawn_blocking;
 use walkdir::WalkDir;
@@ -98,7 +98,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
             &blocking_policy,
         )
     })
-    .await?;
+    .await??;
 
     // ── Overlay files not applied here ───────────────────────────────────
     // Walk the overlay directory for the relative path, find files without
@@ -106,6 +106,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
 
     let overlay_subdir = overlay.root.join(&rel_path);
     let ctx = crate::exec::Context::builder()
+        .read_only(true)
         .root(root)
         .repository(over_repo)
         .overlay(overlay.clone())
@@ -152,7 +153,7 @@ pub async fn execute(cli: &CLI) -> Result<()> {
                 &policy,
             )
         })
-        .await?
+        .await??
     } else {
         Vec::new()
     };
@@ -207,7 +208,7 @@ fn find_managed_files(
     overlay_root_canonical: &Path,
     source: &Path,
     policy: &crate::overlays::ignore::SourcePolicy,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
     let mut managed_files = Vec::new();
     for entry in WalkDir::new(workdir)
         .min_depth(1)
@@ -216,14 +217,15 @@ fn find_managed_files(
             // Skip .git directory
             e.file_name() != ".git"
         })
-        .filter_map(|e| e.ok())
     {
+        // A partial walk must not be reported as a complete, healthy status.
+        let entry = entry.with_context(|| format!("inspect {}", workdir.display()))?;
         let path = entry.path();
-        if path.is_symlink()
-            && let Ok(target) = std::fs::read_link(path)
-        {
-            let target_canonical = if target.is_absolute() && target.exists() {
-                target.canonicalize().unwrap_or(target)
+        if entry.file_type().is_symlink() {
+            let target = std::fs::read_link(path)
+                .with_context(|| format!("read link {}", path.display()))?;
+            let target_canonical = if target.is_absolute() {
+                canonicalize_or_missing(&target)?
             } else {
                 target.clone()
             };
@@ -237,7 +239,7 @@ fn find_managed_files(
             }
         }
     }
-    managed_files
+    Ok(managed_files)
 }
 
 /// Walk the overlay directory for the relative path, find files without
@@ -249,14 +251,14 @@ fn find_unapplied_files_routed(
     routing: Option<(&crate::overlays::mapping::ResolvedMappings, &Path)>,
     entries: &[crate::desired::DesiredEntry],
     policy: &crate::overlays::ignore::SourcePolicy,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
     let mut unapplied_files = Vec::new();
     for entry in WalkDir::new(overlay_subdir)
         .min_depth(1)
         .into_iter()
         .filter_entry(|entry| policy.includes(entry.path(), entry.file_type().is_dir()))
-        .filter_map(|e| e.ok())
     {
+        let entry = entry.with_context(|| format!("inspect {}", overlay_subdir.display()))?;
         let path = entry.path();
         if path.is_file()
             && !is_overlay_descriptor(path)
@@ -276,7 +278,7 @@ fn find_unapplied_files_routed(
             } else {
                 repo_root.join(rel)
             };
-            let is_linked = is_symlink_to(&check_path, path, overlay_root_canonical)
+            let is_linked = is_symlink_to(&check_path, path, overlay_root_canonical)?
                 || entries.iter().any(|entry| {
                     entry.intent.is_virtual_checkout()
                         && crate::stage::owns(entry, &check_path)
@@ -287,40 +289,52 @@ fn find_unapplied_files_routed(
             }
         }
     }
-    unapplied_files
+    Ok(unapplied_files)
+}
+
+// Dangling links are valid status inputs; denied access is not evidence of absence.
+fn canonicalize_or_missing(path: &Path) -> Result<std::path::PathBuf> {
+    match path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(error).with_context(|| format!("resolve {}", path.display())),
+    }
 }
 
 /// Check if a path is a symlink pointing to (or under) a file in the overlay.
-fn is_symlink_to(worktree_path: &Path, overlay_file: &Path, overlay_root_canonical: &Path) -> bool {
-    if !worktree_path.is_symlink() {
-        return false;
+fn is_symlink_to(
+    worktree_path: &Path,
+    overlay_file: &Path,
+    overlay_root_canonical: &Path,
+) -> Result<bool> {
+    match std::fs::symlink_metadata(worktree_path) {
+        Ok(metadata) if metadata.is_symlink() => {}
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("inspect {}", worktree_path.display()));
+        }
     }
-    let Ok(target) = std::fs::read_link(worktree_path) else {
-        return false;
-    };
-    let target_resolved = if target.is_absolute() && target.exists() {
-        target.canonicalize().unwrap_or(target)
+    let target = std::fs::read_link(worktree_path)
+        .with_context(|| format!("read link {}", worktree_path.display()))?;
+    let target_resolved = if target.is_absolute() {
+        canonicalize_or_missing(&target)?
     } else {
-        target.clone()
+        target
     };
-
-    // Check if the symlink target is the exact overlay file or under the overlay root
-    if target_resolved == overlay_file {
-        return true;
-    }
-    if let Ok(overlay_canonical) = overlay_file.canonicalize()
-        && target_resolved == overlay_canonical
+    if target_resolved == overlay_file || target_resolved == canonicalize_or_missing(overlay_file)?
     {
-        return true;
+        return Ok(true);
     }
-    // Compare relative paths within the overlay root; both must succeed for a valid match
-    match (
-        target_resolved.strip_prefix(overlay_root_canonical),
-        overlay_file.strip_prefix(overlay_root_canonical),
-    ) {
-        (Ok(target_rel), Ok(overlay_rel)) => target_rel == overlay_rel,
-        _ => false,
-    }
+    Ok(
+        match (
+            target_resolved.strip_prefix(overlay_root_canonical),
+            overlay_file.strip_prefix(overlay_root_canonical),
+        ) {
+            (Ok(target_rel), Ok(overlay_rel)) => target_rel == overlay_rel,
+            _ => false,
+        },
+    )
 }
 
 /// Check if a path is an overlay descriptor file (e.g., `over.yml`, `over.yaml`, `over.toml`).
@@ -384,22 +398,28 @@ mod tests {
         let td = TempDir::new().unwrap();
         td.child("regular.txt").write_str("hello").unwrap();
 
-        assert!(!is_symlink_to(
-            &td.path().join("regular.txt"),
-            &PathBuf::from("/some/overlay/file"),
-            &PathBuf::from("/some/overlay"),
-        ));
+        assert!(
+            !is_symlink_to(
+                &td.path().join("regular.txt"),
+                &PathBuf::from("/some/overlay/file"),
+                &PathBuf::from("/some/overlay"),
+            )
+            .unwrap()
+        );
     }
 
     #[test]
     fn missing_path_is_not_treated_as_a_symlink_to_overlay() {
         let td = TempDir::new().unwrap();
 
-        assert!(!is_symlink_to(
-            &td.path().join("does_not_exist"),
-            &PathBuf::from("/some/overlay/file"),
-            &PathBuf::from("/some/overlay"),
-        ));
+        assert!(
+            !is_symlink_to(
+                &td.path().join("does_not_exist"),
+                &PathBuf::from("/some/overlay/file"),
+                &PathBuf::from("/some/overlay"),
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -417,11 +437,14 @@ mod tests {
         symlink::symlink_file(overlay_file.path(), &link_path).unwrap();
 
         let overlay_root_canonical = overlay_dir.path().canonicalize().unwrap();
-        assert!(is_symlink_to(
-            &link_path,
-            &overlay_file.path().canonicalize().unwrap(),
-            &overlay_root_canonical,
-        ));
+        assert!(
+            is_symlink_to(
+                &link_path,
+                &overlay_file.path().canonicalize().unwrap(),
+                &overlay_root_canonical,
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -445,11 +468,14 @@ mod tests {
         symlink::symlink_file(other_file.path(), &link_path).unwrap();
 
         let overlay_root_canonical = overlay_dir.path().canonicalize().unwrap();
-        assert!(!is_symlink_to(
-            &link_path,
-            &overlay_file.path().canonicalize().unwrap(),
-            &overlay_root_canonical,
-        ));
+        assert!(
+            !is_symlink_to(
+                &link_path,
+                &overlay_file.path().canonicalize().unwrap(),
+                &overlay_root_canonical,
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -470,10 +496,13 @@ mod tests {
 
         let overlay_root_canonical = overlay_dir.path().canonicalize().unwrap();
         // overlay_file is under overlay_root, so relative path matching should work
-        assert!(is_symlink_to(
-            &link_path,
-            &overlay_file.path().canonicalize().unwrap(),
-            &overlay_root_canonical,
-        ));
+        assert!(
+            is_symlink_to(
+                &link_path,
+                &overlay_file.path().canonicalize().unwrap(),
+                &overlay_root_canonical,
+            )
+            .unwrap()
+        );
     }
 }

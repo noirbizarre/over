@@ -188,13 +188,16 @@ this preserves independent ownership and verifiable link provenance.
 ### Elevated access (`sudo`)
 
 Set `sudo: true` on an overlay or a rule to use elevated access to its managed
-targets. Explicit `sudo: false` overrides inherited elevation. Target inspection
-and mutation share one lazily started sudo helper per invocation, including
+targets during mutating operations. Explicit `sudo: false` overrides inherited
+elevation. Target reads and writes in those operations share one lazily started
+sudo helper per invocation, including
 explicitly elevated hooks. Valid cached sudo credentials are reused according to
 system sudo policy; Over does not collect passwords. `--no-prompt` uses sudo's
 noninteractive mode, allowing cached/passwordless authorization and failing if
-interaction is required. Previews may authenticate for protected reads, but
-cannot mutate targets or execute hooks.
+interaction is required. Read-only commands and dry runs never use sudo, even
+with cached credentials. They inspect targets as the invoking account and report
+inspection failures for inaccessible targets. Previews cannot mutate targets or
+execute hooks.
 
 Git, rendering, secrets resolution, source updates, and XDG state/artifacts retain
 the invoking account. Declared Git provisioning cannot use sudo. Newly created

@@ -112,6 +112,7 @@ pub fn repo_relative_path(
     repo_workdir: &Path,
 ) -> Result<PathBuf> {
     let ctx = crate::exec::Context::builder()
+        .read_only(true)
         .root(root.to_path_buf())
         .repository(over_repo.clone())
         .overlay(overlay.clone())
@@ -135,6 +136,7 @@ pub fn select_overlay(
     overlay_name: Option<&str>,
 ) -> Result<Overlay> {
     let ctx = crate::exec::Context::builder()
+        .read_only(true)
         .repository(over_repo.clone())
         .root(dirs::home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?)
         .build();

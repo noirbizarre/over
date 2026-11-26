@@ -455,8 +455,9 @@ Set `sudo: true` for the entire overlay or individual rules. The normal sudo
 authentication mechanism is used once per invocation, reusing an existing valid
 credential cache when sudo policy permits. One helper stays available for all
 selected overlays and explicitly elevated hooks. `--no-prompt` permits only
-noninteractive sudo authorization. Dry runs and inspection may authenticate when
-reading protected targets, without changing them.
+noninteractive sudo authorization. Read-only commands and dry runs never use
+sudo, even with cached credentials. They read targets as your account and report
+inspection failures for inaccessible targets.
 
 Git, source files, templates, and user state remain under your account. Hook
 commands opt in separately with `command: ...` and `sudo: true`; they do not
