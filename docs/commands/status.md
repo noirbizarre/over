@@ -53,15 +53,33 @@ dependencies in composition order, target rules with resolved destinations,
 materialization baseline and rule count, declared Git destinations, and
 lifecycle-hook counts including install. These describe intent even when targets are missing.
 
-Dependencies and composition are displayed vertically, one overlay per line;
-composition retains dependency-first evaluation order. Git declarations show
-configuration and contributing scope on indented lines. Entry provenance uses
-separate overlay, source, scope and mode lines.
+Composition is displayed as a dependency tree rooted at the selected overlay.
+Its children are direct dependencies; deeper nodes show transitive dependencies,
+in declared `uses` order:
+
+```text
+  composition:
+    └─→ workstation
+        ├─→ editor
+        │   └─→ base
+        └─→ shell
+            └─→ base (already shown)
+```
+
+Shared dependencies appear under every parent, but their subtree is expanded only
+on the first occurrence. Later occurrences are marked `(already shown)`. The full
+tree is visible in both ordinary and verbose output, including with `--no-uses`,
+which skips dependency operations while retaining their metadata.
+Verbose dependency configuration blocks retain unique dependency-first evaluation
+order. Git declarations show configuration and contributing scope on indented
+lines. Entry provenance uses separate overlay, source, scope and mode lines.
 
 The headings are 📦 **Overlay**, 🛠️ **Configuration** and 🚦 **Reconciliation**.
 Overlay names and spinners are cyan; paths and Git repository identities are blue.
 Headings and keys are bold white. Other text uses the default foreground, with
-dimmed scope annotations. Green, yellow and red are reserved for success, warning and
+dimmed scope annotations. Tree connectors and repeated-branch labels are dimmed;
+overlay names retain their semantic color at every nesting level.
+Green, yellow and red are reserved for success, warning and
 error semantics. Nonzero reconciliation counts and entry
 labels share severity colors: applied is green, permission drift and missing entries
 yellow, and broken entries or conflicts red. Only nonzero categories are shown;

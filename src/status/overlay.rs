@@ -20,6 +20,21 @@ pub struct ResolvedConfiguration {
     pub target: PathBuf,
     pub summary: Vec<Field>,
     pub details: Vec<Field>,
+    pub composition: Option<Composition>,
+}
+
+/// Preserve graph edges separately from the unique dependency evaluation order.
+#[derive(Debug, Clone)]
+pub struct Composition {
+    pub root: CompositionNode,
+    pub operations_skipped: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompositionNode {
+    pub name: String,
+    pub children: Vec<CompositionNode>,
+    pub already_shown: bool,
 }
 
 /// Presentation data stays unstyled so collecting a snapshot never depends on a terminal.
@@ -181,12 +196,13 @@ impl OverlayReport {
         mode: InspectionMode,
     ) -> Result<Self> {
         let mut ordered = Vec::new();
-        compose(
+        let composition = compose(
             &ctx.repository,
             overlay,
             &mut BTreeSet::new(),
             &mut BTreeSet::new(),
             &mut ordered,
+            mode == InspectionMode::Full,
         )?;
         let mut configurations = ordered
             .iter()
@@ -200,6 +216,7 @@ impl OverlayReport {
                         target: PathBuf::new(),
                         summary: Vec::new(),
                         details: Vec::new(),
+                        composition: None,
                     })
                 }
             })
@@ -207,14 +224,10 @@ impl OverlayReport {
         let mut configuration = configurations
             .pop()
             .ok_or_else(|| anyhow!("overlay composition is empty"))?;
-        if mode == InspectionMode::Full {
-            configuration.summary.push(Field::list(
-                "composition",
-                ctx.no_uses
-                    .then(|| "dependency operations skipped; data retained".into()),
-                ordered.iter().map(|item| item.name.clone()).collect(),
-            ));
-        }
+        configuration.composition = composition.map(|root| Composition {
+            root,
+            operations_skipped: ctx.no_uses,
+        });
         let mut changes = Vec::new();
         let health = DesiredTree::build_reporting(&ctx, overlay).and_then(|desired| {
             if mode != InspectionMode::Health {
@@ -271,23 +284,40 @@ fn compose(
     visited: &mut BTreeSet<String>,
     stack: &mut BTreeSet<String>,
     ordered: &mut Vec<Overlay>,
-) -> Result<()> {
+    collect_tree: bool,
+) -> Result<Option<CompositionNode>> {
     ensure!(
         !stack.contains(&overlay.name),
         "dependency cycle at overlay '{}'",
         overlay.name
     );
+    let mut node = collect_tree.then(|| CompositionNode {
+        name: overlay.name.clone(),
+        children: Vec::new(),
+        already_shown: visited.contains(&overlay.name),
+    });
     if visited.contains(&overlay.name) {
-        return Ok(());
+        // Keep the repeated edge visible without expanding its shared subtree again.
+        return Ok(node);
     }
     stack.insert(overlay.name.clone());
     for name in overlay.uses.iter().flatten() {
-        compose(repo, &repo.get(name)?, visited, stack, ordered)?;
+        let child = compose(
+            repo,
+            &repo.get(name)?,
+            visited,
+            stack,
+            ordered,
+            collect_tree,
+        )?;
+        if let (Some(node), Some(child)) = (&mut node, child) {
+            node.children.push(child);
+        }
     }
     stack.remove(&overlay.name);
     visited.insert(overlay.name.clone());
     ordered.push(overlay.clone());
-    Ok(())
+    Ok(node)
 }
 
 fn origin(overlay: &Overlay, key: &str) -> String {
@@ -553,6 +583,7 @@ fn configuration(ctx: &Ctx, overlay: &Overlay) -> Result<ResolvedConfiguration> 
         target: mappings.base,
         summary,
         details,
+        composition: None,
     })
 }
 
