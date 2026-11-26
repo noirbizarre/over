@@ -47,7 +47,7 @@ while time.monotonic() < deadline:
     pending += block
     if sent < len(steps) and steps[sent][0].encode() in pending:
         prompt, answer = steps[sent]
-        if "passphrase" in prompt or "PIN" in prompt:
+        if "passphrase" in prompt or "PIN" in prompt or "Secret value" in prompt:
             ready = time.monotonic() + 2
             while termios.tcgetattr(fd)[3] & termios.ECHO:
                 if time.monotonic() >= ready:

@@ -530,7 +530,7 @@ fn forced_unlock_starts_credential_acquisition_without_confirmation_before_check
     let fixture = Fixture::new(true, true);
     let output = checked(fixture.interact(
         fixture.init().arg("--unlock"),
-        &[("passphrase: ", &format!("{PASSPHRASE}\n"))],
+        &[("Age key passphrase for ", &format!("{PASSPHRASE}\n"))],
     ));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("Unlock repository encryption"));
     fixture.assert_hooks(&["post-clone", "post-init"]);
@@ -568,7 +568,7 @@ fn initialization_selects_one_key_before_checkout_and_never_falls_back(#[case] v
         fixture.init().arg("--unlock"),
         &[
             ("bob/recovery (Age passphrase)", "\n"),
-            ("passphrase: ", &answer),
+            ("Age key passphrase for ", &answer),
         ],
     ));
     assert!(
@@ -601,7 +601,7 @@ fn interactive_fresh_init_offers_unlock_and_accepts_one_hidden_passphrase_before
         &mut fixture.init(),
         &[
             ("Unlock repository encryption", "y"),
-            ("passphrase: ", &format!("{PASSPHRASE}\n")),
+            ("Age key passphrase for ", &format!("{PASSPHRASE}\n")),
         ],
     ));
     fixture.assert_hooks(&["post-clone", "post-init"]);
@@ -621,7 +621,7 @@ fn failed_credentials_continue_locked_while_process_termination_preserves_the_un
         &mut fixture.init(),
         &[
             ("Unlock repository encryption", "y"),
-            ("passphrase: ", answer),
+            ("Age key passphrase for ", answer),
         ],
     );
     assert_eq!(output.status.success(), completes);

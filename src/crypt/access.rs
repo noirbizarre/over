@@ -964,8 +964,7 @@ pub(crate) fn unwrap_registry_policy<C: age::Callbacks>(
         let label = format!("{username}/{keyname}");
         let mut attempts = Vec::new();
         if access.recipient.is_none() {
-            callbacks.display_message(&format!("Trying passphrase key {label}"));
-            match password("Age key passphrase") {
+            match password(&format!("Age key passphrase for {label}")) {
                 Ok(password) => attempts.push(super::age::Identity::Library(Box::new(
                     age::scrypt::Identity::new(password),
                 ))),

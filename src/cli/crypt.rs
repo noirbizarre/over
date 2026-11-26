@@ -350,7 +350,8 @@ fn passphrase_with_confirmation(
     }
     let _pause =
         crate::ui::progress::pause().map_err(|_| crate::crypt::age::InteractionError::Failed)?;
-    let mut prompt = dialoguer::Password::new().with_prompt(label);
+    let theme = crate::ui::style::DialogTheme::default();
+    let mut prompt = dialoguer::Password::with_theme(&theme).with_prompt(label);
     if let Some(confirmation) = confirmation {
         prompt = prompt.with_confirmation(confirmation, "Passphrases do not match");
     }
@@ -360,6 +361,7 @@ fn passphrase_with_confirmation(
 }
 
 fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> {
+    let theme = crate::ui::style::DialogTheme::default();
     let mut opt = opt.clone();
     // Normalize the compatibility option before applying prompting and import rules.
     opt.name = opt.name.take().or(opt.name_option.take());
@@ -389,7 +391,7 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
             can_prompt(),
             "select --recipient, --recipients-file, --identity-output or --passphrase"
         );
-        match dialoguer::Select::new()
+        match dialoguer::Select::with_theme(&theme)
             .with_prompt("First key type")
             .items([
                 "Generate Age software identity",
@@ -402,19 +404,19 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
         {
             0 => {
                 opt.identity_output = Some(
-                    dialoguer::Input::<String>::new()
+                    dialoguer::Input::<String>::with_theme(&theme)
                         .with_prompt("Private identity output path")
                         .interact_text()?
                         .into(),
                 )
             }
             1 => opt.recipient.push(
-                dialoguer::Input::new()
+                dialoguer::Input::with_theme(&theme)
                     .with_prompt("Age recipient")
                     .interact_text()?,
             ),
             2 => opt.recipients_file.push(
-                dialoguer::Input::<String>::new()
+                dialoguer::Input::<String>::with_theme(&theme)
                     .with_prompt("Age recipient file")
                     .interact_text()?
                     .into(),
@@ -431,7 +433,7 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
     }
     if recipients.len() > 1 && opt.name_prefix.is_none() && opt.name.is_none() && can_prompt() {
         opt.name_prefix = Some(
-            dialoguer::Input::new()
+            dialoguer::Input::with_theme(&theme)
                 .with_prompt("Imported key name prefix")
                 .interact_text()?,
         );
@@ -448,7 +450,7 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
         "default".to_owned()
     } else {
         ensure!(can_prompt(), "supply NAME or --name for an additional key");
-        dialoguer::Input::new()
+        dialoguer::Input::with_theme(&theme)
             .with_prompt("Key name")
             .interact_text()?
     };
@@ -487,8 +489,11 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
     } else if opt.passphrase {
         // Catch enrollment typos before granting access with an unusable passphrase.
         password = Some(passphrase_with_confirmation(
-            "New Age key passphrase",
-            Some("Confirm new Age key passphrase"),
+            &format!("New Age key passphrase for {}/{name}", opt.user),
+            Some(&format!(
+                "Confirm new Age key passphrase for {}/{name}",
+                opt.user
+            )),
         )?);
     }
     // Publish a generated identity before granting access; a failure leaves recovery material.
@@ -805,8 +810,10 @@ pub(crate) fn acquire_repository_key_policy(
             })
             .collect();
         let _pause = crate::ui::progress::pause()?;
-        let index = dialoguer::Select::new()
+        let index = dialoguer::Select::with_theme(&crate::ui::style::DialogTheme::default())
             .with_prompt("Choose a repository key")
+            // The named password prompt supplies context without leaving a duplicate selection report.
+            .report(false)
             .items(&labels)
             .default(0)
             .interact_on_opt(&console::Term::stderr())
@@ -842,7 +849,7 @@ pub(crate) fn acquire_repository_key_policy(
             "Age identity file"
         };
         let _pause = crate::ui::progress::pause()?;
-        let path: String = dialoguer::Input::new()
+        let path: String = dialoguer::Input::with_theme(&crate::ui::style::DialogTheme::default())
             .with_prompt(prompt)
             .allow_empty(true)
             .interact_text_on(&console::Term::stderr())

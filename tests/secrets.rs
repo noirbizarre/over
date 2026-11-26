@@ -96,6 +96,33 @@ fn named_secrets_round_trip_replace_and_remove_without_disclosing_values() {
     assert!(!path.exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn interactive_secret_input_identifies_the_secret_without_echoing_its_value() {
+    let home = TempDir::new().unwrap();
+    let output = std::process::Command::new("python3")
+        .args(["-c", include_str!("fixtures/age-pty.py")])
+        .arg(serde_json::to_string(&[("Secret value for token", "value-sentinel\n")]).unwrap())
+        .arg(assert_cmd::cargo::cargo_bin!("over"))
+        .arg("--home")
+        .arg(home.path())
+        .args(["secret", "add", "token"])
+        .env("OVER_SECRET", PASSPHRASE)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let transcript = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    assert!(transcript.contains("✔ Secret value for token · ***"));
+    assert!(!transcript.contains("value-sentinel"));
+    assert!(!transcript.contains("[hidden]"));
+    command(home.path())
+        .args(["get", "token"])
+        .assert()
+        .success()
+        .stdout("value-sentinel");
+}
+
 #[test]
 fn repositories_are_isolated_and_wrong_credentials_release_no_plaintext() {
     let first = TempDir::new().unwrap();
