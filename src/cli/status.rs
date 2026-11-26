@@ -13,7 +13,9 @@ use crate::exec::Context;
 use crate::overlays::Overlay;
 use crate::overlays::Repository;
 use crate::status::Counts;
-use crate::status::overlay::{Field, InspectionCache, OverlayReport, ResolvedConfiguration, Value};
+use crate::status::overlay::{
+    CompositionNode, Field, InspectionCache, OverlayReport, ResolvedConfiguration, Value,
+};
 use crate::ui::{self, emojis, style};
 
 #[derive(Args, Clone, Debug)]
@@ -282,7 +284,7 @@ fn render_configuration(
         if verbose
             || matches!(
                 field.key.as_str(),
-                "description" | "effective root" | "mode" | "composition"
+                "description" | "effective root" | "mode"
             )
         {
             if verbose {
@@ -294,10 +296,51 @@ fn render_configuration(
             }
         }
     }
+    if let Some(composition) = &configuration.composition {
+        let annotation = if composition.operations_skipped {
+            format!(
+                " {}",
+                style::annotation("(dependency operations skipped; data retained)")
+            )
+        } else {
+            String::new()
+        };
+        lines.push(format!("  {}{annotation}:", style::key("composition")));
+        render_composition_node(&composition.root, "    ", true, lines);
+    }
     if verbose {
         for field in &configuration.details {
             render_field(field, 4, lines);
         }
+    }
+}
+
+fn render_composition_node(
+    node: &CompositionNode,
+    prefix: &str,
+    last: bool,
+    lines: &mut Vec<String>,
+) {
+    let connector = if last { "└─→" } else { "├─→" };
+    let annotation = if node.already_shown {
+        format!(" {}", style::annotation("(already shown)"))
+    } else {
+        String::new()
+    };
+    lines.push(format!(
+        "{} {}{annotation}",
+        style::annotation(format!("{prefix}{connector}")),
+        style::overlay(&node.name)
+    ));
+    // Continue ancestor branches only while they still have siblings below them.
+    let child_prefix = format!("{prefix}{}", if last { "    " } else { "│   " });
+    for (index, child) in node.children.iter().enumerate() {
+        render_composition_node(
+            child,
+            &child_prefix,
+            index + 1 == node.children.len(),
+            lines,
+        );
     }
 }
 
@@ -459,7 +502,10 @@ mod tests {
     fn rendering_a_collected_overlay_report_never_reopens_its_source_or_target() {
         let tmp = TempDir::new().unwrap();
         tmp.child("ov/over.yaml")
-            .write_str("target: '~/target'")
+            .write_str("target: '~/target'\nuses: [base]")
+            .unwrap();
+        tmp.child("base/over.yaml")
+            .write_str("target: '~/base'")
             .unwrap();
         tmp.child("ov/file").write_str("managed").unwrap();
         let repo = Repository::new(tmp.path().to_owned());
@@ -470,6 +516,7 @@ mod tests {
         assert!(plain.starts_with(&format!("{} Overlay ov\n", emojis::PACKAGE)));
         assert!(plain.contains(&format!("{} Configuration:", emojis::TOOLS)));
         assert!(plain.contains(&format!("{} Reconciliation:", emojis::TRAFFIC_LIGHT)));
+        assert!(plain.contains("composition:\n    └─→ ov\n        └─→ base\n"));
         tmp.close().unwrap();
         assert_eq!(render_overlay(&snapshot, true), before);
     }

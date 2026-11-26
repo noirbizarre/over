@@ -282,7 +282,7 @@ fn unapplied_status_resolves_inheritance_composition_mappings_and_rule_provenanc
         .stdout(contains("Configuration:"))
         .stdout(contains(root.join("resolved").to_string_lossy().as_ref()))
         .stdout(contains(root.join("mapped").to_string_lossy().as_ref()))
-        .stdout(contains("composition:\n    ├─→ base\n    └─→ selected"))
+        .stdout(contains("composition:\n    └─→ selected\n        └─→ base"))
         .stdout(contains("Dependency base:"))
         .stdout(contains("mode: symlink-directory"))
         .stdout(contains("over.yaml rule 1"))
@@ -297,6 +297,61 @@ fn unapplied_status_resolves_inheritance_composition_mappings_and_rule_provenanc
     assert_eq!(status.stdout, show.stdout);
     assert_eq!(status.stderr, show.stderr);
     assert_eq!(status.status.code(), show.status.code());
+    assert!(!root.exists());
+}
+
+#[rstest::rstest]
+fn composition_preserves_nested_edges_and_marks_shared_subtrees_without_reexpanding_them(
+    #[values("status", "show")] verb: &str,
+    #[values(false, true)] verbose: bool,
+    #[values(false, true)] no_uses: bool,
+) {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("home");
+    for (name, uses) in [
+        ("selected", "['zeta', 'alpha', 'shared', './shared/']"),
+        ("zeta", "['shared']"),
+        ("alpha", "['./shared/']"),
+        ("shared", "['leaf']"),
+        ("leaf", "[]"),
+    ] {
+        fs::create_dir_all(source.join(name)).unwrap();
+        fs::write(
+            source.join(name).join("over.toml"),
+            format!("target = '~'\nuses = {uses}\n"),
+        )
+        .unwrap();
+    }
+    let mut cmd = command(&source, &root, verb);
+    cmd.arg("selected");
+    if verbose {
+        cmd.arg("--verbose");
+    }
+    if no_uses {
+        cmd.arg("--no-uses");
+    }
+    let heading = if no_uses {
+        "composition (dependency operations skipped; data retained):\n"
+    } else {
+        "composition:\n"
+    };
+    let tree = concat!(
+        "    └─→ selected\n",
+        "        ├─→ zeta\n",
+        "        │   └─→ shared\n",
+        "        │       └─→ leaf\n",
+        "        ├─→ alpha\n",
+        "        │   └─→ shared (already shown)\n",
+        "        ├─→ shared (already shown)\n",
+        "        └─→ shared (already shown)\n",
+    );
+    cmd.assert()
+        .success()
+        .stdout(contains(format!("{heading}{tree}")))
+        .stdout(contains("│       └─→ leaf").count(1))
+        .stdout(contains("(already shown)").count(3))
+        .stdout(contains("\x1b[").not());
     assert!(!root.exists());
 }
 
@@ -343,6 +398,7 @@ fn healthy_entries_are_summarized_until_verbose_is_requested() {
         .assert()
         .success()
         .stdout(contains("Reconciliation:\n  Fully applied: 2 applied"))
+        .stdout(contains("composition:\n    └─→ selected\n"))
         .stdout(contains("source:").count(1))
         .stdout(contains("\x1b[").not());
     command(&source, &root, "status")
