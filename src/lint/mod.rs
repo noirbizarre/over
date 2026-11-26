@@ -810,6 +810,7 @@ fn lint_dirs(
                 continue;
             };
             let mut context = Context::builder()
+                .read_only(true)
                 .repository(repo.clone())
                 .root(ctx.root.clone())
                 .machine(ctx.machine.clone())

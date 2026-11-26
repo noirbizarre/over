@@ -56,6 +56,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let resolved = resolve_inputs_with_missing(&args.files, true)?;
     let root = home_dir().ok_or_else(|| anyhow!("could not determine home directory"))?;
     let selection_ctx = Context::builder()
+        .dry_run(args.dry_run)
         .repository(over_repo.clone())
         .root(root.clone())
         .build();

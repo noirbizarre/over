@@ -52,6 +52,19 @@ impl Fixture {
     }
 
     fn selected_command(&self, verb: &str, named: bool) -> Command {
+        let mut command = self.base_command();
+        command.arg(verb);
+        if verb == "unapply" {
+            command.arg("--yes");
+        }
+        if named {
+            command.arg("overlay");
+        }
+        command.arg("--target").arg(&self.target);
+        command
+    }
+
+    fn base_command(&self) -> Command {
         let mut command = Command::new(assert_cmd::cargo::cargo_bin!("over"));
         let path = std::env::join_paths(std::iter::once(self.bin.clone()).chain(
             std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
@@ -66,16 +79,17 @@ impl Fixture {
             .env_remove("OVER_HOME")
             .env_remove("OVER_HOOK_ACTIVE")
             .arg("--home")
-            .arg(&self.source)
-            .arg(verb);
-        if verb == "unapply" {
-            command.arg("--yes");
-        }
-        if named {
-            command.arg("overlay");
-        }
-        command.arg("--target").arg(&self.target);
+            .arg(&self.source);
         command
+    }
+
+    fn forbid_sudo(&self) {
+        fs::write(
+            self.bin.join("sudo"),
+            "#!/bin/sh\nprintf 'unexpected sudo\\n' >> \"$FAKE_SUDO_TRACE\"\nexit 1\n",
+        )
+        .unwrap();
+        fs::write(&self.trace, "").unwrap();
     }
 
     fn starts(&self) -> usize {
@@ -106,6 +120,161 @@ impl Fixture {
         )
         .unwrap();
     }
+}
+
+#[rstest::rstest]
+#[case("status")]
+#[case("show")]
+#[case("diff")]
+#[case("lint")]
+#[case("doctor")]
+fn read_only_commands_inspect_sudo_managed_targets_without_authentication(#[case] verb: &str) {
+    let fixture = Fixture::new();
+    fixture.config(json!({"sudo": true, "uses": ["dependency"], "rules": [
+        {"path": "nested/file", "sudo": true}
+    ]}));
+    fs::create_dir_all(fixture.source.join("overlay/nested")).unwrap();
+    fs::write(fixture.source.join("overlay/nested/file"), "source").unwrap();
+    fs::create_dir_all(fixture.source.join("dependency")).unwrap();
+    fs::write(fixture.source.join("dependency/over.yaml"), "sudo: true\n").unwrap();
+    fs::write(fixture.source.join("dependency/other"), "dependency").unwrap();
+    fixture.commit();
+    fixture.command("apply").assert().success();
+    fixture.forbid_sudo();
+    fixture.command(verb).assert().success();
+    if verb == "status" {
+        fixture.command(verb).arg("--short").assert().success();
+        fixture
+            .selected_command(verb, false)
+            .current_dir(&fixture.target)
+            .assert()
+            .success();
+    }
+    assert_eq!(fixture.starts(), 0);
+}
+
+#[test]
+fn git_status_and_add_preview_never_authenticate_for_mapped_targets() {
+    let fixture = Fixture::new();
+    fixture.config(json!({"sudo": true, "target": fixture.target}));
+    fs::write(fixture.source.join("overlay/file"), "source").unwrap();
+    fixture.commit();
+    fixture.command("apply").assert().success();
+    let repo = git2::Repository::init(&fixture.target).unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("over.overlay", "overlay")
+        .unwrap();
+    fs::write(fixture.target.join("new"), "new").unwrap();
+    fixture.forbid_sudo();
+    fixture
+        .base_command()
+        .args(["git", "status"])
+        .current_dir(&fixture.target)
+        .assert()
+        .success();
+    fixture
+        .base_command()
+        .args(["git", "add", "--dry-run", "new"])
+        .current_dir(&fixture.target)
+        .assert()
+        .success();
+    assert_eq!(fixture.starts(), 0);
+    assert!(!fixture.source.join("overlay/new").exists());
+}
+
+#[test]
+fn inaccessible_targets_report_inspection_errors_without_authentication() {
+    // Root can read mode-000 files, so it cannot exercise this permission failure.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let fixture = Fixture::new();
+    fixture.config(json!({"sudo": true, "mode": "checkout", "target": fixture.target}));
+    fs::write(fixture.source.join("overlay/file"), "source").unwrap();
+    fixture.commit();
+    fixture.command("apply").assert().success();
+    fixture.forbid_sudo();
+    let path = fixture.target.join("file");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    let output = fixture
+        .command("status")
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.contains("cannot check overlay") && output.contains("Check failed"),
+        "{output}"
+    );
+    assert_eq!(fixture.starts(), 0);
+
+    let repo = git2::Repository::init(&fixture.target).unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("over.overlay", "overlay")
+        .unwrap();
+    let restricted = fixture.target.join("restricted");
+    fs::create_dir(&restricted).unwrap();
+    fs::set_permissions(&restricted, fs::Permissions::from_mode(0o000)).unwrap();
+    let output = fixture
+        .base_command()
+        .args(["git", "status"])
+        .current_dir(&fixture.target)
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+    fs::set_permissions(&restricted, fs::Permissions::from_mode(0o700)).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("inspect"), "{stderr}");
+    assert_eq!(fixture.starts(), 0);
+}
+
+#[rstest::rstest]
+#[case("unapply")]
+#[case("restore")]
+fn destructive_previews_inspect_without_authentication_or_changes(#[case] verb: &str) {
+    let fixture = Fixture::new();
+    fixture.config(json!({"sudo": true, "mode": "checkout"}));
+    fs::write(fixture.source.join("overlay/file"), "source").unwrap();
+    fixture.commit();
+    fixture.command("apply").assert().success();
+    // Unapply refuses modified checkouts even in previews; restore needs an edit to discard.
+    let content = if verb == "restore" {
+        "local edit"
+    } else {
+        "source"
+    };
+    fs::write(fixture.target.join("file"), content).unwrap();
+    let index = fs::read(fixture.source.join(".git/index")).unwrap();
+    let state_path = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let state = fs::read(&state_path).unwrap();
+    fixture.forbid_sudo();
+    if verb == "restore" {
+        fixture
+            .base_command()
+            .args(["restore", "--overlay", "overlay", "--dry-run", "--target"])
+            .arg(&fixture.target)
+            .arg(fixture.target.join("file"))
+            .assert()
+            .success();
+    } else {
+        fixture.command(verb).arg("--dry-run").assert().success();
+    }
+    assert_eq!(fixture.starts(), 0);
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("file")).unwrap(),
+        content
+    );
+    assert_eq!(fs::read(fixture.source.join(".git/index")).unwrap(), index);
+    assert_eq!(fs::read(&state_path).unwrap(), state);
 }
 
 #[test]
@@ -309,7 +478,7 @@ fn elevated_and_ordinary_hooks_can_read_the_callers_terminal_in_sequence() {
 }
 
 #[test]
-fn dry_runs_authenticate_for_reads_without_deploying_files_or_running_hooks() {
+fn dry_runs_never_authenticate_deploy_files_or_run_hooks() {
     let fixture = Fixture::new();
     fixture.config(
         json!({"sudo": true, "hooks": {"post-apply": [{"command": "exit 88", "sudo": true}]}}),
@@ -320,12 +489,7 @@ fn dry_runs_authenticate_for_reads_without_deploying_files_or_running_hooks() {
         .args(["--dry-run", "--no-prompt"])
         .assert()
         .success();
-    assert_eq!(fixture.starts(), 1);
-    assert!(
-        fs::read_to_string(&fixture.trace)
-            .unwrap()
-            .contains("read-only")
-    );
+    assert_eq!(fixture.starts(), 0);
     assert!(!fixture.target.join("file").exists());
 }
 
@@ -359,9 +523,11 @@ fn sync_preserves_prompt_and_preview_policy_from_selection_to_execution(
     }
     command.assert().success();
     let trace = fs::read_to_string(&fixture.trace).unwrap();
-    assert_eq!(trace.lines().count(), 1, "{trace}");
-    assert!(trace.starts_with("-n "), "{trace}");
-    assert_eq!(trace.contains("read-only"), dry_run, "{trace}");
+    assert_eq!(trace.lines().count(), usize::from(!dry_run), "{trace}");
+    if !dry_run {
+        assert!(trace.starts_with("-n "), "{trace}");
+        assert!(trace.contains("read-write"), "{trace}");
+    }
     assert_eq!(
         fs::read_to_string(fixture.target.join("file")).unwrap(),
         if dry_run { "initial" } else { "updated" }
@@ -512,6 +678,7 @@ fn mapped_rendered_targets_use_rule_elevation_while_artifacts_remain_caller_owne
     );
     fixture.command("status").assert().success();
     fixture.command("diff").assert().success();
+    assert_eq!(fixture.starts(), 1);
     fixture
         .command("unapply")
         .arg("--no-prompt")
@@ -541,6 +708,7 @@ fn virtual_checkouts_share_target_access_across_apply_inspection_sync_and_unappl
     );
     fixture.command("status").assert().success();
     fixture.command("diff").assert().success();
+    assert_eq!(fixture.starts(), 1);
     fs::write(fixture.source.join("overlay/file"), "second").unwrap();
     fixture.commit();
     fixture
@@ -613,12 +781,7 @@ fn privileged_checkout_diffs_enumerate_projected_and_legacy_targets_without_muta
     let output = String::from_utf8(output).unwrap();
     assert!(output.contains("+local edit"), "{output}");
     assert_eq!(output.contains("+target addition"), legacy, "{output}");
-    assert_eq!(fixture.starts(), 1);
-    assert!(
-        fs::read_to_string(&fixture.trace)
-            .unwrap()
-            .contains("read-only")
-    );
+    assert_eq!(fixture.starts(), 0);
     assert_eq!(fs::read(&state_path).unwrap(), state);
     assert_eq!(fs::read(fixture.source.join(".git/index")).unwrap(), index);
     assert_eq!(

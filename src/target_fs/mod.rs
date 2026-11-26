@@ -579,6 +579,11 @@ impl Access {
 }
 
 impl TargetFs {
+    fn elevates_reads(&self) -> bool {
+        // Inspections and previews must not authenticate, even for sudo-managed targets.
+        self.sudo && !self.read_only
+    }
+
     pub fn is_privileged(&self) -> bool {
         self.sudo
     }
@@ -626,7 +631,7 @@ impl TargetFs {
     }
 
     pub fn location(&self, path: &Path) -> Result<PathBuf> {
-        if !self.sudo {
+        if !self.elevates_reads() {
             crate::desired::ownership::validate_directory_ancestors(path)?;
             return crate::overlays::mapping::location(path);
         }
@@ -639,7 +644,7 @@ impl TargetFs {
     }
 
     pub(crate) fn physical_destination(&self, target: &Path, source: &Path) -> Result<PathBuf> {
-        if !self.sudo {
+        if !self.elevates_reads() {
             return crate::overlays::mapping::physical_destination(target, source);
         }
         let metadata = match self.metadata(target, false) {
@@ -678,7 +683,7 @@ impl TargetFs {
     }
 
     pub(crate) fn physical(&self, path: &Path) -> Result<PathBuf> {
-        if !self.sudo {
+        if !self.elevates_reads() {
             return crate::overlays::mapping::physical(path);
         }
         match self.request(Request::Physical {
@@ -702,7 +707,7 @@ impl TargetFs {
     }
 
     pub fn read(&self, path: &Path) -> Result<Vec<u8>> {
-        if !self.sudo {
+        if !self.elevates_reads() {
             return Ok(std::fs::read(path)?);
         }
         match self.request(Request::Read {
@@ -714,7 +719,7 @@ impl TargetFs {
     }
 
     pub fn metadata(&self, path: &Path, follow: bool) -> Result<std::fs::Metadata> {
-        if !self.sudo {
+        if !self.elevates_reads() {
             return Ok(if follow {
                 std::fs::metadata(path)?
             } else {
@@ -755,7 +760,7 @@ impl TargetFs {
     }
 
     pub fn read_link(&self, path: &Path) -> Result<PathBuf> {
-        if !self.sudo {
+        if !self.elevates_reads() {
             return Ok(std::fs::read_link(path)?);
         }
         match self.request(Request::ReadLink {
@@ -767,7 +772,7 @@ impl TargetFs {
     }
 
     pub fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>> {
-        if !self.sudo {
+        if !self.elevates_reads() {
             return std::fs::read_dir(path)?
                 .map(|entry| Ok(entry?.path()))
                 .collect();
@@ -1052,4 +1057,33 @@ pub fn dispatch_helper() -> Option<Result<()>> {
     return Some(unix::serve(args.collect()));
     #[cfg(not(unix))]
     Some(Err(anyhow::anyhow!("sudo mode is only supported on Unix")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_only_access_inspects_locally_even_when_the_privileged_session_is_unavailable() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("file");
+        let link = directory.path().join("link");
+        std::fs::write(&file, "content").unwrap();
+        symlink::symlink_file(&file, &link).unwrap();
+        let session = Arc::new(Session::default());
+        // A closed session catches accidental helper use without launching real sudo.
+        session.shutdown().unwrap();
+        let fs = session.target(true, false, true);
+        assert!(fs.is_privileged());
+        assert_eq!(fs.read_to_string(&file).unwrap(), "content");
+        assert!(fs.metadata(&link, false).unwrap().is_symlink());
+        assert!(fs.metadata(&link, true).unwrap().is_file());
+        assert_eq!(fs.read_link(&link).unwrap(), file);
+        assert_eq!(fs.read_dir(directory.path()).unwrap().len(), 2);
+        assert_eq!(fs.location(&link).unwrap(), link);
+        assert_eq!(fs.physical(&link).unwrap(), file);
+        assert_eq!(fs.physical_destination(&link, &file).unwrap(), link);
+        assert!(fs.create_dir_all(&directory.path().join("new")).is_err());
+        assert!(!directory.path().join("new").exists());
+    }
 }

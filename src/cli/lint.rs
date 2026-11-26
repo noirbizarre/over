@@ -45,7 +45,11 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .clone()
         .or_else(dirs::home_dir)
         .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?;
-    let ctx = Context::builder().repository(repo).root(root).build();
+    let ctx = Context::builder()
+        .read_only(true)
+        .repository(repo)
+        .root(root)
+        .build();
     let result = match &args.overlay {
         Some(name) => lint_overlay_with_context(&ctx, name, !args.no_uses)?,
         None => lint_repository_with_context(&ctx),
