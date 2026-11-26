@@ -470,12 +470,16 @@ fn read_only_apply_runs_declared_git_dependencies_and_install_hooks_normally() {
     )
     .unwrap();
     fs::write(fixture.source.join("app/over.yaml"), format!("git:\n  dependency: '{}'\nhooks:\n  install: ['test -d \"$TEST_TARGET/dependency/.git\" && printf installed > \"$TEST_TARGET/hook\"']\n", dependency.display())).unwrap();
+    fs::write(fixture.source.join("over.yaml"), "host_overlay: app\nhooks:\n  install: ['test ! -f \"$TEST_TARGET/hook\"']\n  post-install: ['test -d \"$TEST_TARGET/dependency/.git\" && printf finalized >> \"$TEST_TARGET/hook\"']\n").unwrap();
     fixture.git(&["add", "."]);
     fixture.git(&["commit", "-qm", "dependency and hook"]);
     let before = snapshot(&fixture.source);
     fixture.apply().arg("--install").assert().success();
     assert!(fixture.target.join("dependency/.git").is_dir());
-    assert_eq!(fs::read(fixture.target.join("hook")).unwrap(), b"installed");
+    assert_eq!(
+        fs::read(fixture.target.join("hook")).unwrap(),
+        b"installedfinalized"
+    );
     assert_eq!(snapshot(&fixture.source), before);
 }
 

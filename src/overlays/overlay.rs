@@ -414,13 +414,67 @@ impl Overlay {
             "at least one overlay must be selected"
         );
         let prepared = ctx.prepare_rendering_many(overlays)?;
+        let mut visited = HashSet::new();
+        let mut stack = Vec::new();
+        let mut participants = Vec::new();
+        for overlay in overlays {
+            overlay.collect_participants(&prepared, &mut visited, &mut stack, &mut participants)?;
+        }
         // Shared partial destinations need one edit and one final metadata policy,
         // rather than a restrictive first block preventing subsequent contributors.
         let prepared = std::sync::Arc::new(crate::exec::Context {
             defer_partials: true,
+            application_overlays: std::sync::Arc::new(participants.clone()),
             ..prepared.as_ref().clone()
         });
         let ctx = &prepared;
+        let root_hooks = ctx.repository.hooks()?;
+        let hooks_enabled =
+            !root_hooks.is_empty() || participants.iter().any(|overlay| !overlay.hooks.is_empty());
+        if hooks_enabled {
+            // Executable configuration requires an explicitly validated repository.
+            ctx.repository.validate_initialization()?;
+        }
+        let run_hooks = !ctx.dry_run && hooks_enabled && !crate::hooks::nested();
+        // Multiple roots have no selected identity; repeated selection of one root
+        // retains the existing repository-hook environment and template scope.
+        let selected = overlays
+            .first()
+            .filter(|first| overlays.iter().all(|overlay| overlay.name == first.name));
+        let selected_target = selected
+            .map(|overlay| overlay.resolve_target(ctx))
+            .transpose()?;
+        let selected_ctx = match (selected, &selected_target) {
+            (Some(overlay), Some(target)) => ctx
+                .with_overlay(overlay.clone())
+                .with_target(target.clone()),
+            _ => std::sync::Arc::new(crate::exec::Context {
+                overlay: None,
+                current_target: None,
+                ..ctx.as_ref().clone()
+            }),
+        };
+        let root_context = || crate::hooks::HookContext {
+            templates: selected_ctx.clone(),
+            repository: &ctx.repository.root,
+            cwd: &ctx.repository.root,
+            scope: "repository root",
+            overlay: selected
+                .zip(selected_target.as_ref())
+                .map(|(overlay, target)| {
+                    (
+                        overlay.name.as_str(),
+                        overlay.root.as_path(),
+                        target.as_path(),
+                    )
+                }),
+            target_root: Some(&ctx.root),
+        };
+        if run_hooks && ctx.install {
+            // Root commands may invoke nested applies: never hold the checkout mutation
+            // guard here, and discover filesystem-dependent desired state afterward.
+            crate::hooks::run(&root_hooks, crate::hooks::Event::Install, root_context()).await?;
+        }
         let mut desired = DesiredTree::build_many(ctx, overlays)?;
         if ctx.source_read_only {
             crate::materialize::ephemeral::validate_source(&ctx.repository.root)?;
@@ -469,20 +523,6 @@ impl Overlay {
             }
         }
         crate::materialize::encrypted::prepare(&desired, ctx).await?;
-        let mut visited = HashSet::new();
-        let mut stack = Vec::new();
-        let mut participants = Vec::new();
-        for overlay in overlays {
-            overlay.collect_participants(ctx, &mut visited, &mut stack, &mut participants)?;
-        }
-        let root_hooks = ctx.repository.hooks()?;
-        let hooks_enabled =
-            !root_hooks.is_empty() || participants.iter().any(|overlay| !overlay.hooks.is_empty());
-        if hooks_enabled {
-            // New executable configuration requires an explicit validated repository;
-            // descriptor-less repositories without hooks retain their existing behavior.
-            ctx.repository.validate_initialization()?;
-        }
         let mut applied = Vec::new();
         let mut directory_metadata = crate::plan::DirectoryMetadata::default();
         let publication = async {
@@ -520,55 +560,18 @@ impl Overlay {
             ))
             .ok();
         }
-        if ctx.dry_run || !hooks_enabled || crate::hooks::nested() {
+        if !run_hooks {
             return Ok(());
         }
-        // Defer all hooks until every participant succeeds, including later siblings.
-        // Multiple roots have no selected identity; do not attribute repository hooks
-        // to an arbitrary participant. Repeated selection of one root stays compatible.
-        let selected = overlays
-            .first()
-            .filter(|first| overlays.iter().all(|overlay| overlay.name == first.name));
-        let selected_target = selected
-            .map(|overlay| overlay.resolve_target(ctx))
-            .transpose()?;
-        let selected_ctx = match (selected, &selected_target) {
-            (Some(overlay), Some(target)) => ctx
-                .with_overlay(overlay.clone())
-                .with_target(target.clone()),
-            _ => std::sync::Arc::new(crate::exec::Context {
-                overlay: None,
-                current_target: None,
-                ..ctx.as_ref().clone()
-            }),
-        };
-        // Installation consumes deployed files; post-apply can then use installed tools.
+        // Overlay installation still consumes deployed files, before any post-apply hook.
         let events = [
             ctx.install.then_some(crate::hooks::Event::Install),
             Some(crate::hooks::Event::PostApply),
         ];
         for event in events.into_iter().flatten() {
-            crate::hooks::run(
-                &root_hooks,
-                event,
-                crate::hooks::HookContext {
-                    templates: selected_ctx.clone(),
-                    repository: &ctx.repository.root,
-                    cwd: &ctx.repository.root,
-                    scope: "repository root",
-                    overlay: selected
-                        .zip(selected_target.as_ref())
-                        .map(|(overlay, target)| {
-                            (
-                                overlay.name.as_str(),
-                                overlay.root.as_path(),
-                                target.as_path(),
-                            )
-                        }),
-                    target_root: Some(&ctx.root),
-                },
-            )
-            .await?;
+            if matches!(event, crate::hooks::Event::PostApply) {
+                crate::hooks::run(&root_hooks, event, root_context()).await?;
+            }
             for (overlay, target) in &applied {
                 let overlay_ctx = ctx
                     .with_overlay((*overlay).clone())
@@ -587,6 +590,15 @@ impl Overlay {
                 )
                 .await?;
             }
+        }
+        if ctx.install {
+            // Finalization is suppressed by any deployment or earlier lifecycle failure.
+            crate::hooks::run(
+                &root_hooks,
+                crate::hooks::Event::PostInstall,
+                root_context(),
+            )
+            .await?;
         }
         Ok(())
     }

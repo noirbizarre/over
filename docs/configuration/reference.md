@@ -369,14 +369,19 @@ git:
 
 Every event contains a **list** of command strings or hook objects. Omitted
 events and empty lists do nothing. Availability below describes execution:
-child `post-clone` and `post-init` declarations are accepted but ignored.
+child `post-clone`, `post-init`, and `post-install` declarations are accepted but ignored.
 
 | Attribute | Scope | Type | Default | Execution |
 | --- | --- | --- | --- | --- |
 | `hooks.post-clone` | Root | List of hooks | `[]` | After a fresh unlocked init clone, before child discovery. |
 | `hooks.post-init` | Root | List of hooks | `[]` | After successful unlocked init, following any post-clone hooks. |
-| `hooks.install` | Both | List of hooks | `[]` | After successful reconciliation, only with `over apply --install` or `-i`. |
-| `hooks.post-apply` | Both | List of hooks | `[]` | After successful apply and any opted-in install hooks. |
+| `hooks.install` | Both | List of hooks | `[]` | Root: once before deployment. Overlay: after all overlays reconcile. Only with `over apply --install` or `-i`. |
+| `hooks.post-apply` | Both | List of hooks | `[]` | After successful reconciliation and any overlay install hooks; root first, then overlays dependency-first. |
+| `hooks.post-install` | Root | List of hooks | `[]` | Once after all overlays and post-apply hooks succeed, only with `--install` or `-i`. |
+
+During apply, `allowOverlays` exposes the deduplicated operational overlay objects
+and their local `data` in dependency-first application order, including transitive
+dependencies unless `--no-uses` is set. Both root install phases share this snapshot.
 
 An encrypted checkout can initialize successfully while locked, skipping both
 bootstrap events. Unlock and rerun init to execute post-init hooks; skipped

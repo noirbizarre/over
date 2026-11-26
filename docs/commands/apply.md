@@ -23,7 +23,7 @@ Options:
       --no-prompt         Fail on conflict instead of prompting
       --no-uses           Skip dependency operations, retaining dependency data
       --skip <NAME_OR_GLOB>  Skip overlay deployment by canonical name or glob (repeatable; quote 'workspace/*')
-  -i, --install           Run install hooks after applying files
+  -i, --install           Run root and overlay install lifecycle hooks
   -h, --help              Print help
 ```
 
@@ -124,8 +124,9 @@ Apply has no whole-command rollback or permanent overwrite/absorb backup.
 Absorb changes source content as well as the target. Reapply/unapply cannot
 recover previously overwritten user data.
 
-With `--install`, install hooks run after all overlays reconcile and before
-post-apply hooks. Later failure does not undo file or command changes.
+With `--install`, root install hooks run before deployment; overlay install
+hooks run after reconciliation, before post-apply. Root post-install runs last.
+Later failure does not undo file or command changes.
 External commands retain their own
 prompt policies; Over's force/no-prompt flags do not control child prompts.
 
@@ -191,19 +192,30 @@ normally when retained overlays are applied.
 
 For multiple distinct selected roots, repository hooks run once per event with
 no selected `overlay` or `OVER_OVERLAY_*` environment variables. Participant hooks
-retain their own overlay context. All hooks wait for every participant's files.
+retain their own overlay context. The shared `allowOverlays` sequence contains
+every actual participant and its local data, in dependency-first application order.
 
 Apply can execute repository-provided commands: **only apply repositories you
 trust**. With `--install`, applying an untrusted repository executes its arbitrary
-installation commands. After all participating overlays reconcile successfully,
-opted-in `hooks.install` runs first, then `hooks.post-apply`. Each event runs root
-hooks once, followed by each overlay's own hooks in dependency-first order,
-without duplicate participants. These hooks also run on a successful
-no-change apply. `--no-uses` includes only root and selected-overlay hooks;
-`--dry-run` executes none.
+installation commands. The lifecycle is:
 
-Ordinary apply does not prepare or execute install hooks. If materialization
-fails, neither install nor post-apply hooks run. A hook failure stops later
+1. Resolve selected overlays, transitive dependencies, data, and targets.
+2. With `--install`, run root `hooks.install` once, before deploying any overlay.
+3. Reconcile all participating overlays, including shared partials and metadata.
+4. With `--install`, run each overlay's own `hooks.install`, dependency-first.
+5. Run root `hooks.post-apply`, then each overlay's own post-apply hooks,
+   dependency-first and without duplicate participants.
+6. With `--install`, run root-only `hooks.post-install` once, after all prior
+   phases succeed.
+
+These hooks also run on a successful no-change apply. `--no-uses` includes only
+selected overlays in `allowOverlays` and skips dependency deployment/hooks;
+`--dry-run` executes no hooks.
+
+Ordinary apply does not prepare or execute either root install phase or overlay
+install hooks. Root install failure prevents deployment. If materialization
+fails, deferred overlay hooks, post-apply, and root post-install do not run.
+A hook failure stops later
 hooks and fails the command, preserving completed filesystem changes. Retrying
 apply reruns hooks, so commands must tolerate repeated execution. See
 [Lifecycle hooks](../configuration/root.md#lifecycle-hooks) for configuration, working

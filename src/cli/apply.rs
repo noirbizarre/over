@@ -61,7 +61,7 @@ pub struct Params {
     #[clap(long, help = "Skip dependency operations, retaining dependency data")]
     no_uses: bool,
 
-    #[clap(long, short, help = "Run install hooks after applying files")]
+    #[clap(long, short, help = "Run root and overlay install lifecycle hooks")]
     install: bool,
 }
 

@@ -89,6 +89,9 @@ pub struct Context {
     pub(crate) rendering_prepared: bool,
     #[serde(skip)]
     pub(crate) resolved_dependencies: Arc<Vec<Overlay>>,
+    /// Operational participants differ from metadata dependencies with --no-uses.
+    #[serde(skip)]
+    pub(crate) application_overlays: Arc<Vec<Overlay>>,
     #[serde(skip)]
     pub crypto: Arc<crate::secrets::CryptoService>,
     #[serde(skip)]
@@ -127,7 +130,7 @@ pub struct Context {
     /// Skip operational overlay composition, retaining dependency metadata.
     pub no_uses: bool,
 
-    /// Run install hooks after reconciliation, before post-apply hooks.
+    /// Run root install phases around deployment and the existing overlay lifecycle.
     pub install: bool,
 
     /// Target root (~)
@@ -331,6 +334,7 @@ impl ContextBuilder {
             data_prepared: false,
             rendering_prepared: false,
             resolved_dependencies: Arc::default(),
+            application_overlays: Arc::default(),
             acquire_checkout_paths: self.acquire_checkout_paths,
             crypto: Arc::new(crate::secrets::CryptoService::default()),
             target_fs: self

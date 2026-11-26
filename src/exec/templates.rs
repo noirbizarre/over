@@ -14,6 +14,8 @@ pub(crate) struct TemplateContext<'a> {
     #[serde(flatten)]
     scope: crate::overlays::data::DataContext,
     paths: TemplatePaths,
+    #[serde(rename = "allowOverlays")]
+    application_overlays: &'a [crate::overlays::Overlay],
 }
 
 #[derive(Serialize)]
@@ -53,6 +55,7 @@ impl<'a> TemplateContext<'a> {
             env: &ctx.path_inputs.environment,
             scope: ctx.data_context()?,
             paths,
+            application_overlays: &ctx.application_overlays,
         })
     }
 }

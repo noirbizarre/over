@@ -312,6 +312,7 @@ fn hook_summary(hooks: &Hooks) -> Option<Field> {
         ("post-clone", hooks.post_clone.len()),
         ("post-init", hooks.post_init.len()),
         ("post-apply", hooks.post_apply.len()),
+        ("post-install", hooks.post_install.len()),
         ("install", hooks.install.len()),
     ]
     .into_iter()
