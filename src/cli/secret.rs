@@ -34,6 +34,7 @@ pub async fn execute(cli: &super::CLI, command: &Commands) -> Result<()> {
     let home = cli.resolve_home()?;
     let store = SecretStore::new(&home, Arc::new(CryptoService::default()))?;
     let command = command.clone();
+    let verbose = cli.verbose;
     // Crypto and terminal input are blocking; keep them off the async executor.
     tokio::task::spawn_blocking(move || -> Result<()> {
         match command {
@@ -48,7 +49,7 @@ pub async fn execute(cli: &super::CLI, command: &Commands) -> Result<()> {
                 }
                 if input.is_empty() {
                     let value = zeroize::Zeroizing::new(crate::secrets::crypto::hidden_input(
-                        "Secret value",
+                        &format!("Secret value for {}", name.as_str()),
                     )?);
                     input.extend_from_slice(value.as_bytes());
                 }
@@ -80,6 +81,14 @@ pub async fn execute(cli: &super::CLI, command: &Commands) -> Result<()> {
                     .write_all(value.expose())
                     .context("could not write secret to stdout")?;
                 stdout.flush().context("could not flush stdout")?;
+                if verbose {
+                    // Read confirmations belong on stderr so binary stdout remains byte-exact.
+                    crate::ui::warn(format!(
+                        "{} Secret {} read",
+                        crate::ui::emojis::checkmark().for_stderr(),
+                        crate::ui::style::yellow(&name).for_stderr(),
+                    ))?;
+                }
             }
             Commands::Remove { name, yes } => {
                 let parsed = SecretName::parse(&name)?;

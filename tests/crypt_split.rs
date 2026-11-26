@@ -536,7 +536,7 @@ fn interactive_filters_choose_only_the_intended_bare_key(
         steps.push(("Age identity file", identity_answer.as_str()));
     } else {
         steps.push((
-            "Age key passphrase: ",
+            "Age key passphrase for ",
             if selected.starts_with("bob/") {
                 "bob-password\n"
             } else {
@@ -592,7 +592,7 @@ fn failed_interactive_selection_never_tries_another_bare_key(#[case] failure: &s
         _ => vec![
             ("bob/recovery (Age passphrase)", "\n"),
             (
-                "Age key passphrase: ",
+                "Age key passphrase for ",
                 if failure == "credential-cancel" {
                     "\x03"
                 } else {

@@ -70,7 +70,7 @@ impl age::Callbacks for Callbacks {
         let _pause = terminal_result(super::progress::pause())?;
         let labels = [safe(yes), safe(no.unwrap_or("Cancel"))];
         let selection = prompt_result(
-            dialoguer::Select::new()
+            dialoguer::Select::with_theme(&super::style::DialogTheme::default())
                 .with_prompt(safe(message))
                 .items(&labels)
                 .default(1)
@@ -88,7 +88,7 @@ impl age::Callbacks for Callbacks {
         }
         let _pause = terminal_result(super::progress::pause())?;
         prompt_result(
-            dialoguer::Input::new()
+            dialoguer::Input::with_theme(&super::style::DialogTheme::default())
                 .with_prompt(safe(description))
                 .interact_text(),
         )
@@ -100,7 +100,7 @@ impl age::Callbacks for Callbacks {
         }
         let _pause = terminal_result(super::progress::pause())?;
         let input = Zeroizing::new(prompt_result(
-            dialoguer::Password::new()
+            dialoguer::Password::with_theme(&super::style::DialogTheme::default())
                 .with_prompt(safe(description))
                 .interact(),
         )?);

@@ -151,7 +151,7 @@ pub(crate) fn hidden_input(label: &str) -> Result<String> {
             "cannot prompt securely; set OVER_SECRET and supply the secret value on stdin when adding a secret"
         );
     }
-    dialoguer::Password::new().with_prompt(label).interact()
+    dialoguer::Password::with_theme(&crate::ui::style::DialogTheme::default()).with_prompt(label).interact()
         .map_err(|_| anyhow!("secure input unavailable; set OVER_SECRET and supply the secret value on stdin when adding a secret"))
 }
 

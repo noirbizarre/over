@@ -308,6 +308,15 @@ impl Theme for DialogTheme {
         )
     }
 
+    fn format_password_prompt_selection(
+        &self,
+        f: &mut dyn fmt::Write,
+        prompt: &str,
+    ) -> fmt::Result {
+        // A fixed marker confirms input without disclosing the credential's length.
+        self.format_input_prompt_selection(f, prompt, "***")
+    }
+
     /// Formats a multi-select prompt.
     fn format_multi_select_prompt(&self, f: &mut dyn fmt::Write, prompt: &str) -> fmt::Result {
         if !prompt.is_empty() {
@@ -385,6 +394,28 @@ pub fn clap_styles() -> styling::Styles {
 mod tests {
     use super::*;
     use std::fmt::Write;
+
+    #[test]
+    fn password_completion_preserves_the_label_and_uses_a_fixed_mask_with_or_without_color() {
+        for colored in [false, true] {
+            let theme = DialogTheme {
+                prompt_style: Style::new().bold().force_styling(colored),
+                success_prefix: style("✔".to_owned()).green().force_styling(colored),
+                success_suffix: style("·".to_owned()).dim().force_styling(colored),
+                values_style: Style::new().force_styling(colored),
+                ..DialogTheme::default()
+            };
+            let mut rendered = String::new();
+            theme
+                .format_password_prompt_selection(&mut rendered, "Secret value for token")
+                .unwrap();
+            assert_eq!(
+                console::strip_ansi_codes(&rendered),
+                "✔ Secret value for token · ***"
+            );
+            assert_eq!(rendered.contains('\x1b'), colored);
+        }
+    }
 
     #[test]
     fn prompt_labels_and_defaults_abbreviate_home_without_mutating_input() {

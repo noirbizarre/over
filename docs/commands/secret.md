@@ -60,6 +60,12 @@ chooser before any credential or device interaction. Partial selectors limit the
 menu; one matching key skips it. Cancelling or failing the chosen credential does
 not try another key. Explicit identities retain automatic matching without a menu.
 Initialization and `over unlock` use the same acquisition behavior.
+The chooser disappears after selection; the passphrase prompt identifies the
+selected `USER/KEY`. Hidden inputs show a fixed `***` marker after entry.
+
+With `--verbose`, a successful `get` prints `✔ Secret NAME read` on stderr,
+with the name highlighted in yellow when color is enabled. Stdout still contains
+only the exact secret bytes.
 
 Prompts require terminal stdin and stderr and never appear on stdout, so piping
 the value remains supported. Without a terminal, a usable identity must already

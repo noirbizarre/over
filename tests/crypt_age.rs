@@ -177,8 +177,10 @@ fn success(output: Output) -> Output {
     output
 }
 
-#[test]
-fn one_shot_plugin_and_passphrase_reads_leave_the_repository_locked() {
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn one_shot_plugin_and_passphrase_reads_leave_the_repository_locked(#[case] verbose: bool) {
     let fixture = Fixture::new();
     fixture.enroll();
     success(fixture.terminal(
@@ -232,25 +234,39 @@ fn one_shot_plugin_and_passphrase_reads_leave_the_repository_locked() {
     ]);
     assert_eq!(plugin.stdout, b"value\0\xff\n");
     assert!(!fixture.repo.join(".git/over-crypt").exists());
+    let mut args = vec![
+        "--home",
+        fixture.repo.to_str().unwrap(),
+        "secret",
+        "get",
+        "token",
+        "--key",
+        "recovery",
+    ];
+    if verbose {
+        args.push("--verbose");
+    }
     let recovery = success(fixture.terminal_output(
-        &[
-            "--home",
-            fixture.repo.to_str().unwrap(),
-            "secret",
-            "get",
-            "token",
-            "--key",
-            "recovery",
-        ],
-        &[("Age key passphrase: ", "recovery-sentinel\n")],
+        &args,
+        &[(
+            "Age key passphrase for alice/recovery",
+            "recovery-sentinel\n",
+        )],
         "success",
         true,
     ));
     assert_eq!(recovery.stdout, b"value\0\xff\n");
     assert!(String::from_utf8_lossy(&recovery.stderr).contains("Age key passphrase"));
+    let diagnostics = String::from_utf8_lossy(&recovery.stderr);
+    let diagnostics = console::strip_ansi_codes(&diagnostics);
+    assert_eq!(diagnostics.contains("✔ Secret token read"), verbose);
+    assert!(diagnostics.contains("***"));
+    assert!(!diagnostics.contains("[hidden]"));
+    assert!(!diagnostics.contains("Trying passphrase key"));
     for answer in ["wrong-recovery-sentinel\n", "\x03"] {
         let failed = fixture.terminal_output(
             &[
+                "--verbose",
                 "--home",
                 fixture.repo.to_str().unwrap(),
                 "secret",
@@ -259,12 +275,16 @@ fn one_shot_plugin_and_passphrase_reads_leave_the_repository_locked() {
                 "--key",
                 "recovery",
             ],
-            &[("Age key passphrase: ", answer)],
+            &[("Age key passphrase for alice/recovery", answer)],
             "success",
             true,
         );
         assert!(!failed.status.success());
         assert!(failed.stdout.is_empty());
+        assert!(
+            !console::strip_ansi_codes(&String::from_utf8_lossy(&failed.stderr))
+                .contains("Secret token read")
+        );
         if answer.starts_with("wrong") {
             assert!(
                 String::from_utf8_lossy(&failed.stderr)
@@ -1110,7 +1130,10 @@ fn a_passphrase_key_remains_usable_after_a_missing_or_failed_plugin(#[case] miss
     }
     success(fixture.terminal(
         &["unlock", "--identity", fixture.identity.to_str().unwrap()],
-        &[("Age key passphrase: ", "recovery-sentinel\n")],
+        &[(
+            "Age key passphrase for alice/recovery",
+            "recovery-sentinel\n",
+        )],
         "absent",
     ));
     assert!(fixture.repo.join(".git/over-crypt/key").exists());
@@ -1142,12 +1165,18 @@ fn interactive_unlock_scopes_device_interaction_to_the_chosen_key(#[case] device
     } else {
         vec![
             ("alice/recovery (Age passphrase)", "\x1b[B\n"),
-            ("Age key passphrase: ", "recovery-sentinel\n"),
+            (
+                "Age key passphrase for alice/recovery",
+                "recovery-sentinel\n",
+            ),
         ]
     };
     let output = fixture.terminal_output(&["unlock"], &steps, "pin", true);
     let diagnostics = String::from_utf8_lossy(&output.stderr);
+    let diagnostics = console::strip_ansi_codes(&diagnostics);
     assert!(!diagnostics.contains("Age identity file"));
+    assert!(!diagnostics.contains("✔ Choose a repository key"));
+    assert!(!diagnostics.contains("Trying passphrase key"));
     if device {
         assert!(!output.status.success());
         assert!(!diagnostics.contains("Trying passphrase key alice/recovery"));
@@ -1200,7 +1229,10 @@ fn a_new_passphrase_key_requires_matching_hidden_confirmation(
     fixture.run(&["lock"]);
     success(fixture.terminal(
         &["unlock", "--user", "alice", "--key", "recovery"],
-        &[("Age key passphrase: ", "recovery-sentinel\n")],
+        &[(
+            "Age key passphrase for alice/recovery",
+            "recovery-sentinel\n",
+        )],
         "success",
     ));
     assert!(fixture.repo.join(".git/over-crypt/key").exists());
