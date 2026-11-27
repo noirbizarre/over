@@ -355,6 +355,27 @@ fn discard_checkout_never_overrides_a_foreign_repository_identity() {
     assert_eq!(snapshot(&fixture.home), before);
 }
 
+#[cfg(unix)]
+#[rstest]
+#[case("")]
+#[case("nested")]
+fn force_preserves_directories_with_dangling_git_boundaries(#[case] nested: &str) {
+    let fixture = Fixture::new("");
+    fs::write(fixture.source.join("ov/file"), "replacement").unwrap();
+    let target = fixture.target().join("file");
+    let checkout = target.join(nested);
+    fs::create_dir_all(&checkout).unwrap();
+    fs::write(checkout.join("keep"), "valuable").unwrap();
+    std::os::unix::fs::symlink("missing-gitdir", checkout.join(".git")).unwrap();
+    let before = snapshot(&fixture.home);
+    fixture
+        .command("apply")
+        .args(["--force", "--no-prompt"])
+        .assert()
+        .failure();
+    assert_eq!(snapshot(&fixture.home), before);
+}
+
 #[test]
 fn apply_requires_checkout_discard_separately_from_force_during_migration() {
     let fixture = Fixture::new("");

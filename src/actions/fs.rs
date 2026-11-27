@@ -572,8 +572,15 @@ pub async fn add_file(ctx: Ctx, overlay: &Overlay, file: &PathBuf) -> Result<()>
 /// Generic force/overwrite must not bypass checkout-specific disposal checks.
 pub(crate) fn ensure_unprotected_target(target: &Path) -> Result<()> {
     if !target.is_symlink() && target.is_dir() {
+        // A dangling .git link still marks a recoverable checkout boundary;
+        // following it would turn temporary gitdir loss into recursive deletion.
+        let has_git = match fs::symlink_metadata(target.join(".git")) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
         anyhow::ensure!(
-            !target.join(".git").exists()
+            !has_git
                 && crate::materialize::virtual_checkout::state::record_for_blocking(target)?
                     .is_none(),
             "protected checkout at '{}'; use its checkout migration/unapply workflow",
