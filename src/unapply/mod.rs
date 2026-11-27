@@ -187,7 +187,7 @@ impl fmt::Display for Counts {
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     entries: Vec<EntryOutcome>,
-    guards: Vec<crate::materialize::disposal::PathGuard>,
+    guards: Vec<Option<crate::materialize::disposal::PathGuard>>,
 }
 
 impl Report {
@@ -203,65 +203,72 @@ impl Report {
         crate::materialize::partial::validate_partial_targets(desired.entries())?;
         let plan = Plan::build(desired)?;
         let mut entries = Vec::with_capacity(plan.len());
-        for step in plan.steps() {
-            let outcome = match (&step.entry.intent, &step.operation) {
-                (_, Operation::NeedsUnlock) => Outcome::NeedsUnlock,
-                (MaterializationIntent::Checkout, _) => {
-                    if !step.entry.target.exists() && !step.entry.target.is_symlink() {
-                        Outcome::AlreadyAbsent
-                    } else {
-                        Outcome::CheckoutDisposal {
-                            reason: crate::materialize::disposal::assess(&step.entry)?
-                                .description(),
+        for (index, step) in plan.steps().iter().enumerate() {
+            let outcome = if let Some(blocker) = plan.blocker_for_step(index) {
+                // A scaffold obstruction provides no ownership evidence for
+                // descendants; never inspect through it, even for checkouts.
+                Outcome::NotOwned {
+                    current: actual::inspect_with(blocker, &step.entry.access.fs)?,
+                }
+            } else {
+                match (&step.entry.intent, &step.operation) {
+                    (_, Operation::NeedsUnlock) => Outcome::NeedsUnlock,
+                    (MaterializationIntent::Checkout, _) => {
+                        if !step.entry.target.exists() && !step.entry.target.is_symlink() {
+                            Outcome::AlreadyAbsent
+                        } else {
+                            Outcome::CheckoutDisposal {
+                                reason: crate::materialize::disposal::assess(&step.entry)?
+                                    .description(),
+                            }
                         }
                     }
+                    // Same strict "only ever remove when fully clean" gate as
+                    // `Checkout` above — a virtual checkout's own `inspect`
+                    // already only ever reports `Applied` when there's nothing
+                    // uncommitted locally and nothing the source repository
+                    // has moved ahead by (#141); no separate "content vs
+                    // declared" split exists for it the way #140 introduced
+                    // for `Checkout` (a virtual checkout is never a
+                    // provisioning-only resource).
+                    (
+                        MaterializationIntent::VirtualCheckout
+                        | MaterializationIntent::ScopedVirtualCheckout(_),
+                        _,
+                    ) => match status::virtual_checkout::inspect(&step.entry)? {
+                        Status::Missing => Outcome::AlreadyAbsent,
+                        Status::Applied => Outcome::Removed,
+                        other => Outcome::CheckoutNotClean { status: other },
+                    },
+                    (MaterializationIntent::RenderedFile(_), operation) => {
+                        rendered_outcome(&step.entry, operation)?
+                    }
+                    (_, Operation::Create) => Outcome::AlreadyAbsent,
+                    // A permission-only drift (#65) doesn't change ownership:
+                    // the content is still exactly what this overlay put
+                    // there, only its mode needs a `chmod` — just as safe to
+                    // remove as a plain `Noop`.
+                    (
+                        _,
+                        Operation::Noop
+                        | Operation::Repair { .. }
+                        | Operation::RepairMetadata { .. },
+                    ) => Outcome::Removed,
+                    (_, Operation::Conflict { current }) => Outcome::NotOwned {
+                        current: current.clone(),
+                    },
+                    // A pending rule-change migration (#129, blocked or not):
+                    // never remove something mid-migration — leave it alone
+                    // and report it exactly like any other not-plain-owned
+                    // entry, same as a `Conflict`.
+                    (_, Operation::Migrate { .. }) => Outcome::NotOwned {
+                        current: actual::inspect_with(&step.entry.target, &step.entry.access.fs)?,
+                    },
+                    // Unknown future classifications must not authorize removal.
+                    (_, Operation::Deferred) => Outcome::NotOwned {
+                        current: ActualState::Missing,
+                    },
                 }
-                // Same strict "only ever remove when fully clean" gate as
-                // `Checkout` above — a virtual checkout's own `inspect`
-                // already only ever reports `Applied` when there's nothing
-                // uncommitted locally and nothing the source repository
-                // has moved ahead by (#141); no separate "content vs
-                // declared" split exists for it the way #140 introduced
-                // for `Checkout` (a virtual checkout is never a
-                // provisioning-only resource).
-                (
-                    MaterializationIntent::VirtualCheckout
-                    | MaterializationIntent::ScopedVirtualCheckout(_),
-                    _,
-                ) => match status::virtual_checkout::inspect(&step.entry)? {
-                    Status::Missing => Outcome::AlreadyAbsent,
-                    Status::Applied => Outcome::Removed,
-                    other => Outcome::CheckoutNotClean { status: other },
-                },
-                (MaterializationIntent::RenderedFile(_), operation) => {
-                    rendered_outcome(&step.entry, operation)?
-                }
-                (_, Operation::Create) => Outcome::AlreadyAbsent,
-                // A permission-only drift (#65) doesn't change ownership:
-                // the content is still exactly what this overlay put
-                // there, only its mode needs a `chmod` — just as safe to
-                // remove as a plain `Noop`.
-                (
-                    _,
-                    Operation::Noop | Operation::Repair { .. } | Operation::RepairMetadata { .. },
-                ) => Outcome::Removed,
-                (_, Operation::Conflict { current }) => Outcome::NotOwned {
-                    current: current.clone(),
-                },
-                // A pending rule-change migration (#129, blocked or not):
-                // never remove something mid-migration — leave it alone
-                // and report it exactly like any other not-plain-owned
-                // entry, same as a `Conflict`.
-                (_, Operation::Migrate { .. }) => Outcome::NotOwned {
-                    current: actual::inspect_with(&step.entry.target, &step.entry.access.fs)?,
-                },
-                // Every intent has a registered `Materializer` since #110;
-                // no step should ever classify as `Deferred` — unreachable
-                // in practice, but treated as "leave it alone" rather than
-                // panicking on a stale/future classification.
-                (_, Operation::Deferred) => Outcome::NotOwned {
-                    current: ActualState::Missing,
-                },
             };
             entries.push(EntryOutcome {
                 entry: step.entry.clone(),
@@ -270,11 +277,16 @@ impl Report {
         }
         let guards = entries
             .iter()
-            .map(|entry| {
+            .enumerate()
+            .map(|(index, entry)| {
+                if plan.blocker_for_step(index).is_some() {
+                    return Ok(None);
+                }
                 crate::materialize::disposal::PathGuard::capture_with(
                     &entry.entry.target,
                     &entry.entry.access.fs,
                 )
+                .map(Some)
             })
             .collect::<Result<_>>()?;
         Ok(Self { entries, guards })
@@ -355,8 +367,9 @@ impl Report {
         }
         let mut executed = self.clone();
         // Unlock all selected existing files before any sibling removal can occur.
-        for entry in &executed.entries {
+        for (entry, guard) in executed.entries.iter().zip(&executed.guards) {
             if let MaterializationIntent::EncryptedFile(recipe) = &entry.entry.intent
+                && guard.is_some()
                 && !matches!(entry.outcome, Outcome::AlreadyAbsent)
             {
                 let recipe = recipe.clone();
@@ -365,6 +378,10 @@ impl Report {
             }
         }
         for (entry_outcome, guard) in executed.entries.iter_mut().zip(&executed.guards).rev() {
+            let Some(guard) = guard else {
+                // Reinspection must not bypass the blocker honored by build.
+                continue;
+            };
             guard.verify()?;
             if matches!(
                 entry_outcome.entry.intent,
@@ -836,6 +853,63 @@ mod tests {
     }
 
     // ── classification ──────────────────────────────────────────────────
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn blocked_descendants_are_retained_while_owned_siblings_are_removed(
+        #[case] checkout: bool,
+    ) {
+        let (td, repo) = repo_and_root();
+        td.child("blocked").write_str("preserve").unwrap();
+        td.child("source").write_str("managed").unwrap();
+        let source = td.path().join("source");
+        let sibling = td.path().join("sibling");
+        symlink::symlink_file(&source, &sibling).unwrap();
+        let entry = |target, intent| DesiredEntry {
+            access: Default::default(),
+            target,
+            provenance: Provenance::Overlay {
+                overlay: "ov".into(),
+                source: source.clone(),
+            },
+            intent,
+            permissions: None,
+        };
+        let desired = DesiredTree::from_entries(vec![
+            entry(td.path().join("blocked"), MaterializationIntent::Directory),
+            entry(
+                td.path().join("blocked/child"),
+                if checkout {
+                    MaterializationIntent::VirtualCheckout
+                } else {
+                    MaterializationIntent::SymlinkFile {
+                        source: source.clone(),
+                        link_type: LinkType::Soft,
+                    }
+                },
+            ),
+            entry(
+                sibling.clone(),
+                MaterializationIntent::SymlinkFile {
+                    source: source.clone(),
+                    link_type: LinkType::Soft,
+                },
+            ),
+        ]);
+        let report = Report::build(&desired).unwrap();
+        assert_eq!(report.counts().not_owned, 2);
+        report
+            .execute(ctx(td.path().into(), repo, None))
+            .await
+            .unwrap();
+        assert!(!sibling.is_symlink());
+        assert_eq!(
+            fs::read_to_string(td.path().join("blocked")).unwrap(),
+            "preserve"
+        );
+    }
 
     #[rstest]
     fn missing_target_is_already_absent() {
