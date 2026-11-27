@@ -7,6 +7,47 @@ use predicates::str::contains;
 use rstest::rstest;
 use tempfile::TempDir;
 
+#[test]
+fn generated_sync_previews_list_clean_creates_replacements_and_removals_without_writing() {
+    let fixture = Fixture::new(true);
+    fs::write(fixture.source.join("app/old.jinja"), "old render\n").unwrap();
+    commit_all(&fixture.repo());
+    fixture.apply();
+    let state = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let before = fs::read(&state).unwrap();
+    fs::write(fixture.source.join("app/config.jinja"), "updated render\n").unwrap();
+    fs::write(fixture.source.join("app/new.jinja"), "new render\n").unwrap();
+    fs::remove_file(fixture.source.join("app/old.jinja")).unwrap();
+    commit_all(&fixture.repo());
+    let output = fixture
+        .sync()
+        .args(["--dry-run", "--pull-only"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    for (action, name) in [("replace", "config"), ("create", "new"), ("remove", "old")] {
+        assert!(
+            stdout.contains(&format!(
+                "would {action}: {}",
+                fixture.target.join(name).display()
+            )),
+            "{stdout}"
+        );
+    }
+    assert!(!stdout.contains("updated render"));
+    assert_eq!(fs::read(state).unwrap(), before);
+    assert!(!fixture.target.join("new").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("old")).unwrap(),
+        "old render"
+    );
+    assert!(
+        fs::read_to_string(fixture.target.join("config"))
+            .unwrap()
+            .contains("host=first")
+    );
+}
+
 #[rstest]
 #[case(false)]
 #[case(true)]
