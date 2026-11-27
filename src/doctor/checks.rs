@@ -81,12 +81,13 @@ pub async fn xdg_state_findings(repo: &Repository) -> Result<Vec<Finding>> {
 /// `_in`-suffixed functions, so tests never touch the real
 /// `$XDG_STATE_HOME`.
 ///
-/// Both state files are explicitly non-authoritative bookkeeping (see
-/// their own module docs) — losing or ignoring a stale record never
-/// corrupts anything, so every finding here is a `Warning`, never an
-/// `Error`. A load failure (corrupt file, unknown future schema) *is* an
-/// `Error`: it means every future `over sync`/virtual-checkout operation
-/// touching that file will hard-fail.
+/// Sync history is informational, but virtual-checkout associations preserve
+/// the historical base and ownership scope used by safety checks. Losing an
+/// association leaves target files intact but requires a matching backup to
+/// recover its previous base. Stale records are warnings because unavailable
+/// targets or overlays may return; doctor preserves those records. A load
+/// failure (corrupt file, unknown future schema) is an error because operations
+/// touching that state cannot proceed.
 async fn xdg_state_findings_in(
     repo: &Repository,
     sync_file: &StateFile<SyncState>,
