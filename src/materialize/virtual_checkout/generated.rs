@@ -665,6 +665,24 @@ pub(crate) fn reconcile(entry: &DesiredEntry, dry_run: bool) -> Result<Reconcile
         }
     }
     if dry_run {
+        // Use the executable update inventory so clean changes and metadata-only
+        // repairs are visible without rendering contents into diagnostic output.
+        for (path, wanted) in &analysis.updates {
+            let local = analysis.local.get(path);
+            let action = if wanted.is_none() {
+                "remove"
+            } else if local.is_none() {
+                "create"
+            } else if same(local, wanted.as_ref()) {
+                "repair permissions"
+            } else {
+                "replace"
+            };
+            crate::ui::info(format!(
+                "would {action}: {}",
+                entry.target.join(path).display()
+            ))?;
+        }
         for path in analysis.conflicts.keys() {
             let template = analysis.template_source(
                 previous

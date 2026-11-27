@@ -107,6 +107,18 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         )?;
     }
 
+    // Validate serialization before publishing any descriptor or absorbing files.
+    let content = build_descriptor(descriptor_target.as_deref(), format, &git_entries)?;
+    Config::builder()
+        .add_source(File::from_str(
+            &content,
+            match format {
+                Format::Toml => FileFormat::Toml,
+                Format::Yaml => FileFormat::Yaml,
+            },
+        ))
+        .build()?;
+
     // Create the overlay directory
     if !args.dry_run {
         fs::create_dir_all(&overlay_root)?;
@@ -119,7 +131,6 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     ))
     .ok();
 
-    let content = build_descriptor(descriptor_target.as_deref(), format, &git_entries);
     if args.dry_run {
         ui::info(format!(
             "{}",
@@ -306,9 +317,9 @@ fn build_descriptor(
     target: Option<&str>,
     format: Format,
     git_entries: &HashMap<String, String>,
-) -> String {
+) -> Result<String> {
     match format {
-        Format::Toml => build_toml_descriptor(target, git_entries),
+        Format::Toml => Ok(build_toml_descriptor(target, git_entries)),
         Format::Yaml => build_yaml_descriptor(target, git_entries),
     }
 }
@@ -317,7 +328,10 @@ fn build_toml_descriptor(target: Option<&str>, git_entries: &HashMap<String, Str
     let mut out = String::new();
 
     if let Some(target) = target {
-        out.push_str(&format!("target = \"{target}\"\n"));
+        out.push_str(&format!(
+            "target = {}\n",
+            toml::Value::String(target.into())
+        ));
     }
 
     if !git_entries.is_empty() {
@@ -328,18 +342,29 @@ fn build_toml_descriptor(target: Option<&str>, git_entries: &HashMap<String, Str
         let mut entries: Vec<_> = git_entries.iter().collect();
         entries.sort_by_key(|(k, _)| *k);
         for (name, url) in entries {
-            out.push_str(&format!("{name} = {{ url = \"{url}\" }}\n"));
+            out.push_str(&format!(
+                "{} = {{ url = {} }}\n",
+                // TOML keys require single-line quoting; the value serializer
+                // may choose multiline strings, whereas JSON always escapes them.
+                serde_json::Value::String(name.clone()),
+                toml::Value::String(url.clone())
+            ));
         }
     }
 
     out
 }
 
-fn build_yaml_descriptor(target: Option<&str>, git_entries: &HashMap<String, String>) -> String {
+fn build_yaml_descriptor(
+    target: Option<&str>,
+    git_entries: &HashMap<String, String>,
+) -> Result<String> {
     let mut out = String::new();
 
     if let Some(target) = target {
-        out.push_str(&format!("target: \"{target}\"\n"));
+        // JSON strings are YAML-compatible quoted scalars, including control
+        // characters; hand quoting would change Windows paths and templates.
+        out.push_str(&format!("target: {}\n", serde_json::to_string(target)?));
     }
 
     if !git_entries.is_empty() {
@@ -350,11 +375,15 @@ fn build_yaml_descriptor(target: Option<&str>, git_entries: &HashMap<String, Str
         let mut entries: Vec<_> = git_entries.iter().collect();
         entries.sort_by_key(|(k, _)| *k);
         for (name, url) in entries {
-            out.push_str(&format!("  {name}:\n    url: \"{url}\"\n"));
+            out.push_str(&format!(
+                "  {}:\n    url: {}\n",
+                serde_json::to_string(name)?,
+                serde_json::to_string(url)?
+            ));
         }
     }
 
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -400,7 +429,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("over.toml"),
-            build_descriptor(assignment.as_deref(), Format::Toml, &HashMap::new()),
+            build_descriptor(assignment.as_deref(), Format::Toml, &HashMap::new()).unwrap(),
         )
         .unwrap();
         let actual = repo.get("apps/demo").unwrap();
@@ -514,6 +543,38 @@ mod tests {
         assert_eq!(fs::read_dir(&home).unwrap().count(), 1);
     }
 
+    #[rstest::rstest]
+    #[case(Format::Toml)]
+    #[case(Format::Yaml)]
+    fn descriptors_round_trip_quoted_paths_templates_and_literal_repository_names(
+        #[case] format: Format,
+    ) {
+        let target = "C:\\a\"b\\{{ env(\"HOME\") }}\nnext";
+        let url = "ssh://example/a\\b\"c\nnext";
+        let git = ["client.api", "true", "a: b", "a\"b\\c", "a\nb"]
+            .into_iter()
+            .map(|name| (name.to_owned(), url.to_owned()))
+            .collect();
+        let content = build_descriptor(Some(target), format, &git).unwrap();
+        let parsed: serde_json::Value = Config::builder()
+            .add_source(File::from_str(
+                &content,
+                match format {
+                    Format::Toml => FileFormat::Toml,
+                    Format::Yaml => FileFormat::Yaml,
+                },
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert_eq!(parsed["target"], target);
+        for name in git.keys() {
+            assert_eq!(parsed["git"][name]["url"], url);
+        }
+        assert_eq!(parsed["git"].as_object().unwrap().len(), git.len());
+    }
+
     // ── build_toml_descriptor ───────────────────────────────────────────
 
     #[test]
@@ -538,7 +599,7 @@ mod tests {
         let content = build_toml_descriptor(Some("~/apps/myapp"), &git);
         assert_eq!(
             content,
-            "target = \"~/apps/myapp\"\n\n[git]\nmyrepo = { url = \"https://github.com/user/myrepo.git\" }\n"
+            "target = \"~/apps/myapp\"\n\n[git]\n\"myrepo\" = { url = \"https://github.com/user/myrepo.git\" }\n"
         );
     }
 
@@ -582,22 +643,22 @@ mod tests {
         git.insert("gamma".to_string(), "https://example.com/g.git".to_string());
         let content = build_toml_descriptor(None, &git);
         assert!(content.contains("[git]"));
-        assert!(content.contains("alpha = { url ="));
-        assert!(content.contains("beta = { url ="));
-        assert!(content.contains("gamma = { url ="));
+        assert!(content.contains("\"alpha\" = { url ="));
+        assert!(content.contains("\"beta\" = { url ="));
+        assert!(content.contains("\"gamma\" = { url ="));
     }
 
     // ── build_yaml_descriptor ───────────────────────────────────────────
 
     #[test]
     fn yaml_descriptor_without_target_or_git_is_empty() {
-        let content = build_yaml_descriptor(None, &HashMap::new());
+        let content = build_yaml_descriptor(None, &HashMap::new()).unwrap();
         assert_eq!(content, "");
     }
 
     #[test]
     fn yaml_descriptor_with_target_writes_target_line() {
-        let content = build_yaml_descriptor(Some("~/apps/myapp"), &HashMap::new());
+        let content = build_yaml_descriptor(Some("~/apps/myapp"), &HashMap::new()).unwrap();
         assert_eq!(content, "target: \"~/apps/myapp\"\n");
     }
 
@@ -608,10 +669,10 @@ mod tests {
             "myrepo".to_string(),
             "https://github.com/user/myrepo.git".to_string(),
         );
-        let content = build_yaml_descriptor(Some("~/apps/myapp"), &git);
+        let content = build_yaml_descriptor(Some("~/apps/myapp"), &git).unwrap();
         assert_eq!(
             content,
-            "target: \"~/apps/myapp\"\n\ngit:\n  myrepo:\n    url: \"https://github.com/user/myrepo.git\"\n"
+            "target: \"~/apps/myapp\"\n\ngit:\n  \"myrepo\":\n    url: \"https://github.com/user/myrepo.git\"\n"
         );
     }
 
@@ -620,7 +681,7 @@ mod tests {
         let mut git = HashMap::new();
         git.insert("zrepo".to_string(), "https://example.com/z.git".to_string());
         git.insert("arepo".to_string(), "https://example.com/a.git".to_string());
-        let content = build_yaml_descriptor(None, &git);
+        let content = build_yaml_descriptor(None, &git).unwrap();
         let a_pos = content.find("arepo").unwrap();
         let z_pos = content.find("zrepo").unwrap();
         assert!(a_pos < z_pos, "entries should be sorted alphabetically");
@@ -630,25 +691,25 @@ mod tests {
 
     #[test]
     fn build_descriptor_toml_format_delegates_to_toml_builder() {
-        let content = build_descriptor(Some("~/test"), Format::Toml, &HashMap::new());
+        let content = build_descriptor(Some("~/test"), Format::Toml, &HashMap::new()).unwrap();
         assert!(content.starts_with("target = "));
     }
 
     #[test]
     fn build_descriptor_yaml_format_delegates_to_yaml_builder() {
-        let content = build_descriptor(Some("~/test"), Format::Yaml, &HashMap::new());
+        let content = build_descriptor(Some("~/test"), Format::Yaml, &HashMap::new()).unwrap();
         assert!(content.starts_with("target: "));
     }
 
     #[test]
     fn build_descriptor_toml_without_target_is_empty() {
-        let content = build_descriptor(None, Format::Toml, &HashMap::new());
+        let content = build_descriptor(None, Format::Toml, &HashMap::new()).unwrap();
         assert_eq!(content, "");
     }
 
     #[test]
     fn build_descriptor_yaml_without_target_is_empty() {
-        let content = build_descriptor(None, Format::Yaml, &HashMap::new());
+        let content = build_descriptor(None, Format::Yaml, &HashMap::new()).unwrap();
         assert_eq!(content, "");
     }
 
@@ -656,18 +717,18 @@ mod tests {
     fn build_descriptor_toml_with_git_includes_git_section() {
         let mut git = HashMap::new();
         git.insert("repo".to_string(), "https://example.com/r.git".to_string());
-        let content = build_descriptor(Some("~/test"), Format::Toml, &git);
+        let content = build_descriptor(Some("~/test"), Format::Toml, &git).unwrap();
         assert!(content.contains("[git]"));
-        assert!(content.contains("repo = { url ="));
+        assert!(content.contains("\"repo\" = { url ="));
     }
 
     #[test]
     fn build_descriptor_yaml_with_git_includes_git_section() {
         let mut git = HashMap::new();
         git.insert("repo".to_string(), "https://example.com/r.git".to_string());
-        let content = build_descriptor(Some("~/test"), Format::Yaml, &git);
+        let content = build_descriptor(Some("~/test"), Format::Yaml, &git).unwrap();
         assert!(content.contains("git:"));
-        assert!(content.contains("  repo:"));
+        assert!(content.contains("  \"repo\":"));
         assert!(content.contains("    url:"));
     }
 

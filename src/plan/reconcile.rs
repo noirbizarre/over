@@ -138,18 +138,23 @@ fn classify(
             other.target == entry.target && matches!(other.intent, MaterializationIntent::Checkout)
         })
         && !entry.target.is_symlink()
-        && ((entry.target.join(".git").exists() && git2::Repository::open(&entry.target).ok()
-            .and_then(|repo| repo.config().ok())
-            .and_then(|config| config.get_string("over.overlay").ok())
-            .is_some_and(|name| matches!(&entry.provenance, crate::desired::Provenance::Overlay { overlay, .. } if *overlay == name)))
-            || crate::materialize::virtual_checkout::state::record_for_blocking(&entry.target)?.is_some())
+        && ((entry.target.join(".git").exists()
+            && {
+                let repo = git2::Repository::open(&entry.target)?;
+                crate::actions::git::association::read(&repo)?
+                .is_some_and(|name| matches!(&entry.provenance, crate::desired::Provenance::Overlay { overlay, .. } if *overlay == name))
+            })
+            || crate::materialize::virtual_checkout::state::record_for_blocking(&entry.target)?
+                .is_some())
     {
         // A parent checkout is indivisible: never force-overwrite its
         // individual editable files after a recursive-rule change.
         operation = Operation::Migrate {
             from: MaterializationIntent::VirtualCheckout,
             to: entry.intent.clone(),
-            blocked: Some("checkout to recursive links requires unapplying its old layout first".into()),
+            blocked: Some(
+                "checkout to recursive links requires unapplying its old layout first".into(),
+            ),
         };
     }
     if matches!(operation, Operation::Noop)

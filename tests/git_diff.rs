@@ -15,6 +15,36 @@ struct Fixture {
     target: PathBuf,
 }
 
+#[rstest]
+fn diff_rejects_incomplete_discovery_instead_of_reporting_success(
+    #[values(false, true)] all: bool,
+    #[values(false, true)] all_malformed: bool,
+) {
+    let fixture = Fixture::new(false);
+    if all_malformed {
+        fs::remove_dir_all(fixture.source.join("ov")).unwrap();
+    }
+    fs::create_dir_all(fixture.source.join("broken")).unwrap();
+    fs::write(fixture.source.join("broken/over.toml"), "target = [").unwrap();
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("over"));
+    fixture.environment(&mut command);
+    command
+        .current_dir(fixture.temp.path())
+        .arg("--home")
+        .arg(&fixture.source)
+        .args(["diff", "--target"])
+        .arg(&fixture.target);
+    if all {
+        command.arg("--all");
+    }
+    let output = command.output().unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("failed to load overlay"),
+        "{output:?}"
+    );
+}
+
 impl Fixture {
     fn new(checkout: bool) -> Self {
         let temp = TempDir::new().unwrap();

@@ -156,7 +156,12 @@ pub(crate) fn assess(entry: &DesiredEntry) -> Result<Assessment> {
     {
         return forbidden("shared, external, or bare Git layout requires manual removal");
     }
-    let associated = repo.config()?.get_string("over.overlay").ok();
+    // Disposal must use the same ownership evidence as selection; global or
+    // ambiguous values cannot authorize removing a repository.
+    let associated = match crate::actions::git::association::read(&repo) {
+        Ok(associated) => associated,
+        Err(error) => return forbidden(&format!("invalid overlay association: {error:#}")),
+    };
     match &entry.provenance {
         Provenance::Git {
             overlay, config, ..

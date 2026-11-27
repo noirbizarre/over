@@ -938,7 +938,10 @@ async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Resu
         vc_state::verify(&inspect_entry, &verification_record)?;
         let (repo, managed_path) = vc_git::discover_source(&source)?;
         let from_tree = vc_git::base_tree(&repo, Some(&base_oid))?;
-        let to_tree = vc_git::base_tree(&repo, None)?;
+        // Native Git can advance HEAD while filters run; checkpoint only the
+        // revision whose contents this reconciliation actually publishes.
+        let source_commit = repo.head()?.peel_to_commit()?;
+        let to_tree = source_commit.tree()?;
         // Entry maps are read-only; filtered subtree construction writes objects.
         let base_entries = vc_git::scoped_entries(&repo, &from_tree, &managed_path, &scope)?;
         let head_entries = vc_git::scoped_entries(&repo, &to_tree, &managed_path, &scope)?;
@@ -1015,7 +1018,7 @@ async fn reconcile_virtual_checkout(entry: &DesiredEntry, dry_run: bool) -> Resu
             changes.apply(&target)?;
             crate::materialize::virtual_checkout::metadata::apply(&inspect_entry)?;
         }
-        anyhow::Ok(repo.head()?.peel_to_commit()?.id().to_string())
+        anyhow::Ok(source_commit.id().to_string())
     })
     .await??;
 
@@ -1539,6 +1542,85 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sync_checkpoints_the_deployed_revision_when_a_filter_advances_head() {
+        let _xdg = isolate_xdg_state();
+        let source = TempDir::new().unwrap();
+        source.child("file").write_str("original").unwrap();
+        source
+            .child(".gitattributes")
+            .write_str("file filter=advance\n")
+            .unwrap();
+        init_committed_repo(source.path());
+        let repo = Repository::open(source.path()).unwrap();
+        let target = TempDir::new().unwrap();
+        materialize_virtual_checkout(source.path(), target.path()).await;
+        let entry = virtual_checkout_entry(target.path().into(), source.path().into());
+        let base = repo.head().unwrap().peel_to_commit().unwrap();
+        let mut builder = repo.treebuilder(Some(&base.tree().unwrap())).unwrap();
+        builder
+            .insert("file", repo.blob(b"first update").unwrap(), 0o100644)
+            .unwrap();
+        let signature = repo.signature().unwrap();
+        let first = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "first",
+                &repo.find_tree(builder.write().unwrap()).unwrap(),
+                &[&base],
+            )
+            .unwrap();
+        builder
+            .insert("file", repo.blob(b"second update").unwrap(), 0o100644)
+            .unwrap();
+        let second = repo
+            .commit(
+                None,
+                &signature,
+                &signature,
+                "second",
+                &repo.find_tree(builder.write().unwrap()).unwrap(),
+                &[&repo.find_commit(first).unwrap()],
+            )
+            .unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .read_tree(&repo.find_commit(first).unwrap().tree().unwrap())
+            .unwrap();
+        index.write().unwrap();
+        // A noncanonical target forces filtering inside reconciliation, after
+        // its source snapshot is captured, without a timing-dependent thread.
+        target.child("file").write_str("ORIGINAL").unwrap();
+        repo.config()
+            .unwrap()
+            .set_str(
+                "filter.advance.clean",
+                &format!("git update-ref HEAD {second}; tr '[:upper:]' '[:lower:]'"),
+            )
+            .unwrap();
+        reconcile_virtual_checkout(&entry, false).await.unwrap();
+        assert_eq!(
+            fs::read_to_string(target.path().join("file")).unwrap(),
+            "first update"
+        );
+        assert_eq!(repo.head().unwrap().target().unwrap(), second);
+        assert_eq!(
+            vc_state::record_for_entry(&entry)
+                .unwrap()
+                .unwrap()
+                .base_oid,
+            first.to_string()
+        );
+        reconcile_virtual_checkout(&entry, false).await.unwrap();
+        assert_eq!(
+            fs::read_to_string(target.path().join("file")).unwrap(),
+            "second update"
+        );
     }
 
     #[rstest::rstest]

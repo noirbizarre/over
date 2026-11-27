@@ -7,6 +7,80 @@ use predicates::str::contains;
 use rstest::rstest;
 use tempfile::TempDir;
 
+#[cfg(unix)]
+#[rstest]
+#[case("1755", 0o1755)]
+#[case("2755", 0o2755)]
+#[case("4755", 0o4755)]
+fn rendered_artifacts_preserve_reuse_and_repair_special_permission_bits(
+    #[case] configured: &str,
+    #[case] mode: u32,
+) {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let fixture = Fixture::new(false);
+    let descriptor = fixture.source.join("app/over.yaml");
+    let original = fs::read_to_string(&descriptor).unwrap();
+    fs::write(
+        descriptor,
+        format!("{original}\npermissions: '{configured}'\n"),
+    )
+    .unwrap();
+    commit_all(&fixture.repo());
+    fixture.apply();
+    let target = fixture.target.join("config");
+    let metadata = fs::metadata(&target).unwrap();
+    assert_eq!(metadata.permissions().mode() & 0o7777, mode);
+    fixture.apply();
+    assert_eq!(fs::metadata(&target).unwrap().ino(), metadata.ino());
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+    fixture.apply();
+    assert_eq!(
+        fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+        mode
+    );
+}
+
+#[test]
+fn generated_sync_previews_list_clean_creates_replacements_and_removals_without_writing() {
+    let fixture = Fixture::new(true);
+    fs::write(fixture.source.join("app/old.jinja"), "old render\n").unwrap();
+    commit_all(&fixture.repo());
+    fixture.apply();
+    let state = fixture.temp.path().join("state/over/virtual_checkout.toml");
+    let before = fs::read(&state).unwrap();
+    fs::write(fixture.source.join("app/config.jinja"), "updated render\n").unwrap();
+    fs::write(fixture.source.join("app/new.jinja"), "new render\n").unwrap();
+    fs::remove_file(fixture.source.join("app/old.jinja")).unwrap();
+    commit_all(&fixture.repo());
+    let output = fixture
+        .sync()
+        .args(["--dry-run", "--pull-only"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    for (action, name) in [("replace", "config"), ("create", "new"), ("remove", "old")] {
+        assert!(
+            stdout.contains(&format!(
+                "would {action}: {}",
+                fixture.target.join(name).display()
+            )),
+            "{stdout}"
+        );
+    }
+    assert!(!stdout.contains("updated render"));
+    assert_eq!(fs::read(state).unwrap(), before);
+    assert!(!fixture.target.join("new").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("old")).unwrap(),
+        "old render"
+    );
+    assert!(
+        fs::read_to_string(fixture.target.join("config"))
+            .unwrap()
+            .contains("host=first")
+    );
+}
+
 #[rstest]
 #[case(false)]
 #[case(true)]

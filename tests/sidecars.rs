@@ -4,6 +4,51 @@ use assert_cmd::Command;
 use rstest::rstest;
 use serde_json::json;
 
+#[cfg(unix)]
+#[rstest]
+fn partial_inspection_rejects_a_fifo_instead_of_waiting_for_a_writer(
+    #[values("status", "unapply")] verb: &str,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(source.join("ov")).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::write(source.join("ov/over.toml"), "target='~'\n").unwrap();
+    fs::write(
+        source.join("ov/entry.partial.toml"),
+        "target='~/settings'\ncontent='managed'\n",
+    )
+    .unwrap();
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(target.join("settings"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("over"));
+    command
+        .timeout(std::time::Duration::from_secs(10))
+        .env("XDG_STATE_HOME", temp.path().join("state"))
+        .arg("--home")
+        .arg(&source)
+        .args([verb, "ov", "--target"])
+        .arg(&target);
+    if verb == "unapply" {
+        command.arg("--yes");
+    }
+    command
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(if verb == "status" {
+            "could not check status"
+        } else {
+            "unsupported filesystem node"
+        }));
+    assert!(fs::symlink_metadata(target.join("settings")).is_ok());
+}
+
 #[rstest]
 fn unknown_sidecar_attributes_warn_with_the_source_path_and_preserve_optional_defaults(
     #[values("toml", "yaml", "yml")] format: &str,

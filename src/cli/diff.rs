@@ -69,7 +69,11 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let overlays = match (&args.name, args.all) {
         (Some(name), _) => vec![repo.get(name)?],
-        (None, true) => repo.overlays()?,
+        // An explicit all-selection must not succeed with silently omitted overlays.
+        (None, true) => repo
+            .inspect_overlays()?
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?,
         (None, false) => {
             let ctx = Context::builder()
                 .read_only(true)
@@ -80,7 +84,10 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
                 .await??
             {
                 Some(overlay) => vec![overlay],
-                None => repo.overlays()?,
+                None => repo
+                    .inspect_overlays()?
+                    .into_iter()
+                    .collect::<Result<Vec<_>>>()?,
             }
         }
     };
