@@ -362,7 +362,9 @@ mod tests {
         let source = TempDir::new().unwrap();
         init_committed_repo(source.path());
         let destination = TempDir::new().unwrap();
-        let target = destination.path().join("checkout");
+        // A dangling replacement cannot canonicalize itself; retain the state
+        // key's parent spelling across macOS aliases and Windows prefixes.
+        let target = destination.path().canonicalize().unwrap().join("checkout");
         let e = entry(target.clone(), source.path().into());
         VirtualCheckoutMaterializer
             .materialize(
