@@ -119,7 +119,9 @@ impl Materializer for VirtualCheckoutMaterializer {
         // status/diff/commit/sync for anything beyond "it exists" (see
         // module doc). Uses the blocking XDG read since `classify` is
         // deliberately sync across every `Materializer` backend.
-        if let Some(record) = state::record_for_entry(entry)? {
+        if matches!(actual, ActualState::Directory)
+            && let Some(record) = state::record_for_entry(entry)?
+        {
             state::verify(entry, &record)?;
             if !record.initializing {
                 return Ok(Operation::Noop);
@@ -349,6 +351,40 @@ mod tests {
         let td = TempDir::new().unwrap();
         let e = entry(td.path().join("nope"), td.path().to_path_buf());
         assert!(matches!(m.classify(&e).unwrap(), Operation::Create));
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    #[tokio::test]
+    async fn recorded_associations_do_not_hide_non_directory_roots(#[case] symlink: bool) {
+        let _xdg = isolate_xdg_state();
+        let source = TempDir::new().unwrap();
+        init_committed_repo(source.path());
+        let destination = TempDir::new().unwrap();
+        let target = destination.path().join("checkout");
+        let e = entry(target.clone(), source.path().into());
+        VirtualCheckoutMaterializer
+            .materialize(
+                Context::builder().build(),
+                &PlanStep {
+                    entry: e.clone(),
+                    operation: Operation::Create,
+                },
+            )
+            .await
+            .unwrap();
+        fs::remove_dir_all(&target).unwrap();
+        if symlink {
+            symlink::symlink_dir(destination.path().join("foreign"), &target).unwrap();
+        } else {
+            fs::write(&target, "preserve").unwrap();
+        }
+        assert!(matches!(
+            VirtualCheckoutMaterializer.classify(&e).unwrap(),
+            Operation::Conflict { .. }
+        ));
+        assert!(state::record_for_entry(&e).unwrap().is_some());
     }
 
     #[test]
