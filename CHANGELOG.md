@@ -4,6 +4,55 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0](https://github.com/noirbizarre/over/compare/0.6.1..0.7.0) - 2026-11-27
+
+### 💫 Features
+
+- Improve secret prompt styling and feedback ([#365](https://github.com/noirbizarre/over/issues/365)) - ([a8cc698](https://github.com/noirbizarre/over/commit/a8cc6988378e3e7b6007af5695f46febba60c8c3))
+- Display nested composition dependency trees ([#364](https://github.com/noirbizarre/over/issues/364)) - ([635cf6f](https://github.com/noirbizarre/over/commit/635cf6f63dcea961706fd789055c70d9c3725022))
+- Run root install hooks once for resolved overlays ([#361](https://github.com/noirbizarre/over/issues/361)) - ([a3f6825](https://github.com/noirbizarre/over/commit/a3f6825b2b608166ae3c8a7031e48943a322fd2f))
+
+### 🐛 Bug Fixes
+
+- **diff** Reject incomplete overlay discovery - ([792a839](https://github.com/noirbizarre/over/commit/792a8392aa8e410a081dc206ec88496d6fbac507))
+- **fs** Preserve broken git boundaries on overwrite - ([98ce9fa](https://github.com/noirbizarre/over/commit/98ce9fa8fddee88153b04a244fb830e43468242e))
+- **materialize** Preserve rendered artifact permission bits - ([0141b8e](https://github.com/noirbizarre/over/commit/0141b8e3835e2683830b7222310766cd471f67e8))
+- **materialize** Reject non-directory checkout roots - ([771b1eb](https://github.com/noirbizarre/over/commit/771b1eb3b8d0c26639b7a4e84e2409587c44b96a))
+- **materialize** Validate disposal associations consistently - ([be57732](https://github.com/noirbizarre/over/commit/be57732a8f05188f1dfaa2c648d419189b06502f))
+- **new** Serialize overlay descriptors safely - ([419f6cd](https://github.com/noirbizarre/over/commit/419f6cde9ef8b2aa7fda912c02750a256429bbc7))
+- **packaging** Declare git as an AUR runtime dependency - ([1338529](https://github.com/noirbizarre/over/commit/1338529a54a37dff6c05a89c07a311b0da8141ef))
+- **plan** Reject unsupported filesystem nodes before reads - ([6b61225](https://github.com/noirbizarre/over/commit/6b61225544ccfdc088e026809f4b6668f3ee0856))
+- **sync** List generated checkout preview effects - ([224dd9f](https://github.com/noirbizarre/over/commit/224dd9ff145a03986b9042c5857fd921ff66ed75))
+- **sync** Checkpoint the reconciled source revision - ([c2e549d](https://github.com/noirbizarre/over/commit/c2e549db83ac5582940b8e7808d7b65e0a36246c))
+- **unapply** Retain descendants behind scaffold blockers - ([46ff341](https://github.com/noirbizarre/over/commit/46ff341c2474befaa9b5da9fc10b5545d79d29d2))
+- Align checkout safety, reconciliation, and documentation ([#369](https://github.com/noirbizarre/over/issues/369)) - ([e4a5eef](https://github.com/noirbizarre/over/commit/e4a5eef6f6d49d25c676eae8b62726f52fab8d46))
+- Avoid sudo for read-only operations ([#363](https://github.com/noirbizarre/over/issues/363)) - ([0c1d761](https://github.com/noirbizarre/over/commit/0c1d761111dfc679f42ee378dcd18caf965fe273))
+
+### 📚 Documentation
+
+- **crypt** Describe native Windows ACL initialization - ([10dfd44](https://github.com/noirbizarre/over/commit/10dfd44b711fefc096bef9bfb076d7e5b676a9c9))
+- **demo** Rerender the demo ([#367](https://github.com/noirbizarre/over/issues/367)) - ([ba611ec](https://github.com/noirbizarre/over/commit/ba611ec6bcdafebb2c2ac39d8e9b57d4ee568c48))
+- **doctor** Clarify virtual checkout state importance - ([06b5835](https://github.com/noirbizarre/over/commit/06b58352a514ce8973828b5d91ad356e34956b01))
+- **safety** Clarify unprivileged preview inspection - ([71ecf65](https://github.com/noirbizarre/over/commit/71ecf65429765b9098cec29cd4d7950de0c7a7ff))
+
+### 🧪 Tests
+
+- Normalize checkout obstruction fixture paths - ([da8faf7](https://github.com/noirbizarre/over/commit/da8faf703741a66a8d5f759fd83df0821d33c12d))
+
+### 🏗️ Build
+
+- **deps** Update to git tpl 0.18 ([#368](https://github.com/noirbizarre/over/issues/368)) - ([8aec6c3](https://github.com/noirbizarre/over/commit/8aec6c3f4851deba606dcd01aad8b2699131c003))
+- **deps** Update to git tpl 0.18 - ([338c647](https://github.com/noirbizarre/over/commit/338c6478f89d2d79bc7b6e7b80a3813ea01d9e79))
+- **deps** Update all dependencies ([#366](https://github.com/noirbizarre/over/issues/366)) - ([31c40d0](https://github.com/noirbizarre/over/commit/31c40d0087b6c92ced3c78228f755dc1337234b2))
+
+### 🧹 Chores
+
+- **tpl** Update template and align icon/logo naming - ([35c17ee](https://github.com/noirbizarre/over/commit/35c17ee323d19c9618493023a05caba8133f265b))
+
+### Tpl
+
+- Render rust at main - ([ec92e0e](https://github.com/noirbizarre/over/commit/ec92e0ea2ca770cf075b0abbd995ff8d7ca7b8d1))
+
 ## [0.6.1](https://github.com/noirbizarre/over/compare/0.6.0..0.6.1) - 2026-11-23
 
 ### 🐛 Bug Fixes
