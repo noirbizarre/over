@@ -70,6 +70,13 @@ pub fn inspect(path: &Path) -> Result<ActualState> {
         return Ok(ActualState::Symlink { points_to });
     }
 
+    // Content-reading backends may open File immediately; FIFOs and devices
+    // must fail inspection rather than block or stream unbounded input.
+    anyhow::ensure!(
+        metadata.is_dir() || metadata.is_file(),
+        "unsupported filesystem node at '{}'",
+        path.display()
+    );
     Ok(if metadata.is_dir() {
         ActualState::Directory
     } else {
@@ -101,6 +108,11 @@ pub(crate) fn inspect_with(
             points_to: access.read_link(path)?,
         });
     }
+    anyhow::ensure!(
+        metadata.is_dir() || metadata.is_file(),
+        "unsupported filesystem node at '{}'",
+        path.display()
+    );
     Ok(if metadata.is_dir() {
         ActualState::Directory
     } else {
@@ -141,6 +153,34 @@ mod tests {
     use super::*;
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
+
+    #[cfg(unix)]
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn special_nodes_are_rejected_without_opening_them(#[case] fifo: bool) {
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("special");
+        let _listener = if fifo {
+            assert!(
+                std::process::Command::new("mkfifo")
+                    .arg(&path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            None
+        } else {
+            Some(std::os::unix::net::UnixListener::bind(&path).unwrap())
+        };
+        assert!(
+            inspect(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported filesystem node")
+        );
+        assert!(inspect_with(&path, &crate::target_fs::Access::default().fs).is_err());
+    }
 
     #[test]
     fn missing_path_reports_missing() {
