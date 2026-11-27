@@ -391,6 +391,50 @@ fn apply_requires_checkout_discard_separately_from_force_during_migration() {
     assert_eq!(fs::read_link(original).unwrap(), replacement);
 }
 
+#[rstest]
+#[case("global")]
+#[case("empty")]
+#[case("ambiguous")]
+fn disposal_never_uses_invalid_or_global_associations_as_ownership(#[case] association: &str) {
+    let fixture = Fixture::new("");
+    let repo = fixture.real_checkout();
+    let mut config = repo.config().unwrap();
+    config.remove("over.overlay").unwrap();
+    match association {
+        "global" => fs::write(
+            fixture.temp.path().join("gitconfig"),
+            "[over]\noverlay = ov\n",
+        )
+        .unwrap(),
+        "empty" => config.set_str("over.overlay", "").unwrap(),
+        "ambiguous" => {
+            let path = repo.path().join("config");
+            let original = fs::read_to_string(&path).unwrap();
+            fs::write(
+                path,
+                format!("{original}\n[over]\noverlay = ov\noverlay = other\n"),
+            )
+            .unwrap();
+        }
+        _ => unreachable!(),
+    }
+    let replacement = fixture.temp.path().join("replacement");
+    fs::create_dir_all(&replacement).unwrap();
+    fs::write(fixture.source.join("ov/over.toml"), "target='~'\n").unwrap();
+    fs::write(
+        fixture.source.join("ov/target.link.toml"),
+        format!("target='{}'\n", replacement.display()),
+    )
+    .unwrap();
+    let before = snapshot(&fixture.home);
+    fixture
+        .command("apply")
+        .args(["--force", "--discard-checkout", "--no-prompt"])
+        .assert()
+        .failure();
+    assert_eq!(snapshot(&fixture.home), before);
+}
+
 #[cfg(unix)]
 #[test]
 fn known_noninteractive_conflicts_prevent_install_hook_side_effects() {
