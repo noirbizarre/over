@@ -39,7 +39,7 @@ fn artifact_matches(
     {
         use std::os::unix::fs::PermissionsExt;
         let desired = _permissions.map_or(0o600 | (file.mode as u32 & 0o111), |mode| mode.bits());
-        if metadata.permissions().mode() & 0o777 != desired & 0o777 {
+        if metadata.permissions().mode() & 0o7777 != desired & 0o7777 {
             return Ok(false);
         }
     }
@@ -58,7 +58,8 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], _mode: u32) -> Result<()> 
         use std::os::unix::fs::PermissionsExt;
         temporary
             .as_file()
-            .set_permissions(fs::Permissions::from_mode(_mode & 0o777))?;
+            // Set special bits after writing: writes can clear set-id bits.
+            .set_permissions(fs::Permissions::from_mode(_mode & 0o7777))?;
     }
     temporary.as_file().sync_all()?;
     temporary.persist(path).map_err(|error| error.error)?;
