@@ -18,7 +18,8 @@ license=('MIT')
 # What the published binaries actually link. libgit2 and OpenSSL are
 # vendored into them, so they are absent here — but zlib and libgcc_s are
 # not, and namcap reports an error for every needed library left undeclared.
-depends=('gcc-libs' 'glibc' 'zlib')
+# Native Git implements diff, commit and configured filter execution at runtime.
+depends=('gcc-libs' 'git' 'glibc' 'zlib')
 
 provides=("$_pkgname=$pkgver")
 conflicts=("$_pkgname")

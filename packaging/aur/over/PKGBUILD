@@ -16,7 +16,8 @@ license=('MIT')
 # zlib because libgit2 links the system one rather than bundling it: the
 # binaries really do need libz.so.1, and namcap errors on a needed library
 # left undeclared.
-depends=('gcc-libs' 'glibc' 'zlib')
+# Native Git implements diff, commit and configured filter execution at runtime.
+depends=('gcc-libs' 'git' 'glibc' 'zlib')
 
 # cmake, because `git2` is built with the `vendored` feature (vendored-libgit2
 # + vendored-openssl) — libgit2 and OpenSSL are compiled from source rather
