@@ -3,10 +3,10 @@
 Over checks ownership before changing deployed content. Use `apply --dry-run`,
 `unapply --dry-run`, and `sync --dry-run` to inspect affected paths. A preview
 never asks for conflict, disposal, or commit confirmation, executes hooks,
-updates checkpoints, or writes Git objects, indexes, or refs. Protected reads
-can still require sudo authentication. Add `--no-prompt` to require
-noninteractive sudo authorization; unavailable authorization fails rather than
-prompting. A preview is a snapshot, not a reservation of those paths.
+updates checkpoints, or writes Git objects, indexes, or refs. Read-only commands
+and dry runs never use sudo, even with cached credentials. They inspect targets
+as the invoking account and report inspection failures for inaccessible paths.
+A preview is a snapshot, not a reservation of those paths.
 
 ## Authorization contract
 
