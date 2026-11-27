@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="docs/images/icon.svg" alt="over" width="160">
+  <img src="docs/images/logo.svg" alt="over">
 </p>
-
-<h1 align="center">over</h1>
 
 <p align="center"><strong>A git-based file overlay manager (dotfiles as overlays)</strong></p>
 

@@ -1,4 +1,4 @@
-# over
+<h1 align="center"><img src="images/logo.svg" alt="over"></h1>
 
 A git-based file overlay manager (dotfiles as overlays)
 
