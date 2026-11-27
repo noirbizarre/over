@@ -1,6 +1,4 @@
-<h1 align="center">
-  <img src="images/over-text.svg" alt="Over">
-</h1>
+<h1 align="center"><img src="images/logo.svg" alt="Over"></h1>
 
 Over manages files as **overlays**: directories in a Git-backed source repository
 whose contents are applied to a **target** directory. Descriptors configure where
