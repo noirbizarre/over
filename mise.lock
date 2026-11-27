@@ -138,7 +138,7 @@ version = "0.9.152"
 backend = "cargo:cargo-nextest"
 
 [[tools."cargo:git-tpl"]]
-version = "0.17.0"
+version = "0.18.0"
 backend = "cargo:git-tpl"
 
 [[tools.devcontainer-cli]]

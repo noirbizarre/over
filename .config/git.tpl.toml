@@ -11,7 +11,11 @@ archive = true
 aur = false
 author = "Axel H. <noirbizarre@gmail.com>"
 bin_name = "over"
-categories = "command-line-utilities, filesystem, development-tools"
+categories = [
+  "command-line-utilities",
+  "filesystem",
+  "development-tools",
+]
 copyright_holder = "Axel H."
 copyright_year = 2026
 crate = "over"
@@ -22,6 +26,10 @@ gh_ship_token_mode = "app"
 homebrew = false
 keywords = "dotfiles, overlay, git, symlink, cli"
 kind = "library-and-binary"
+logos = [
+  "wordmark",
+  "icon",
+]
 man_pages = false
 mbx = false
 msrv = true
