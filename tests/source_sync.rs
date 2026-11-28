@@ -165,6 +165,38 @@ fn default_sync_is_offline_and_preserves_local_virtual_reconciliation() {
     assert!(!f.source.join(".git/FETCH_HEAD").exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn a_deliberate_overlay_choice_survives_source_pull_without_a_second_prompt() {
+    let f = Fixture::new();
+    f.apply();
+    f.advance("pulled update");
+    let output = std::process::Command::new("python3")
+        .current_dir(f.temp.path())
+        .args(["-c", include_str!("fixtures/age-pty.py")])
+        .arg(serde_json::to_string(&[("Choose an overlay", "ov\r")]).unwrap())
+        .arg(assert_cmd::cargo::cargo_bin!("over"))
+        .arg("--home")
+        .arg(&f.source)
+        .args(["sync", "--pull", "--target"])
+        .arg(&f.home)
+        .env("XDG_STATE_HOME", f.temp.path().join("state"))
+        .env("NO_COLOR", "1")
+        .env("TERM", "xterm")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(git(&f.source, &["rev-parse", "HEAD"]), f.remote_head());
+    assert_eq!(
+        fs::read_to_string(f.home.join("checkout/file")).unwrap(),
+        "pulled update"
+    );
+}
+
 #[rstest::rstest]
 fn pull_rebuilds_targets_after_fast_forward_or_replaying_local_commits(
     #[values(false, true)] divergent: bool,

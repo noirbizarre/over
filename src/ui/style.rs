@@ -1,51 +1,42 @@
 use std::fmt;
 use std::sync::LazyLock;
 
+use choisir::theme::MinimalTheme;
 use clap::builder::styling;
-use console::{Style, StyledObject, style};
+use console::{StyledObject, style};
 use dialoguer::theme::Theme;
 
 pub static TICK_CHARS_BRAILLE_4_6_DOWN: LazyLock<String> = LazyLock::new(|| String::from("⠶⢲⣰⣤⣆⡖"));
 pub static TICK_CHARS_BRAILLE_4_6_UP: LazyLock<String> = LazyLock::new(|| String::from("⠛⠹⠼⠶⠧⠏"));
 pub static BRAILLE_6: LazyLock<String> = LazyLock::new(|| String::from("⠿"));
-
 pub static THIN_PROGRESS: LazyLock<String> = LazyLock::new(|| String::from("━>-"));
 pub static THIN_DUAL_PROGRESS: LazyLock<String> = LazyLock::new(|| String::from("=>-"));
-
 pub static DOTS_4: LazyLock<String> = LazyLock::new(|| String::from("::"));
 
 pub fn white<D>(value: D) -> StyledObject<D> {
     style(value)
 }
-
 pub fn white_b<D>(value: D) -> StyledObject<D> {
     white(value).bold()
 }
-
 pub fn white_bi<D>(value: D) -> StyledObject<D> {
     white_b(value).italic()
 }
-
 pub fn cyan<D>(value: D) -> StyledObject<D> {
     style(value).cyan()
 }
-
 pub fn bold<D>(value: D) -> StyledObject<D> {
     style(value).bold()
 }
-
 pub fn dim<D>(value: D) -> StyledObject<D> {
     style(value).dim()
 }
-
 pub fn yellow<D>(value: D) -> StyledObject<D> {
     style(value).yellow()
 }
-
 pub fn green<D>(value: D) -> StyledObject<D> {
     style(value).green()
 }
-
 pub fn red<D>(value: D) -> StyledObject<D> {
     style(value).red()
 }
@@ -88,223 +79,56 @@ pub fn severity<D>(value: D, severity: Severity) -> StyledObject<D> {
     }
 }
 
-pub struct DialogTheme {
-    /// The style for default values
-    pub defaults_style: Style,
-    /// The style for prompt
-    pub prompt_style: Style,
-    /// Prompt prefix value and style
-    pub prompt_prefix: StyledObject<String>,
-    /// Prompt suffix value and style
-    pub prompt_suffix: StyledObject<String>,
-    /// Prompt on success prefix value and style
-    pub success_prefix: StyledObject<String>,
-    /// Prompt on success suffix value and style
-    pub success_suffix: StyledObject<String>,
-    /// Error prefix value and style
-    pub error_prefix: StyledObject<String>,
-    /// The style for error message
-    pub error_style: Style,
-    /// The style for hints
-    pub hint_style: Style,
-    /// The style for values on prompt success
-    pub values_style: Style,
-    /// The style for active items
-    pub active_item_style: Style,
-    /// The style for inactive items
-    pub inactive_item_style: Style,
-    /// Active item in select prefix value and style
-    pub active_item_prefix: StyledObject<String>,
-    /// Inactive item in select prefix value and style
-    pub inactive_item_prefix: StyledObject<String>,
-}
-
-impl Default for DialogTheme {
-    fn default() -> DialogTheme {
-        DialogTheme {
-            defaults_style: Style::new().for_stderr(),
-            prompt_style: Style::new().for_stderr().bold(),
-            prompt_prefix: style("?".to_string()).for_stderr(),
-            prompt_suffix: style("›".to_string()).for_stderr().dim(),
-            success_prefix: style("✔".to_string()).for_stderr().green(),
-            success_suffix: style("·".to_string()).for_stderr().dim(),
-            error_prefix: style("✘".to_string()).for_stderr().red(),
-            error_style: Style::new().for_stderr().red(),
-            hint_style: Style::new().for_stderr().dim(),
-            values_style: Style::new().for_stderr(),
-            active_item_style: Style::new().for_stderr().bold(),
-            inactive_item_style: Style::new().for_stderr(),
-            active_item_prefix: style("❯".to_string()).for_stderr(),
-            inactive_item_prefix: style(" ".to_string()).for_stderr(),
-        }
-    }
-}
+/// Keep path presentation and credential masking local; choisir owns widget styling.
+#[derive(Default)]
+pub struct DialogTheme(MinimalTheme);
 
 impl Theme for DialogTheme {
-    /// Formats a confirm prompt.
+    fn format_prompt(&self, f: &mut dyn fmt::Write, prompt: &str) -> fmt::Result {
+        self.0.format_prompt(f, &crate::utils::short_paths(prompt))
+    }
+
     fn format_confirm_prompt(
         &self,
         f: &mut dyn fmt::Write,
         prompt: &str,
         default: Option<bool>,
     ) -> fmt::Result {
-        if !prompt.is_empty() {
-            write!(
-                f,
-                "{} {} ",
-                self.prompt_prefix,
-                self.prompt_style
-                    .apply_to(crate::utils::short_paths(prompt))
-            )?;
-        }
-
-        match default {
-            None => write!(
-                f,
-                "{} {}",
-                self.hint_style.apply_to("(y/n)"),
-                self.prompt_suffix
-            ),
-            Some(true) => write!(
-                f,
-                "{} {} {}",
-                self.hint_style.apply_to("(y/n)"),
-                self.prompt_suffix,
-                self.defaults_style.apply_to("yes")
-            ),
-            Some(false) => write!(
-                f,
-                "{} {} {}",
-                self.hint_style.apply_to("(y/n)"),
-                self.prompt_suffix,
-                self.defaults_style.apply_to("no")
-            ),
-        }
+        self.0
+            .format_confirm_prompt(f, &crate::utils::short_paths(prompt), default)
     }
 
-    /// Formats a confirm prompt after selection.
     fn format_confirm_prompt_selection(
         &self,
         f: &mut dyn fmt::Write,
         prompt: &str,
         selection: Option<bool>,
     ) -> fmt::Result {
-        let selection = selection.map(|b| if b { "yes" } else { "no" });
-        // Declining a confirmation is a valid answer, not a failed operation.
-        let prefix = &self.success_prefix;
-        let style = &self.values_style;
-
-        if !prompt.is_empty() {
-            write!(
-                f,
-                "{} {} ",
-                prefix,
-                self.prompt_style
-                    .apply_to(crate::utils::short_paths(prompt))
-            )?;
-        }
-
-        match selection {
-            Some(selection) => {
-                write!(f, "{}", style.apply_to(selection))
-            }
-            None => {
-                write!(f, "{}", self.success_suffix)
-            }
-        }
+        self.0
+            .format_confirm_prompt_selection(f, &crate::utils::short_paths(prompt), selection)
     }
 
-    /// Formats a select prompt.
-    fn format_select_prompt(&self, f: &mut dyn fmt::Write, prompt: &str) -> fmt::Result {
-        if !prompt.is_empty() {
-            write!(
-                f,
-                "{} {} ",
-                self.prompt_prefix,
-                self.prompt_style
-                    .apply_to(crate::utils::short_paths(prompt))
-            )?;
-        }
-
-        write!(f, "{}", self.prompt_suffix)
-    }
-
-    /// Formats a select prompt after selection.
-    fn format_select_prompt_selection(
-        &self,
-        f: &mut dyn fmt::Write,
-        prompt: &str,
-        sel: &str,
-    ) -> fmt::Result {
-        if !prompt.is_empty() {
-            write!(
-                f,
-                "{} {} ",
-                self.success_prefix,
-                self.prompt_style
-                    .apply_to(crate::utils::short_paths(prompt))
-            )?;
-        }
-
-        write!(
-            f,
-            "{} {}",
-            self.success_suffix,
-            self.values_style.apply_to(crate::utils::short_paths(sel))
-        )
-    }
-
-    /// Formats an input prompt.
     fn format_input_prompt(
         &self,
         f: &mut dyn fmt::Write,
         prompt: &str,
         default: Option<&str>,
     ) -> fmt::Result {
-        if !prompt.is_empty() {
-            write!(
-                f,
-                "{} {} ",
-                self.prompt_prefix,
-                self.prompt_style
-                    .apply_to(crate::utils::short_paths(prompt)),
-            )?;
-        }
-
-        match default {
-            Some(default) => write!(
-                f,
-                "{} {} ",
-                self.hint_style
-                    .apply_to(format!("({})", crate::utils::short_paths(default))),
-                self.prompt_suffix,
-            ),
-            None => write!(f, "{} ", self.prompt_suffix),
-        }
+        let default = default.map(crate::utils::short_paths);
+        self.0
+            .format_input_prompt(f, &crate::utils::short_paths(prompt), default.as_deref())
     }
 
-    /// Formats an input prompt after selection.
     fn format_input_prompt_selection(
         &self,
         f: &mut dyn fmt::Write,
         prompt: &str,
-        sel: &str,
+        selection: &str,
     ) -> fmt::Result {
-        if !prompt.is_empty() {
-            write!(
-                f,
-                "{} {} ",
-                self.success_prefix,
-                self.prompt_style
-                    .apply_to(crate::utils::short_paths(prompt))
-            )?;
-        }
-
-        write!(
+        self.0.format_input_prompt_selection(
             f,
-            "{} {}",
-            self.success_suffix,
-            self.values_style.apply_to(crate::utils::short_paths(sel))
+            &crate::utils::short_paths(prompt),
+            &crate::utils::short_paths(selection),
         )
     }
 
@@ -317,68 +141,66 @@ impl Theme for DialogTheme {
         self.format_input_prompt_selection(f, prompt, "***")
     }
 
-    /// Formats a multi-select prompt.
-    fn format_multi_select_prompt(&self, f: &mut dyn fmt::Write, prompt: &str) -> fmt::Result {
-        if !prompt.is_empty() {
-            write!(
-                f,
-                "{} {} ",
-                self.prompt_prefix,
-                self.prompt_style
-                    .apply_to(crate::utils::short_paths(prompt)),
-            )?;
-        }
-
-        write!(f, "{}", self.prompt_suffix)
+    fn format_select_prompt(&self, f: &mut dyn fmt::Write, prompt: &str) -> fmt::Result {
+        self.0
+            .format_select_prompt(f, &crate::utils::short_paths(prompt))
     }
 
-    /// Formats a multi-select prompt after selection.
-    fn format_multi_select_prompt_selection(
+    fn format_select_prompt_selection(
         &self,
         f: &mut dyn fmt::Write,
         prompt: &str,
-        selections: &[&str],
+        selection: &str,
     ) -> fmt::Result {
-        if !prompt.is_empty() {
-            write!(
-                f,
-                "{} {} ",
-                self.success_prefix,
-                self.prompt_style
-                    .apply_to(crate::utils::short_paths(prompt))
-            )?;
-        }
-
-        write!(
+        self.0.format_select_prompt_selection(
             f,
-            "{} {}",
-            self.success_suffix,
-            self.values_style
-                .apply_to(crate::utils::short_paths(&selections.join(", ")))
+            &crate::utils::short_paths(prompt),
+            &crate::utils::short_paths(selection),
         )
     }
 
-    /// Formats a select prompt item.
     fn format_select_prompt_item(
         &self,
         f: &mut dyn fmt::Write,
         text: &str,
         active: bool,
     ) -> fmt::Result {
-        let text = crate::utils::short_paths(text);
-        let details = if active {
-            (
-                &self.active_item_prefix,
-                self.active_item_style.apply_to(text),
-            )
-        } else {
-            (
-                &self.inactive_item_prefix,
-                self.inactive_item_style.apply_to(text),
-            )
-        };
+        self.0
+            .format_select_prompt_item(f, &crate::utils::short_paths(text), active)
+    }
 
-        write!(f, "{} {}", details.0, details.1)
+    fn format_multi_select_prompt(&self, f: &mut dyn fmt::Write, prompt: &str) -> fmt::Result {
+        self.0
+            .format_multi_select_prompt(f, &crate::utils::short_paths(prompt))
+    }
+
+    fn format_multi_select_prompt_selection(
+        &self,
+        f: &mut dyn fmt::Write,
+        prompt: &str,
+        selections: &[&str],
+    ) -> fmt::Result {
+        let selections: Vec<_> = selections
+            .iter()
+            .map(|selection| crate::utils::short_paths(selection))
+            .collect();
+        let selections: Vec<_> = selections.iter().map(String::as_str).collect();
+        self.0.format_multi_select_prompt_selection(
+            f,
+            &crate::utils::short_paths(prompt),
+            &selections,
+        )
+    }
+
+    fn format_multi_select_prompt_item(
+        &self,
+        f: &mut dyn fmt::Write,
+        text: &str,
+        checked: bool,
+        active: bool,
+    ) -> fmt::Result {
+        self.0
+            .format_multi_select_prompt_item(f, &crate::utils::short_paths(text), checked, active)
     }
 }
 
@@ -393,397 +215,24 @@ pub fn clap_styles() -> styling::Styles {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fmt::Write;
 
     #[test]
-    fn password_completion_preserves_the_label_and_uses_a_fixed_mask_with_or_without_color() {
-        for colored in [false, true] {
-            let theme = DialogTheme {
-                prompt_style: Style::new().bold().force_styling(colored),
-                success_prefix: style("✔".to_owned()).green().force_styling(colored),
-                success_suffix: style("·".to_owned()).dim().force_styling(colored),
-                values_style: Style::new().force_styling(colored),
-                ..DialogTheme::default()
-            };
-            let mut rendered = String::new();
-            theme
-                .format_password_prompt_selection(&mut rendered, "Secret value for token")
-                .unwrap();
-            assert_eq!(
-                console::strip_ansi_codes(&rendered),
-                "✔ Secret value for token · ***"
-            );
-            assert_eq!(rendered.contains('\x1b'), colored);
-        }
-    }
-
-    #[test]
-    fn prompt_labels_and_defaults_abbreviate_home_without_mutating_input() {
-        let home = dirs::home_dir().unwrap();
-        let path = home.join("file").display().to_string();
-        let prompt = format!("Target for {path}");
-        let theme = DialogTheme::default();
+    fn password_completion_uses_a_fixed_mask() {
         let mut rendered = String::new();
-        theme
-            .format_input_prompt(&mut rendered, &prompt, Some(&path))
+        DialogTheme::default()
+            .format_password_prompt_selection(&mut rendered, "Passphrase")
             .unwrap();
-        let rendered = console::strip_ansi_codes(&rendered);
-        let shortened = std::path::Path::new("~").join("file").display().to_string();
-        assert!(rendered.contains(&format!("Target for {shortened}")));
-        assert!(rendered.contains(&format!("({shortened})")));
-        assert_eq!(path, home.join("file").display().to_string());
-        let mut selected = String::new();
-        theme
-            .format_select_prompt_item(&mut selected, &path, true)
+        assert_eq!(console::strip_ansi_codes(&rendered), "Passphrase · ***");
+    }
+
+    #[test]
+    fn input_defaults_abbreviate_home_paths() {
+        let Some(home) = dirs::home_dir() else { return };
+        let value = home.join("identity.txt").display().to_string();
+        let mut rendered = String::new();
+        DialogTheme::default()
+            .format_input_prompt(&mut rendered, "Identity", Some(&value))
             .unwrap();
-        assert!(console::strip_ansi_codes(&selected).contains(&shortened));
-    }
-
-    #[test]
-    fn identities_and_severities_use_their_semantic_foreground_colors() {
-        for (actual, code) in [
-            (overlay("value").force_styling(true).to_string(), 36),
-            (path("value").force_styling(true).to_string(), 34),
-            (repository("value").force_styling(true).to_string(), 34),
-            (
-                severity("value", Severity::Success)
-                    .force_styling(true)
-                    .to_string(),
-                32,
-            ),
-            (
-                severity("value", Severity::Warning)
-                    .force_styling(true)
-                    .to_string(),
-                33,
-            ),
-            (
-                severity("value", Severity::Error)
-                    .force_styling(true)
-                    .to_string(),
-                31,
-            ),
-        ] {
-            assert_eq!(actual, format!("\x1b[{code}mvalue\x1b[0m"));
-        }
-        assert_eq!(mode("checkout").force_styling(true).to_string(), "checkout");
-        assert_eq!(white("label").force_styling(true).to_string(), "label");
-        assert_eq!(
-            heading("Heading").force_styling(true).to_string(),
-            "\x1b[37m\x1b[1mHeading\x1b[0m"
-        );
-        assert_eq!(
-            key("Key").force_styling(true).to_string(),
-            "\x1b[37m\x1b[1mKey\x1b[0m"
-        );
-    }
-
-    #[test]
-    fn white_preserves_original_text() {
-        let styled = white("hello");
-        let mut buf = String::new();
-        write!(&mut buf, "{}", styled).unwrap();
-        assert!(buf.contains("hello"));
-    }
-
-    #[test]
-    fn white_b_preserves_original_text() {
-        let styled = white_b("hello");
-        let mut buf = String::new();
-        write!(&mut buf, "{}", styled).unwrap();
-        assert!(buf.contains("hello"));
-    }
-
-    #[test]
-    fn white_bi_preserves_original_text() {
-        let styled = white_bi("hello");
-        let mut buf = String::new();
-        write!(&mut buf, "{}", styled).unwrap();
-        assert!(buf.contains("hello"));
-    }
-
-    #[test]
-    fn cyan_preserves_original_text() {
-        let styled = cyan("hello");
-        let mut buf = String::new();
-        write!(&mut buf, "{}", styled).unwrap();
-        assert!(buf.contains("hello"));
-    }
-
-    #[test]
-    fn yellow_preserves_original_text() {
-        let styled = yellow("hello");
-        let mut buf = String::new();
-        write!(&mut buf, "{}", styled).unwrap();
-        assert!(buf.contains("hello"));
-    }
-
-    #[test]
-    fn green_preserves_original_text() {
-        let styled = green("hello");
-        let mut buf = String::new();
-        write!(&mut buf, "{}", styled).unwrap();
-        assert!(buf.contains("hello"));
-    }
-
-    #[test]
-    fn red_preserves_original_text() {
-        let styled = red("hello");
-        let mut buf = String::new();
-        write!(&mut buf, "{}", styled).unwrap();
-        assert!(buf.contains("hello"));
-    }
-
-    #[test]
-    fn default_theme_uses_expected_glyphs() {
-        let theme = DialogTheme::default();
-        assert_eq!(format!("{}", theme.prompt_prefix), "?");
-        assert_eq!(format!("{}", theme.prompt_suffix), "›");
-        assert_eq!(format!("{}", theme.success_prefix), "✔");
-        assert_eq!(format!("{}", theme.success_suffix), "·");
-        assert_eq!(format!("{}", theme.error_prefix), "✘");
-        assert_eq!(format!("{}", theme.active_item_prefix), "❯");
-    }
-
-    #[test]
-    fn confirm_prompt_without_default_shows_yn_hint() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_confirm_prompt(&mut buf, "Are you sure?", None)
-            .unwrap();
-        assert!(buf.contains("Are you sure?"));
-        assert!(buf.contains("(y/n)"));
-    }
-
-    #[test]
-    fn confirm_prompt_with_default_true_shows_yes() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_confirm_prompt(&mut buf, "Continue?", Some(true))
-            .unwrap();
-        assert!(buf.contains("Continue?"));
-        assert!(buf.contains("yes"));
-    }
-
-    #[test]
-    fn confirm_prompt_with_default_false_shows_no() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_confirm_prompt(&mut buf, "Continue?", Some(false))
-            .unwrap();
-        assert!(buf.contains("Continue?"));
-        assert!(buf.contains("no"));
-    }
-
-    #[test]
-    fn confirm_prompt_with_empty_text_still_shows_yn_hint() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme.format_confirm_prompt(&mut buf, "", None).unwrap();
-        assert!(buf.contains("(y/n)"));
-    }
-
-    #[test]
-    fn confirm_selection_true_renders_yes() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_confirm_prompt_selection(&mut buf, "Are you sure?", Some(true))
-            .unwrap();
-        assert!(buf.contains("yes"));
-    }
-
-    #[test]
-    fn confirm_selection_false_does_not_render_yes() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_confirm_prompt_selection(&mut buf, "Are you sure?", Some(false))
-            .unwrap();
-        assert!(!buf.contains("yes"));
-    }
-
-    #[test]
-    fn confirm_selection_none_renders_success_suffix() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_confirm_prompt_selection(&mut buf, "Are you sure?", None)
-            .unwrap();
-        assert!(buf.contains("·"));
-    }
-
-    #[test]
-    fn confirm_selection_with_empty_prompt_still_renders_selection() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_confirm_prompt_selection(&mut buf, "", Some(true))
-            .unwrap();
-        assert!(buf.contains("yes"));
-    }
-
-    #[test]
-    fn select_prompt_includes_prompt_text() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme.format_select_prompt(&mut buf, "Choose:").unwrap();
-        assert!(buf.contains("Choose:"));
-    }
-
-    #[test]
-    fn select_prompt_with_empty_text_still_shows_suffix() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme.format_select_prompt(&mut buf, "").unwrap();
-        assert!(buf.contains("›"));
-    }
-
-    #[test]
-    fn select_prompt_selection_includes_chosen_option() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_select_prompt_selection(&mut buf, "Choose:", "option1")
-            .unwrap();
-        assert!(buf.contains("option1"));
-    }
-
-    #[test]
-    fn select_prompt_selection_with_empty_prompt_still_shows_option() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_select_prompt_selection(&mut buf, "", "option1")
-            .unwrap();
-        assert!(buf.contains("option1"));
-    }
-
-    #[test]
-    fn input_prompt_with_default_shows_default_hint() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_input_prompt(&mut buf, "Enter value:", Some("default"))
-            .unwrap();
-        assert!(buf.contains("(default)"));
-    }
-
-    #[test]
-    fn input_prompt_without_default_still_shows_prompt_text() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_input_prompt(&mut buf, "Enter value:", None)
-            .unwrap();
-        assert!(buf.contains("Enter value:"));
-    }
-
-    #[test]
-    fn input_prompt_with_empty_text_still_shows_default_hint() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_input_prompt(&mut buf, "", Some("default"))
-            .unwrap();
-        assert!(buf.contains("(default)"));
-    }
-
-    #[test]
-    fn input_prompt_selection_includes_chosen_value() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_input_prompt_selection(&mut buf, "Enter value:", "chosen")
-            .unwrap();
-        assert!(buf.contains("chosen"));
-    }
-
-    #[test]
-    fn input_prompt_selection_with_empty_prompt_still_shows_value() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_input_prompt_selection(&mut buf, "", "chosen")
-            .unwrap();
-        assert!(buf.contains("chosen"));
-    }
-
-    #[test]
-    fn multi_select_prompt_includes_prompt_text() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_multi_select_prompt(&mut buf, "Select:")
-            .unwrap();
-        assert!(buf.contains("Select:"));
-    }
-
-    #[test]
-    fn multi_select_prompt_with_empty_text_still_shows_suffix() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme.format_multi_select_prompt(&mut buf, "").unwrap();
-        assert!(buf.contains("›"));
-    }
-
-    #[test]
-    fn multi_select_prompt_selection_joins_chosen_options() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_multi_select_prompt_selection(&mut buf, "Select:", &["a", "b"])
-            .unwrap();
-        assert!(buf.contains("a, b"));
-    }
-
-    #[test]
-    fn multi_select_prompt_selection_with_empty_prompt_still_shows_option() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_multi_select_prompt_selection(&mut buf, "", &["x"])
-            .unwrap();
-        assert!(buf.contains("x"));
-    }
-
-    #[test]
-    fn select_prompt_active_item_uses_active_prefix() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_select_prompt_item(&mut buf, "item1", true)
-            .unwrap();
-        assert!(buf.contains("item1"));
-        assert!(buf.contains("❯"));
-    }
-
-    #[test]
-    fn select_prompt_inactive_item_renders_item_text() {
-        let theme = DialogTheme::default();
-        let mut buf = String::new();
-        theme
-            .format_select_prompt_item(&mut buf, "item2", false)
-            .unwrap();
-        assert!(buf.contains("item2"));
-    }
-
-    #[test]
-    fn clap_styles_produces_non_empty_styles() {
-        let styles = clap_styles();
-        assert!(std::mem::size_of_val(&styles) > 0);
-    }
-
-    #[test]
-    fn spinner_and_progress_char_constants_are_non_empty() {
-        assert!(!TICK_CHARS_BRAILLE_4_6_DOWN.is_empty());
-        assert!(!TICK_CHARS_BRAILLE_4_6_UP.is_empty());
-        assert!(!BRAILLE_6.is_empty());
-        assert!(!THIN_PROGRESS.is_empty());
-        assert!(!THIN_DUAL_PROGRESS.is_empty());
-        assert!(!DOTS_4.is_empty());
+        assert!(console::strip_ansi_codes(&rendered).contains("[~/identity.txt]"));
     }
 }

@@ -260,7 +260,7 @@ pub fn policy_inputs(
         .repository(crate::overlays::Repository::new(home.to_path_buf()))
         .root(dirs::home_dir().ok_or_else(|| anyhow::anyhow!("home directory unavailable"))?)
         .build();
-    let overlay = crate::selection::select(&ctx, None, &paths, false)?;
+    let overlay = super::selection::select(&ctx, None, &paths, false)?;
     let ctx = ctx.with_overlay(overlay.clone()).resolve_data()?;
     let routing = overlay.resolve_mappings(&ctx)?;
     let mut inputs = std::collections::BTreeMap::new();
@@ -391,14 +391,19 @@ fn add_key(repo: &git2::Repository, opt: &NewKey, new_user: bool) -> Result<()> 
             can_prompt(),
             "select --recipient, --recipients-file, --identity-output or --passphrase"
         );
-        match dialoguer::Select::with_theme(&theme)
+        match choisir::Select::new()
+            .with_theme(&theme)
             .with_prompt("First key type")
-            .items([
-                "Generate Age software identity",
-                "Existing Age/plugin recipient",
-                "Age recipient file",
-                "Passphrase",
-            ])
+            .items(
+                [
+                    "Generate Age software identity",
+                    "Existing Age/plugin recipient",
+                    "Age recipient file",
+                    "Passphrase",
+                ]
+                .into_iter()
+                .enumerate(),
+            )
             .default(0)
             .interact()?
         {
@@ -810,14 +815,14 @@ pub(crate) fn acquire_repository_key_policy(
             })
             .collect();
         let _pause = crate::ui::progress::pause()?;
-        let index = dialoguer::Select::with_theme(&crate::ui::style::DialogTheme::default())
+        let index = choisir::Select::new()
+            .with_theme(&crate::ui::style::DialogTheme::default())
+            .search(choisir::SearchMode::Typeahead)
             .with_prompt("Choose a repository key")
-            // The named password prompt supplies context without leaving a duplicate selection report.
-            .report(false)
-            .items(&labels)
+            .items(labels.iter().enumerate())
             .default(0)
             .interact_on_opt(&console::Term::stderr())
-            .map_err(crate::ui::age::prompt_error)?
+            .map_err(crate::ui::age::choice_error)?
             .ok_or(crate::crypt::age::InteractionError::Cancelled)?;
         let selected = candidates[index];
         // Narrow before hints or identity loading so an unselected device cannot interact or recover.

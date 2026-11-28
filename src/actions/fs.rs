@@ -4,7 +4,7 @@ use std::fs::{self, create_dir_all};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use dialoguer::Select;
+use choisir::Select;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -72,13 +72,18 @@ pub(crate) fn prompt_conflict_policy(
         .copied()
         .filter(|choice| !source_read_only || !matches!(choice, ConflictChoice::Absorb))
         .collect();
-    let selection = Select::with_theme(&DialogTheme::default())
+    let selection = Select::new()
+        .with_theme(&DialogTheme::default())
         .with_prompt(prompt)
         .default(0)
-        .items(&choices)
+        .items(
+            choices
+                .into_iter()
+                .map(|choice| (choice, choice.to_string())),
+        )
         .interact()
         .map_err(|e| anyhow::anyhow!("prompt failed: {}", e))?;
-    Ok(choices[selection])
+    Ok(selection)
 }
 
 /// Show a diff between the overlay source and the existing target using `git diff --no-index`.
@@ -916,7 +921,7 @@ impl Action for EnsureDir {
                             path.display()
                         );
                         let _pause = ui::progress::pause()?;
-                        let overwrite = dialoguer::Confirm::new()
+                        let overwrite = choisir::Confirm::with_theme(&DialogTheme::default())
                             .with_prompt(format!(
                                 "Replace directory scaffold conflict at '{}' ?",
                                 path.display()

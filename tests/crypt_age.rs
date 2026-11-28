@@ -1175,7 +1175,7 @@ fn interactive_unlock_scopes_device_interaction_to_the_chosen_key(#[case] device
     let diagnostics = String::from_utf8_lossy(&output.stderr);
     let diagnostics = console::strip_ansi_codes(&diagnostics);
     assert!(!diagnostics.contains("Age identity file"));
-    assert!(!diagnostics.contains("✔ Choose a repository key"));
+    assert!(diagnostics.contains("Choose a repository key ·"));
     assert!(!diagnostics.contains("Trying passphrase key"));
     if device {
         assert!(!output.status.success());

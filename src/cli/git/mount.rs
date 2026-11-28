@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
+use choisir::{MultiSelect, SearchMode};
 use clap::Args;
-use dialoguer::MultiSelect;
 use dirs::home_dir;
 use noyalib::compat::serde_yaml as serde_yml;
 
@@ -308,10 +308,18 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             .collect();
 
         let pause = ui::progress::pause()?;
-        let selections = MultiSelect::with_theme(&DialogTheme::default())
+        let selections = MultiSelect::new()
+            .with_theme(&DialogTheme::default())
+            .search(SearchMode::Typeahead)
             .with_prompt("Select properties to export to overlay config")
-            .items(&labels)
-            .defaults(&defaults)
+            .items(labels.iter().copied().enumerate())
+            .defaults(
+                &defaults
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, selected)| selected.then_some(index))
+                    .collect::<Vec<_>>(),
+            )
             .interact()
             .map_err(|e| anyhow!("selection cancelled: {}", e))?;
         drop(pause);

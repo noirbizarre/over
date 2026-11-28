@@ -1,8 +1,8 @@
 use std::io::{self, IsTerminal};
 
 use anyhow::{Context as _, Result, bail};
+use choisir::{Confirm, Select};
 use clap::{Args, ValueEnum};
-use dialoguer::{Confirm, Select};
 
 use crate::actions::git::init::prepare_with;
 use crate::overlays::MaterializationKind;
@@ -111,11 +111,16 @@ fn setup_configuration(
             ui::info(
                 "Virtual checkout uses ordinary target files from committed source HEAD; symlink edits target files through links to the source.",
             )?;
-            let selection = Select::with_theme(&DialogTheme::default())
+            let selection = Select::new()
+                .with_theme(&DialogTheme::default())
                 .with_prompt(
                     "Choose the repository default materialization (no files will be applied)",
                 )
-                .items(["Virtual checkout (recommended)", "Symlink"])
+                .items(
+                    ["Virtual checkout (recommended)", "Symlink"]
+                        .into_iter()
+                        .enumerate(),
+                )
                 .default(0)
                 .interact()
                 .context("materialization selection failed")?;

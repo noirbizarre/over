@@ -15,6 +15,64 @@ struct Fixture {
     ctx: Ctx,
 }
 
+#[cfg(unix)]
+#[rstest]
+#[case("outside", "TWO\r", false, true)]
+#[case("home", "two\r", false, true)]
+#[case("outside", "\u{1b}", false, false)]
+#[case("outside", "", true, false)]
+fn terminal_selection_filters_missing_or_ambiguous_context_without_implicit_consent(
+    #[case] cwd: &str,
+    #[case] answer: &str,
+    #[case] no_prompt: bool,
+    #[case] applied: bool,
+) {
+    let fixture = Fixture::new();
+    for name in ["one", "two"] {
+        fixture.overlay(name, "target = '~'\nmode = 'symlink'");
+        fixture
+            .temp
+            .child(format!("repo/{name}/{name}"))
+            .write_str(name)
+            .unwrap();
+    }
+    let steps = if no_prompt {
+        Vec::new()
+    } else {
+        vec![("Choose an overlay", answer)]
+    };
+    let mut command = std::process::Command::new("python3");
+    command
+        .current_dir(fixture.path(cwd))
+        .args(["-c", include_str!("fixtures/age-pty.py")])
+        .arg(serde_json::to_string(&steps).unwrap())
+        .arg(assert_cmd::cargo::cargo_bin!("over"))
+        .arg("--home")
+        .arg(fixture.path("repo"))
+        .args(["apply", "--target"])
+        .arg(fixture.path("home"))
+        .env("XDG_STATE_HOME", fixture.path("state"))
+        .env("GIT_CONFIG_GLOBAL", fixture.path("gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("OVER_TEST_PTY_SPLIT_STDOUT", "1")
+        .env("NO_COLOR", "1")
+        .env("TERM", "xterm");
+    if no_prompt {
+        command.arg("--no-prompt");
+    }
+    let output = command.output().unwrap();
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(output.status.code(), Some(124), "picker timed out: {text}");
+    assert_ne!(output.status.code(), Some(125), "missing prompt: {text}");
+    assert_eq!(output.status.success(), applied, "{text}");
+    assert!(!fixture.path("home/one").exists());
+    assert_eq!(fixture.path("home/two").exists(), applied);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Choose an overlay"));
+    if applied {
+        assert_eq!(fs::read_to_string(fixture.path("home/two")).unwrap(), "two");
+    }
+}
+
 impl Fixture {
     fn new() -> Self {
         let temp = TempDir::new().unwrap();
@@ -52,6 +110,109 @@ impl Fixture {
             .arg(command);
         cli
     }
+}
+
+#[cfg(unix)]
+#[rstest]
+#[case("apply", false)]
+#[case("apply", true)]
+#[case("unapply", false)]
+#[case("sync", false)]
+fn choosing_an_overlay_cannot_resolve_ambiguous_source_mappings_at_cwd(
+    #[case] command: &str,
+    #[case] exclusions: bool,
+) {
+    let fixture = Fixture::new();
+    for name in ["one", "two"] {
+        fixture.overlay(name, "mode = 'symlink'\ntarget = '~/base'\n[[rules]]\npath = 'first'\ntarget = '../mapped'\n[[rules]]\npath = 'second'\ntarget = '../mapped/nested'");
+        fixture
+            .temp
+            .child(format!("repo/{name}/first/file"))
+            .write_str("first")
+            .unwrap();
+        fixture
+            .temp
+            .child(format!("repo/{name}/second/file"))
+            .write_str("second")
+            .unwrap();
+    }
+    fixture
+        .temp
+        .child("repo/mapped/nested")
+        .create_dir_all()
+        .unwrap();
+    let mut process = std::process::Command::new("python3");
+    process
+        .current_dir(fixture.path("repo/mapped/nested"))
+        .args(["-c", include_str!("fixtures/age-pty.py")])
+        .arg(serde_json::to_string(&[("Choose an overlay", "one\r")]).unwrap())
+        .arg(assert_cmd::cargo::cargo_bin!("over"))
+        .arg("--home")
+        .arg(fixture.path("repo"))
+        .arg(command)
+        .arg("--target")
+        .arg(fixture.path("home"))
+        .env("XDG_STATE_HOME", fixture.path("state"))
+        .env("GIT_CONFIG_GLOBAL", fixture.path("gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("NO_COLOR", "1")
+        .env("TERM", "xterm");
+    if exclusions {
+        process.args(["--skip", "absent"]);
+    }
+    let output = process.output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{text}");
+    assert_ne!(output.status.code(), Some(124), "picker timed out: {text}");
+    assert_ne!(output.status.code(), Some(125), "missing prompt: {text}");
+    assert!(text.contains("ambiguous source path"), "{text}");
+    assert!(!fixture.path("repo/mapped/file").exists());
+    assert!(!fixture.path("repo/mapped/nested/file").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn absorption_typeahead_retains_checked_entries_hidden_by_a_later_filter() {
+    let fixture = Fixture::new();
+    for name in ["one", "two", "untouched"] {
+        fixture
+            .temp
+            .child(format!("home/{name}"))
+            .write_str(name)
+            .unwrap();
+    }
+    // Check one, replace the query, then check two while one is hidden.
+    let steps = [("select entries to absorb", "one \u{7f}\u{7f}\u{7f}two \r")];
+    let output = std::process::Command::new("python3")
+        .current_dir(fixture.path("outside"))
+        .args(["-c", include_str!("fixtures/age-pty.py")])
+        .arg(serde_json::to_string(&steps).unwrap())
+        .arg(assert_cmd::cargo::cargo_bin!("over"))
+        .arg("--home")
+        .arg(fixture.path("repo"))
+        .args(["new", "picked"])
+        .arg(fixture.path("home"))
+        .env("XDG_STATE_HOME", fixture.path("state"))
+        .env("NO_COLOR", "1")
+        .env("TERM", "xterm")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    for name in ["one", "two"] {
+        assert_eq!(
+            fs::read_to_string(fixture.path(&format!("repo/picked/{name}"))).unwrap(),
+            name
+        );
+    }
+    assert!(!fixture.path("repo/picked/untouched").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.path("home/untouched")).unwrap(),
+        "untouched"
+    );
 }
 
 #[rstest]

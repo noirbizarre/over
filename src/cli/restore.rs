@@ -119,7 +119,7 @@ fn resolved(ctx: &Ctx, overlay: &Overlay) -> Result<Ctx> {
 }
 
 fn select(ctx: Ctx, name: Option<&str>, paths: &[PathBuf]) -> Result<(Ctx, Overlay)> {
-    let overlay = crate::selection::select_context(&ctx, name, paths)?;
+    let overlay = super::selection::select(&ctx, name, paths, false)?;
     Ok((resolved(&ctx, &overlay)?, overlay))
 }
 

@@ -26,11 +26,12 @@ Most commands check evidence in this order, stopping at the first matching tier
    by rules are excluded. A unique match preserves the target rule and source
    directory correspondence, including the remaining relative suffix.
 
-The first matching tier must identify one overlay. Multiple candidates are an
-error (except for `log`'s repository-history fallback), even when one target is
-deeper or a default is configured. The error lists
-the candidates and asks for an explicit overlay. Conflicting Git association
-values and stale associations also require correction or an explicit override.
+The first matching tier must identify one overlay. Single-overlay commands can
+ask you to choose among equally strong candidates in an interactive terminal;
+a deeper target or configured host never breaks a tie automatically. Without
+prompting, the error lists the candidates and asks for an explicit overlay.
+Conflicting Git association values and stale associations require correction
+or an explicit override.
 
 Multiple valid source explanations within one overlay are also ambiguous.
 Neither an explicit overlay nor a configured host chooses between its rules.
@@ -43,12 +44,14 @@ without file operands use the invocation directory.
 
 [`commit`](../commands/commit.md) selects from `--overlay`, then named paths'
 recorded checkout ownership, then current-directory context. Named paths must
-identify one overlay; ambiguous operands or different owners require explicit
-selection. Its bounded current-directory inference checks the containing Git repository's association first,
+identify one overlay; different owners remain an error, while compatible ambiguous
+operands can offer an interactive choice. Its bounded current-directory inference
+checks the containing Git repository's association first,
 then recorded checkout ownership (source context takes precedence over target
 context), then ancestor source descriptors within the configured Over home.
 It does not discover every overlay or use the sibling and target-containment tiers
-above. Missing or ambiguous context requires `--overlay NAME`; a uniquely owned
+above. Missing or ambiguous context offers a picker, or requires `--overlay NAME`
+when prompting is unavailable; a uniquely owned
 file operand works even from a shared destination directory. The configured host is never a
 fallback for commit.
 
@@ -56,15 +59,24 @@ fallback for commit.
 
 | Commands | Fallback |
 | --- | --- |
-| `apply` | Configured `host_overlay` only with root `apply.default_to_host` enabled (false by default), otherwise an actionable missing-overlay error |
-| `sync` | Configured host only with root `sync.default_to_host` enabled (false by default), otherwise require an explicit overlay or `--all` |
+| `apply` | Configured `host_overlay` only with root `apply.default_to_host` enabled (false by default), otherwise interactive selection or an explicit overlay |
+| `sync` | Configured host only with root `sync.default_to_host` enabled (false by default), otherwise interactive selection, an explicit overlay or `--all` |
 | `data` | Configured host, otherwise require an explicit overlay |
-| `add`, `git add`, `git mount`, `unapply`, `commit`, `restore` | Require an explicit overlay |
+| `add`, `git add`, `git mount`, `unapply`, `commit`, `restore` | Interactive selection or an explicit overlay |
 | `status` / `show`, `diff` | Configured host, otherwise all overlays |
 | `log` | Whole history of the repository containing the configured Over home; also used for ambiguous context or an inferred non-checkout overlay |
 
-Active context precedes the host. Except for `log`, ambiguity never invokes a
-fallback or an overlay selection prompt. `log` never selects the host implicitly;
+Interactive selection requires terminal stdin and stderr and honors `--no-prompt`
+where available. Type part of an overlay name to filter the list, use arrow keys
+to move, and Enter to choose. Escape clears a filter first; Escape with no filter
+or Ctrl+C cancels the command. Even an unrelated sole overlay requires a deliberate
+choice. Conflicting operand ownership and ambiguous mappings within one overlay
+remain errors. Apply exclusions also filter picker candidates; an excluded active
+context remains a no-op. Sync retains a deliberate choice across a source pull.
+
+Active context precedes the host. Ambiguity never invokes host fallback.
+Reporting commands retain their existing fallbacks rather than opening a picker.
+`log` never selects the host implicitly;
 name the host overlay explicitly to scope its history. `--all` on status/diff/sync explicitly bypasses inference and
 host selection. The configured host's own `host` overrides still apply
 when another overlay is selected; its data and unrelated dependencies do not.

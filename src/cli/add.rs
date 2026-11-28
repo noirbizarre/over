@@ -27,7 +27,7 @@ pub struct Params {
     #[clap(
         short,
         long,
-        help = "Select the target overlay (otherwise infer from file context)"
+        help = "Select the target overlay (otherwise infer from file context or choose interactively)"
     )]
     overlay: Option<String>,
 
@@ -85,7 +85,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let paths = resolved.clone();
     let explicit = args.overlay.clone();
     let overlay = tokio::task::spawn_blocking(move || {
-        crate::selection::select(&selection_ctx, explicit.as_deref(), &paths, false)
+        super::selection::select(&selection_ctx, explicit.as_deref(), &paths, false)
     })
     .await??;
     if cli.debug {

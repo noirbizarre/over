@@ -581,7 +581,7 @@ fn selecting_checkout_preserves_deployed_links_and_external_state() {
 #[cfg(target_os = "linux")]
 #[rstest]
 #[case("\r", Some("checkout"))]
-#[case("j\r", Some("symlink"))]
+#[case("\u{1b}[B\r", Some("symlink"))]
 #[case("decline", None)]
 #[case("cancel", None)]
 fn interactive_setup_persists_only_an_accepted_mode(
@@ -590,7 +590,7 @@ fn interactive_setup_persists_only_an_accepted_mode(
 ) {
     let tmp = TempDir::new().unwrap();
     source(tmp.path(), "readme.txt", "fixture");
-    // A controlling terminal exercises Dialoguer's actual default and key handling;
+    // A controlling terminal exercises choisir's actual default and key handling;
     // piped stdin cannot cover either because it deliberately disables setup prompts.
     let steps = if answer == "decline" {
         vec![("Create over.toml?", "n")]

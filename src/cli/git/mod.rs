@@ -145,7 +145,7 @@ pub fn select_overlay(
         // Bare workspaces own their siblings, not the Git administration directory's children.
         None => main_repo_root(git_repo)?,
     };
-    crate::selection::select(&ctx, overlay_name, &[path], false)
+    crate::cli::selection::select(&ctx, overlay_name, &[path], false)
 }
 
 #[cfg(test)]

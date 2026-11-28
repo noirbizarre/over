@@ -102,7 +102,7 @@ pub struct Params {
 
     #[clap(
         long,
-        help = "Never prompt to commit a virtual checkout's local changes; report them as blocked instead"
+        help = "Never prompt for overlay selection or to commit local changes; report local changes as blocked instead"
     )]
     no_prompt: bool,
 }
@@ -151,7 +151,8 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .ok_or_else(|| anyhow!("could not determine home directory"))?;
     // Reject absent/ambiguous intent before an optional pull mutates the source repository.
     let opts = args.options();
-    let selection = sync_selection(&repo, &root, args.name.as_deref(), args.all, &opts).await?;
+    let (selection, picked) =
+        sync_selection(&repo, &root, args.name.as_deref(), args.all, &opts).await?;
     let upstream = if remote.pull || remote.push {
         Some(
             source
@@ -182,7 +183,17 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
     let overlays = if remote.pull && !args.dry_run {
         // A pull can change descriptors; never execute the preflight snapshot afterward.
-        let refreshed = sync_selection(&repo, &root, args.name.as_deref(), args.all, &opts).await?;
+        // A deliberate picker choice survives reload; inferred intent must still be checked for changes.
+        let name = if picked {
+            selection.first().map(|overlay| overlay.name.as_str())
+        } else {
+            args.name.as_deref()
+        };
+        let refresh_opts = SyncOptions {
+            no_prompt: true,
+            ..opts
+        };
+        let (refreshed, _) = sync_selection(&repo, &root, name, args.all, &refresh_opts).await?;
         if args.name.is_none() && !args.all {
             anyhow::ensure!(
                 selection.first().map(|overlay| &overlay.name)
@@ -230,10 +241,15 @@ async fn sync_selection(
     name: Option<&str>,
     all: bool,
     opts: &SyncOptions,
-) -> Result<Vec<Overlay>> {
+) -> Result<(Vec<Overlay>, bool)> {
     match (name, all) {
-        (Some(name), _) => Ok(vec![repo.get(name)?]),
-        (None, true) => repo.inspect_overlays()?.into_iter().collect(),
+        (Some(name), _) => Ok((vec![repo.get(name)?], false)),
+        (None, true) => Ok((
+            repo.inspect_overlays()?
+                .into_iter()
+                .collect::<Result<_>>()?,
+            false,
+        )),
         (None, false) => {
             let ctx = Context::builder()
                 .dry_run(opts.dry_run)
@@ -241,22 +257,26 @@ async fn sync_selection(
                 .root(root.to_path_buf())
                 .repository(repo.clone())
                 .build();
-            let overlay = tokio::task::spawn_blocking(move || -> Result<Option<Overlay>> {
-                if let Some(overlay) = crate::selection::infer(&ctx, &[])? {
-                    return Ok(Some(overlay));
-                }
-                // Sync has its own opt-in; enabling bare apply must not authorize sync.
-                if ctx.repository.sync_config()?.default_to_host {
-                    ctx.repository.host_overlay(&ctx)
-                } else {
-                    Ok(None)
-                }
-            })
-                .await??
-                .ok_or_else(|| {
-                    anyhow!("cannot infer an overlay; use `over sync NAME`, `over sync --all`, or configure host_overlay and sync.default_to_host = true")
+            tokio::task::spawn_blocking(move || {
+                let result = (|| {
+                    if let Some(overlay) = crate::selection::infer(&ctx, &[])? {
+                        return Ok(overlay);
+                    }
+                    // Sync has its own opt-in; enabling bare apply must not authorize sync.
+                    if ctx.repository.sync_config()?.default_to_host
+                        && let Some(overlay) = ctx.repository.host_overlay(&ctx)? {
+                        return Ok(overlay);
+                    }
+                    Err(crate::selection::missing("cannot infer an overlay; use `over sync NAME`, `over sync --all`, or configure host_overlay and sync.default_to_host = true"))
+                })();
+                let mut picked = false;
+                let overlay = super::selection::resolve(&ctx, result, |_| true, |name, _| {
+                    picked = true;
+                    super::selection::chosen(&ctx, name, &[])
                 })?;
-            Ok(vec![overlay])
+                Ok((vec![overlay], picked))
+            })
+                .await?
         }
     }
 }

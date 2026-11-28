@@ -17,7 +17,7 @@ use crate::utils::short_path;
 pub struct Params {
     #[clap(
         long = "overlay",
-        help = "Select the overlay (otherwise infer from paths or active context)"
+        help = "Select the overlay (otherwise infer from paths or active context, then choose interactively)"
     )]
     name: Option<String>,
 
@@ -71,7 +71,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     let name = args.name.clone();
     let selection_paths = args.paths.clone();
     let selection = tokio::task::spawn_blocking(move || {
-        crate::selection::select_commit(&selection_ctx, name.as_deref(), &selection_paths)
+        super::selection::commit(&selection_ctx, name.as_deref(), &selection_paths)
     })
     .await??;
     let overlay = selection.overlay;

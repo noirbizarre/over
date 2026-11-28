@@ -126,7 +126,7 @@ impl Fixture {
 
     #[cfg(target_os = "linux")]
     fn interact(&self, keys: &str) {
-        // A controlling PTY is necessary: dialoguer reads the terminal, not a
+        // A controlling PTY is necessary: choisir reads the terminal, not a
         // scripted stdin pipe. The deadline turns prompt regressions into failures.
         let driver = r#"
 import errno, fcntl, os, pty, select, signal, struct, sys, time, tty
@@ -234,8 +234,8 @@ fn patch_mode_requires_a_terminal_instead_of_accepting_piped_choices() {
 fn terminal_choices_stage_one_hunk_and_keep_the_other_unstaged() {
     let fixture = Fixture::new();
     let changed = fixture.changed();
-    // Default is Skip; k selects Accept, then space confirms each selection.
-    fixture.interact("k  ");
+    // Default is Skip; Up selects Accept, then Enter confirms each selection.
+    fixture.interact("\u{1b}[A\r\r");
     let staged = fixture.git(&["diff", "--cached", "--no-ext-diff"]);
     let staged = String::from_utf8(staged.stdout).unwrap();
     assert!(staged.contains("+accepted"));
@@ -263,7 +263,7 @@ fn terminal_cancellation_discards_an_earlier_accepted_hunk() {
     let fixture = Fixture::new();
     fixture.changed();
     let original = fs::read(fixture.source.join(".git/index")).unwrap();
-    fixture.interact("k jj ");
+    fixture.interact("\u{1b}[A\r\u{1b}[B\u{1b}[B\r");
     assert_eq!(
         fs::read(fixture.source.join(".git/index")).unwrap(),
         original
@@ -277,7 +277,7 @@ fn patch_staging_updates_a_linked_worktree_index_without_touching_the_main_index
     let main_index = fixture.directory.path().join("source/.git/index");
     let original = fs::read(&main_index).unwrap();
     fixture.changed();
-    fixture.interact("k  ");
+    fixture.interact("\u{1b}[A\r\r");
     assert_eq!(fs::read(main_index).unwrap(), original);
     let diff = fixture.git(&["diff", "--cached", "--no-ext-diff"]);
     assert!(String::from_utf8_lossy(&diff.stdout).contains("+accepted"));
@@ -296,7 +296,7 @@ fn terminal_whole_file_choices_stage_binary_changes_and_deletions(#[case] binary
     } else {
         fs::remove_file(fixture.target.join("file")).unwrap();
     }
-    fixture.interact("k ");
+    fixture.interact("\u{1b}[A\r");
     if binary {
         assert_eq!(fixture.git(&["show", ":ov/file"]).stdout, b"binary\0change");
         assert_eq!(

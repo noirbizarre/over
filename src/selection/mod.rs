@@ -1,6 +1,7 @@
 //! Read-only overlay selection from configured ownership and invocation paths.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
@@ -33,7 +34,7 @@ pub struct InferredOverlay {
     pub paths: Vec<(PathBuf, ReverseMatch)>,
 }
 
-/// Read-only history may fall back on ambiguity; mutations must still reject it.
+/// Preserve history's ambiguity fallback, including ambiguities that a picker cannot resolve.
 #[derive(Debug)]
 pub(crate) struct AmbiguousSelection(String);
 
@@ -44,6 +45,54 @@ impl std::fmt::Display for AmbiguousSelection {
 }
 
 impl std::error::Error for AmbiguousSelection {}
+
+/// Only these failures can be resolved by deliberately choosing an overlay identity.
+#[derive(Debug)]
+pub(crate) struct SelectionRequired {
+    /// Empty only when context is missing, allowing the CLI to discover available names lazily.
+    pub candidates: Vec<String>,
+    /// Recorded target operands must retain their namespace after an interactive choice.
+    pub absolute_paths: bool,
+    message: String,
+}
+
+impl std::fmt::Display for SelectionRequired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SelectionRequired {}
+
+pub(crate) fn missing(message: impl Into<String>) -> anyhow::Error {
+    SelectionRequired {
+        candidates: Vec::new(),
+        absolute_paths: false,
+        message: message.into(),
+    }
+    .into()
+}
+
+fn ambiguous(message: String, candidates: BTreeSet<String>, absolute_paths: bool) -> anyhow::Error {
+    anyhow::Error::new(SelectionRequired {
+        candidates: candidates.into_iter().collect(),
+        absolute_paths,
+        message: message.clone(),
+    })
+    .context(AmbiguousSelection(message))
+}
+
+fn compatible_candidates(constraints: &[BTreeSet<String>]) -> BTreeSet<String> {
+    let Some(first) = constraints.first() else {
+        return BTreeSet::new();
+    };
+    constraints
+        .iter()
+        .skip(1)
+        .fold(first.clone(), |names, constraint| {
+            names.intersection(constraint).cloned().collect()
+        })
+}
 
 /// Infer from paths (or captured cwd when empty). Ambiguity is never absence.
 pub fn infer_selection(ctx: &Context, paths: &[PathBuf]) -> Result<Option<InferredOverlay>> {
@@ -76,6 +125,8 @@ fn infer_selection_with_exclusions(
     let mut locations = None;
     let mut selected = BTreeMap::new();
     let mut resolved_paths = Vec::new();
+    let mut constraints = Vec::new();
+    let mut ambiguity = None;
     for path in &paths {
         if let Some(name) = git_association(path)? {
             if let Some(policy) = exclusions.as_deref_mut()
@@ -101,13 +152,25 @@ fn infer_selection_with_exclusions(
             .into_iter()
             .filter_map(|(directory, owns)| owns.then_some(directory))
             .collect::<Vec<_>>();
-        ensure!(
-            sources.len() <= 1,
-            AmbiguousSelection(format!(
+        if sources.len() > 1 {
+            ambiguity = Some(format!(
                 "ambiguous source overlay for '{}'; specify NAME or --overlay NAME explicitly",
                 path.display()
-            ))
-        );
+            ));
+            constraints.push(
+                sources
+                    .iter()
+                    .map(|directory| {
+                        ctx.repository.canonical_name(
+                            &directory
+                                .strip_prefix(&ctx.repository.root)?
+                                .to_string_lossy(),
+                        )
+                    })
+                    .collect::<Result<BTreeSet<_>>>()?,
+            );
+            continue;
+        }
         if let Some(directory) = sources.first() {
             // Source context is authoritative: resolving unrelated targets here defeats lazy loading.
             let name = directory
@@ -273,14 +336,16 @@ fn infer_selection_with_exclusions(
             }
         }
         if let Some(tier) = tiers.into_values().next() {
-            ensure!(
-                tier.len() == 1,
-                AmbiguousSelection(format!(
+            constraints.push(tier.keys().cloned().collect());
+            if tier.len() > 1 {
+                ambiguity = Some(format!(
                     "ambiguous overlay for '{}': {}; specify NAME or --overlay NAME explicitly",
                     path.display(),
                     tier.keys().cloned().collect::<Vec<_>>().join(", ")
-                ))
-            );
+                ));
+                // Inspect later operands before offering a choice, so ambiguity cannot hide conflicting ownership.
+                continue;
+            }
             for (name, candidate) in tier {
                 match candidate.routing.reverse(path)? {
                     ReverseResolution::Unique(found) => resolved_paths.push((path.clone(), found)),
@@ -309,6 +374,18 @@ fn infer_selection_with_exclusions(
             selected.keys().cloned().collect::<Vec<_>>().join(", ")
         ))
     );
+    if let Some(message) = ambiguity {
+        constraints.extend(selected.keys().map(|name| BTreeSet::from([name.clone()])));
+        let candidates = compatible_candidates(&constraints);
+        ensure!(
+            !candidates.is_empty(),
+            AmbiguousSelection(
+                "paths belong to different overlays; specify NAME or --overlay NAME explicitly"
+                    .into()
+            )
+        );
+        return Err(ambiguous(message, candidates, false));
+    }
     Ok(selected
         .into_values()
         .next()
@@ -416,6 +493,8 @@ pub(crate) fn select_commit(
     }
     let state = crate::materialize::virtual_checkout::state::state_file()?.inspect_blocking()?;
     let mut operand_owners = std::collections::BTreeSet::new();
+    let mut operand_constraints = Vec::new();
+    let mut ambiguous_operand = false;
     for path in paths {
         let path = mapping::location(&ctx.absolute_path(path)?)?;
         let mut sources = std::collections::BTreeSet::new();
@@ -450,17 +529,30 @@ pub(crate) fn select_commit(
             }
         }
         let owners = if sources.is_empty() { targets } else { sources };
-        ensure!(
-            owners.len() <= 1,
-            "ambiguous overlay for '{}'; specify --overlay NAME explicitly",
-            path.display()
-        );
-        operand_owners.extend(owners);
+        if !owners.is_empty() {
+            ambiguous_operand |= owners.len() > 1;
+            operand_constraints.push(owners.clone());
+            if owners.len() == 1 {
+                operand_owners.extend(owners);
+            }
+        }
     }
     ensure!(
         operand_owners.len() <= 1,
         "paths belong to different overlays; specify --overlay NAME explicitly"
     );
+    if ambiguous_operand {
+        let candidates = compatible_candidates(&operand_constraints);
+        ensure!(
+            !candidates.is_empty(),
+            "paths belong to different overlays; specify --overlay NAME explicitly"
+        );
+        return Err(ambiguous(
+            "ambiguous overlay for selected paths; specify --overlay NAME explicitly".into(),
+            candidates,
+            true,
+        ));
+    }
     if let Some(name) = operand_owners.into_iter().next() {
         // Re-anchoring after inference could silently commit a colliding source-relative file.
         return Ok(CommitSelection {
@@ -505,10 +597,13 @@ pub(crate) fn select_commit(
     }
     // Source context remains authoritative even when another overlay targets that directory.
     let names = if sources.is_empty() { targets } else { sources };
-    ensure!(
-        names.len() <= 1,
-        "ambiguous overlay; specify --overlay NAME explicitly"
-    );
+    if names.len() > 1 {
+        return Err(ambiguous(
+            "ambiguous overlay; specify --overlay NAME explicitly".into(),
+            names,
+            false,
+        ));
+    }
     if let Some(name) = names.into_iter().next() {
         return ctx.repository.get(&name).map(contextual);
     }
@@ -528,7 +623,9 @@ pub(crate) fn select_commit(
                 .map(contextual);
         }
     }
-    bail!("cannot infer an overlay; specify --overlay NAME or run from an active overlay context")
+    Err(missing(
+        "cannot infer an overlay; specify --overlay NAME or run from an active overlay context",
+    ))
 }
 
 /// Select explicitly, then contextually, then optionally by host context.
@@ -547,14 +644,14 @@ pub fn select(
     if use_host && let Some(overlay) = ctx.repository.host_overlay(ctx)? {
         return Ok(overlay);
     }
-    bail!(
+    Err(missing(format!(
         "cannot infer an overlay; provide NAME or --overlay NAME explicitly{}",
         if use_host {
             " or configure host_overlay"
         } else {
             ""
         }
-    )
+    )))
 }
 
 /// Resolve a reporting command's active context before its host context.
@@ -583,9 +680,9 @@ pub fn select_apply(ctx: &Context, name: Option<&str>) -> Result<Overlay> {
     {
         return Ok(overlay);
     }
-    bail!(
-        "cannot infer an overlay; run `over apply NAME`, use an active overlay context, or configure host_overlay and apply.default_to_host = true"
-    )
+    Err(missing(
+        "cannot infer an overlay; run `over apply NAME`, use an active overlay context, or configure host_overlay and apply.default_to_host = true",
+    ))
 }
 
 /// Select apply roots without treating an excluded authoritative context as absence.
@@ -607,7 +704,71 @@ pub(crate) fn select_apply_with_exclusions(
     {
         return Ok((!exclusions.excludes(&overlay.name)).then_some(overlay));
     }
-    bail!(
-        "cannot infer an overlay; run `over apply NAME`, use an active overlay context, or configure host_overlay and apply.default_to_host = true"
-    )
+    Err(missing(
+        "cannot infer an overlay; run `over apply NAME`, use an active overlay context, or configure host_overlay and apply.default_to_host = true",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_fs::prelude::*;
+
+    #[test]
+    fn ambiguity_only_offers_candidates_from_the_strongest_evidence_tier() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        for name in ["one", "two", "weaker"] {
+            temp.child(format!("repo/{name}/over.toml"))
+                .write_str("target = '~'")
+                .unwrap();
+        }
+        for name in ["one", "two"] {
+            temp.child(format!("repo/{name}/file"))
+                .write_str(name)
+                .unwrap();
+        }
+        let ctx = Context::builder()
+            .repository(crate::overlays::Repository::new(temp.path().join("repo")))
+            .root(temp.path().join("home"))
+            .build();
+        let error = infer(&ctx, &[temp.path().join("home/file")]).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<SelectionRequired>()
+                .unwrap()
+                .candidates,
+            ["one", "two"]
+        );
+        assert!(error.is::<AmbiguousSelection>());
+    }
+
+    #[test]
+    fn an_early_ambiguity_cannot_hide_later_conflicting_operand_ownership() {
+        let temp = assert_fs::TempDir::new().unwrap();
+        for name in ["one", "two", "three"] {
+            temp.child(format!("repo/{name}/over.toml"))
+                .write_str("target = '~'")
+                .unwrap();
+        }
+        for name in ["one", "two"] {
+            temp.child(format!("repo/{name}/ambiguous"))
+                .write_str(name)
+                .unwrap();
+        }
+        temp.child("repo/three/owned").write_str("three").unwrap();
+        let ctx = Context::builder()
+            .repository(crate::overlays::Repository::new(temp.path().join("repo")))
+            .root(temp.path().join("home"))
+            .build();
+        let error = infer(
+            &ctx,
+            &[
+                temp.path().join("home/ambiguous"),
+                temp.path().join("home/owned"),
+            ],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("different overlays"));
+        assert!(!error.is::<SelectionRequired>());
+    }
 }

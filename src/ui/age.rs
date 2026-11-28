@@ -53,6 +53,14 @@ pub(crate) fn prompt_error(error: dialoguer::Error) -> InteractionError {
     }
 }
 
+pub(crate) fn choice_error(error: choisir::Error) -> InteractionError {
+    // Classify cancellation without echoing terminal input or plugin-provided text.
+    match error {
+        choisir::Error::Cancelled => InteractionError::Cancelled,
+        _ => InteractionError::Failed,
+    }
+}
+
 impl age::Callbacks for Callbacks {
     fn display_message(&self, message: &str) {
         let pause = super::progress::pause();
@@ -69,13 +77,16 @@ impl age::Callbacks for Callbacks {
         }
         let _pause = terminal_result(super::progress::pause())?;
         let labels = [safe(yes), safe(no.unwrap_or("Cancel"))];
-        let selection = prompt_result(
-            dialoguer::Select::with_theme(&super::style::DialogTheme::default())
+        let selection = {
+            choisir::Select::new()
+                .with_theme(&super::style::DialogTheme::default())
                 .with_prompt(safe(message))
-                .items(&labels)
+                .items(labels.iter().enumerate())
                 .default(1)
-                .interact_opt(),
-        )?;
+                .interact_opt()
+                .map_err(|error| eprintln!("{}", choice_error(error)))
+                .ok()?
+        };
         if selection != Some(0) {
             eprintln!("{0}", InteractionError::Cancelled);
         }
@@ -112,7 +123,7 @@ impl age::Callbacks for Callbacks {
 mod tests {
     use rstest::rstest;
 
-    use super::prompt_error;
+    use super::{choice_error, prompt_error};
     use crate::crypt::age::{InteractionError, interaction_error};
 
     #[rstest]
@@ -134,5 +145,17 @@ mod tests {
             interaction_error(&unknown).to_string(),
             InteractionError::Failed.to_string()
         );
+    }
+
+    #[test]
+    fn choice_errors_preserve_cancellation_without_disclosing_terminal_input() {
+        assert!(matches!(
+            choice_error(choisir::Error::Cancelled),
+            InteractionError::Cancelled
+        ));
+        let error = choisir::Error::Io(std::io::Error::other("private-input-sentinel"));
+        let message = choice_error(error).to_string();
+        assert_eq!(message, InteractionError::Failed.to_string());
+        assert!(!message.contains("sentinel"));
     }
 }
