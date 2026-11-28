@@ -1,7 +1,8 @@
 //! `over commit`: record staged virtual-checkout snapshots in the overlay's
 //! own source repository, preserving unstaged target and unrelated index changes.
-//! The standalone CLI can additionally supply checked reverse patches for rendered
-//! literals; sync's reusable staged-only entry points do not select those edits.
+//! The standalone CLI can additionally supply checked current-content snapshots
+//! for explicit operands and reverse patches for rendered literals; sync's reusable
+//! staged-only entry points do not select those edits.
 //!
 //! Reused by both `cli::commit` (the standalone command) and `crate::sync`
 //! (which offers to commit dirty virtual-checkout files before
@@ -28,6 +29,7 @@ use crate::materialize::virtual_checkout::state::{self, VirtualCheckoutRecord};
 use crate::status;
 use crate::ui::{emojis, style};
 
+pub(crate) mod ordinary;
 pub(crate) mod reverse_patch;
 
 /// What `over commit` should do for a single virtual checkout entry.
@@ -72,6 +74,10 @@ pub(crate) fn pending(
                 !reverse
                     .selected_sources
                     .contains(&source.join(&change.path))
+                    && !reverse
+                        .ordinary
+                        .selected_sources
+                        .contains(&source.join(&change.path))
             });
     }
     Ok(pending)
@@ -299,6 +305,10 @@ fn commit_blocking(
                 !reverse
                     .selected_sources
                     .contains(&source.join(&change.path))
+                    && !reverse
+                        .ordinary
+                        .selected_sources
+                        .contains(&source.join(&change.path))
             });
         }
         let destinations: Vec<_> = file_changes
@@ -319,6 +329,19 @@ fn commit_blocking(
             .collect();
         crate::desired::content::validate_selection(entry, &destinations)?;
         if let Some(reverse) = reverse {
+            for file in reverse
+                .ordinary
+                .files
+                .iter()
+                .filter(|file| file.target == entry.target)
+            {
+                file_changes.push(git::FileChange {
+                    path: file.relative.clone(),
+                    kind: file.kind,
+                    local_oid: None,
+                    local_mode: None,
+                });
+            }
             for file in reverse
                 .files
                 .iter()
@@ -478,7 +501,13 @@ fn commit_blocking(
                 )
             })
             .collect();
-        git::commit_staged_prepared(&repo, &paths, &message, &updates, &mut |oid| {
+        let ordinary = reverse
+            .ordinary
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), &file.update))
+            .collect();
+        git::commit_selected_prepared(&repo, &paths, &message, &updates, &ordinary, &mut |oid| {
             if let Some(expected) = expected {
                 anyhow::ensure!(
                     &snapshot(entries)? == expected,

@@ -275,7 +275,10 @@ fn native_secret_reads_preserve_ciphertext_without_persisting_a_one_shot_unlock(
 #[rstest::rstest]
 #[case(false)]
 #[case(true)]
-fn a_virtual_crypt_commit_includes_canonical_policy_and_ciphertext(#[case] direct_policy: bool) {
+fn a_virtual_crypt_commit_includes_canonical_policy_and_ciphertext(
+    #[case] direct_policy: bool,
+    #[values(false, true)] direct_contents: bool,
+) {
     let (root, _) = repository();
     let deployed = tempfile::tempdir().unwrap();
     fs::create_dir(root.path().join("ov")).unwrap();
@@ -339,21 +342,29 @@ fn a_virtual_crypt_commit_includes_canonical_policy_and_ciphertext(#[case] direc
             ],
         );
     }
-    over(
-        root.path(),
-        &[
-            "--home",
-            root.path().to_str().unwrap(),
-            "commit",
-            "--overlay",
-            "ov",
-            "--no-prompt",
-            "--message",
-            "crypt transition",
-            "--target",
-            deployed.path().to_str().unwrap(),
-        ],
-    );
+    let token = deployed.path().join("checkout/token");
+    let expected = if direct_contents {
+        fs::write(&token, b"direct virtual sentinel").unwrap();
+        b"direct virtual sentinel".as_slice()
+    } else {
+        b"virtual edited sentinel".as_slice()
+    };
+    let mut args = vec![
+        "--home",
+        root.path().to_str().unwrap(),
+        "commit",
+        "--overlay",
+        "ov",
+        "--no-prompt",
+        "--message",
+        "crypt transition",
+        "--target",
+        deployed.path().to_str().unwrap(),
+    ];
+    if direct_contents {
+        args.push(token.to_str().unwrap());
+    }
+    over(root.path(), &args);
     over::crypt::format::inspect(&git(root.path(), &["show", "HEAD:ov/token"]).stdout).unwrap();
     assert!(
         String::from_utf8_lossy(&git(root.path(), &["show", "HEAD:.gitattributes"]).stdout)
@@ -361,10 +372,9 @@ fn a_virtual_crypt_commit_includes_canonical_policy_and_ciphertext(#[case] direc
     );
     assert_eq!(
         fs::read(deployed.path().join("checkout/token")).unwrap(),
-        b"virtual edited sentinel"
+        expected
     );
-    let plaintext_oid =
-        git2::Oid::hash_object(git2::ObjectType::Blob, b"virtual edited sentinel").unwrap();
+    let plaintext_oid = git2::Oid::hash_object(git2::ObjectType::Blob, expected).unwrap();
     assert!(
         !git2::Repository::open(root.path())
             .unwrap()

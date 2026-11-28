@@ -247,8 +247,10 @@ over commit --overlay workspace/client -m "Update client settings"
 over sync workspace/client --dry-run
 ```
 
-Add stages a target snapshot; commit records **only staged changes** in the source
-repository. Further unstaged target edits stay outside that commit. Sync reconciles
+Add stages a target snapshot; commit without paths records **only staged changes**
+in ordinary files. Further unstaged target edits stay outside that commit.
+Alternatively, `over commit -m "Update client settings" ~/.config/client/settings.json`
+infers the file's owner and commits its current contents without staging first. Sync reconciles
 source and target locally by default. Use `over sync workspace/client --pull --push` to fetch/rebase
 the Over source repository first and push its commits after successful reconciliation.
 

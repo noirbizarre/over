@@ -487,6 +487,99 @@ fn reverse_add_and_commit_isolate_siblings_sharing_a_target(#[case] nested: bool
     );
 }
 
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+fn a_named_file_selects_its_owner_inside_a_shared_home(#[case] nested: bool) {
+    let fixture = Fixture::with_nested_source(nested);
+    fixture.apply();
+    fs::write(fixture.home.join(".env.d/git"), "current git").unwrap();
+    fs::write(fixture.home.join(".env.d/ssh"), "staged ssh").unwrap();
+    fixture.add("apps/ssh", &fixture.home.join(".env.d/ssh"));
+    fixture
+        .command("commit")
+        .current_dir(&fixture.home)
+        .args(["--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .arg(".env.d/git")
+        .assert()
+        .success();
+    let repo = fixture.repo();
+    let head = repo.head().unwrap().peel_to_tree().unwrap();
+    let git = head.get_path(Path::new("apps/git/.env.d/git")).unwrap();
+    let ssh = head.get_path(Path::new("apps/ssh/.env.d/ssh")).unwrap();
+    assert_eq!(repo.find_blob(git.id()).unwrap().content(), b"current git");
+    assert_eq!(repo.find_blob(ssh.id()).unwrap().content(), b"ssh\n");
+    let indexed = repo
+        .index()
+        .unwrap()
+        .get_path(Path::new("apps/ssh/.env.d/ssh"), 0)
+        .unwrap();
+    assert_eq!(repo.find_blob(indexed.id).unwrap().content(), b"staged ssh");
+    fixture
+        .command("sync")
+        .args(["apps/git", "--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .success();
+}
+
+#[rstest::rstest]
+#[case(true)]
+#[case(false)]
+fn ambiguous_or_disagreeing_commit_operands_preserve_all_changes(#[case] directory: bool) {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.home.join(".env.d/git"), "current git").unwrap();
+    fs::write(fixture.home.join(".env.d/ssh"), "current ssh").unwrap();
+    let repo = fixture.repo();
+    let head = repo.head().unwrap().target();
+    let index = fs::read(repo.path().join("index")).unwrap();
+    let mut command = fixture.command("commit");
+    command
+        .current_dir(&fixture.home)
+        .args(["--no-prompt", "--target"])
+        .arg(&fixture.home);
+    if directory {
+        command.args([".env.d", ".env.d/git"]);
+    } else {
+        command.args([".env.d/git", ".env.d/ssh"]);
+    }
+    command
+        .assert()
+        .failure()
+        .stderr(contains("--overlay NAME"));
+    assert_eq!(repo.head().unwrap().target(), head);
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+    assert_eq!(
+        fs::read(fixture.home.join(".env.d/git")).unwrap(),
+        b"current git"
+    );
+    assert_eq!(
+        fs::read(fixture.home.join(".env.d/ssh")).unwrap(),
+        b"current ssh"
+    );
+}
+
+#[test]
+fn an_explicit_overlay_cannot_commit_a_siblings_file() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.home.join(".env.d/ssh"), "current ssh").unwrap();
+    let repo = fixture.repo();
+    let head = repo.head().unwrap().target();
+    let index = fs::read(repo.path().join("index")).unwrap();
+    fixture
+        .command("commit")
+        .args(["--overlay", "apps/git", "--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .arg(fixture.home.join(".env.d/ssh"))
+        .assert()
+        .failure();
+    assert_eq!(repo.head().unwrap().target(), head);
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+}
+
 #[test]
 fn explicitly_acquired_files_remain_regular_and_cannot_be_stolen_by_a_sibling() {
     let fixture = Fixture::new();

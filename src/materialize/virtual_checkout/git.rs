@@ -1241,11 +1241,35 @@ pub(crate) struct SourceUpdate {
     pub expected: (Oid, i32),
 }
 
+/// Explicit checkout operands replace selected snapshots without staging first.
+pub(crate) struct OrdinaryUpdate {
+    pub content: Option<(Vec<u8>, u32)>,
+    pub expected: Option<(Oid, i32)>,
+}
+
 pub(crate) fn commit_staged_prepared(
     repo: &Repository,
     paths: &[PathBuf],
     message: &str,
     prepared: &BTreeMap<PathBuf, SourceUpdate>,
+    before_publish: &mut dyn FnMut(Oid) -> Result<()>,
+) -> Result<Oid> {
+    commit_selected_prepared(
+        repo,
+        paths,
+        message,
+        prepared,
+        &BTreeMap::new(),
+        before_publish,
+    )
+}
+
+pub(crate) fn commit_selected_prepared(
+    repo: &Repository,
+    paths: &[PathBuf],
+    message: &str,
+    prepared: &BTreeMap<PathBuf, SourceUpdate>,
+    ordinary: &BTreeMap<PathBuf, &OrdinaryUpdate>,
     before_publish: &mut dyn FnMut(Oid) -> Result<()>,
 ) -> Result<Oid> {
     let index_path = repo.path().join("index");
@@ -1270,7 +1294,34 @@ pub(crate) fn commit_staged_prepared(
         entry.mode = update.mode;
         index.add(&entry)?;
     }
-    let prepared_index = if prepared.is_empty() {
+    for (path, update) in ordinary {
+        if let Some((bytes, mode)) = &update.content {
+            // Preparation already ran clean filters; filtering again can corrupt canonical bytes.
+            let entry = git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode: *mode,
+                uid: 0,
+                gid: 0,
+                file_size: bytes.len().try_into().context("file too large to commit")?,
+                id: repo.blob(bytes)?,
+                flags: 0,
+                flags_extended: 0,
+                path: path
+                    .to_str()
+                    .context("source path is not UTF-8")?
+                    // Raw index entries need Git separators even on Windows.
+                    .replace('\\', "/")
+                    .into_bytes(),
+            };
+            index.add(&entry)?;
+        } else if index.get_path(path, 0).is_some() {
+            index.remove_path(path)?;
+        }
+    }
+    let prepared_index = if prepared.is_empty() && ordinary.is_empty() {
         None
     } else {
         // Serialize privately: publication must not stage translations before preflight succeeds.
@@ -1318,6 +1369,8 @@ pub(crate) fn commit_staged_prepared(
         anyhow::ensure!(
             if let Some(update) = prepared.get(path) {
                 current == Some(update.expected)
+            } else if let Some(update) = ordinary.get(path) {
+                current == update.expected
             } else {
                 entries_match(current, old) || entries_match(current, new)
             },

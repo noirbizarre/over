@@ -2118,6 +2118,42 @@ fn rendered_commit_selection_accepts_source_and_destination_paths(#[case] source
     );
 }
 
+#[test]
+fn explicit_ordinary_and_rendered_edits_share_one_commit_without_staging() {
+    let fixture = Fixture::new(true);
+    fixture.apply();
+    fs::write(fixture.target.join("plain"), "current ordinary\n").unwrap();
+    let target = fixture.target.join("config");
+    let rendered = fs::read_to_string(&target)
+        .unwrap()
+        .replace("first=base", "first=direct");
+    fs::write(&target, &rendered).unwrap();
+    let parent = fixture.repo().head().unwrap().target().unwrap();
+    fixture
+        .commit()
+        .arg(&target)
+        .arg(fixture.target.join("plain"))
+        .assert()
+        .success();
+    let repo = fixture.repo();
+    let commit = repo.head().unwrap().peel_to_commit().unwrap();
+    assert_eq!(commit.parent_id(0).unwrap(), parent);
+    let tree = commit.tree().unwrap();
+    let plain = repo
+        .find_blob(tree.get_path(Path::new("app/plain")).unwrap().id())
+        .unwrap();
+    assert_eq!(plain.content(), b"current ordinary\n");
+    let template = repo
+        .find_blob(tree.get_path(Path::new("app/config.jinja")).unwrap().id())
+        .unwrap();
+    assert!(
+        std::str::from_utf8(template.content())
+            .unwrap()
+            .contains("first=direct")
+    );
+    assert_eq!(fs::read_to_string(target).unwrap(), rendered);
+}
+
 #[rstest]
 #[case(
     "host={{ data.hostname }}\nsame\nsame\nend\n",

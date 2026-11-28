@@ -80,7 +80,9 @@ over commit --overlay workspace/client --message "Update client configuration"
 ```
 
 Staging records a snapshot. Further edits stay unstaged, and `over commit`
-commits only staged changes. Status and diff distinguish staged and unstaged
+without paths commits only staged ordinary changes. Naming files directly with
+`over commit PATH...` instead commits their current target contents, including
+later unstaged edits. Status and diff distinguish staged and unstaged
 content. Unrelated index entries are preserved. Sync a checkout that is
 behind its source before staging, and resolve conflicting source edits
 first. `--dry-run` leaves both the index and target files unchanged.
