@@ -332,6 +332,8 @@ fn unapply_requires_approval_before_removing_files_or_excludes(
 #[case("\n", false)]
 #[case("n\n", false)]
 #[case("y\n", true)]
+#[case("\u{1b}[D\r", true)]
+#[case("\u{3}", false)]
 fn terminal_removal_defaults_to_no_and_obeys_explicit_consent(
     #[case] answer: &str,
     #[case] approved: bool,

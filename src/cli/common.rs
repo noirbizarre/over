@@ -15,7 +15,7 @@ pub(crate) fn confirm_removal(message: &str, yes: bool, no_prompt: bool) -> Resu
         !no_prompt && std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
         || {
             let _pause = crate::ui::progress::pause()?;
-            dialoguer::Confirm::new()
+            choisir::Confirm::with_theme(&crate::ui::style::DialogTheme::default())
                 .with_prompt(message)
                 .default(false)
                 .interact()
@@ -113,9 +113,9 @@ pub(crate) fn resolve_inputs_with_missing(
     Ok(resolved)
 }
 
-/// Resolve single-overlay commands without guessing or prompting on ambiguity.
+/// Resolve single-overlay commands, asking for deliberate selection when necessary.
 pub fn select_overlay(ctx: &exec::Context, name: Option<&str>) -> Result<Overlay> {
-    crate::selection::select_context(ctx, name, &[])
+    super::selection::select(ctx, name, &[], false)
 }
 
 /// Re-run a cwd-sensitive test alone, including when libtest runs tests in parallel.

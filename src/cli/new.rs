@@ -3,9 +3,10 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
+use choisir::{MultiSelect, SearchMode};
 use clap::Args;
 use config::{Config, File, FileFormat};
-use dialoguer::{Input, MultiSelect};
+use dialoguer::Input;
 use dirs::home_dir;
 
 use crate::exec::Context;
@@ -277,25 +278,28 @@ fn discover_and_prompt_absorb(
 
     items.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let labels: Vec<&str> = items.iter().map(|(l, _, _)| l.as_str()).collect();
-
     let pause = ui::progress::pause()?;
-    let selections = MultiSelect::with_theme(theme)
+    let selections = MultiSelect::new()
+        .with_theme(theme)
+        .search(SearchMode::Typeahead)
         .with_prompt("Target exists — select entries to absorb")
-        .items(&labels)
+        .items(
+            items
+                .into_iter()
+                .map(|(label, path, is_git)| ((path, is_git), label)),
+        )
         .interact()
         .map_err(|e| anyhow!("prompt cancelled: {}", e))?;
     drop(pause);
 
-    for idx in selections {
-        let (_, ref path, is_git) = items[idx];
+    for (path, is_git) in selections {
         if is_git {
             // Extract remote origin URL via git2
-            if let Some((name, url)) = extract_git_remote(path) {
+            if let Some((name, url)) = extract_git_remote(&path) {
                 git_entries.insert(name, url);
             }
         } else {
-            files_to_absorb.push(path.clone());
+            files_to_absorb.push(path);
         }
     }
 

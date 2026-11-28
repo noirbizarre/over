@@ -22,6 +22,7 @@ mod log;
 mod new;
 mod restore;
 mod secret;
+mod selection;
 mod status;
 mod sync;
 mod unapply;

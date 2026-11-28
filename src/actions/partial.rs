@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
-use dialoguer::Select;
+use choisir::Select;
 
 use noyalib::compat::serde_yaml as serde_yml;
 use serde::{Deserialize, Serialize};
@@ -463,13 +463,19 @@ pub(crate) fn authorize_structural_conflict(ctx: &Ctx, target: &Path) -> Result<
         "Conflict: {} exists and isn't a plain file",
         style::path(short_path(&target.to_string_lossy())),
     );
-    let selection = Select::with_theme(&DialogTheme::default())
+    let selection = Select::new()
+        .with_theme(&DialogTheme::default())
         .with_prompt(prompt)
         .default(0)
-        .items(StructuralChoice::ALL)
+        .items(
+            StructuralChoice::ALL
+                .iter()
+                .copied()
+                .map(|choice| (choice, choice.to_string())),
+        )
         .interact()
         .map_err(|e| anyhow::anyhow!("prompt failed: {}", e))?;
-    match StructuralChoice::ALL[selection] {
+    match selection {
         StructuralChoice::Skip => Ok(false),
         StructuralChoice::Overwrite => Ok(true),
     }
@@ -524,13 +530,19 @@ pub(crate) fn resolve_block_conflict(
             marker,
             style::path(short_path(&target.to_string_lossy())),
         );
-        let selection = Select::with_theme(&DialogTheme::default())
+        let selection = Select::new()
+            .with_theme(&DialogTheme::default())
             .with_prompt(prompt)
             .default(0)
-            .items(BlockChoice::ALL)
+            .items(
+                BlockChoice::ALL
+                    .iter()
+                    .copied()
+                    .map(|choice| (choice, choice.to_string())),
+            )
             .interact()
             .map_err(|e| anyhow::anyhow!("prompt failed: {}", e))?;
-        match BlockChoice::ALL[selection] {
+        match selection {
             BlockChoice::Skip => return Ok(false),
             BlockChoice::Overwrite => return Ok(true),
             BlockChoice::Diff => {

@@ -114,7 +114,7 @@ impl Materializer for EncryptedFileMaterializer {
                     "encrypted target differs; use --force to overwrite it"
                 );
                 let _pause = crate::ui::progress::pause()?;
-                if !dialoguer::Confirm::new()
+                if !choisir::Confirm::with_theme(&crate::ui::style::DialogTheme::default())
                     .with_prompt("Overwrite encrypted file destination?")
                     .default(false)
                     .interact()

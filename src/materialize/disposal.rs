@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail, ensure};
-use dialoguer::Confirm;
+use choisir::Confirm;
 use git2::{Repository, RepositoryState, StatusOptions};
 
 use crate::desired::{DesiredEntry, Provenance};
@@ -268,7 +268,7 @@ pub(crate) fn authorize(ctx: &Context, target: &Path, assessment: &Assessment) -
     }
     authorize_with(ctx, target, assessment, |prompt| {
         let _pause = crate::ui::progress::pause()?;
-        Confirm::new()
+        Confirm::with_theme(&crate::ui::style::DialogTheme::default())
             .with_prompt(prompt)
             .default(false)
             .interact()

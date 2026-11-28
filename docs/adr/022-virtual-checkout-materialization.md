@@ -148,7 +148,7 @@ Deterministic per `Status`: `Applied` -> `UpToDate`; `Behind` (source-only
 changes, confirmed nothing local to lose) -> re-checkout and advance
 `base_oid` -> `FastForwarded`, gated on `opts.pull`; `Modified`
 (local-only changes) -> gated on `opts.push`, prompts
-(`dialoguer::Confirm` + `Input`, unless `no_prompt`) before calling
+(`choisir::Confirm` + `dialoguer::Input`, unless `no_prompt`) before calling
 `crate::commit::commit` — declining, or `no_prompt`, leaves everything
 untouched and reports `Blocked`; `Diverged`/`Conflict` -> `Conflict`,
 never auto-resolved in either direction, per-file.

@@ -107,24 +107,23 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     if let Some(mut exclusions) = exclusions {
         let prepared = tokio::task::spawn_blocking(move || {
             let result = (|| -> Result<_> {
-                let overlays = if names.is_empty() {
-                    crate::selection::select_apply_with_exclusions(&selection_ctx, &mut exclusions)?
-                        .into_iter()
-                        .collect::<Vec<_>>()
-                } else {
-                    let mut overlays = Vec::new();
-                    for name in names {
-                        let canonical = selection_ctx.repository.canonical_name(&name)?;
-                        if !exclusions.excludes(&canonical) {
-                            overlays.push(
-                                selection_ctx.repository.get(&name).with_context(|| {
-                                    format!("could not select overlay '{name}'")
-                                })?,
-                            );
+                let overlays =
+                    if names.is_empty() {
+                        super::selection::apply_with_exclusions(&selection_ctx, &mut exclusions)?
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                    } else {
+                        let mut overlays = Vec::new();
+                        for name in names {
+                            let canonical = selection_ctx.repository.canonical_name(&name)?;
+                            if !exclusions.excludes(&canonical) {
+                                overlays.push(selection_ctx.repository.get(&name).with_context(
+                                    || format!("could not select overlay '{name}'"),
+                                )?);
+                            }
                         }
-                    }
-                    overlays
-                };
+                        overlays
+                    };
                 // Empty roots otherwise activate metadata's host fallback and repository hooks.
                 if overlays.is_empty() {
                     return Ok(None);
@@ -145,7 +144,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
     }
     let overlays = tokio::task::spawn_blocking(move || -> Result<Vec<Overlay>> {
         if names.is_empty() {
-            return Ok(vec![crate::selection::select_apply(&selection_ctx, None)?]);
+            return Ok(vec![super::selection::apply(&selection_ctx)?]);
         }
         names
             .iter()

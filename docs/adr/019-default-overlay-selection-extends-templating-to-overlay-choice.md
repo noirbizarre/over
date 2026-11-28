@@ -5,6 +5,11 @@
 **Amended by #228:** [Contextual overlay selection](../usage/selection.md) now
 precedes the configured default. Missing single-overlay selection reports an
 actionable error instead of prompting; ambiguous context never falls through.
+The later choisir integration restores a terminal-only typeahead picker for
+missing selection and compatible overlay ambiguity, after contextual inference
+and permitted host defaults. Noninteractive selection still reports errors;
+ownership conflicts and ambiguity within an overlay remain errors. See the
+[current selection policy](../usage/selection.md).
 
 **Amended by #300:** `data` and `host` are local declarations. Only the configured
 default's own `host` mapping overrides each overlay's own host defaults; dependency

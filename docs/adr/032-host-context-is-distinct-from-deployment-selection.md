@@ -26,6 +26,11 @@ the host only with its own root `apply.default_to_host` or `sync.default_to_host
 enabled, both disabled by default. Command-specific settings live in root
 `apply` and `sync` tables. Other mutating commands require explicit or active
 selection; sync also accepts explicit `--all`.
+The choisir integration adds deliberate interactive selection when these sources
+do not identify an overlay, or when compatible overlay candidates remain tied.
+This requires terminal stdin/stderr and respects `--no-prompt`; it never resolves
+conflicting path owners or mappings within an overlay. Configured host defaults
+retain precedence over the missing-context picker, but cannot break ambiguity.
 Ambiguous or invalid context errors never activate host fallback.
 
 Host data remains independent of deployment selection: recursively merge the
@@ -39,4 +44,5 @@ The removed `default_overlay` key is ignored with a migration hint. Users rename
 it to `host_overlay` and separately opt into host apply/sync defaults if desired.
 Scripts relying on implicit mutation targets must opt in, name an overlay, run in
 active context, or use explicit sync `--all`. Sync validates intent before source pulls and loads
-fresh descriptors afterward, rejecting changed inferred identity.
+fresh descriptors afterward, rejecting changed inferred identity. A deliberate
+interactive choice is retained and reloaded without prompting again after a pull.

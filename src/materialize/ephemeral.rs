@@ -298,7 +298,7 @@ impl Materializer for EphemeralMaterializer {
                     entry.target.display()
                 );
                 let _pause = crate::ui::progress::pause()?;
-                if !dialoguer::Confirm::new()
+                if !choisir::Confirm::with_theme(&crate::ui::style::DialogTheme::default())
                     .with_prompt(format!(
                         "Overwrite read-only apply destination '{}' ?",
                         entry.target.display()

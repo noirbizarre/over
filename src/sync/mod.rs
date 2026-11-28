@@ -27,7 +27,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow};
-use dialoguer::Confirm;
+use choisir::Confirm;
 use git2::{Repository, RepositoryState};
 
 use crate::actions::git::config::ROOT_PATH;

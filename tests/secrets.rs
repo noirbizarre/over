@@ -113,7 +113,7 @@ fn interactive_secret_input_identifies_the_secret_without_echoing_its_value() {
         .unwrap();
     let transcript = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{output:?}");
-    assert!(transcript.contains("✔ Secret value for token · ***"));
+    assert!(transcript.contains("Secret value for token · ***"));
     assert!(!transcript.contains("value-sentinel"));
     assert!(!transcript.contains("[hidden]"));
     command(home.path())
