@@ -247,6 +247,8 @@ struct Check {
 
 #[derive(Default)]
 pub(crate) struct Prepared {
+    // Ordinary operands share the same publication checks as translated edits.
+    pub ordinary: super::ordinary::Prepared,
     pub files: Vec<File>,
     pub conflicts: Vec<String>,
     pub selected_sources: std::collections::BTreeSet<PathBuf>,
@@ -387,6 +389,7 @@ impl Prepared {
     }
 
     pub fn verify_inputs(&self) -> Result<()> {
+        self.ordinary.verify()?;
         for check in &self.checks {
             check.guard.verify()?;
             let metadata = std::fs::symlink_metadata(&check.path)?;

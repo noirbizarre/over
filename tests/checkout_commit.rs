@@ -273,7 +273,7 @@ fn unrelated_root_attributes_deletion_stays_staged_outside_selected_commits() {
 #[case("target", false, "--message")]
 #[case("nested_source", false, "-m")]
 #[case("nested_target", false, "-m")]
-fn path_operands_commit_only_staged_snapshots_and_preserve_other_changes(
+fn path_operands_commit_current_contents_and_preserve_other_changes(
     #[case] context: &str,
     #[case] explicit: bool,
     #[case] message_flag: &str,
@@ -318,7 +318,7 @@ fn path_operands_commit_only_staged_snapshots_and_preserve_other_changes(
             .to_vec()
     };
     assert_eq!(blob("ov/file"), b"original");
-    assert_eq!(blob("ov/nested/second"), b"second staged");
+    assert_eq!(blob("ov/nested/second"), b"second unstaged");
     assert_eq!(
         fs::read(fixture.target.join("nested/second")).unwrap(),
         b"second unstaged"
@@ -335,6 +335,235 @@ fn path_operands_commit_only_staged_snapshots_and_preserve_other_changes(
         fs::read(fixture.source.join("ov/file")).unwrap(),
         b"first staged"
     );
+}
+
+#[rstest]
+#[case(false, false)]
+#[case(true, false)]
+#[case(false, true)]
+fn an_absolute_operand_commits_unstaged_contents_from_an_unrelated_directory(
+    #[case] explicit: bool,
+    #[case] source_operand: bool,
+) {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "current contents").unwrap();
+    let mut command = fixture.command("commit");
+    command.current_dir(fixture.temp.path());
+    if explicit {
+        command.args(["--overlay", "ov"]);
+    }
+    command
+        .args(["--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .arg(if source_operand {
+            fixture.source.join("ov/file")
+        } else {
+            fixture.target.join("file")
+        })
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"current contents"
+    );
+    assert_eq!(
+        fs::read(fixture.target.join("file")).unwrap(),
+        b"current contents"
+    );
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let tree = repo.head().unwrap().peel_to_tree().unwrap();
+    let blob = repo
+        .find_blob(tree.get_path(Path::new("ov/file")).unwrap().id())
+        .unwrap();
+    assert_eq!(blob.content(), b"current contents");
+    fixture
+        .command("sync")
+        .args(["ov", "--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .assert()
+        .success();
+}
+
+#[test]
+fn a_pathless_commit_preserves_edits_made_after_staging() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "staged").unwrap();
+    fixture.add();
+    fs::write(fixture.target.join("file"), "later edit").unwrap();
+    fixture.commit_command().assert().success();
+    assert_eq!(fs::read(fixture.source.join("ov/file")).unwrap(), b"staged");
+    assert_eq!(
+        fs::read(fixture.target.join("file")).unwrap(),
+        b"later edit"
+    );
+}
+
+#[test]
+fn inferred_relative_operands_do_not_commit_colliding_source_relative_files() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.source.join("ov/home/checkout")).unwrap();
+    fs::write(
+        fixture.source.join("ov/home/checkout/file"),
+        "collision original",
+    )
+    .unwrap();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(Path::new("ov/home/checkout/file")).unwrap();
+    index.write().unwrap();
+    commit_index(&repo);
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "intended edit").unwrap();
+    fs::write(
+        fixture.target.join("home/checkout/file"),
+        "unselected collision",
+    )
+    .unwrap();
+    fixture
+        .command("commit")
+        .current_dir(fixture.temp.path())
+        .args(["--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .arg("home/checkout/file")
+        .assert()
+        .success();
+    let tree = repo.head().unwrap().peel_to_tree().unwrap();
+    let blob = |path: &str| {
+        repo.find_blob(tree.get_path(Path::new(path)).unwrap().id())
+            .unwrap()
+            .content()
+            .to_vec()
+    };
+    assert_eq!(blob("ov/file"), b"intended edit");
+    assert_eq!(blob("ov/home/checkout/file"), b"collision original");
+    assert_eq!(
+        fs::read(fixture.target.join("home/checkout/file")).unwrap(),
+        b"unselected collision"
+    );
+}
+
+#[test]
+fn an_operand_owned_by_another_collection_does_not_select_a_same_named_overlay() {
+    let applied = Fixture::new();
+    applied.apply();
+    let other = Fixture::new();
+    let repo = git2::Repository::open(&other.source).unwrap();
+    let head = repo.head().unwrap().target();
+    other
+        .command("commit")
+        .env("XDG_STATE_HOME", applied.temp.path().join("state"))
+        .current_dir(other.temp.path())
+        .args(["--no-prompt", "--target"])
+        .arg(&other.home)
+        .arg(applied.target.join("file"))
+        .assert()
+        .failure()
+        .stderr(contains("cannot infer an overlay"));
+    assert_eq!(repo.head().unwrap().target(), head);
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn aliased_operands_infer_recorded_checkout_ownership(#[case] source_operand: bool) {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "aliased edit").unwrap();
+    let alias = fixture.temp.path().join("alias");
+    symlink(
+        if source_operand {
+            fixture.source.join("ov")
+        } else {
+            fixture.target.clone()
+        },
+        &alias,
+    )
+    .unwrap();
+    fixture
+        .command("commit")
+        .current_dir(fixture.temp.path())
+        .args(["--no-prompt", "--target"])
+        .arg(&fixture.home)
+        .arg(alias.join("file"))
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"aliased edit"
+    );
+}
+
+#[test]
+fn a_selected_file_reverted_to_head_does_not_commit_its_obsolete_staging() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "stale staging").unwrap();
+    fixture.add();
+    fs::write(fixture.target.join("file"), "original").unwrap();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let head = repo.head().unwrap().target();
+    fixture
+        .commit_command()
+        .arg("file")
+        .assert()
+        .success()
+        .stdout(contains("nothing to commit"));
+    assert_eq!(repo.head().unwrap().target(), head);
+}
+
+#[test]
+fn a_failed_hook_does_not_stage_explicit_checkout_contents() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "unstaged edit").unwrap();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let hook = repo.path().join("hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let head = repo.head().unwrap().target();
+    let index = fs::read(repo.path().join("index")).unwrap();
+    fixture.commit_command().arg("file").assert().failure();
+    assert_eq!(repo.head().unwrap().target(), head);
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+    assert_eq!(
+        fs::read(fixture.source.join("ov/file")).unwrap(),
+        b"original"
+    );
+    assert_eq!(
+        fs::read(fixture.target.join("file")).unwrap(),
+        b"unstaged edit"
+    );
+}
+
+#[test]
+fn a_hook_editing_the_selected_target_requires_a_retry_without_staging() {
+    let fixture = Fixture::new();
+    fixture.apply();
+    fs::write(fixture.target.join("file"), "unstaged edit").unwrap();
+    let repo = git2::Repository::open(&fixture.source).unwrap();
+    let hook = repo.path().join("hooks/pre-commit");
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\nprintf 'hook edit' > '{}'\n",
+            fixture.target.join("file").display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let head = repo.head().unwrap().target();
+    let index = fs::read(repo.path().join("index")).unwrap();
+    fixture
+        .commit_command()
+        .arg("file")
+        .assert()
+        .failure()
+        .stderr(contains("changed while preparing"));
+    assert_eq!(repo.head().unwrap().target(), head);
+    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index);
+    assert_eq!(fs::read(fixture.target.join("file")).unwrap(), b"hook edit");
 }
 
 #[rstest]
@@ -407,7 +636,7 @@ fn commit_ignores_unrelated_overlays_and_untracked_repository_trees() {
 }
 
 #[test]
-fn a_missing_directory_operand_selects_staged_deletions_without_walking_it() {
+fn a_missing_directory_operand_commits_unstaged_deletions_without_walking_it() {
     let fixture = Fixture::new();
     fs::create_dir(fixture.source.join("ov/deleted")).unwrap();
     fs::write(fixture.source.join("ov/deleted/file"), "delete me").unwrap();
@@ -418,7 +647,6 @@ fn a_missing_directory_operand_selects_staged_deletions_without_walking_it() {
     commit_index(&repo);
     fixture.apply();
     fs::remove_dir_all(fixture.target.join("deleted")).unwrap();
-    fixture.add();
     fixture
         .commit_command()
         .args(["deleted", "deleted/file"])
@@ -741,14 +969,21 @@ fn full_staging_status_diff_commit_sync_and_unapply_share_clean_filters_and_igno
     );
 }
 
-#[test]
-fn committing_filtered_targets_publishes_smudged_source_bytes() {
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn committing_filtered_targets_publishes_smudged_source_bytes(#[case] explicit: bool) {
     let fixture = Fixture::new();
     let repo = configure_prefix_filter(&fixture);
     fixture.apply();
     fs::write(fixture.target.join("file"), "selected\n").unwrap();
-    fixture.add();
-    fixture.commit_command().assert().success();
+    let mut command = fixture.commit_command();
+    if explicit {
+        command.arg("file");
+    } else {
+        fixture.add();
+    }
+    command.assert().success();
     assert_native_source_is_clean(&fixture);
     assert_eq!(
         fs::read(fixture.source.join("ov/file")).unwrap(),

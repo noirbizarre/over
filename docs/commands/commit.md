@@ -6,7 +6,7 @@ checked against its own policy so plaintext cannot be committed beneath a
 protected attribute. Resolve unstaged policy edits before committing; unrelated
 ordinary staged paths remain outside the selected commit.
 
-Record staged changes and compatible rendered-file edits made in a
+Record selected current contents, staged changes, and compatible rendered-file edits made in a
 [virtual checkout](../adr/022-virtual-checkout-materialization.md) back
 into the overlay's own source repository, as a normal git commit.
 
@@ -14,7 +14,7 @@ into the overlay's own source repository, as a normal git commit.
 Usage: over commit [OPTIONS] [PATH]...
 
 Arguments:
-  [PATH]...  Commit staged paths and compatible rendered edits (defaults to all owned paths)
+  [PATH]...  Commit current contents of selected paths (defaults to staged and compatible rendered edits)
 
 Options:
       --overlay <NAME>    Select the overlay explicitly
@@ -27,8 +27,11 @@ Options:
   -h, --help               Print help
 ```
 
-When `--overlay` is omitted, infer the current overlay from its source descriptor,
-Git association, or recorded checkout. The configured `host_overlay` is not a
+When `--overlay` is omitted, infer the overlay from the named paths' recorded
+checkout ownership, or from the current source descriptor, Git association, or
+recorded checkout context. Named paths must identify a single overlay; ambiguous
+paths or paths belonging to different overlays require explicit selection.
+The configured `host_overlay` is not a
 fallback, even with `apply.default_to_host` enabled. Missing or ambiguous
 selection requires `--overlay NAME`.
 Commit does not discover every overlay to infer ownership.
@@ -37,19 +40,23 @@ An explicit `--overlay NAME` retains the configured host's
 [data context](../configuration/overlay.md#consumer-metadata-data) for path rendering.
 Only the selected overlay's own checkout entries are committed.
 This also applies when multiple applications project files into the same home:
-their source snapshots and checkout checkpoints remain independent. Use an explicit
-overlay when invoking commit from a shared destination directory.
+their source snapshots and checkout checkpoints remain independent. A uniquely
+owned file operand selects its overlay even from a shared destination directory.
 
-For ordinary files, path operands filter **staged snapshots**, including staged
-additions and deletions. They never stage current ordinary file contents.
+For ordinary files, path operands commit **current target contents**, including
+unstaged edits and owned additions or deletions. No `over add` is needed.
+If a selected file has both staged and unstaged edits, its current target contents
+replace the earlier staged snapshot in this commit. New files without recorded
+checkout ownership must first be acquired with `over add --overlay NAME`.
 For generated files, operands select current rendered edits for conservative
 [reverse patching](#rendered-file-edits). Without operands, all owned staged
 changes and compatible rendered edits are selected. Directory operands select descendants;
 shell-expanded glob matches are accepted as multiple paths. Quoted wildcard
 expressions are not expanded by `over commit`.
 
-Relative paths resolve from the current directory when it is inside the selected
-overlay's source or checkout target. Otherwise, including when selecting another
+Relative paths used to infer ownership retain their invocation-directory meaning.
+Otherwise, relative paths resolve from the current directory when it is inside the selected
+overlay's source or checkout target. Outside those contexts, including when selecting another
 overlay with `--overlay`, they resolve from that overlay's source root. Absolute
 source and target paths are also accepted. Unrelated untracked directories and
 other overlays are not scanned.
@@ -59,9 +66,7 @@ other overlays are not scanned.
 After editing a file in an applied [virtual checkout](../configuration/materialization.md):
 
 ```sh
-over add --overlay workspace/client ~/.config/client/settings.json
-over diff workspace/client --staged
-over commit --overlay workspace/client --message "Update client settings" \
+over commit --message "Update client settings" \
   ~/.config/client/settings.json
 ```
 
@@ -73,21 +78,23 @@ for source initialization and the mapped layout. Commit does not push a remote.
 For ordinary files in the named overlay's own virtual checkout entries (never a `uses`
 dependency's — that content belongs to a different overlay):
 
-1. Selects the added/modified/deleted files staged with [`over add`](add.md)
-   in the source repository's Git index.
+1. With path operands, captures current target contents for the selected owned
+   files. Without operands, selects added/modified/deleted files staged with
+   [`over add`](add.md) in the source repository's Git index.
 2. If a selected file changed both locally and in the source repository, to
    different content, refuses to commit at all — resolve the conflicting
    files manually first (`over status` lists file changes in its final Changes section).
 3. Otherwise, with something to commit, asks for a commit message
    (`--message` skips the prompt; `--no-prompt` with no `--message` falls
    back to an auto-generated one).
-4. Uses the staged snapshots, updates just those paths in the
+4. Uses the selected snapshots, updates just those paths in the
    source repository's current tree (everything else in that repository —
    sibling overlays, unrelated files — is carried over untouched), and
    creates a normal, single-parent commit on top of the source
    repository's current `HEAD`.
 5. Advances participating checkout checkpoints to the new commit.
-   Unstaged target edits remain visible and unchanged. Selected source
+   Unselected target edits remain visible and unchanged. Without path operands,
+   later unstaged edits to staged files also remain outside the commit. Selected source
    working-tree files are brought into agreement with the commit after
    checking that doing so preserves existing source edits.
 
@@ -122,11 +129,13 @@ This is limited source-update recovery, not whole-command/crash rollback.
 Checkpoint persistence happens after the commit: it can fail after HEAD has
 advanced, and participating checkpoints may be only partly updated. That error
 identifies the successful commit; inspect HEAD and checkout status before
-retrying. Use `over diff NAME --staged` to inspect the selected changes;
+retrying. Use `over diff NAME` to inspect current target edits or
+`over diff NAME --staged` to inspect staged snapshots;
 commit has no dry-run flag. See [Safety and recovery](../usage/safety.md).
 
-For ordinary files, `over commit` does not include unstaged target changes.
-Use `over add` to select those changes first.
+Without path operands, `over commit` does not include ordinary unstaged target
+changes. Use `over add` to stage a snapshot first, or name the files directly in
+`over commit PATH...` to commit their current contents.
 
 The resulting commit is entirely ordinary: inspect it with `git log`/`git
 show`/`git diff` directly in the overlay's source repository, and push it
@@ -165,7 +174,8 @@ for translation; source commits and generated/consumed-render snapshots retain
 their [encryption policy](../usage/crypt.md#protected-generated-snapshots) at rest.
 
 Each template succeeds or fails as a whole. Successful files and selected ordinary
-staged changes are committed together even if another reverse patch fails. The
+changes selected by operands (or staged changes without operands) are committed
+together even if another reverse patch fails. The
 command reports the successful commit and conflicting destination/source paths
 and hunk ranges, then exits unsuccessfully while conflicts remain. Diagnostics
 omit rendered values. Edit the source template manually to resolve unsupported

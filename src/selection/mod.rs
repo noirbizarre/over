@@ -386,18 +386,94 @@ fn git_association(path: &Path) -> Result<Option<String>> {
     }
 }
 
+/// Keep operand interpretation paired with the evidence that selected the overlay.
+pub(crate) struct CommitSelection {
+    pub overlay: Overlay,
+    pub paths: Vec<PathBuf>,
+}
+
 /// Commit already-associated checkouts without discovering every overlay's contents.
-pub(crate) fn select_commit(ctx: &Context, name: Option<&str>) -> Result<Overlay> {
+pub(crate) fn select_commit(
+    ctx: &Context,
+    name: Option<&str>,
+    paths: &[PathBuf],
+) -> Result<CommitSelection> {
+    let contextual = |overlay| CommitSelection {
+        overlay,
+        paths: paths.to_vec(),
+    };
     if let Some(name) = name {
-        return ctx.repository.get(name);
+        return ctx.repository.get(name).map(contextual);
     }
     // macOS /var aliases and symlinked collections must share cwd's physical namespace.
     let cwd = mapping::physical(&ctx.absolute_path(Path::new("."))?)?;
     let collection = mapping::physical(&ctx.repository.root)?;
-    if let Some(name) = git_association(&cwd)? {
-        return ctx.repository.get(&name);
+    // Operand ownership outranks an unrelated cwd association; no-path selection stays lazy.
+    if paths.is_empty()
+        && let Some(name) = git_association(&cwd)?
+    {
+        return ctx.repository.get(&name).map(contextual);
     }
     let state = crate::materialize::virtual_checkout::state::state_file()?.inspect_blocking()?;
+    let mut operand_owners = std::collections::BTreeSet::new();
+    for path in paths {
+        let path = mapping::location(&ctx.absolute_path(path)?)?;
+        let mut sources = std::collections::BTreeSet::new();
+        let mut targets = std::collections::BTreeSet::new();
+        for (key, record) in &state.checkouts {
+            let source = record
+                .source_repository
+                .as_ref()
+                .map(|root| mapping::physical(&root.join(&record.managed_path)))
+                .transpose()?;
+            if source
+                .as_ref()
+                .is_some_and(|source| !source.starts_with(&collection))
+            {
+                continue;
+            }
+            if source.as_ref().is_some_and(|source| {
+                path.strip_prefix(source)
+                    .is_ok_and(|relative| record.scope.owns_source_kind(relative, true))
+            }) {
+                sources.insert(record.overlay.clone());
+            }
+            let target = mapping::location(
+                &crate::materialize::virtual_checkout::state::target_for_key(key)?,
+            )?;
+            // Prefix ownership also handles directories removed since application.
+            if path
+                .strip_prefix(&target)
+                .is_ok_and(|relative| record.scope.owns_target_kind(relative, true))
+            {
+                targets.insert(record.overlay.clone());
+            }
+        }
+        let owners = if sources.is_empty() { targets } else { sources };
+        ensure!(
+            owners.len() <= 1,
+            "ambiguous overlay for '{}'; specify --overlay NAME explicitly",
+            path.display()
+        );
+        operand_owners.extend(owners);
+    }
+    ensure!(
+        operand_owners.len() <= 1,
+        "paths belong to different overlays; specify --overlay NAME explicitly"
+    );
+    if let Some(name) = operand_owners.into_iter().next() {
+        // Re-anchoring after inference could silently commit a colliding source-relative file.
+        return Ok(CommitSelection {
+            overlay: ctx.repository.get(&name)?,
+            paths: paths
+                .iter()
+                .map(|path| ctx.absolute_path(path))
+                .collect::<Result<_>>()?,
+        });
+    }
+    if let Some(name) = git_association(&cwd)? {
+        return ctx.repository.get(&name).map(contextual);
+    }
     let mut sources = std::collections::BTreeSet::new();
     let mut targets = std::collections::BTreeSet::new();
     for (target, record) in &state.checkouts {
@@ -434,7 +510,7 @@ pub(crate) fn select_commit(ctx: &Context, name: Option<&str>) -> Result<Overlay
         "ambiguous overlay; specify --overlay NAME explicitly"
     );
     if let Some(name) = names.into_iter().next() {
-        return ctx.repository.get(&name);
+        return ctx.repository.get(&name).map(contextual);
     }
     // Descriptor probing is bounded by cwd depth, not by repository size.
     for directory in cwd
@@ -448,7 +524,8 @@ pub(crate) fn select_commit(ctx: &Context, name: Option<&str>) -> Result<Overlay
         {
             return ctx
                 .repository
-                .get(&directory.strip_prefix(&collection)?.to_string_lossy());
+                .get(&directory.strip_prefix(&collection)?.to_string_lossy())
+                .map(contextual);
         }
     }
     bail!("cannot infer an overlay; specify --overlay NAME or run from an active overlay context")

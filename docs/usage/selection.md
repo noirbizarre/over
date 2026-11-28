@@ -41,14 +41,15 @@ an ambiguous operand is not resolved by another operand. Selection does not
 bypass the operation's path, materialization, or ownership validation. Commands
 without file operands use the invocation directory.
 
-[`commit`](../commands/commit.md) selects from `--overlay` or current-directory
-context before resolving its path filters. File operands do not select its overlay.
-Its bounded inference checks the containing Git repository's association first,
+[`commit`](../commands/commit.md) selects from `--overlay`, then named paths'
+recorded checkout ownership, then current-directory context. Named paths must
+identify one overlay; ambiguous operands or different owners require explicit
+selection. Its bounded current-directory inference checks the containing Git repository's association first,
 then recorded checkout ownership (source context takes precedence over target
 context), then ancestor source descriptors within the configured Over home.
 It does not discover every overlay or use the sibling and target-containment tiers
-above. Missing or ambiguous context requires `--overlay NAME`; use it when
-committing from a shared destination directory. The configured host is never a
+above. Missing or ambiguous context requires `--overlay NAME`; a uniquely owned
+file operand works even from a shared destination directory. The configured host is never a
 fallback for commit.
 
 ## Fallbacks when no context matches

@@ -17,13 +17,13 @@ use crate::utils::short_path;
 pub struct Params {
     #[clap(
         long = "overlay",
-        help = "Select the overlay (otherwise require an active overlay context)"
+        help = "Select the overlay (otherwise infer from paths or active context)"
     )]
     name: Option<String>,
 
     #[clap(
         value_name = "PATH",
-        help = "Commit staged paths and compatible rendered edits (defaults to all owned paths)"
+        help = "Commit current contents of selected paths (defaults to staged and compatible rendered edits)"
     )]
     paths: Vec<PathBuf>,
 
@@ -69,10 +69,12 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
 
     let selection_ctx = ctx.clone();
     let name = args.name.clone();
-    let overlay = tokio::task::spawn_blocking(move || {
-        crate::selection::select_commit(&selection_ctx, name.as_deref())
+    let selection_paths = args.paths.clone();
+    let selection = tokio::task::spawn_blocking(move || {
+        crate::selection::select_commit(&selection_ctx, name.as_deref(), &selection_paths)
     })
     .await??;
+    let overlay = selection.overlay;
     if cli.debug {
         tracing::debug!(?overlay, "resolved overlay");
     }
@@ -146,7 +148,7 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             crate::overlays::mapping::ReverseResolution::Absent
         );
     let anchor = if contextual { &cwd } else { &overlay.root };
-    let paths = args
+    let paths = selection
         .paths
         .iter()
         .map(|path| -> Result<_> {
@@ -172,9 +174,15 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     for path in &paths {
         if !path.starts_with(&overlay.root)
-            && !owned_entries
-                .iter()
-                .any(|entry| path.starts_with(&entry.target) || entry.target.starts_with(path))
+            && !owned_entries.iter().any(|entry| {
+                entry.target.starts_with(path)
+                    || path.strip_prefix(&entry.target).is_ok_and(|relative| {
+                        entry
+                            .intent
+                            .checkout_scope()
+                            .owns_target_kind(relative, true)
+                    })
+            })
         {
             bail!(
                 "path '{}' is outside overlay '{}'",
@@ -210,13 +218,15 @@ pub async fn execute(cli: &CLI, args: &Params) -> Result<()> {
             } else {
                 preflight_ctx
             };
-            let reverse = commit::reverse_patch::prepare(
+            let mut reverse = commit::reverse_patch::prepare(
                 &preflight_entries,
                 &preflight_options,
                 &rendering,
                 &preflight_overlay,
             )?;
+            reverse.ordinary = commit::ordinary::prepare(&preflight_entries, &preflight_options)?;
             let pending = !reverse.files.is_empty()
+                || !reverse.ordinary.files.is_empty()
                 || commit::pending(&preflight_entries, &preflight_options, &reverse)?;
             let conflicts = preflight_entries
                 .iter()

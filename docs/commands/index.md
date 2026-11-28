@@ -32,7 +32,7 @@ workflows.
 | Command | When to use it |
 | --- | --- |
 | [`over sync`](sync.md) | Reconcile virtual checkouts locally, optionally pulling/pushing the Over source repository |
-| [`over commit`](commit.md) | Record staged checkout changes in the source repository |
+| [`over commit`](commit.md) | Record selected current contents or staged checkout changes in the source repository |
 | [`over restore`](restore.md) | Discard selected changes, unstage files, or recover historical content |
 | [`over log`](log.md) | Show the git history behind a checkout-materialized overlay |
 
@@ -97,11 +97,12 @@ An explicit overlay name selects that overlay. Otherwise commands first try
 managed siblings, then target containment. Active context precedes any permitted host fallback;
 ambiguous contexts require an explicit overlay. Status/diff retain their
 all-overlay fallback without active or host context (`--all` forces all).
-Commit uses bounded inference from the current directory's Git association,
+Commit first infers ownership from named files' recorded checkout associations,
+then uses bounded inference from the current directory's Git association,
 recorded checkout/source ownership, or an ancestor source descriptor within the
 configured Over home, without discovering every overlay. Missing or ambiguous
-context requires `--overlay NAME`, including from shared destination directories;
-commit's file operands only filter changes after selection, and it never falls back to the host.
+context requires `--overlay NAME`. A uniquely owned file operand works from a
+shared destination directory. Commit never falls back to the host.
 Apply and sync can separately opt into host fallback; sync requires explicit
 `--all` to operate repository-wide.
 Lint and doctor retain their broader diagnostic scopes. See
