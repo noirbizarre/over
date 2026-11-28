@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1](https://github.com/noirbizarre/over/compare/0.7.0..0.7.1) - 2026-11-28
+
+### 🐛 Bug Fixes
+
+- **commit** Infer overlays from paths and commit current contents ([#370](https://github.com/noirbizarre/over/issues/370)) - ([6f39aff](https://github.com/noirbizarre/over/commit/6f39aff5559b51d2a62e0ee0a493ea8979cbca6f))
+
 ## [0.7.0](https://github.com/noirbizarre/over/compare/0.6.1..0.7.0) - 2026-11-27
 
 ### 💫 Features
