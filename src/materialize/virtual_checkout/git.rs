@@ -1312,8 +1312,9 @@ pub(crate) fn commit_selected_prepared(
                 path: path
                     .to_str()
                     .context("source path is not UTF-8")?
-                    .as_bytes()
-                    .to_vec(),
+                    // Raw index entries need Git separators even on Windows.
+                    .replace('\\', "/")
+                    .into_bytes(),
             };
             index.add(&entry)?;
         } else if index.get_path(path, 0).is_some() {
