@@ -233,6 +233,7 @@ mod tests {
         DialogTheme::default()
             .format_input_prompt(&mut rendered, "Identity", Some(&value))
             .unwrap();
-        assert!(console::strip_ansi_codes(&rendered).contains("[~/identity.txt]"));
+        let expected = format!("[~{}identity.txt]", std::path::MAIN_SEPARATOR);
+        assert!(console::strip_ansi_codes(&rendered).contains(&expected));
     }
 }

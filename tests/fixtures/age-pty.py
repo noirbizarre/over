@@ -9,6 +9,7 @@ import signal
 import sys
 import termios
 import time
+import tty
 
 steps = json.loads(sys.argv[1])
 split_stdout = os.environ.get("OVER_TEST_PTY_SPLIT_STDOUT") == "1"
@@ -21,6 +22,9 @@ if pid == 0:
         os.dup2(stdout_write, 1)
         os.close(stdout_write)
     os.execv(sys.argv[2], sys.argv[2:])
+if os.environ.get("OVER_TEST_PTY_RAW_INPUT") == "1":
+    # Choice-widget scripts may send Backspace in a burst; canonical mode can erase unread choices on macOS.
+    tty.setraw(fd)
 if split_stdout:
     os.close(stdout_write)
 

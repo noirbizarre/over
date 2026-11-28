@@ -588,7 +588,7 @@ fn failed_interactive_selection_never_tries_another_bare_key(#[case] failure: &s
             args.extend(["--user", "missing"]);
             vec![]
         }
-        "menu-cancel" => vec![("bob/recovery (Age passphrase)", "q")],
+        "menu-cancel" => vec![("bob/recovery (Age passphrase)", "\x1b")],
         _ => vec![
             ("bob/recovery (Age passphrase)", "\n"),
             (

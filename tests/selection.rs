@@ -192,6 +192,7 @@ fn absorption_typeahead_retains_checked_entries_hidden_by_a_later_filter() {
         .arg(fixture.path("repo"))
         .args(["new", "picked"])
         .arg(fixture.path("home"))
+        .env("OVER_TEST_PTY_RAW_INPUT", "1")
         .env("XDG_STATE_HOME", fixture.path("state"))
         .env("NO_COLOR", "1")
         .env("TERM", "xterm")
